@@ -38,6 +38,98 @@ pub fn verify_identify(
         .map_err(|e| format!("signature did not verify: {e}"))
 }
 
+pub struct VerifiedManifest {
+    pub pubkey: String,
+    pub manifest: crate::protocol::AppManifest,
+    pub event: String,
+}
+
+#[derive(serde::Deserialize)]
+struct NostrEvent {
+    id: String,
+    pubkey: String,
+    created_at: i64,
+    kind: u32,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: String,
+}
+
+/// A signed event of one kind and `d` tag, checked here rather than trusted
+/// from the client that relayed it.
+fn verify_event(
+    event_json: &str,
+    kind: u32,
+    d_tag: &str,
+    what: &str,
+) -> Result<NostrEvent, String> {
+    if event_json.len() > crate::protocol::MAX_MANIFEST_EVENT_BYTES {
+        return Err(format!("{what} event is too large"));
+    }
+    let ev: NostrEvent =
+        serde_json::from_str(event_json).map_err(|e| format!("{what} is not an event: {e}"))?;
+    if ev.kind != kind {
+        return Err(format!("{what} must be kind {kind}"));
+    }
+    let d = ev
+        .tags
+        .iter()
+        .find(|t| t.first().is_some_and(|n| n == "d"))
+        .and_then(|t| t.get(1));
+    if d.map(String::as_str) != Some(d_tag) {
+        return Err(format!("{what} needs the d tag {d_tag}"));
+    }
+    let canonical = serde_json::json!([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
+    let id: [u8; 32] = Sha256::digest(canonical.to_string().as_bytes()).into();
+    if hex::encode(id) != ev.id {
+        return Err(format!("{what} id does not match its content"));
+    }
+    let pubkey_bytes = hex::decode(&ev.pubkey).map_err(|e| format!("pubkey not hex: {e}"))?;
+    let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
+        .map_err(|e| format!("invalid nostr pubkey: {e}"))?;
+    let sig_bytes = hex::decode(&ev.sig).map_err(|e| format!("signature not hex: {e}"))?;
+    let sig =
+        Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid schnorr signature: {e}"))?;
+    Secp256k1::verification_only()
+        .verify_schnorr(&sig, &Message::from_digest(id), &xonly)
+        .map_err(|e| format!("{what} signature did not verify: {e}"))?;
+    Ok(ev)
+}
+
+/// The pin a manifest becomes is what decides an app's powers.
+pub fn verify_manifest_event(event_json: &str) -> Result<VerifiedManifest, String> {
+    use crate::protocol::{APP_MANIFEST_D, APP_MANIFEST_KIND};
+    let ev = verify_event(event_json, APP_MANIFEST_KIND, APP_MANIFEST_D, "manifest")?;
+    let manifest: crate::protocol::AppManifest = serde_json::from_str(&ev.content)
+        .map_err(|e| format!("manifest content is not a manifest: {e}"))?;
+    Ok(VerifiedManifest {
+        pubkey: ev.pubkey,
+        manifest: crate::protocol::validate_manifest(manifest)?,
+        event: event_json.to_string(),
+    })
+}
+
+/// A curator's list of app keys, from its public `p` tags.
+pub fn verify_blocklist_event(event_json: &str) -> Result<crate::protocol::AppBlocklist, String> {
+    use crate::protocol::{APP_BLOCKLIST_D, APP_BLOCKLIST_KIND, is_pubkey_hex};
+    let ev = verify_event(event_json, APP_BLOCKLIST_KIND, APP_BLOCKLIST_D, "blocklist")?;
+    let mut blocked: Vec<String> = ev
+        .tags
+        .iter()
+        .filter(|t| t.first().is_some_and(|n| n == "p"))
+        .filter_map(|t| t.get(1))
+        .filter(|k| is_pubkey_hex(k))
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+    blocked.sort_unstable();
+    blocked.dedup();
+    Ok(crate::protocol::AppBlocklist {
+        curator: ev.pubkey,
+        created_at: ev.created_at,
+        blocked,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

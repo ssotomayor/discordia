@@ -279,14 +279,13 @@ impl Actor {
             tracing::warn!(%reason, call_id = %signal.call_id, clock_offset = offset, "Rejected queued DM call signal");
             return;
         }
-        if !self.state.peek().contacts.contains(&author)
-            && !self
-                .state
-                .peek()
-                .dms
-                .iter()
-                .any(|dm| dm.other_pubkey == author)
-        {
+        let known = {
+            let s = self.state.peek();
+            s.dm_standing(&author) == crate::state::DmStanding::Inbox
+                && (s.contacts.contains(&author)
+                    || s.dms.iter().any(|dm| dm.other_pubkey == author))
+        };
+        if !known {
             return;
         }
         if signal.target.is_some_and(|target| target != self.device) {

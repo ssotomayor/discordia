@@ -58,6 +58,7 @@ fn channel(guild_id: Id) -> Channel {
 
 fn message(channel_id: Id, at_ms: i64, body: &str) -> Message {
     Message {
+        author_bot: false,
         image_metadata: None,
         attachment: None,
         pinned: false,

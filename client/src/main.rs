@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity_bundle;
+mod activity_window;
 mod agc;
 mod app;
 mod audio_device;
@@ -228,7 +230,11 @@ fn main() {
         .with_window_icon(load_window_icon());
     let window = mac_window(window);
     LaunchBuilder::new()
-        .with_cfg(apply_menu(Config::new().with_window(window)))
+        .with_cfg(apply_menu(
+            Config::new()
+                .with_window(window)
+                .with_custom_event_handler(activity_window::on_event),
+        ))
         .launch(app::App);
 }
 

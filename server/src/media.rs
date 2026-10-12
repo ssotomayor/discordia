@@ -114,11 +114,15 @@ impl MediaStore {
         self.store_kind(data_url, Kind::File)
     }
 
+    pub fn store_bundle_data_url(&self, data_url: &str) -> Result<String, StoreError> {
+        self.store_kind(data_url, Kind::Bundle)
+    }
+
     fn store_kind(&self, data_url: &str, kind: Kind) -> Result<String, StoreError> {
         let unsupported = match kind {
             Kind::Image => StoreError::Unsupported,
             Kind::Sound => StoreError::UnsupportedSound,
-            Kind::File => StoreError::UnsupportedFile,
+            Kind::File | Kind::Bundle => StoreError::UnsupportedFile,
         };
         let rest = data_url.strip_prefix("data:").ok_or(unsupported)?;
         let (mime, payload) = rest.split_once(";base64,").ok_or(unsupported)?;
@@ -128,6 +132,9 @@ impl MediaStore {
             .map_err(|_| unsupported)?;
         if matches!(kind, Kind::Image) && bytes.len() > crate::protocol::MAX_IMAGE_BYTES {
             return Err(StoreError::ImageTooLarge);
+        }
+        if matches!(kind, Kind::Bundle) && bytes.len() > crate::protocol::MAX_BUNDLE_BYTES {
+            return Err(StoreError::UnsupportedFile);
         }
         if !looks_like(ext, &bytes) {
             return Err(unsupported);
@@ -280,11 +287,13 @@ enum Kind {
     Image,
     Sound,
     File,
+    Bundle,
 }
 
 fn ext_for_mime(mime: &str, kind: Kind) -> Option<&'static str> {
     match (kind, mime) {
         (Kind::File, "application/octet-stream") => Some("bin"),
+        (Kind::Bundle, crate::protocol::BUNDLE_MIME) => Some("dxa"),
         (Kind::Image, "image/png") => Some("png"),
         (Kind::Image, "image/jpeg" | "image/jpg") => Some("jpg"),
         (Kind::Image, "image/gif") => Some("gif"),
@@ -302,6 +311,7 @@ fn ext_for_mime(mime: &str, kind: Kind) -> Option<&'static str> {
 fn looks_like(ext: &str, bytes: &[u8]) -> bool {
     match ext {
         "bin" => !bytes.is_empty(),
+        "dxa" => crate::protocol::looks_like_bundle(bytes),
         "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "jpg" => bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
         "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
@@ -331,6 +341,7 @@ fn mime_for_name(name: &str) -> &'static str {
         Some("mp3") => "audio/mpeg",
         Some("ogg") => "audio/ogg",
         Some("wav") => "audio/wav",
+        Some("dxa") => crate::protocol::BUNDLE_MIME,
         _ => "application/octet-stream",
     }
 }

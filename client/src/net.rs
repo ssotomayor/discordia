@@ -1502,6 +1502,52 @@ fn apply(
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
         }
+        ServerMessage::AppManifestEvent { bot_pubkey, event } => {
+            s.app_manifest_events.insert(bot_pubkey, event);
+        }
+        ServerMessage::GuildActivities {
+            guild_id,
+            activities,
+        } => {
+            s.guild_activities.insert(guild_id, activities);
+        }
+        ServerMessage::GuildBlocklists {
+            guild_id,
+            curators,
+            lists,
+        } => {
+            s.guild_blocklists.insert(guild_id, (curators, lists));
+        }
+        ServerMessage::ActivityInstances {
+            channel_id,
+            instances,
+        } => {
+            s.activity_instances.insert(channel_id, instances);
+        }
+        ServerMessage::ActivityStarted { instance } => {
+            s.activity_instances
+                .entry(instance.channel_id)
+                .or_default()
+                .retain(|i| i.id != instance.id);
+            s.activity_instances
+                .entry(instance.channel_id)
+                .or_default()
+                .push(instance.clone());
+            crate::features::activities::inbound(crate::features::activities::Inbound::Started(
+                instance,
+            ));
+        }
+        ServerMessage::ActivityEvent {
+            instance_id,
+            from,
+            data,
+        } => {
+            crate::features::activities::inbound(crate::features::activities::Inbound::Event {
+                instance_id,
+                from,
+                data,
+            });
+        }
         ServerMessage::BotCommands(set) => {
             s.bot_commands.insert(set.bot_pubkey, set.commands);
         }
@@ -1510,6 +1556,7 @@ fn apply(
             bot_pubkey,
             channel_id,
             content,
+            ..
         } => {
             s.command_notes.push(crate::state::CommandNote {
                 invocation_id,
@@ -2306,6 +2353,7 @@ mod tests {
                     s.messages.insert(
                         channel,
                         vec![crate::protocol::Message {
+                            author_bot: false,
                             image_metadata: None,
                             attachment: None,
                             pinned: false,
@@ -2418,6 +2466,7 @@ mod tests {
         s.messages.insert(
             channel,
             vec![crate::protocol::Message {
+                author_bot: false,
                 image_metadata: None,
                 attachment: None,
                 pinned: false,

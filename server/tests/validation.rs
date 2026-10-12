@@ -173,6 +173,7 @@ async fn a_history_page_is_clamped_however_much_is_asked_for() {
         for i in 0..250 {
             store
                 .insert_message(&Message {
+                    author_bot: false,
                     image_metadata: None,
                     attachment: None,
                     pinned: false,

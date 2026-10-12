@@ -429,6 +429,54 @@ async fn every_kind_of_blob_reference_is_found() {
         })
         .await
         .unwrap();
+    // A bundle is referenced only through the install's manifest, by hash.
+    let page = b"<!doctype html><p>bundle</p>";
+    let sha = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(page))
+    };
+    let app = BotIdentity::generate();
+    let manifest = dioxusfun_server::protocol::AppManifest {
+        name: "Bundle".into(),
+        description: String::new(),
+        icon: String::new(),
+        version: 1,
+        permissions: Vec::new(),
+        intents: Vec::new(),
+        commands: Vec::new(),
+        activity: Some(dioxusfun_server::protocol::ActivityManifest {
+            sha256: sha,
+            capabilities: Vec::new(),
+            max_players: 1,
+            url: None,
+        }),
+    };
+    session
+        .send(&ClientMessage::InstallBot {
+            guild_id,
+            bot_pubkey: app.pubkey().to_string(),
+            name: String::new(),
+            permissions: Vec::new(),
+            intents: Vec::new(),
+            manifest: Some(app.sign_manifest(&manifest)),
+        })
+        .await
+        .unwrap();
+    session
+        .send(&ClientMessage::UploadActivityBundle {
+            guild_id,
+            bot_pubkey: app.pubkey().to_string(),
+            data_url: {
+                use base64::Engine;
+                format!(
+                    "data:{};base64,{}",
+                    dioxusfun_server::protocol::BUNDLE_MIME,
+                    base64::engine::general_purpose::STANDARD.encode(page)
+                )
+            },
+        })
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(400)).await;
 
@@ -448,6 +496,10 @@ async fn every_kind_of_blob_reference_is_found() {
     assert!(
         on_disk.iter().any(|n| n.ends_with(".wav")),
         "the sound was stored: {on_disk:?}"
+    );
+    assert!(
+        on_disk.iter().any(|n| n.ends_with(".dxa")),
+        "the bundle was stored: {on_disk:?}"
     );
     for name in &on_disk {
         assert!(

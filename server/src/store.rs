@@ -232,6 +232,12 @@ impl Store {
                 permissions TEXT NOT NULL DEFAULT '[]',
                 intents TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (guild_id, bot_pubkey))",
+            "CREATE TABLE IF NOT EXISTS app_manifests (
+                bot_pubkey TEXT PRIMARY KEY, version INTEGER NOT NULL, event TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS guild_blocklists (
+                guild_id TEXT NOT NULL, curator TEXT NOT NULL, PRIMARY KEY (guild_id, curator))",
+            "CREATE TABLE IF NOT EXISTS app_blocklists (
+                curator TEXT PRIMARY KEY, created_at INTEGER NOT NULL, blocked TEXT NOT NULL)",
         ];
         for stmt in ddl {
             sqlx::query(stmt).execute(&self.pool).await?;
@@ -252,6 +258,9 @@ impl Store {
             "ALTER TABLE guilds ADD COLUMN leveling TEXT",
             "ALTER TABLE channels ADD COLUMN access TEXT",
             "ALTER TABLE channels ADD COLUMN divider TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN app TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
             "ALTER TABLE profiles ADD COLUMN hide_guild_owner INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN hide_operator INTEGER NOT NULL DEFAULT 0",
         ] {
@@ -435,7 +444,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents FROM bot_installs")
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call FROM bot_installs")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -445,6 +454,16 @@ impl Store {
                 name: r.get(2),
                 permissions: serde_json::from_str(&r.get::<String, _>(3)).unwrap_or_default(),
                 intents: serde_json::from_str(&r.get::<String, _>(4)).unwrap_or_default(),
+                app: r
+                    .get::<Option<String>, _>(5)
+                    .and_then(|j| serde_json::from_str(&j).ok()),
+                pending: r
+                    .get::<Option<String>, _>(6)
+                    .and_then(|j| serde_json::from_str(&j).ok()),
+                may_call: r
+                    .get::<Option<String>, _>(7)
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
             });
         }
         Ok(out)
@@ -937,6 +956,21 @@ impl Store {
                 out.insert(name.to_string());
             }
         }
+        // A bundle is named by its manifest's hash; the pending one is kept so
+        // an admin can upload it before approving.
+        for r in sqlx::query("SELECT app, pending FROM bot_installs")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            for col in 0..2 {
+                let app = r
+                    .get::<Option<String>, _>(col)
+                    .and_then(|j| serde_json::from_str::<crate::protocol::AppManifest>(&j).ok());
+                if let Some(activity) = app.and_then(|a| a.activity) {
+                    out.insert(crate::protocol::bundle_blob(&activity.sha256));
+                }
+            }
+        }
         // Profiles and guilds point at blobs too; a sweep that forgot them
         // deleted every avatar older than a day.
         for sql in [
@@ -972,19 +1006,111 @@ impl Store {
         i: &BotInstall,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(guild_id, bot_pubkey) DO UPDATE SET name=excluded.name,
-               permissions=excluded.permissions, intents=excluded.intents",
+               permissions=excluded.permissions, intents=excluded.intents,
+               app=excluded.app, pending=excluded.pending, may_call=excluded.may_call",
         )
         .bind(i.guild_id.to_string())
         .bind(&i.bot_pubkey)
         .bind(&i.name)
         .bind(serde_json::to_string(&i.permissions).unwrap_or_else(|_| "[]".into()))
         .bind(serde_json::to_string(&i.intents).unwrap_or_else(|_| "[]".into()))
+        .bind(i.app.as_ref().and_then(|m| serde_json::to_string(m).ok()))
+        .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
+        .bind(serde_json::to_string(&i.may_call).unwrap_or_else(|_| "[]".into()))
         .execute(executor)
         .await?;
         Ok(())
+    }
+
+    pub async fn guild_blocklists(&self) -> Result<Vec<(Id, String)>> {
+        let rows = sqlx::query("SELECT guild_id, curator FROM guild_blocklists")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (parse_id(&r.get::<String, _>(0)), r.get(1)))
+            .collect())
+    }
+
+    pub async fn set_guild_blocklists(&self, guild_id: Id, curators: &[String]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM guild_blocklists WHERE guild_id = ?")
+            .bind(guild_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for c in curators {
+            sqlx::query("INSERT INTO guild_blocklists (guild_id, curator) VALUES (?, ?)")
+                .bind(guild_id.to_string())
+                .bind(c)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn app_blocklists(&self) -> Result<Vec<crate::protocol::AppBlocklist>> {
+        let rows = sqlx::query("SELECT curator, created_at, blocked FROM app_blocklists")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::protocol::AppBlocklist {
+                curator: r.get(0),
+                created_at: r.get(1),
+                blocked: serde_json::from_str(&r.get::<String, _>(2)).unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    pub async fn upsert_app_blocklist(&self, list: &crate::protocol::AppBlocklist) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO app_blocklists (curator, created_at, blocked) VALUES (?, ?, ?)
+             ON CONFLICT(curator) DO UPDATE SET created_at=excluded.created_at, blocked=excluded.blocked",
+        )
+        .bind(&list.curator)
+        .bind(list.created_at)
+        .bind(serde_json::to_string(&list.blocked).unwrap_or_else(|_| "[]".into()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn app_manifests(&self) -> Result<Vec<(String, u64, String)>> {
+        let rows = sqlx::query("SELECT bot_pubkey, version, event FROM app_manifests")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), r.get::<i64, _>(1) as u64, r.get(2)))
+            .collect())
+    }
+
+    /// The manifest and every install it changed land together, or a crash
+    /// leaves a guild pinned to a version the host no longer remembers.
+    pub async fn record_manifest(
+        &self,
+        bot_pubkey: &str,
+        version: u64,
+        event: &str,
+        installs: &[BotInstall],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO app_manifests (bot_pubkey, version, event) VALUES (?, ?, ?)
+             ON CONFLICT(bot_pubkey) DO UPDATE SET version=excluded.version, event=excluded.event",
+        )
+        .bind(bot_pubkey)
+        .bind(version as i64)
+        .bind(event)
+        .execute(&mut *tx)
+        .await?;
+        for i in installs {
+            Self::write_bot_install(&mut *tx, i).await?;
+        }
+        tx.commit().await
     }
 
     pub async fn delete_bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Result<()> {
@@ -1264,6 +1390,7 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         })
     });
     Message {
+        author_bot: false,
         image_metadata: r
             .get::<Option<String>, _>("image_metadata")
             .and_then(|raw| serde_json::from_str(&raw).ok()),

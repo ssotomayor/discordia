@@ -11,6 +11,7 @@ mod chat_tools;
 pub mod connect;
 pub mod discord_import;
 pub mod dm_call;
+mod dm_requests;
 pub mod globe;
 mod globe_geometry;
 mod guild_hub;

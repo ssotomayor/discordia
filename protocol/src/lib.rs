@@ -83,6 +83,8 @@ pub fn quic_origin(endpoint_id: &str) -> String {
 
 pub const QUIC_SCHEME: &str = "quic://";
 
+pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
+
 /// What a host hands a friend: the key the connection is authenticated by, and
 /// where to try it. An address may also be a relay URL for hole punching.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -992,6 +994,10 @@ pub struct Message {
     pub id: Id,
     pub channel_id: Id,
     pub author: User,
+    /// Set by the server from the guild's installs, so a bot can skip other
+    /// bots and two of them cannot answer each other forever.
+    #[serde(default)]
+    pub author_bot: bool,
     pub content: String,
     #[serde(default)]
     pub image: Option<String>,
@@ -1234,6 +1240,274 @@ pub struct BotInstall {
     pub name: String,
     pub permissions: Vec<Permission>,
     pub intents: Vec<Intent>,
+    /// The apps this one may call, as the guild allowed.
+    #[serde(default)]
+    pub may_call: Vec<String>,
+    /// The manifest an admin approved. A newer one that asks for more waits in
+    /// `pending` until an admin approves that too.
+    #[serde(default)]
+    pub app: Option<AppManifest>,
+    #[serde(default)]
+    pub pending: Option<AppManifest>,
+}
+
+/// NIP-89's handler kind, so a relay already knows to keep only the latest.
+pub const APP_MANIFEST_KIND: u32 = 31990;
+pub const APP_MANIFEST_D: &str = "discordia-app";
+pub const MAX_APP_NAME: usize = 32;
+pub const MAX_APP_DESCRIPTION: usize = 300;
+pub const MAX_APP_ICON: usize = 16;
+pub const MAX_APP_URL: usize = 512;
+pub const MAX_ACTIVITY_PLAYERS: u8 = 16;
+pub const MAX_MANIFEST_EVENT_BYTES: usize = 64 * 1024;
+/// Fits one gateway frame as base64, beside the rest of the message.
+pub const MAX_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
+pub const BUNDLE_MIME: &str = "application/x-discordia-activity";
+
+/// The blob name a host keeps an activity bundle under: its hash is the name,
+/// so an install needs nothing stored to find it.
+pub fn bundle_blob(sha256: &str) -> String {
+    format!("{sha256}.dxa")
+}
+
+/// A zip, or one HTML page.
+pub fn looks_like_bundle(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"PK\x03\x04") {
+        return true;
+    }
+    let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let start = text
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(0);
+    text.get(start..start + 1) == Some(b"<")
+}
+
+/// NIP-51's set kind: a curator's named list of app keys a guild may follow.
+pub const APP_BLOCKLIST_KIND: u32 = 30000;
+pub const APP_BLOCKLIST_D: &str = "discordia-app-blocklist";
+pub const MAX_GUILD_BLOCKLISTS: usize = 8;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppBlocklist {
+    pub curator: String,
+    pub created_at: i64,
+    pub blocked: Vec<String>,
+}
+
+/// Activities every client ships, by id, with how many may play at once.
+/// The host knows them so it can size a game it has no manifest for.
+pub const BUILTIN_ACTIVITIES: &[(&str, u8)] = &[("dice", 1), ("rps", 2)];
+
+pub fn builtin_activity(id: &str) -> String {
+    format!("builtin:{id}")
+}
+
+pub const MAX_ACTIVITY_DATA: usize = 16 * 1024;
+pub const MAX_INSTANCES_PER_CHANNEL: usize = 8;
+pub const MAX_INSTANCE_PARTICIPANTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityRole {
+    Player,
+    Spectator,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityParticipant {
+    pub pubkey: String,
+    pub role: ActivityRole,
+}
+
+/// A running activity people can join. Memory only, like presence: it ends
+/// when its last participant leaves or disconnects.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityInstance {
+    pub id: Id,
+    pub channel_id: Id,
+    /// `builtin:<id>`, or the key of the app whose activity it is.
+    pub app: String,
+    pub max_players: u8,
+    /// In join order. The first is the host, so leaving hands it on.
+    pub participants: Vec<ActivityParticipant>,
+}
+
+impl ActivityInstance {
+    pub fn host(&self) -> Option<&str> {
+        self.participants.first().map(|p| p.pubkey.as_str())
+    }
+
+    pub fn players(&self) -> usize {
+        self.participants
+            .iter()
+            .filter(|p| p.role == ActivityRole::Player)
+            .count()
+    }
+
+    pub fn role_of(&self, pubkey: &str) -> Option<ActivityRole> {
+        self.participants
+            .iter()
+            .find(|p| p.pubkey == pubkey)
+            .map(|p| p.role)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuildActivity {
+    pub bot_pubkey: String,
+    pub name: String,
+    pub icon: String,
+    pub sha256: String,
+    pub capabilities: Vec<ActivityCapability>,
+    pub max_players: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityCapability {
+    UserRead,
+    ChannelRead,
+    MessageSend,
+    Instance,
+}
+
+impl ActivityCapability {
+    pub fn label(self) -> &'static str {
+        match self {
+            ActivityCapability::UserRead => "See your name and public key",
+            ActivityCapability::ChannelRead => "See the channel it was opened in",
+            ActivityCapability::MessageSend => "Post messages as you in that channel",
+            ActivityCapability::Instance => "Play with others who join it",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityManifest {
+    /// Hex sha256 of the bundle file. The client refuses any other bytes.
+    pub sha256: String,
+    #[serde(default)]
+    pub capabilities: Vec<ActivityCapability>,
+    #[serde(default = "one_player")]
+    pub max_players: u8,
+    /// Where an admin can download the bundle to upload it. Members never
+    /// fetch from it.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+fn one_player() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppManifest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// An emoji, never a URL: drawing it must not reach anyone's server.
+    #[serde(default)]
+    pub icon: String,
+    pub version: u64,
+    #[serde(default)]
+    pub permissions: Vec<Permission>,
+    #[serde(default)]
+    pub intents: Vec<Intent>,
+    #[serde(default)]
+    pub commands: Vec<BotCommand>,
+    #[serde(default)]
+    pub activity: Option<ActivityManifest>,
+}
+
+impl AppManifest {
+    /// Anything a guild has not yet approved. A new bundle hash alone is not:
+    /// the bundle runs with the capabilities it was given, and no more.
+    pub fn widens(&self, newer: &AppManifest) -> bool {
+        let caps = |m: &AppManifest| {
+            m.activity
+                .as_ref()
+                .map(|a| a.capabilities.clone())
+                .unwrap_or_default()
+        };
+        let players = |m: &AppManifest| m.activity.as_ref().map_or(0, |a| a.max_players);
+        let old_caps = caps(self);
+        newer
+            .permissions
+            .iter()
+            .any(|p| !self.permissions.contains(p))
+            || newer.intents.iter().any(|i| !self.intents.contains(i))
+            || caps(newer).iter().any(|c| !old_caps.contains(c))
+            || players(newer) > players(self).max(1)
+    }
+}
+
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A manifest is drawn on a consent screen and pinned in every guild that
+/// installs it, so it is refused whole rather than trimmed.
+pub fn validate_manifest(raw: AppManifest) -> Result<AppManifest, String> {
+    let name = sanitize_line(&raw.name, MAX_APP_NAME);
+    if name.is_empty() {
+        return Err("an app needs a name".into());
+    }
+    if raw.description.chars().count() > MAX_APP_DESCRIPTION {
+        return Err(format!(
+            "description is over {MAX_APP_DESCRIPTION} characters"
+        ));
+    }
+    let icon = raw.icon.trim().to_string();
+    if icon.chars().count() > MAX_APP_ICON || icon.contains("://") {
+        return Err("the icon must be a short emoji".into());
+    }
+    if let Some(bad) = raw
+        .permissions
+        .iter()
+        .find(|p| !Permission::BOT_INSTALLABLE.contains(p))
+    {
+        return Err(format!("{bad:?} isn't grantable to bots"));
+    }
+    let commands = validate_commands(raw.commands)?;
+    let activity = match raw.activity {
+        None => None,
+        Some(a) => {
+            if !is_sha256_hex(&a.sha256) {
+                return Err("activity sha256 must be 64 lowercase hex characters".into());
+            }
+            if a.max_players == 0 || a.max_players > MAX_ACTIVITY_PLAYERS {
+                return Err(format!("max_players must be 1 to {MAX_ACTIVITY_PLAYERS}"));
+            }
+            if let Some(url) = &a.url
+                && (url.len() > MAX_APP_URL || !url.starts_with("https://"))
+            {
+                return Err("the bundle url must be https".into());
+            }
+            let mut capabilities = a.capabilities;
+            capabilities.sort_unstable();
+            capabilities.dedup();
+            Some(ActivityManifest { capabilities, ..a })
+        }
+    };
+    let mut permissions = raw.permissions;
+    permissions.sort_unstable_by_key(|p| format!("{p:?}"));
+    permissions.dedup();
+    let mut intents = raw.intents;
+    intents.sort_unstable_by_key(|i| format!("{i:?}"));
+    intents.dedup();
+    Ok(AppManifest {
+        name,
+        description: raw.description.trim().to_string(),
+        icon,
+        version: raw.version,
+        permissions,
+        intents,
+        commands,
+        activity,
+    })
 }
 
 impl BotInstall {
@@ -1255,6 +1529,9 @@ pub const MAX_COMMAND_DESCRIPTION: usize = 100;
 pub const MAX_COMMAND_TEXT: u16 = 1000;
 pub const MAX_COMMAND_MEMBERS: u8 = 25;
 pub const MAX_COMMAND_REPLY: usize = 2000;
+pub const MAX_COMMAND_DATA: usize = 8 * 1024;
+/// Keys in a call chain, the person who started it included.
+pub const MAX_CALL_DEPTH: usize = 3;
 
 /// A button a bot puts on its profile card. Declared by the bot on every
 /// connect, so it is the bot's code, never the guild's data.
@@ -1270,6 +1547,10 @@ pub struct BotCommand {
     pub permission: Option<Permission>,
     #[serde(default)]
     pub options: Vec<CommandOption>,
+    /// Whether another installed app may call it, where the guild allows the
+    /// pair. Off unless the bot says so.
+    #[serde(default)]
+    pub callable_by_apps: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1333,6 +1614,10 @@ pub struct Invocation {
     /// Every pubkey a `Members` arg names, under the name this guild knows.
     #[serde(default)]
     pub users: Vec<User>,
+    /// Every key the call came through, from whoever started it to the
+    /// invoker: `[person]` for a press, `[person, app]` for an app calling.
+    #[serde(default)]
+    pub via: Vec<String>,
 }
 
 impl Invocation {
@@ -1380,7 +1665,13 @@ impl BotCommand {
             description: String::new(),
             permission: None,
             options: Vec::new(),
+            callable_by_apps: false,
         }
+    }
+
+    pub fn callable_by_apps(mut self) -> Self {
+        self.callable_by_apps = true;
+        self
     }
 
     pub fn description(mut self, text: &str) -> Self {
@@ -1544,6 +1835,7 @@ pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String
             id: cmd.id,
             permission: cmd.permission,
             options,
+            callable_by_apps: cmd.callable_by_apps,
         });
     }
     Ok(out)
@@ -1794,6 +2086,56 @@ pub enum ClientMessage {
         name: String,
         permissions: Vec<Permission>,
         intents: Vec<Intent>,
+        /// The app's signed manifest event, as JSON. With it the server pins
+        /// what was approved; permissions and intents must lie within it.
+        #[serde(default)]
+        manifest: Option<String>,
+    },
+    /// Bot only. A signed manifest event; a newer version than a guild pinned
+    /// applies at once if it asks for no more, else waits for an admin.
+    RegisterManifest {
+        event: String,
+    },
+    ApproveAppUpdate {
+        guild_id: Id,
+        bot_pubkey: String,
+    },
+    FetchAppManifest {
+        bot_pubkey: String,
+    },
+    /// Manage guild. The bytes must hash to the approved or pending manifest's
+    /// `activity.sha256`.
+    UploadActivityBundle {
+        guild_id: Id,
+        bot_pubkey: String,
+        data_url: String,
+    },
+    FetchGuildActivities {
+        guild_id: Id,
+    },
+    /// Starts a joinable instance in a channel. Starting or joining another
+    /// one leaves the instance you were in.
+    ActivityStart {
+        channel_id: Id,
+        app: String,
+    },
+    ActivityJoin {
+        instance_id: Id,
+        role: ActivityRole,
+    },
+    ActivityLeave {
+        instance_id: Id,
+    },
+    /// Players and the app's bot only. `to` reaches one participant; without
+    /// it, everyone in the instance but the sender. `data` is opaque JSON text.
+    ActivitySend {
+        instance_id: Id,
+        #[serde(default)]
+        to: Option<String>,
+        data: String,
+    },
+    FetchActivityInstances {
+        channel_id: Id,
     },
     UninstallBot {
         guild_id: Id,
@@ -1813,11 +2155,35 @@ pub enum ClientMessage {
         command: String,
         #[serde(default)]
         args: Vec<CommandArg>,
+        /// From a bot: the invocation it is handling, which carries the chain
+        /// and the person whose permission the call is also held to.
+        #[serde(default)]
+        parent: Option<Id>,
     },
-    /// Bot only. Reaches the one person who pressed, once, and is never stored.
+    /// Bot only. Reaches whoever invoked, once, and is never stored. `data` is
+    /// JSON text for an app that called, so it need not parse prose.
     RespondToCommand {
         invocation_id: Id,
         content: String,
+        #[serde(default)]
+        data: Option<String>,
+    },
+    /// Manage guild. The curators whose app blocklists this guild follows;
+    /// none is followed unless an admin adds it.
+    SetGuildBlocklists {
+        guild_id: Id,
+        curators: Vec<String>,
+    },
+    /// A curator's signed list, fetched from relays by a client. Kept only if
+    /// some guild here follows that curator, and only if newer.
+    UploadBlocklist {
+        event: String,
+    },
+    /// Manage guild. Which installed apps this one may call.
+    SetAppCalls {
+        guild_id: Id,
+        bot_pubkey: String,
+        may_call: Vec<String>,
     },
     CreateRole {
         guild_id: Id,
@@ -2211,6 +2577,37 @@ pub enum ServerMessage {
         guild_id: Id,
         bots: Vec<BotInstall>,
     },
+    /// The latest manifest event this host has seen from that bot, if any.
+    AppManifestEvent {
+        bot_pubkey: String,
+        event: Option<String>,
+    },
+    /// Activities whose bundle this host holds, for any member.
+    GuildActivities {
+        guild_id: Id,
+        activities: Vec<GuildActivity>,
+    },
+    /// To a guild's managers: who it follows and what each curator lists.
+    GuildBlocklists {
+        guild_id: Id,
+        curators: Vec<String>,
+        lists: Vec<AppBlocklist>,
+    },
+    /// Every instance running in a channel, to everyone who can see it.
+    ActivityInstances {
+        channel_id: Id,
+        instances: Vec<ActivityInstance>,
+    },
+    /// To the socket that sent `ActivityStart`, so it binds its window to the
+    /// instance it made rather than guessing among a channel's instances.
+    ActivityStarted {
+        instance: ActivityInstance,
+    },
+    ActivityEvent {
+        instance_id: Id,
+        from: String,
+        data: String,
+    },
     BotCommands(BotCommandSet),
     CommandInvoked(Invocation),
     CommandResponse {
@@ -2218,6 +2615,8 @@ pub enum ServerMessage {
         bot_pubkey: String,
         channel_id: Id,
         content: String,
+        #[serde(default)]
+        data: Option<String>,
     },
     ScreenShareState {
         channel_id: Id,
@@ -2912,6 +3311,7 @@ mod command_tests {
                 pubkey: key('a'),
                 username: "ana".into(),
             }],
+            via: vec![key('c')],
         };
         assert_eq!(inv.members("targets")[0].username, "ana");
         assert!(inv.text("targets").is_none());
@@ -2928,6 +3328,7 @@ mod command_tests {
                 id: "n".into(),
                 value: ArgValue::Integer(3),
             }],
+            parent: None,
         })
         .unwrap();
         assert_eq!(json["op"], "invoke_command");

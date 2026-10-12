@@ -119,8 +119,12 @@ webview2-com-sys = "0.38"
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration", "WKPreferences"] }
 objc2-foundation = "0.3"
 objc2-screen-capture-kit = "0.3"
 objc2-core-media = "0.3"

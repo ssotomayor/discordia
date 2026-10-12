@@ -268,6 +268,16 @@ pub struct DmInfo {
     pub other_pubkey: String,
 }
 
+/// Which list a conversation belongs in. A bot with `Members` can harvest every
+/// pubkey and DM it over relays, outside any server's reach (#311).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmStanding {
+    Inbox,
+    Request,
+    Ignored,
+    Blocked,
+}
+
 /// A right-click on someone in a voice channel. Mounted at the workspace root
 /// like the soundboard (trap 22), so it carries where it was opened.
 #[derive(Debug, Clone, PartialEq)]
@@ -325,6 +335,11 @@ pub struct AppState {
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
     pub dm_call: Option<crate::features::dm_call::CallView>,
     pub contacts: crate::nostr::nip02::ContactList,
+    /// Seeded from `ClientSettings::dm_blocked` until our kind 10000 arrives.
+    pub mutes: crate::nostr::nip51::MuteList,
+    /// Seeded from `ClientSettings`; written back by `use_dm_standing_persistence`.
+    pub dm_accepted: HashSet<String>,
+    pub dm_ignored: HashSet<String>,
     pub nostr_relays_up: std::collections::HashSet<String>,
     /// Names peers published for themselves (kind 0), by pubkey, each with the
     /// `created_at` it came with. Kept because kind 0 is replaceable and the
@@ -447,6 +462,18 @@ pub struct AppState {
     pub host_info: Option<HostInfo>,
     pub transport: Transport,
     pub integrations: HashMap<Id, Vec<BotInstall>>,
+    /// What the host answered `FetchAppManifest` with, by bot key.
+    pub app_manifest_events: HashMap<String, Option<String>>,
+    /// Manifest events our relays served, newest per key, with `created_at`.
+    pub relay_app_manifests: HashMap<String, (i64, String)>,
+    /// Activities each guild's host holds a bundle for.
+    pub guild_activities: HashMap<Id, Vec<crate::protocol::GuildActivity>>,
+    /// Joinable activities running in each channel we can see.
+    pub activity_instances: HashMap<Id, Vec<crate::protocol::ActivityInstance>>,
+    /// Per guild, from its host: curators followed and the lists it holds.
+    pub guild_blocklists: HashMap<Id, (Vec<String>, Vec<crate::protocol::AppBlocklist>)>,
+    /// Blocklist events our relays served, newest per curator, with `created_at`.
+    pub relay_blocklists: HashMap<String, (i64, String)>,
     /// By bot pubkey. What each bot's profile card offers to press.
     pub bot_commands: HashMap<String, Vec<crate::protocol::BotCommand>>,
     /// A bot's private answers: never stored anywhere, gone on reconnect.
@@ -499,6 +526,9 @@ impl AppState {
             dm_delivery: HashMap::new(),
             dm_call: None,
             contacts: Default::default(),
+            mutes: Default::default(),
+            dm_accepted: HashSet::new(),
+            dm_ignored: HashSet::new(),
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),
             dm_mode: false,
@@ -587,6 +617,12 @@ impl AppState {
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),
+            app_manifest_events: HashMap::new(),
+            relay_app_manifests: HashMap::new(),
+            guild_activities: HashMap::new(),
+            activity_instances: HashMap::new(),
+            guild_blocklists: HashMap::new(),
+            relay_blocklists: HashMap::new(),
             bot_commands: HashMap::new(),
             command_notes: Vec::new(),
             guild_emojis: HashMap::new(),
@@ -1060,10 +1096,37 @@ impl AppState {
         self.messages.get(&channel_id).and_then(|m| m.last())
     }
 
+    /// A bot in the guild is the very sender #311 is about, so it introduces nobody.
+    pub fn shares_guild(&self, pubkey: &str) -> bool {
+        self.members
+            .iter()
+            .any(|m| m.user.pubkey == pubkey && !m.bot)
+    }
+
+    pub fn dm_standing(&self, peer: &str) -> DmStanding {
+        if self.mutes.contains(peer) {
+            DmStanding::Blocked
+        } else if self.dm_accepted.contains(peer)
+            || self.contacts.contains(peer)
+            || self.shares_guild(peer)
+        {
+            DmStanding::Inbox
+        } else if self.dm_ignored.contains(peer) {
+            DmStanding::Ignored
+        } else {
+            DmStanding::Request
+        }
+    }
+
     /// Empty conversations sort last: one just opened by pasting a key has no
     /// activity to be recent about.
-    pub fn dms_by_recency(&self) -> Vec<DmInfo> {
-        let mut v = self.dms.clone();
+    pub fn dms_by_recency(&self, standing: DmStanding) -> Vec<DmInfo> {
+        let mut v: Vec<DmInfo> = self
+            .dms
+            .iter()
+            .filter(|d| self.dm_standing(&d.other_pubkey) == standing)
+            .cloned()
+            .collect();
         v.sort_by(|a, b| {
             let at = self.dm_last_message(a.channel_id).map(|m| m.created_at);
             let bt = self.dm_last_message(b.channel_id).map(|m| m.created_at);
@@ -1073,7 +1136,56 @@ impl AppState {
     }
 
     pub fn dm_unread_total(&self) -> u32 {
-        self.dm_unread.values().copied().sum()
+        self.dms
+            .iter()
+            .filter(|d| self.dm_standing(&d.other_pubkey) == DmStanding::Inbox)
+            .filter_map(|d| self.dm_unread.get(&d.channel_id))
+            .sum()
+    }
+
+    pub fn dm_request_count(&self) -> usize {
+        self.dms
+            .iter()
+            .filter(|d| self.dm_standing(&d.other_pubkey) == DmStanding::Request)
+            .count()
+    }
+
+    /// Moves the read mark too: nothing counted while it was a request, and a
+    /// mark left behind would ring for all of it on the next launch's replay.
+    pub fn accept_dm(&mut self, peer: &str) {
+        self.dm_accepted.insert(peer.to_string());
+        self.dm_ignored.remove(peer);
+        self.mark_dm_read(crate::nostr::service::conversation_id(peer));
+    }
+
+    pub fn ignore_dm(&mut self, peer: &str) {
+        self.dm_ignored.insert(peer.to_string());
+        let cid = crate::nostr::service::conversation_id(peer);
+        if self.selected_channel == Some(cid) {
+            self.selected_channel = None;
+        }
+    }
+
+    pub fn set_mutes(&mut self, mutes: crate::nostr::nip51::MuteList) {
+        self.mutes = mutes;
+        let blocked: Vec<Id> = self
+            .dms
+            .iter()
+            .filter(|d| self.mutes.contains(&d.other_pubkey))
+            .map(|d| d.channel_id)
+            .collect();
+        for cid in blocked {
+            self.drop_conversation(cid);
+        }
+    }
+
+    fn drop_conversation(&mut self, cid: Id) {
+        self.dms.retain(|d| d.channel_id != cid);
+        self.messages.remove(&cid);
+        self.dm_unread.remove(&cid);
+        if self.selected_channel == Some(cid) {
+            self.selected_channel = None;
+        }
     }
 
     pub fn is_muted(&self, channel_id: Id) -> bool {
@@ -1246,7 +1358,9 @@ impl AppState {
         if viewing {
             let mark = self.dm_read_at.entry(peer.to_string()).or_insert(at);
             *mark = (*mark).max(at);
-        } else if self.dm_read_at.get(peer).is_none_or(|mark| at > *mark) {
+        } else if self.dm_standing(peer) == DmStanding::Inbox
+            && self.dm_read_at.get(peer).is_none_or(|mark| at > *mark)
+        {
             *self.dm_unread.entry(channel_id).or_insert(0) += 1;
             // Tied to the counter and not merely to `viewing`: the relays replay
             // the whole history on every launch, and ringing for that would be a
@@ -1303,12 +1417,7 @@ impl AppState {
             .entry(peer.to_string())
             .and_modify(|t| *t = (*t).max(at))
             .or_insert(at);
-        self.dms.retain(|d| d.channel_id != cid);
-        self.messages.remove(&cid);
-        self.dm_unread.remove(&cid);
-        if self.selected_channel == Some(cid) {
-            self.selected_channel = None;
-        }
+        self.drop_conversation(cid);
     }
 
     pub fn leveling_of(&self, guild_id: Id) -> crate::protocol::Leveling {
@@ -1472,6 +1581,56 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
             settings.set(next.clone());
             crate::settings::save(&next);
         }
+    });
+}
+
+/// A roster exists only while connected, so a guild-mate is accepted for good
+/// once seen; on Home their next DM would otherwise be a request.
+pub fn use_dm_standing_persistence(mut state: Signal<AppState>) {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let guild_mates = use_memo(move || {
+        let s = state.read();
+        s.dms
+            .iter()
+            .map(|d| d.other_pubkey.clone())
+            .filter(|peer| s.shares_guild(peer) && !s.dm_accepted.contains(peer))
+            .collect::<Vec<_>>()
+    });
+    use_effect(move || {
+        let peers = guild_mates();
+        if !peers.is_empty() {
+            state.write().dm_accepted.extend(peers);
+        }
+    });
+    let standing = use_memo(move || {
+        let s = state.read();
+        let sorted = |it: &mut dyn Iterator<Item = String>| {
+            let mut v: Vec<String> = it.collect();
+            v.sort();
+            v
+        };
+        (
+            sorted(&mut s.dm_accepted.iter().cloned()),
+            sorted(&mut s.dm_ignored.iter().cloned()),
+            sorted(&mut s.mutes.pubkeys().map(str::to_string)),
+        )
+    });
+    use_effect(move || {
+        let (accepted, ignored, blocked) = standing();
+        let saved = settings.peek();
+        if saved.dm_accepted == accepted
+            && saved.dm_ignored == ignored
+            && saved.dm_blocked == blocked
+        {
+            return;
+        }
+        let mut next = saved.clone();
+        drop(saved);
+        next.dm_accepted = accepted;
+        next.dm_ignored = ignored;
+        next.dm_blocked = blocked;
+        settings.set(next.clone());
+        crate::settings::save(&next);
     });
 }
 
@@ -1742,6 +1901,7 @@ mod tests {
 
     fn at(id: Id, channel_id: Id, secs: i64) -> Message {
         Message {
+            author_bot: false,
             image_metadata: None,
             attachment: None,
             pinned: false,
@@ -2034,6 +2194,7 @@ mod tests {
     }
 
     fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {
+        s.dm_accepted.insert(peer.to_string());
         let cid = crate::nostr::service::conversation_id(peer);
         if !s.dms.iter().any(|d| d.channel_id == cid) {
             s.dms.push(DmInfo {
@@ -2044,6 +2205,7 @@ mod tests {
         let entry = s.messages.entry(cid).or_default();
         for at in ats {
             entry.push(Message {
+                author_bot: false,
                 image_metadata: None,
                 attachment: None,
                 pinned: false,
@@ -2132,6 +2294,100 @@ mod tests {
             pubkey: pk.into(),
             username: format!("u-{pk}"),
         }
+    }
+
+    #[test]
+    fn a_stranger_waits_in_requests_without_counting_or_ringing() {
+        let mut s = AppState::empty();
+        let peer = "stranger";
+        let cid = dm_with(&mut s, peer, &[100]);
+        s.dm_accepted.clear();
+
+        s.note_dm_arrival(cid, peer, 100);
+        assert_eq!(s.dm_standing(peer), DmStanding::Request);
+        assert!(s.dm_unread.is_empty());
+        assert_eq!(s.dm_notify_tick, 0);
+        assert_eq!(s.dm_request_count(), 1);
+        assert!(s.dms_by_recency(DmStanding::Inbox).is_empty());
+    }
+
+    #[test]
+    fn a_contact_or_a_guild_mate_goes_to_the_inbox_but_a_bot_does_not() {
+        let mut s = AppState::empty();
+        s.contacts = s.contacts.clone().with(crate::nostr::nip02::Contact {
+            pubkey: "friend".into(),
+            relay: None,
+            petname: None,
+        });
+        s.members.push(member("mate", true));
+        s.members.push(Member {
+            bot: true,
+            ..member("harvester", true)
+        });
+        assert_eq!(s.dm_standing("friend"), DmStanding::Inbox);
+        assert_eq!(s.dm_standing("mate"), DmStanding::Inbox);
+        assert_eq!(s.dm_standing("harvester"), DmStanding::Request);
+    }
+
+    /// Accepting moves the read mark, or the next launch's replay would count
+    /// and ring for everything that arrived while it was a request.
+    #[test]
+    fn accepting_moves_the_conversation_and_its_read_mark() {
+        let mut s = AppState::empty();
+        let peer = "stranger";
+        let cid = dm_with(&mut s, peer, &[100, 200]);
+        s.dm_accepted.clear();
+        s.dm_ignored.insert(peer.into());
+
+        s.accept_dm(peer);
+        assert_eq!(s.dm_standing(peer), DmStanding::Inbox);
+        assert!(!s.dm_ignored.contains(peer));
+        assert_eq!(s.dms_by_recency(DmStanding::Inbox)[0].channel_id, cid);
+        s.note_dm_arrival(cid, peer, 200);
+        assert!(s.dm_unread.is_empty());
+    }
+
+    #[test]
+    fn an_ignored_request_leaves_the_list_and_the_count() {
+        let mut s = AppState::empty();
+        let peer = "stranger";
+        let cid = dm_with(&mut s, peer, &[100]);
+        s.dm_accepted.clear();
+        s.selected_channel = Some(cid);
+
+        s.ignore_dm(peer);
+        assert_eq!(s.dm_standing(peer), DmStanding::Ignored);
+        assert_eq!(s.dm_request_count(), 0);
+        assert_eq!(s.selected_channel, None);
+    }
+
+    /// Blocking outranks every reason to let somebody in, contacts included.
+    #[test]
+    fn a_mute_drops_the_conversation_whoever_it_is() {
+        let mut s = AppState::empty();
+        let peer = "pest";
+        let cid = dm_with(&mut s, peer, &[100]);
+        s.dm_unread.insert(cid, 1);
+        s.selected_channel = Some(cid);
+
+        s.set_mutes(crate::nostr::nip51::MuteList::default().with(peer));
+        assert_eq!(s.dm_standing(peer), DmStanding::Blocked);
+        assert!(s.dms.is_empty());
+        assert!(!s.messages.contains_key(&cid));
+        assert!(s.dm_unread.is_empty());
+        assert_eq!(s.selected_channel, None);
+    }
+
+    /// A request's leftover count must not reach the badges.
+    #[test]
+    fn the_unread_total_counts_the_inbox_only() {
+        let mut s = AppState::empty();
+        let friend = dm_with(&mut s, "friend", &[]);
+        let stranger = dm_with(&mut s, "stranger", &[]);
+        s.dm_accepted.remove("stranger");
+        s.dm_unread.insert(friend, 2);
+        s.dm_unread.insert(stranger, 5);
+        assert_eq!(s.dm_unread_total(), 2);
     }
 
     fn member(pk: &str, online: bool) -> Member {

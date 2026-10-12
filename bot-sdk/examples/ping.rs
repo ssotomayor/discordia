@@ -1,4 +1,6 @@
-use dioxusfun_bot::protocol::{BotCommand, CommandOption, ServerMessage};
+//! SERVER_URL: `ws://127.0.0.1:9000` on loopback, `wss://host` behind a TLS proxy, or
+//! anywhere else the host's share string, `quic://<key>@<addr>;<relay url>`, quoted.
+use dioxusfun_bot::protocol::{BotCommand, CommandOption, ServerMessage, parse_quic_share};
 use dioxusfun_bot::{Bot, BotIdentity};
 
 #[tokio::main]
@@ -20,7 +22,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    eprintln!("connecting to {server} as PingBot ({})", identity.pubkey());
+    let transport = if parse_quic_share(&server).is_some() {
+        "QUIC"
+    } else {
+        "WebSocket"
+    };
+    eprintln!(
+        "connecting to {server} over {transport} as PingBot ({})",
+        identity.pubkey()
+    );
     let mut bot = Bot::connect(&server, &identity, "PingBot").await?;
 
     while let Some(event) = bot.next_event().await {
@@ -60,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             },
             ServerMessage::MessageCreate(msg) => {
-                if msg.author.pubkey == bot.user.pubkey {
+                // Another bot's message is never answered, or two bots echo forever.
+                if msg.author_bot || msg.author.pubkey == bot.user.pubkey {
                     continue;
                 }
                 match msg.content.trim() {

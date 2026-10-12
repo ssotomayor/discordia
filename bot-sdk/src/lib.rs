@@ -1,16 +1,19 @@
-use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, StreamExt};
+use std::pin::Pin;
+
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use rand::RngCore;
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 
 pub use dioxusfun_protocol as protocol;
-use protocol::{BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
+use protocol::{AppManifest, BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
 
-type Stream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+mod quic;
+
+type FrameSink = Pin<Box<dyn Sink<WsMessage, Error = WsError> + Send + Sync>>;
+type FrameStream =
+    Pin<Box<dyn Stream<Item = std::result::Result<WsMessage, WsError>> + Send + Sync>>;
 
 #[derive(Debug)]
 pub enum BotError {
@@ -18,6 +21,7 @@ pub enum BotError {
     Ws(String),
     Json(String),
     Handshake(String),
+    Quic(String),
 }
 
 impl std::fmt::Display for BotError {
@@ -27,6 +31,7 @@ impl std::fmt::Display for BotError {
             BotError::Ws(e) => write!(f, "websocket error: {e}"),
             BotError::Json(e) => write!(f, "json error: {e}"),
             BotError::Handshake(e) => write!(f, "handshake error: {e}"),
+            BotError::Quic(e) => write!(f, "quic error: {e}"),
         }
     }
 }
@@ -87,15 +92,107 @@ impl BotIdentity {
         let m = Message::from_digest(digest);
         hex::encode(secp.sign_schnorr_no_aux_rand(&m, &keypair).serialize())
     }
+
+    /// The signed NIP-89 event a guild installs from. Publish it to relays, or
+    /// hand it to a host with `Bot::register_manifest`.
+    pub fn sign_manifest(&self, manifest: &AppManifest) -> String {
+        let content = serde_json::to_string(manifest).expect("manifest serializes");
+        let tags = vec![vec![
+            "d".to_string(),
+            dioxusfun_protocol::APP_MANIFEST_D.to_string(),
+        ]];
+        self.sign_event(
+            dioxusfun_protocol::APP_MANIFEST_KIND,
+            tags,
+            &content,
+            now_secs(),
+        )
+    }
+
+    /// A curator's list of app keys guilds may follow (NIP-51 kind 30000).
+    pub fn sign_blocklist(&self, app_keys: &[&str], created_at: i64) -> String {
+        let mut tags = vec![vec![
+            "d".to_string(),
+            dioxusfun_protocol::APP_BLOCKLIST_D.to_string(),
+        ]];
+        tags.extend(
+            app_keys
+                .iter()
+                .map(|k| vec!["p".to_string(), k.to_string()]),
+        );
+        self.sign_event(dioxusfun_protocol::APP_BLOCKLIST_KIND, tags, "", created_at)
+    }
+
+    /// Any NIP-01 event signed by this key, as JSON.
+    pub fn sign_event(
+        &self,
+        kind: u32,
+        tags: Vec<Vec<String>>,
+        content: &str,
+        created_at: i64,
+    ) -> String {
+        let canonical =
+            serde_json::json!([0, self.pubkey_hex, created_at, kind, tags, content]).to_string();
+        let id: [u8; 32] = Sha256::digest(canonical.as_bytes()).into();
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &self.secret);
+        let sig = secp.sign_schnorr_no_aux_rand(&Message::from_digest(id), &keypair);
+        serde_json::json!({
+            "id": hex::encode(id),
+            "pubkey": self.pubkey_hex,
+            "created_at": created_at,
+            "kind": kind,
+            "tags": tags,
+            "content": content,
+            "sig": hex::encode(sig.serialize()),
+        })
+        .to_string()
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 pub struct Bot {
-    write: SplitSink<Stream, WsMessage>,
-    read: SplitStream<Stream>,
+    write: FrameSink,
+    read: FrameStream,
+    _quic: Option<quic::Link>,
     pub user: User,
 }
 
+/// The same WebSocket either way: over TCP, or over one QUIC stream to the
+/// host's key, where the origin signed is `quic:<key>` (trap 12).
+async fn open_socket(url: &str) -> Result<(FrameSink, FrameStream, Option<quic::Link>, String)> {
+    if let Some(share) = protocol::parse_quic_share(url) {
+        let (io, link) = quic::dial(&share).await?;
+        let (ws, _) = tokio_tungstenite::client_async(quic::HANDSHAKE_URL, io)
+            .await
+            .map_err(|e| BotError::Ws(format!("websocket over quic: {e}")))?;
+        let (write, read) = ws.split();
+        return Ok((
+            Box::pin(write),
+            Box::pin(read),
+            Some(link),
+            protocol::quic_origin(&share.key),
+        ));
+    }
+    let ws_url = normalize_gateway_url(url)?;
+    let origin = protocol::dial_origin(&ws_url)
+        .ok_or_else(|| BotError::Url("server URL has no host".into()))?;
+    let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .map_err(|e| BotError::Ws(format!("connect failed: {e}")))?;
+    let (write, read) = ws.split();
+    Ok((Box::pin(write), Box::pin(read), None, origin))
+}
+
 impl Bot {
+    /// `url` is `ws://`/`wss://`, or a host's `quic://key@addrs` share string: off
+    /// loopback a gateway answers only QUIC (trap 15), unless a TLS proxy fronts it.
     pub async fn connect(url: &str, identity: &BotIdentity, username: &str) -> Result<Bot> {
         Self::connect_declaring(url, identity, username, true).await
     }
@@ -110,13 +207,7 @@ impl Bot {
         username: &str,
         bot: bool,
     ) -> Result<Bot> {
-        let ws_url = normalize_gateway_url(url)?;
-        let origin = dioxusfun_protocol::dial_origin(&ws_url)
-            .ok_or_else(|| BotError::Url("server URL has no host".into()))?;
-        let (stream, _) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .map_err(|e| BotError::Ws(format!("connect failed: {e}")))?;
-        let (write, mut read) = stream.split();
+        let (write, mut read, link, origin) = open_socket(url).await?;
 
         let nonce = loop {
             let frame = read
@@ -159,6 +250,7 @@ impl Bot {
         let mut bot = Bot {
             write,
             read,
+            _quic: link,
             user: User {
                 pubkey: identity.pubkey().to_string(),
                 username,
@@ -222,6 +314,33 @@ impl Bot {
 
     /// Replaces every command declared before. Call it after `Ready`, on each
     /// connect: the server keeps them only while it runs.
+    pub async fn register_manifest(
+        &mut self,
+        identity: &BotIdentity,
+        manifest: &AppManifest,
+    ) -> Result<()> {
+        self.send(&ClientMessage::RegisterManifest {
+            event: identity.sign_manifest(manifest),
+        })
+        .await
+    }
+
+    /// Speaks in an instance of this bot's own activity, as its backend. `to`
+    /// reaches one participant; `None` reaches them all.
+    pub async fn activity_send(
+        &mut self,
+        instance_id: Id,
+        to: Option<&str>,
+        data: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::ActivitySend {
+            instance_id,
+            to: to.map(str::to_string),
+            data: data.to_string(),
+        })
+        .await
+    }
+
     pub async fn register_commands(&mut self, commands: Vec<BotCommand>) -> Result<()> {
         self.send(&ClientMessage::RegisterCommands { commands })
             .await
@@ -232,6 +351,44 @@ impl Bot {
         self.send(&ClientMessage::RespondToCommand {
             invocation_id: invocation.id,
             content: content.to_string(),
+            data: None,
+        })
+        .await
+    }
+
+    /// For an app that called: `data` is JSON text it reads instead of prose.
+    pub async fn respond_with_data(
+        &mut self,
+        invocation: &Invocation,
+        content: &str,
+        data: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::RespondToCommand {
+            invocation_id: invocation.id,
+            content: content.to_string(),
+            data: Some(data.to_string()),
+        })
+        .await
+    }
+
+    /// Calls another installed app's command. `parent` is the invocation this
+    /// bot is handling, if any; the guild must allow the pair.
+    pub async fn invoke(
+        &mut self,
+        parent: Option<&Invocation>,
+        guild_id: Id,
+        channel_id: Id,
+        bot_pubkey: &str,
+        command: &str,
+        args: Vec<protocol::CommandArg>,
+    ) -> Result<()> {
+        self.send(&ClientMessage::InvokeCommand {
+            guild_id,
+            channel_id,
+            bot_pubkey: bot_pubkey.to_string(),
+            command: command.to_string(),
+            args,
+            parent: parent.map(|p| p.id),
         })
         .await
     }

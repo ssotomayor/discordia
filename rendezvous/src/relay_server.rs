@@ -9,6 +9,12 @@ pub struct RelayHandle {
     _server: Server,
 }
 
+impl RelayHandle {
+    pub fn http_addr(&self) -> Option<SocketAddr> {
+        self._server.http_addr()
+    }
+}
+
 pub async fn spawn(bind: SocketAddr, public_url: Option<String>) -> Option<RelayHandle> {
     let url = public_url?;
 
@@ -63,7 +69,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let bind = relay._server.http_addr().unwrap();
+            let bind = relay.http_addr().unwrap();
             let url = format!("http://{bind}/");
             let server = endpoint(&url).await;
             let client = endpoint(&url).await;

@@ -12,8 +12,12 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
+mod apps;
+mod blocklists;
 mod chat_tools;
 mod commands;
+mod instances;
+pub use apps::ManifestOutcome;
 
 /// A failed write is logged and ignored: the change survives the session but
 /// not a restart, and is never a user-facing error.
@@ -92,6 +96,14 @@ pub struct AppState {
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     /// Memory only: a bot declares its commands on every connect.
     pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
+    /// The newest manifest event each bot has handed this host, by version.
+    pub app_manifests: DashMap<String, (u64, String)>,
+    activity_instances: instances::Instances,
+    /// The curators each guild follows, and the newest list each curator signed.
+    followed_blocklists: DashMap<Id, Vec<String>>,
+    app_blocklists: DashMap<String, crate::protocol::AppBlocklist>,
+    /// Per caller and callee: when the minute started and calls made in it.
+    app_calls: DashMap<(String, String), (std::time::Instant, u32)>,
     invocations: DashMap<Id, commands::Pending>,
     pub roles: DashMap<Id, Vec<Role>>,
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
@@ -133,6 +145,11 @@ impl AppState {
             activities: DashMap::new(),
             bot_installs: DashMap::new(),
             bot_commands: DashMap::new(),
+            app_manifests: DashMap::new(),
+            activity_instances: Default::default(),
+            followed_blocklists: DashMap::new(),
+            app_blocklists: DashMap::new(),
+            app_calls: DashMap::new(),
             invocations: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
@@ -230,6 +247,19 @@ impl AppState {
                 .entry(i.bot_pubkey.clone())
                 .or_default()
                 .insert(i.guild_id, i);
+        }
+        for (bot, version, event) in state.store.app_manifests().await? {
+            state.app_manifests.insert(bot, (version, event));
+        }
+        for (guild_id, curator) in state.store.guild_blocklists().await? {
+            state
+                .followed_blocklists
+                .entry(guild_id)
+                .or_default()
+                .push(curator);
+        }
+        for list in state.store.app_blocklists().await? {
+            state.app_blocklists.insert(list.curator.clone(), list);
         }
 
         state.detach_inline_images().await;
@@ -375,14 +405,19 @@ impl AppState {
     }
 
     /// A full queue drops the socket, since a client that missed state has to
-    /// re-snapshot anyway — except for typing, which nobody needs replayed and
-    /// which a hostile guild could otherwise use to knock members offline.
+    /// re-snapshot anyway — except for typing and activity frames, which nobody
+    /// needs replayed and which a hostile guild could use to knock members offline.
     fn route(&self, conn_id: u64, msg: &ServerMessage) {
         let tx = match self.conns.get(&conn_id) {
             Some(c) => c.tx.clone(),
             None => return,
         };
-        if tx.try_send(msg.clone()).is_err() && !matches!(msg, ServerMessage::TypingUpdate { .. }) {
+        if tx.try_send(msg.clone()).is_err()
+            && !matches!(
+                msg,
+                ServerMessage::TypingUpdate { .. } | ServerMessage::ActivityEvent { .. }
+            )
+        {
             tracing::warn!(conn_id, "outbound queue full — dropping the connection");
             self.drop_conn(conn_id);
         }
@@ -2462,7 +2497,10 @@ impl AppState {
         before_ms: Option<i64>,
     ) -> Vec<Message> {
         match self.store.history(channel_id, limit, before_ms).await {
-            Ok(messages) => messages,
+            Ok(mut messages) => {
+                self.mark_bot_authors(channel_id, &mut messages);
+                messages
+            }
             Err(e) => {
                 tracing::error!(error = %e, "history query failed");
                 Vec::new()
@@ -2616,6 +2654,27 @@ impl AppState {
         }
     }
 
+    /// Installs are the record, not the row: an uninstalled bot's old messages
+    /// stop counting as a bot's, the same way its name stops being overridden.
+    pub fn mark_bot_authors(&self, channel_id: Id, messages: &mut [Message]) {
+        let Some(guild_id) = self.channel_guild(channel_id) else {
+            return;
+        };
+        let bots: std::collections::HashSet<String> = self
+            .guild_installs(guild_id)
+            .into_iter()
+            .map(|i| i.bot_pubkey)
+            .collect();
+        for m in messages {
+            m.author_bot = bots.contains(&m.author.pubkey);
+        }
+    }
+
+    fn is_installed_bot(&self, channel_id: Id, pubkey: &str) -> bool {
+        self.channel_guild(channel_id)
+            .is_some_and(|gid| self.bot_install(gid, pubkey).is_some())
+    }
+
     fn attributed_author(&self, channel_id: Id, author: User) -> User {
         let Some(guild_id) = self.channel_guild(channel_id) else {
             return author;
@@ -2644,6 +2703,7 @@ impl AppState {
             pinned: false,
             id: Uuid::new_v4(),
             channel_id,
+            author_bot: self.is_installed_bot(channel_id, &author.pubkey),
             author,
             content,
             image,
@@ -2959,6 +3019,7 @@ impl AppState {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_bot(
         &self,
         guild_id: Id,
@@ -2966,10 +3027,32 @@ impl AppState {
         name: &str,
         permissions: Vec<Permission>,
         intents: Vec<Intent>,
+        manifest: Option<String>,
         by_pubkey: &str,
     ) -> Result<(BotInstall, Member), String> {
+        let app = match manifest {
+            Some(event) => Some(self.verified_manifest_for(bot_pubkey, &event)?),
+            None => None,
+        };
+        if let Some(app) = &app {
+            if let Some(p) = permissions
+                .iter()
+                .find(|p| !app.manifest.permissions.contains(p))
+            {
+                return Err(format!("the app's manifest does not ask for {p:?}"));
+            }
+            if let Some(i) = intents.iter().find(|i| !app.manifest.intents.contains(i)) {
+                return Err(format!("the app's manifest does not ask for {i:?}"));
+            }
+        }
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        if let Some(curator) = self.blocked_by(guild_id, bot_pubkey) {
+            return Err(format!(
+                "that app is on a blocklist this guild follows (curated by {})",
+                &curator[..12]
+            ));
+        }
         if bot_pubkey.trim().is_empty() {
             return Err("bot pubkey is required".into());
         }
@@ -2987,7 +3070,11 @@ impl AppState {
         }
         let name = {
             let n = crate::protocol::sanitize_line(name, 32);
-            if n.is_empty() { "Bot".to_string() } else { n }
+            match (&app, n.is_empty()) {
+                (_, false) => n,
+                (Some(app), true) => app.manifest.name.clone(),
+                (None, true) => "Bot".to_string(),
+            }
         };
         let install = BotInstall {
             guild_id,
@@ -2995,6 +3082,12 @@ impl AppState {
             name: name.clone(),
             permissions: unique(permissions),
             intents: unique(intents),
+            may_call: self
+                .bot_install(guild_id, bot_pubkey)
+                .map(|i| i.may_call)
+                .unwrap_or_default(),
+            app: app.as_ref().map(|a| a.manifest.clone()),
+            pending: None,
         };
         let member = {
             let guild_members = self.members.entry(guild_id).or_default();
@@ -3044,6 +3137,18 @@ impl AppState {
             self.store.uninstall_bot(guild_id, bot_pubkey).await,
             "bot uninstall",
         )?;
+        // An app allowed to call this one must not regain that if it returns.
+        for mut other in self.guild_installs(guild_id) {
+            if other.may_call.iter().any(|k| k == bot_pubkey) {
+                other.may_call.retain(|k| k != bot_pubkey);
+                if self.store.upsert_bot_install(&other).await.is_ok() {
+                    self.bot_installs
+                        .entry(other.bot_pubkey.clone())
+                        .or_default()
+                        .insert(guild_id, other);
+                }
+            }
+        }
         let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
             g.remove(&guild_id);
             g.is_empty()

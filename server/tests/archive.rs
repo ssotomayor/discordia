@@ -30,6 +30,7 @@ async fn fresh_state() -> AppState {
 
 fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
     Message {
+        author_bot: false,
         image_metadata: None,
         attachment: None,
         pinned: false,
@@ -359,6 +360,9 @@ async fn a_hostile_archive_is_filtered_on_import() {
             name: "\u{0}".into(),
             permissions: vec![Permission::SendMessages, Permission::ManageGuild],
             intents: vec![Intent::GuildMessages],
+            may_call: Vec::new(),
+            app: None,
+            pending: None,
         }],
         messages: vec![(
             chan,

@@ -6,7 +6,7 @@ use axum::extract::ConnectInfo;
 use iroh::endpoint::{BindOpts, IncomingAddr, presets};
 use iroh::{Endpoint, EndpointId, SecretKey};
 
-pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
+pub use dioxusfun_protocol::GATEWAY_ALPN;
 
 /// UDP port the standalone server binds unless `DIOXUSFUN_QUIC_PORT` says otherwise;
 /// `RANDOM_PORT` is what a self-host uses, since a port mapping takes whatever it got.
