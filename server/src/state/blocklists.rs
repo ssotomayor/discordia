@@ -64,11 +64,11 @@ impl AppState {
         if followers.is_empty() {
             return Err("no guild here follows that blocklist".into());
         }
+        let _write = self.durable_writes.lock().await;
         let held = self.app_blocklists.get(&list.curator).map(|l| l.created_at);
         if held.is_some_and(|at| at >= list.created_at) {
             return Ok(Vec::new());
         }
-        let _write = self.durable_writes.lock().await;
         durable(
             self.store.upsert_app_blocklist(&list).await,
             "app blocklist",

@@ -2,6 +2,10 @@ use super::{AppState, durable};
 use crate::auth::{VerifiedManifest, verify_manifest_event};
 use crate::protocol::{AppManifest, BotInstall, GuildActivity, Id, Permission, bundle_blob};
 
+/// A throwaway key costs nothing, so manifests from bots no guild installed
+/// are capped rather than kept without end.
+const MAX_UNINSTALLED_MANIFESTS: usize = 1024;
+
 pub enum ManifestOutcome {
     /// Older than or equal to what this host already holds.
     Stale,
@@ -44,6 +48,14 @@ impl AppState {
         let v = self.verified_manifest_for(bot_pubkey, event)?;
         let _write = self.durable_writes.lock().await;
         let held = self.app_manifests.get(bot_pubkey).map(|m| m.0);
+        if held.is_none()
+            && self.bot_guilds(bot_pubkey).is_empty()
+            && self.app_manifests.len() >= MAX_UNINSTALLED_MANIFESTS
+        {
+            return Err(
+                "this host holds as many manifests as it will for apps nobody installed".into(),
+            );
+        }
         if held.is_some_and(|h| h >= v.manifest.version) {
             return Ok(ManifestOutcome::Stale);
         }

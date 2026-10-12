@@ -409,5 +409,89 @@ async fn an_apps_bot_is_the_backend_of_its_own_activity() {
         .unwrap();
     assert_eq!(event(&mut w.alice.0).await.1, "{\"board\":\"after e4\"}");
 
+    w.alice
+        .0
+        .send(&ClientMessage::UninstallBot {
+            guild_id: gid,
+            bot_pubkey: app.pubkey().to_string(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if instances(&mut w.alice.0).await.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        bot.activity_send(started.id, None, "{}").await.is_ok(),
+        "the frame is sent; the host refuses it"
+    );
+    loop {
+        if let ServerMessage::Error { message } = next_timeout(&mut bot).await {
+            assert!(
+                message.contains("ended") || message.contains("isn't installed"),
+                "{message}"
+            );
+            break;
+        }
+    }
+
+    w.handle.abort();
+}
+
+#[tokio::test]
+async fn a_kicked_member_leaves_the_game_and_cannot_rejoin() {
+    let mut w = world().await;
+    w.alice
+        .0
+        .send(&ClientMessage::ActivityStart {
+            channel_id: w.text,
+            app: "builtin:rps".into(),
+        })
+        .await
+        .unwrap();
+    let started = loop {
+        if let ServerMessage::ActivityStarted { instance } = next_timeout(&mut w.alice.0).await {
+            break instance;
+        }
+    };
+    w.carol
+        .0
+        .send(&ClientMessage::ActivityJoin {
+            instance_id: started.id,
+            role: ActivityRole::Spectator,
+        })
+        .await
+        .unwrap();
+    loop {
+        let list = instances(&mut w.alice.0).await;
+        if list.first().is_some_and(|i| i.participants.len() == 2) {
+            break;
+        }
+    }
+    w.alice
+        .0
+        .send(&ClientMessage::KickMember {
+            guild_id: w.guild_id,
+            user_pubkey: w.carol.1.clone(),
+        })
+        .await
+        .unwrap();
+    loop {
+        let list = instances(&mut w.alice.0).await;
+        if list.first().is_some_and(|i| i.participants.len() == 1) {
+            break;
+        }
+    }
+    w.carol
+        .0
+        .send(&ClientMessage::ActivityJoin {
+            instance_id: started.id,
+            role: ActivityRole::Spectator,
+        })
+        .await
+        .unwrap();
+    assert!(next_error(&mut w.carol.0).await.contains("can't see"));
+
     w.handle.abort();
 }

@@ -770,11 +770,19 @@ async fn download_bundle(url: &str) -> Result<Vec<u8>, String> {
     {
         return Err("the bundle is over 2 MiB".into());
     }
-    let bytes = response
-        .bytes()
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| format!("download failed: {e}"))?;
-    Ok(bytes.to_vec())
+        .map_err(|e| format!("download failed: {e}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > crate::protocol::MAX_BUNDLE_BYTES {
+            return Err("the bundle is over 2 MiB".into());
+        }
+    }
+    Ok(bytes)
 }
 
 /// Which other apps this one may call. Each call is still held to the

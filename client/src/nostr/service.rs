@@ -422,6 +422,11 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             request_names(&pool, &state, &our_pubkey, &mut named);
                         }
                         nip51::KIND_MUTE_LIST if event.pubkey == our_pubkey => {
+                            // A relay can forge one, and the next mute would sign the
+                            // forgery; a far-future one would pin itself for good.
+                            if !event.verify() || event.created_at > now() + 600 {
+                                continue;
+                            }
                             // Relays serve stale copies of a replaceable event too.
                             if let Some(list) = nip51::parse_mute_list(&event)
                                 && list.created_at > state.peek().mutes.created_at

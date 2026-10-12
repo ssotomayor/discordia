@@ -281,7 +281,7 @@ fn build<T>(spec: OpenSpec, target: &EventLoopWindowTarget<T>) -> Result<Open, S
     let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_url(format!("{base}index.html"))
         .with_custom_protocol(SCHEME.to_string(), serve_bundle)
-        .with_initialization_script(HARDEN_JS)
+        .with_initialization_script_for_main_only(HARDEN_JS, false)
         .with_initialization_script_for_main_only(SDK_JS, true)
         .with_ipc_handler(ipc)
         .with_navigation_handler(move |url| url.starts_with(&nav_base))
@@ -291,8 +291,15 @@ fn build<T>(spec: OpenSpec, target: &EventLoopWindowTarget<T>) -> Result<Open, S
         .with_back_forward_navigation_gestures(false)
         .with_devtools(cfg!(debug_assertions));
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let webview = builder.build(&window);
+    #[cfg(target_os = "macos")]
+    let webview = {
+        use wry::WebViewBuilderExtMacos;
+        builder
+            .with_webview_configuration(macos::configuration_without_webrtc())
+            .build(&window)
+    };
+    #[cfg(target_os = "windows")]
+    let webview = windows::build_without_network(builder, &window);
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let webview = {
         use dioxus::desktop::tao::platform::unix::WindowExtUnix;
@@ -301,6 +308,8 @@ fn build<T>(spec: OpenSpec, target: &EventLoopWindowTarget<T>) -> Result<Open, S
         builder.build_gtk(vbox)
     };
     let webview = webview.map_err(|e| format!("webview: {e}"))?;
+    #[cfg(target_os = "linux")]
+    linux::disable_webrtc(&webview);
 
     Ok(Open {
         webview,
@@ -310,20 +319,39 @@ fn build<T>(spec: OpenSpec, target: &EventLoopWindowTarget<T>) -> Result<Open, S
     })
 }
 
-/// Runs in every frame before the page. CSP does not cover WebRTC, and the
-/// main webview needs it for LiveKit, so it is removed here instead.
+/// CSP does not cover WebRTC, so each platform turns it off in the engine for
+/// these windows; this is the backstop. A frame can still be reached by index
+/// (`frames[0]`) before any script of ours runs in it, which is why it is not
+/// the wall.
 const HARDEN_JS: &str = r#"(function () {
   var gone = ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel',
     'RTCIceCandidate', 'RTCSessionDescription', 'RTCRtpSender', 'RTCRtpReceiver',
     'RTCRtpTransceiver', 'RTCDtlsTransport', 'RTCIceTransport', 'RTCSctpTransport',
     'RTCCertificate', 'WebTransport', 'Notification'];
-  gone.forEach(function (k) {
-    try { delete window[k]; } catch (e) {}
-    try { Object.defineProperty(window, k, { value: undefined, configurable: false, writable: false }); } catch (e) {}
-  });
-  ['mediaDevices', 'geolocation', 'credentials', 'serviceWorker'].forEach(function (k) {
-    try { Object.defineProperty(navigator, k, { value: undefined, configurable: false }); } catch (e) {}
-  });
+  function harden(w) {
+    if (!w || w.__dxfHardened) return;
+    try { Object.defineProperty(w, '__dxfHardened', { value: true }); } catch (e) { return; }
+    gone.forEach(function (k) {
+      try { delete w[k]; } catch (e) {}
+      try { Object.defineProperty(w, k, { value: undefined, configurable: false, writable: false }); } catch (e) {}
+    });
+    ['mediaDevices', 'geolocation', 'credentials', 'serviceWorker'].forEach(function (k) {
+      try { Object.defineProperty(w.navigator, k, { value: undefined, configurable: false }); } catch (e) {}
+    });
+    var frame = w.HTMLIFrameElement && w.HTMLIFrameElement.prototype;
+    ['contentWindow', 'contentDocument'].forEach(function (k) {
+      var d = frame && Object.getOwnPropertyDescriptor(frame, k);
+      if (!d || !d.get) return;
+      try {
+        Object.defineProperty(frame, k, { configurable: false, get: function () {
+          var v = d.get.call(this);
+          harden(k === 'contentWindow' ? v : v && v.defaultView);
+          return v;
+        } });
+      } catch (e) {}
+    });
+  }
+  harden(window);
 })();"#;
 
 const SDK_JS: &str = r#"(function () {
@@ -348,6 +376,102 @@ const SDK_JS: &str = r#"(function () {
   } });
   Object.defineProperty(window, 'discordia', { value: Object.freeze({ call: call, on: on }) });
 })();"#;
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Sel};
+    use objc2::{MainThreadMarker, msg_send, sel};
+    use objc2_web_kit::WKWebViewConfiguration;
+
+    /// The preferences are WebKit's private ones, so each is asked for before
+    /// it is set: an OS without it must not crash the app.
+    pub fn configuration_without_webrtc() -> Retained<WKWebViewConfiguration> {
+        let mtm = MainThreadMarker::new().expect("activity windows open on the main thread");
+        let config = unsafe { WKWebViewConfiguration::new(mtm) };
+        let prefs = unsafe { config.preferences() };
+        let prefs: &AnyObject = &prefs;
+        for setter in [
+            sel!(_setPeerConnectionEnabled:),
+            sel!(_setMediaDevicesEnabled:),
+        ] {
+            set_off(prefs, setter);
+        }
+        config
+    }
+
+    fn set_off(prefs: &AnyObject, setter: Sel) {
+        let responds: bool = unsafe { msg_send![prefs, respondsToSelector: setter] };
+        if !responds {
+            tracing::warn!(
+                ?setter,
+                "WebKit lacks this preference; activity WebRTC is only stripped by script"
+            );
+            return;
+        }
+        unsafe {
+            let _: () = match setter {
+                s if s == sel!(_setPeerConnectionEnabled:) => {
+                    msg_send![prefs, _setPeerConnectionEnabled: false]
+                }
+                _ => msg_send![prefs, _setMediaDevicesEnabled: false],
+            };
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use dioxus::desktop::tao::window::Window;
+    use dioxus::desktop::wry::{self, WebView, WebViewBuilder};
+
+    const ARGS: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+    /// WebRTC may only go through a proxy, and the proxy is a closed port, so
+    /// neither it nor any real request leaves; `dxapp.` is answered in-process.
+    const NO_NETWORK: &str = " --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
+        --proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>;dxapp.*";
+
+    /// WebView2 takes this variable over any per-webview option, and the main
+    /// window sets it at start-up, so the activity's flags ride on it while
+    /// its environment (its own data folder, its own browser) is created.
+    pub fn build_without_network(
+        builder: WebViewBuilder<'_>,
+        window: &Window,
+    ) -> wry::Result<WebView> {
+        let previous = std::env::var_os(ARGS);
+        let mut args = previous
+            .as_ref()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        args.push_str(NO_NETWORK);
+        // SAFETY: Win32 serialises environment access, and this runs on the
+        // UI thread for the length of one environment creation.
+        unsafe { std::env::set_var(ARGS, &args) };
+        let built = builder.build(window);
+        unsafe {
+            match previous {
+                Some(p) => std::env::set_var(ARGS, p),
+                None => std::env::remove_var(ARGS),
+            }
+        }
+        built
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use dioxus::desktop::wry::{WebView, WebViewExtUnix};
+    use webkit2gtk::{SettingsExt, WebViewExt};
+
+    /// WebKitGTK ships with both off; said here so a distro default can't
+    /// turn them back on.
+    pub fn disable_webrtc(webview: &WebView) {
+        if let Some(settings) = webview.webview().settings() {
+            settings.set_enable_webrtc(false);
+            settings.set_enable_media_stream(false);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

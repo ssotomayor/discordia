@@ -200,6 +200,9 @@ struct Launched {
 /// What one open window has said and been told. Commitments are held here,
 /// in Rust, so a reveal is checked by every client rather than by the page.
 struct Session {
+    /// Which window this is: calls a replaced window still had queued must not
+    /// run under the next one's permissions and channel.
+    window: u64,
     caps: Vec<ActivityCapability>,
     channel: Option<Id>,
     instance: Option<Id>,
@@ -213,7 +216,9 @@ struct Session {
 
 impl Session {
     fn new(caps: Vec<ActivityCapability>, channel: Option<Id>, instance: Option<Id>) -> Self {
+        static WINDOWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Session {
+            window: WINDOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             caps,
             channel,
             instance,
@@ -235,10 +240,11 @@ impl Session {
 
 /// Frames for an instance whose window is still opening.
 const EARLY_LIMIT: usize = 64;
+const MAX_SEEN_COMMITS: usize = 1024;
 
 enum HostCmd {
     Begin(Session),
-    Window(FromActivity),
+    Window(u64, FromActivity),
     Inbound(Inbound),
     Sync(Option<ActivityInstance>),
 }
@@ -384,7 +390,16 @@ fn handle_instance_event(session: &mut Session, from: &str, data: &str) -> (&'st
                 .and_then(|h| h.as_str())
                 .unwrap_or("")
                 .to_string();
-            session.seen.insert((from.to_string(), round.clone()), hash);
+            if session.seen.len() >= MAX_SEEN_COMMITS {
+                session.seen.clear();
+            }
+            // A second commitment for a round is a move changed after seeing
+            // the other's: the round is void for that player, not re-committed.
+            session
+                .seen
+                .entry((from.to_string(), round.clone()))
+                .and_modify(|h| h.clear())
+                .or_insert(hash);
             ("instance.commit", json!({ "from": from, "round": round }))
         }
         Some("reveal") => {
@@ -440,13 +455,8 @@ pub fn ActivityHost() -> Element {
                         }
                         session = Some(next);
                     }
-                    HostCmd::Window(FromActivity::Call { id, method, params }) => {
-                        let Some(s) = session.as_mut() else {
-                            activity_window::reply(
-                                WINDOW_KEY,
-                                id,
-                                Err("no activity is open".into()),
-                            );
+                    HostCmd::Window(window, FromActivity::Call { id, method, params }) => {
+                        let Some(s) = session.as_mut().filter(|s| s.window == window) else {
                             continue;
                         };
                         if carries_key_material(&params) {
@@ -480,7 +490,10 @@ pub fn ActivityHost() -> Element {
                             activity_window::emit(WINDOW_KEY, name, &payload);
                         }
                     }
-                    HostCmd::Window(FromActivity::Closed | FromActivity::Failed(_)) => {
+                    HostCmd::Window(window, FromActivity::Closed | FromActivity::Failed(_)) => {
+                        if session.as_ref().is_none_or(|s| s.window != window) {
+                            continue;
+                        }
                         if let Some(s) = session.take()
                             && let Some(id) = s.instance
                         {
@@ -569,11 +582,9 @@ pub fn ActivityHost() -> Element {
     let open_window = use_callback(
         move |(p, instance, sha, bundle): (Pending, Option<Id>, String, Bundle)| {
             let (tx, mut wrx) = tokio::sync::mpsc::unbounded_channel();
-            co.send(HostCmd::Begin(Session::new(
-                p.activity.caps.clone(),
-                p.channel,
-                instance,
-            )));
+            let session = Session::new(p.activity.caps.clone(), p.channel, instance);
+            let window = session.window;
+            co.send(HostCmd::Begin(session));
             activity_window::open(activity_window::OpenSpec {
                 key: WINDOW_KEY,
                 title: p.activity.title(),
@@ -588,7 +599,7 @@ pub fn ActivityHost() -> Element {
             }));
             spawn(async move {
                 while let Some(msg) = wrx.recv().await {
-                    co.send(HostCmd::Window(msg));
+                    co.send(HostCmd::Window(window, msg));
                 }
             });
         },
@@ -1279,6 +1290,27 @@ mod tests {
                 let tampered = sent().replace("rock", "paper");
                 assert_eq!(
                     handle_instance_event(&mut bob, "alice", &tampered).1["valid"],
+                    json!(false)
+                );
+
+                // A changed mind: a second commit after seeing the other's move voids the round.
+                call(
+                    &mut alice,
+                    "instance.commit",
+                    json!({ "round": "3", "value": "rock" }),
+                )
+                .unwrap();
+                handle_instance_event(&mut bob, "alice", &sent());
+                call(
+                    &mut alice,
+                    "instance.commit",
+                    json!({ "round": "3", "value": "paper" }),
+                )
+                .unwrap();
+                handle_instance_event(&mut bob, "alice", &sent());
+                call(&mut alice, "instance.reveal", json!({ "round": "3" })).unwrap();
+                assert_eq!(
+                    handle_instance_event(&mut bob, "alice", &sent()).1["valid"],
                     json!(false)
                 );
 

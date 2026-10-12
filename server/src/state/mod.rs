@@ -3137,6 +3137,18 @@ impl AppState {
             self.store.uninstall_bot(guild_id, bot_pubkey).await,
             "bot uninstall",
         )?;
+        // An app allowed to call this one must not regain that if it returns.
+        for mut other in self.guild_installs(guild_id) {
+            if other.may_call.iter().any(|k| k == bot_pubkey) {
+                other.may_call.retain(|k| k != bot_pubkey);
+                if self.store.upsert_bot_install(&other).await.is_ok() {
+                    self.bot_installs
+                        .entry(other.bot_pubkey.clone())
+                        .or_default()
+                        .insert(guild_id, other);
+                }
+            }
+        }
         let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
             g.remove(&guild_id);
             g.is_empty()

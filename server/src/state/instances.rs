@@ -184,9 +184,16 @@ impl AppState {
             .instance(instance_id)
             .ok_or("that activity has ended")?;
         let bot = Self::instance_bot(&instance);
-        let is_bot = bot == Some(pubkey);
-        if !is_bot && instance.role_of(pubkey) != Some(ActivityRole::Player) {
-            return Err("only players move".into());
+        if bot == Some(pubkey) {
+            let guild = self.channel(instance.channel_id).map(|c| c.guild_id);
+            if guild.and_then(|g| self.bot_install(g, pubkey)).is_none() {
+                return Err("that app isn't installed here any more".into());
+            }
+        } else {
+            self.may_use_channel(pubkey, instance.channel_id)?;
+            if instance.role_of(pubkey) != Some(ActivityRole::Player) {
+                return Err("only players move".into());
+            }
         }
         let mut everyone: Vec<String> = instance
             .participants
@@ -201,6 +208,58 @@ impl AppState {
             Some(_) => Err("that person isn't in this activity".into()),
             None => Ok(everyone.into_iter().filter(|p| p != pubkey).collect()),
         }
+    }
+
+    /// Whoever is no longer a member, or can no longer see the channel, is out;
+    /// an instance whose channel or app is gone ends. Run after any removal.
+    pub fn prune_instances(&self) -> Touched {
+        let snapshot: Vec<ActivityInstance> =
+            self.activity_instances.lock().values().cloned().collect();
+        let mut touched = Vec::new();
+        let mut verdicts: Vec<(Id, Option<Vec<String>>)> = Vec::new();
+        for instance in snapshot {
+            let Some(channel) = self.channel(instance.channel_id) else {
+                verdicts.push((instance.id, None));
+                continue;
+            };
+            let app_gone = Self::instance_bot(&instance)
+                .is_some_and(|bot| self.bot_install(channel.guild_id, bot).is_none());
+            if app_gone {
+                verdicts.push((instance.id, None));
+                touched.push(channel.id);
+                continue;
+            }
+            let out: Vec<String> = instance
+                .participants
+                .iter()
+                .filter(|p| {
+                    !self.is_guild_member(channel.guild_id, &p.pubkey)
+                        || !self.can_see_channel(&p.pubkey, &channel)
+                })
+                .map(|p| p.pubkey.clone())
+                .collect();
+            if !out.is_empty() {
+                verdicts.push((instance.id, Some(out)));
+                touched.push(channel.id);
+            }
+        }
+        let mut all = self.activity_instances.lock();
+        for (id, out) in verdicts {
+            match out {
+                None => {
+                    all.remove(&id);
+                }
+                Some(out) => {
+                    if let Some(i) = all.get_mut(&id) {
+                        i.participants.retain(|p| !out.contains(&p.pubkey));
+                        if i.participants.is_empty() {
+                            all.remove(&id);
+                        }
+                    }
+                }
+            }
+        }
+        dedup(touched)
     }
 
     pub fn end_channel_instances(&self, channel_id: Id) -> bool {

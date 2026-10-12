@@ -171,13 +171,17 @@ impl AppState {
         if via.len() > crate::protocol::MAX_CALL_DEPTH {
             return Err("that call chain is too deep".into());
         }
+        // Every app the chain passed through is held to it, not only the last:
+        // else a low app reaches a high one through a middle one.
         if let Some(perm) = cmd.permission {
-            if !install.has_permission(perm) {
-                return Err(format!("the calling app lacks {perm:?}"));
-            }
-            let root = &via[0];
-            if self.bot_install(guild_id, root).is_none() {
-                self.require_permission(guild_id, root, perm)?;
+            for key in &via {
+                match self.bot_install(guild_id, key) {
+                    Some(app) if !app.has_permission(perm) => {
+                        return Err(format!("an app in the chain lacks {perm:?}"));
+                    }
+                    Some(_) => {}
+                    None => self.require_permission(guild_id, key, perm)?,
+                }
             }
         }
         self.spend_call(caller, callee)?;

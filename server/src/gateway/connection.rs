@@ -538,6 +538,7 @@ pub async fn handle_connection<S>(
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.delete_guild(guild_id, &u.pubkey).await {
                             Ok(()) => {
+                                share_instances(&ctx.state, ctx.state.prune_instances());
                                 tracing::info!(%guild_id, by = ?u.username, "guild deleted");
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
                             }
@@ -1035,6 +1036,7 @@ pub async fn handle_connection<S>(
                                     guild_id,
                                     activities: ctx.state.guild_activities(guild_id),
                                 });
+                                share_instances(&ctx.state, ctx.state.prune_instances());
                                 let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
                                     guild_id,
                                     bots: ctx.state.guild_installs(guild_id),
@@ -1332,7 +1334,9 @@ pub async fn handle_connection<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.invoke_command(u, guild_id, channel_id, &bot_pubkey, &command, args, parent, is_bot) {
+                        // `bot` in Identify is self-declared; the install is the fact.
+                        let as_app = is_bot || ctx.state.bot_install(guild_id, &u.pubkey).is_some();
+                        match ctx.state.invoke_command(u, guild_id, channel_id, &bot_pubkey, &command, args, parent, as_app) {
                             Ok(invocation) => {
                                 tracing::debug!(%guild_id, bot = %bot_pubkey, command = ?invocation.command, by = ?u.username, "bot command invoked");
                                 ctx.state.deliver(vec![bot_pubkey], ServerMessage::CommandInvoked(invocation));
@@ -2695,6 +2699,7 @@ fn removal_broadcasts(
     // `was_sharing` and `cleared_voice` are read by the caller *before* the
     // removal, because removing the member is what ends the share.
     let rest = state.guild_member_pubkeys(guild_id);
+    share_instances(state, state.prune_instances());
     if was_member {
         state.deliver(
             vec![target.to_string()],

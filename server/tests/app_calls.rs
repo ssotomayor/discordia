@@ -60,6 +60,7 @@ struct App {
 }
 
 struct World {
+    url: String,
     handle: dioxusfun_server::ServerHandle,
     owner: Bot,
     member: Bot,
@@ -217,6 +218,7 @@ async fn world() -> World {
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     World {
+        url,
         handle,
         owner,
         member,
@@ -370,5 +372,72 @@ async fn chains_cannot_loop_run_deep_or_run_hot() {
         "the pair is rate limited"
     );
 
+    w.handle.abort();
+}
+
+#[tokio::test]
+async fn every_app_in_a_chain_is_held_to_the_permission() {
+    let mut w = world().await;
+    w.allow(0, &[1]).await;
+    w.allow(1, &[2]).await;
+    w.call(0, None, 1, "echo").await;
+    let at1 = invoked(&mut w.apps[1].bot).await;
+    // App1 holds Manage messages; App0, at the root, does not.
+    w.call(1, Some(&at1), 2, "purge").await;
+    assert!(
+        next_error(&mut w.apps[1].bot)
+            .await
+            .contains("an app in the chain lacks")
+    );
+    w.handle.abort();
+}
+
+#[tokio::test]
+async fn an_installed_bot_cannot_pass_for_a_person() {
+    let w = world().await;
+    let (url, key1) = (w.url.clone(), w.key(1));
+    let mut disguised = Bot::connect_as_user(&url, &w.apps[0].id, "App0")
+        .await
+        .unwrap();
+    while !matches!(
+        next_timeout(&mut disguised).await,
+        ServerMessage::Ready { .. }
+    ) {}
+    disguised
+        .send(&ClientMessage::InvokeCommand {
+            guild_id: w.guild_id,
+            channel_id: w.text,
+            bot_pubkey: key1,
+            command: "echo".into(),
+            args: vec![],
+            parent: None,
+        })
+        .await
+        .unwrap();
+    assert!(next_error(&mut disguised).await.contains("hasn't allowed"));
+    w.handle.abort();
+}
+
+#[tokio::test]
+async fn an_uninstalled_app_does_not_come_back_allowed() {
+    let mut w = world().await;
+    w.allow(0, &[1]).await;
+    let (g, key0, key1) = (w.guild_id, w.key(0), w.key(1));
+    w.owner
+        .send(&ClientMessage::UninstallBot {
+            guild_id: g,
+            bot_pubkey: key1.clone(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildIntegrations { bots, .. } = next_timeout(&mut w.owner).await
+            && !bots.iter().any(|b| b.bot_pubkey == key1)
+        {
+            let app0 = bots.iter().find(|b| b.bot_pubkey == key0).unwrap();
+            assert!(app0.may_call.is_empty(), "{:?}", app0.may_call);
+            break;
+        }
+    }
     w.handle.abort();
 }
