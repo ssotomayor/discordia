@@ -148,6 +148,7 @@ jobs:
           node client/tests/camera_preview_bridge.cjs
           node --test scripts/test-stream-quality.mjs
           node --test scripts/test-stream-audio.mjs
+          node --test scripts/test-gif-playback.mjs
           node client/tests/chat_attachment_bridge.cjs
           node client/tests/chat_composer.cjs
           node client/tests/native_ui_bridges.cjs

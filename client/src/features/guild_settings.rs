@@ -423,6 +423,7 @@ pub fn GuildSettingsDialog(
                                                 img {
                                                     class: "w-10 h-10 rounded-md object-cover border border-[var(--border)]",
                                                     src: "{src}", alt: "guild icon",
+                                                    "data-gif-hover": "true",
                                                 }
                                             } else {
                                                 div { class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
