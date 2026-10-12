@@ -99,7 +99,12 @@ async fn next_error(session: &mut Bot) -> String {
     }
 }
 
-fn install(guild_id: Id, app: &BotIdentity, perms: Vec<Permission>, event: String) -> ClientMessage {
+fn install(
+    guild_id: Id,
+    app: &BotIdentity,
+    perms: Vec<Permission>,
+    event: String,
+) -> ClientMessage {
     ClientMessage::InstallBot {
         guild_id,
         bot_pubkey: app.pubkey().to_string(),
@@ -118,7 +123,12 @@ async fn an_install_pins_its_manifest_and_only_a_wider_update_waits_for_approval
     let v1 = app.sign_manifest(&manifest(1, vec![Permission::SendMessages]));
 
     owner
-        .send(&install(guild_id, &app, vec![Permission::AddReactions], v1.clone()))
+        .send(&install(
+            guild_id,
+            &app,
+            vec![Permission::AddReactions],
+            v1.clone(),
+        ))
         .await
         .unwrap();
     assert!(next_error(&mut owner).await.contains("does not ask for"));
@@ -135,7 +145,10 @@ async fn an_install_pins_its_manifest_and_only_a_wider_update_waits_for_approval
         .await
         .unwrap();
     let pinned = integrations(&mut owner, app.pubkey()).await;
-    assert_eq!(pinned.name, "Rock Paper Scissors", "an empty name takes the manifest's");
+    assert_eq!(
+        pinned.name, "Rock Paper Scissors",
+        "an empty name takes the manifest's"
+    );
     assert_eq!(pinned.app.as_ref().unwrap().version, 1);
 
     let mut bot = Bot::connect(&url, &app, "RPS").await.unwrap();
@@ -155,7 +168,9 @@ async fn an_install_pins_its_manifest_and_only_a_wider_update_waits_for_approval
     assert_eq!(waiting.pending.as_ref().unwrap().version, 3);
     assert_eq!(waiting.permissions, vec![Permission::SendMessages]);
 
-    bot.register_manifest(&app, &manifest(1, vec![])).await.unwrap();
+    bot.register_manifest(&app, &manifest(1, vec![]))
+        .await
+        .unwrap();
 
     owner
         .send(&ClientMessage::ApproveAppUpdate {
@@ -208,10 +223,9 @@ async fn only_a_bot_registers_a_manifest_and_only_its_own() {
     .unwrap();
     assert!(next_error(&mut bot).await.contains("different key"));
 
-    let mut forged = serde_json::from_str::<serde_json::Value>(
-        &app.sign_manifest(&manifest(1, vec![])),
-    )
-    .unwrap();
+    let mut forged =
+        serde_json::from_str::<serde_json::Value>(&app.sign_manifest(&manifest(1, vec![])))
+            .unwrap();
     forged["content"] = serde_json::Value::String(
         serde_json::to_string(&manifest(1, vec![Permission::ManageMessages])).unwrap(),
     );

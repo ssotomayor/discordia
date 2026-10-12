@@ -1,8 +1,66 @@
 use dioxus::prelude::*;
 
-use crate::identity::truncate_pubkey;
-use crate::protocol::{BotInstall, ClientMessage, Id, Intent, Permission};
+use crate::identity::{npub_of, pubkey_from_input, truncate_pubkey};
+use crate::nostr::event::Event;
+use crate::nostr::service::{NostrCmd, NostrTx};
+use crate::protocol::{
+    APP_MANIFEST_D, APP_MANIFEST_KIND, AppManifest, BotInstall, ClientMessage, Id, Intent,
+    Permission, validate_manifest,
+};
 use crate::state::{use_app_state, use_gateway};
+
+/// Checked here as well as on the host: the consent screen must not draw a
+/// manifest the key never signed.
+pub fn read_manifest(json: &str, author: &str) -> Result<AppManifest, String> {
+    let ev: Event = serde_json::from_str(json).map_err(|e| format!("not an event: {e}"))?;
+    if ev.pubkey != author {
+        return Err("signed by a different key".into());
+    }
+    if u32::from(ev.kind) != APP_MANIFEST_KIND || ev.tag("d") != Some(APP_MANIFEST_D) {
+        return Err("not an app manifest".into());
+    }
+    if !ev.verify() {
+        return Err("the signature does not verify".into());
+    }
+    let raw: AppManifest =
+        serde_json::from_str(&ev.content).map_err(|e| format!("unreadable manifest: {e}"))?;
+    validate_manifest(raw)
+}
+
+/// What `newer` asks for that `pinned` was never granted, in words.
+pub fn asks_more(pinned: &AppManifest, newer: &AppManifest) -> Vec<String> {
+    let mut out: Vec<String> = newer
+        .permissions
+        .iter()
+        .filter(|p| !pinned.permissions.contains(p))
+        .map(|p| p.label().to_string())
+        .collect();
+    out.extend(
+        newer
+            .intents
+            .iter()
+            .filter(|i| !pinned.intents.contains(i))
+            .map(|i| i.label().to_string()),
+    );
+    let caps = |m: &AppManifest| {
+        m.activity
+            .as_ref()
+            .map(|a| a.capabilities.clone())
+            .unwrap_or_default()
+    };
+    let old_caps = caps(pinned);
+    out.extend(
+        caps(newer)
+            .into_iter()
+            .filter(|c| !old_caps.contains(c))
+            .map(|c| c.label().to_string()),
+    );
+    let players = |m: &AppManifest| m.activity.as_ref().map_or(1, |a| a.max_players);
+    if players(newer) > players(pinned) {
+        out.push(format!("Up to {} players", players(newer)));
+    }
+    out
+}
 
 #[component]
 pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
@@ -45,7 +103,7 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                         if installs.is_empty() {
                             div { class: "text-xs text-[var(--text-dim)] py-2",
-                                "No bots installed. Add one below by its public key."
+                                "Nothing installed. Add an app below by its key."
                             }
                         }
                         for bot in installs.iter().cloned() {
@@ -63,11 +121,23 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
 fn InstalledRow(guild_id: Id, bot: BotInstall) -> Element {
     let gateway = use_gateway();
     let pk = bot.bot_pubkey.clone();
+    let approve_pk = bot.bot_pubkey.clone();
+    let approve_gw = gateway.clone();
+    let update = match (&bot.app, &bot.pending) {
+        (Some(pinned), Some(next)) => Some((next.version, asks_more(pinned, next))),
+        _ => None,
+    };
 
     rsx! {
         div { class: "border border-[var(--border)] rounded-md p-2.5 flex flex-col gap-1.5",
             div { class: "flex items-center gap-2",
+                if let Some(app) = &bot.app {
+                    span { class: "text-sm", "{app.icon}" }
+                }
                 span { class: "text-sm text-[var(--text)] font-medium truncate flex-1", "{bot.name}" }
+                if let Some(app) = &bot.app {
+                    span { class: "text-[9px] text-[var(--text-dim)] font-mono", "v{app.version}" }
+                }
                 button {
                     class: "text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 rounded px-2 py-0.5 hover:bg-[var(--danger)]/10 transition-colors",
                     onclick: move |_| gateway.send(ClientMessage::UninstallBot {
@@ -98,12 +168,30 @@ fn InstalledRow(guild_id: Id, bot: BotInstall) -> Element {
                     }
                 }
             }
+            if let Some((version, more)) = update {
+                div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
+                    div { class: "text-[11px] font-semibold text-[var(--warn)]",
+                        "Version {version} asks for more:"
+                    }
+                    for line in more.iter() {
+                        div { class: "text-[11px] text-[var(--text)]", "• {line}" }
+                    }
+                    button {
+                        class: "w-full mt-1 rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/40 hover:bg-[var(--warn)]/10 transition-colors",
+                        onclick: move |_| approve_gw.send(ClientMessage::ApproveAppUpdate {
+                            guild_id,
+                            bot_pubkey: approve_pk.clone(),
+                        }),
+                        "Approve update"
+                    }
+                }
+            }
         }
     }
 }
 
 #[component]
-fn InstallForm(guild_id: Id) -> Element {
+fn ManualInstall(guild_id: Id) -> Element {
     let gateway = use_gateway();
     let mut pubkey = use_signal(String::new);
     let mut name = use_signal(String::new);
@@ -146,7 +234,7 @@ fn InstallForm(guild_id: Id) -> Element {
     rsx! {
         div { class: "border-t border-[var(--border)] pt-3",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                "Install a bot"
+                "Install without a manifest"
             }
             div { class: "space-y-2",
                 input {
@@ -245,5 +333,273 @@ fn InstallForm(guild_id: Id) -> Element {
                 }
             }
         }
+    }
+}
+
+#[component]
+fn InstallForm(guild_id: Id) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let nostr = try_use_context::<NostrTx>();
+    let mut input = use_signal(String::new);
+    let mut looked_up = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<String>);
+    let mut manual = use_signal(|| false);
+
+    let lookup_gw = gateway.clone();
+    let look_up = use_callback(move |_: ()| match pubkey_from_input(&input()) {
+        Ok(key) => {
+            error.set(None);
+            lookup_gw.send(ClientMessage::FetchAppManifest {
+                bot_pubkey: key.clone(),
+            });
+            if let Some(n) = &nostr {
+                n.send(NostrCmd::FetchAppManifest {
+                    author: key.clone(),
+                });
+            }
+            looked_up.set(Some(key));
+        }
+        Err(e) => error.set(Some(e)),
+    });
+
+    let found = use_memo(move || {
+        let key = looked_up()?;
+        let s = state.read();
+        let host = s.app_manifest_events.get(&key).cloned();
+        let relay = s.relay_app_manifests.get(&key).map(|(_, j)| j.clone());
+        let mut best: Option<(AppManifest, String)> = None;
+        let mut problem = None;
+        for json in [host.clone().flatten(), relay.clone()]
+            .into_iter()
+            .flatten()
+        {
+            match read_manifest(&json, &key) {
+                Ok(m) if best.as_ref().is_none_or(|(b, _)| m.version > b.version) => {
+                    best = Some((m, json))
+                }
+                Ok(_) => {}
+                Err(e) => problem = Some(e),
+            }
+        }
+        let host_answered = host.is_some();
+        Some((key, best, problem, host_answered))
+    });
+
+    rsx! {
+        div { class: "border-t border-[var(--border)] pt-3 space-y-2",
+            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
+                "Install an app"
+            }
+            div { class: "flex gap-2",
+                input {
+                    class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
+                    placeholder: "npub1… or hex key",
+                    value: "{input}",
+                    oninput: move |e| { input.set(e.value()); looked_up.set(None); },
+                    onkeydown: move |e| if e.key() == Key::Enter { look_up.call(()); },
+                }
+                button {
+                    class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| look_up.call(()),
+                    "Look up"
+                }
+            }
+            if let Some(err) = error() {
+                div { class: "text-[11px] text-[var(--danger)]", "{err}" }
+            }
+            if let Some((key, best, problem, host_answered)) = found() {
+                match best {
+                    Some((manifest, event)) => rsx! {
+                        AppConsent {
+                            key: "{key}",
+                            guild_id,
+                            bot_pubkey: key.clone(),
+                            manifest,
+                            event,
+                            on_done: move |_| { input.set(String::new()); looked_up.set(None); },
+                        }
+                    },
+                    None => rsx! {
+                        div { class: "text-[11px] text-[var(--text-dim)]",
+                            if let Some(p) = problem {
+                                "That key's manifest was refused: {p}"
+                            } else if host_answered {
+                                "Looking on your relays… This host has never seen that app's manifest."
+                            } else {
+                                "Looking…"
+                            }
+                        }
+                    },
+                }
+            }
+            button {
+                class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--text-muted)] underline",
+                onclick: move |_| manual.set(!manual()),
+                if manual() { "Hide manual install" } else { "Install a bot without a manifest" }
+            }
+            if manual() {
+                ManualInstall { guild_id }
+            }
+        }
+    }
+}
+
+#[component]
+fn AppConsent(
+    guild_id: Id,
+    bot_pubkey: String,
+    manifest: AppManifest,
+    event: String,
+    on_done: EventHandler<()>,
+) -> Element {
+    let gateway = use_gateway();
+    let privileged = manifest.intents.iter().any(|i| i.is_privileged());
+    let npub = npub_of(&bot_pubkey);
+    let install = {
+        let manifest = manifest.clone();
+        move |_| {
+            gateway.send(ClientMessage::InstallBot {
+                guild_id,
+                bot_pubkey: bot_pubkey.clone(),
+                name: String::new(),
+                permissions: manifest.permissions.clone(),
+                intents: manifest.intents.clone(),
+                manifest: Some(event.clone()),
+            });
+            on_done.call(());
+        }
+    };
+    rsx! {
+        div { class: "rounded-md border border-[var(--border)] p-2.5 space-y-2",
+            div { class: "flex items-center gap-2",
+                span { class: "text-lg", "{manifest.icon}" }
+                div { class: "flex-1 min-w-0",
+                    div { class: "text-sm text-[var(--text)] font-medium truncate", "{manifest.name}" }
+                    div { class: "font-mono text-[10px] text-[var(--text-dim)] truncate", title: "{npub}",
+                        "{truncate_pubkey(&npub)} · v{manifest.version}"
+                    }
+                }
+            }
+            if !manifest.description.is_empty() {
+                div { class: "text-[11px] text-[var(--text-muted)]", "{manifest.description}" }
+            }
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "It asks to" }
+            ul { class: "space-y-0.5",
+                for p in manifest.permissions.iter().copied() {
+                    li { class: "text-[11px] text-[var(--text)]", "• {p.label()}" }
+                }
+                for i in manifest.intents.iter().copied() {
+                    li { class: if i.is_privileged() { "text-[11px] text-[var(--warn)]" } else { "text-[11px] text-[var(--text)]" },
+                        "• Receive: {i.label()}"
+                    }
+                }
+                if let Some(a) = &manifest.activity {
+                    for c in a.capabilities.iter().copied() {
+                        li { class: "text-[11px] text-[var(--text)]", "• Activity: {c.label()}" }
+                    }
+                    if a.max_players > 1 {
+                        li { class: "text-[11px] text-[var(--text)]", "• Activity for up to {a.max_players} players" }
+                    }
+                }
+                if manifest.permissions.is_empty() && manifest.intents.is_empty() && manifest.activity.is_none() {
+                    li { class: "text-[11px] text-[var(--text-dim)]", "Nothing beyond appearing in the member list" }
+                }
+            }
+            if !manifest.commands.is_empty() {
+                div { class: "text-[10px] text-[var(--text-dim)]",
+                    "Buttons: "
+                    {manifest.commands.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", ")}
+                }
+            }
+            if privileged {
+                div { class: "text-[10px] text-[var(--warn)]",
+                    "Highlighted items let it read what members write or who comes and goes. Uninstalling later stops the delivery, not what was already read."
+                }
+            }
+            div { class: "text-[10px] text-[var(--text-dim)]",
+                "A later version that asks for more waits for your approval."
+            }
+            button {
+                class: if privileged {
+                    "w-full rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/40 hover:bg-[var(--warn)]/10 transition-colors"
+                } else {
+                    "w-full rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+                },
+                onclick: install,
+                "Approve and install"
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nostr::event::{sign_with, xonly_hex};
+    use crate::protocol::{ActivityCapability, ActivityManifest};
+
+    fn manifest(version: u64) -> AppManifest {
+        AppManifest {
+            name: "RPS".into(),
+            description: String::new(),
+            icon: "✊".into(),
+            version,
+            permissions: vec![Permission::SendMessages],
+            intents: vec![Intent::GuildMessages],
+            commands: Vec::new(),
+            activity: Some(ActivityManifest {
+                sha256: "0".repeat(64),
+                capabilities: vec![ActivityCapability::UserRead],
+                max_players: 2,
+                url: None,
+            }),
+        }
+    }
+
+    fn signed(secret: &secp256k1::SecretKey, kind: u16, d: &str, content: String) -> String {
+        let tags = vec![vec!["d".to_string(), d.to_string()]];
+        serde_json::to_string(&sign_with(secret, 1, kind, tags, content)).unwrap()
+    }
+
+    #[test]
+    fn only_a_signed_manifest_from_that_key_is_read() {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let key = xonly_hex(&secret);
+        let body = serde_json::to_string(&manifest(1)).unwrap();
+        let good = signed(&secret, 31990, APP_MANIFEST_D, body.clone());
+        assert_eq!(read_manifest(&good, &key).unwrap().version, 1);
+
+        assert!(read_manifest(&good, &"1".repeat(64)).is_err());
+        assert!(
+            read_manifest(&signed(&secret, 30078, APP_MANIFEST_D, body.clone()), &key).is_err()
+        );
+        assert!(read_manifest(&signed(&secret, 31990, "other", body.clone()), &key).is_err());
+
+        let mut tampered: Event = serde_json::from_str(&good).unwrap();
+        tampered.content = body.replace("\"version\":1", "\"version\":9");
+        let tampered = serde_json::to_string(&tampered).unwrap();
+        assert!(
+            read_manifest(&tampered, &key)
+                .unwrap_err()
+                .contains("signature")
+        );
+    }
+
+    #[test]
+    fn an_update_names_only_what_it_adds() {
+        let v1 = manifest(1);
+        let mut v2 = manifest(2);
+        assert!(asks_more(&v1, &v2).is_empty());
+        v2.permissions.push(Permission::AddReactions);
+        v2.activity
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .push(ActivityCapability::MessageSend);
+        v2.activity.as_mut().unwrap().max_players = 4;
+        let more = asks_more(&v1, &v2);
+        assert_eq!(more.len(), 3, "{more:?}");
+        assert!(more.contains(&"Up to 4 players".to_string()));
     }
 }

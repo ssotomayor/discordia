@@ -128,7 +128,6 @@ impl Event {
             .is_ok()
     }
 
-    #[allow(dead_code)]
     pub fn tag(&self, name: &str) -> Option<&str> {
         self.tags
             .iter()

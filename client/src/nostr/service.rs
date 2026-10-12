@@ -74,6 +74,10 @@ pub enum NostrCmd {
     /// ignored when the number has not actually changed since the last one:
     /// kind 30078 is replaceable, so a re-send costs every relay a write.
     PublishXp(xp::GlobalXp),
+    /// Look an app's manifest up on our relays, for a guild about to install it.
+    FetchAppManifest {
+        author: String,
+    },
 }
 
 /// Handle the UI holds.
@@ -309,6 +313,18 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         pool.publish(nip51::mute_list_event(&secret, &next, next.created_at));
                         state.write().set_mutes(next);
                     }
+                    Some(NostrCmd::FetchAppManifest { author }) => {
+                        pool.subscribe(
+                            SUB_APP,
+                            vec![Filter {
+                                kinds: Some(vec![crate::protocol::APP_MANIFEST_KIND as u16]),
+                                authors: Some(vec![author]),
+                                d: Some(vec![crate::protocol::APP_MANIFEST_D.to_string()]),
+                                limit: Some(1),
+                                ..Default::default()
+                            }],
+                        );
+                    }
                     Some(NostrCmd::PublishXp(total)) => {
                         if state.read().global_xp.get(&our_pubkey) != Some(&total) {
                             state.write().global_xp.insert(our_pubkey.clone(), total);
@@ -407,6 +423,21 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                                 state.write().note_name(&event.pubkey, name, event.created_at);
                             }
                         }
+                        k if u32::from(k) == crate::protocol::APP_MANIFEST_KIND
+                            && event.tag("d") == Some(crate::protocol::APP_MANIFEST_D) =>
+                        {
+                            let newer = state
+                                .peek()
+                                .relay_app_manifests
+                                .get(&event.pubkey)
+                                .is_none_or(|(at, _)| *at < event.created_at);
+                            if newer && let Ok(json) = serde_json::to_string(&*event) {
+                                state
+                                    .write()
+                                    .relay_app_manifests
+                                    .insert(event.pubkey.clone(), (event.created_at, json));
+                            }
+                        }
                         xp::KIND_APP_DATA => {
                             // Self-asserted: stored beside the key that signed
                             // it and drawn as a claim, never used to gate.
@@ -491,6 +522,8 @@ const SUB_DM: &str = "dxf-dm";
 /// replays everything under the id it names — sharing `SUB_DM` would have
 /// re-delivered every gift wrap each time somebody new said hello.
 const SUB_NAMES: &str = "dxf-names";
+/// One app at a time: each lookup replaces the last under this id.
+const SUB_APP: &str = "dxf-app";
 
 /// Most keys the name subscription will ask about at once.
 ///
