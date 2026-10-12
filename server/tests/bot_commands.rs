@@ -128,6 +128,7 @@ async fn world() -> World {
             name: "LecheBot".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages],
+            manifest: None,
         })
         .await
         .unwrap();

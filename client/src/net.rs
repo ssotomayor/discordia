@@ -1498,6 +1498,9 @@ fn apply(
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
         }
+        ServerMessage::AppManifestEvent { bot_pubkey, event } => {
+            s.app_manifest_events.insert(bot_pubkey, event);
+        }
         ServerMessage::BotCommands(set) => {
             s.bot_commands.insert(set.bot_pubkey, set.commands);
         }

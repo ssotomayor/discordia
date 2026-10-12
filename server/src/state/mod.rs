@@ -12,8 +12,10 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
+mod apps;
 mod chat_tools;
 mod commands;
+pub use apps::ManifestOutcome;
 
 /// A failed write is logged and ignored: the change survives the session but
 /// not a restart, and is never a user-facing error.
@@ -92,6 +94,8 @@ pub struct AppState {
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     /// Memory only: a bot declares its commands on every connect.
     pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
+    /// The newest manifest event each bot has handed this host, by version.
+    pub app_manifests: DashMap<String, (u64, String)>,
     invocations: DashMap<Id, commands::Pending>,
     pub roles: DashMap<Id, Vec<Role>>,
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
@@ -133,6 +137,7 @@ impl AppState {
             activities: DashMap::new(),
             bot_installs: DashMap::new(),
             bot_commands: DashMap::new(),
+            app_manifests: DashMap::new(),
             invocations: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
@@ -230,6 +235,9 @@ impl AppState {
                 .entry(i.bot_pubkey.clone())
                 .or_default()
                 .insert(i.guild_id, i);
+        }
+        for (bot, version, event) in state.store.app_manifests().await? {
+            state.app_manifests.insert(bot, (version, event));
         }
 
         state.detach_inline_images().await;
@@ -2979,6 +2987,7 @@ impl AppState {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_bot(
         &self,
         guild_id: Id,
@@ -2986,8 +2995,24 @@ impl AppState {
         name: &str,
         permissions: Vec<Permission>,
         intents: Vec<Intent>,
+        manifest: Option<String>,
         by_pubkey: &str,
     ) -> Result<(BotInstall, Member), String> {
+        let app = match manifest {
+            Some(event) => Some(self.verified_manifest_for(bot_pubkey, &event)?),
+            None => None,
+        };
+        if let Some(app) = &app {
+            if let Some(p) = permissions
+                .iter()
+                .find(|p| !app.manifest.permissions.contains(p))
+            {
+                return Err(format!("the app's manifest does not ask for {p:?}"));
+            }
+            if let Some(i) = intents.iter().find(|i| !app.manifest.intents.contains(i)) {
+                return Err(format!("the app's manifest does not ask for {i:?}"));
+            }
+        }
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         if bot_pubkey.trim().is_empty() {
@@ -3007,7 +3032,11 @@ impl AppState {
         }
         let name = {
             let n = crate::protocol::sanitize_line(name, 32);
-            if n.is_empty() { "Bot".to_string() } else { n }
+            match (&app, n.is_empty()) {
+                (_, false) => n,
+                (Some(app), true) => app.manifest.name.clone(),
+                (None, true) => "Bot".to_string(),
+            }
         };
         let install = BotInstall {
             guild_id,
@@ -3015,6 +3044,8 @@ impl AppState {
             name: name.clone(),
             permissions: unique(permissions),
             intents: unique(intents),
+            app: app.as_ref().map(|a| a.manifest.clone()),
+            pending: None,
         };
         let member = {
             let guild_members = self.members.entry(guild_id).or_default();

@@ -38,6 +38,66 @@ pub fn verify_identify(
         .map_err(|e| format!("signature did not verify: {e}"))
 }
 
+pub struct VerifiedManifest {
+    pub pubkey: String,
+    pub manifest: crate::protocol::AppManifest,
+    pub event: String,
+}
+
+#[derive(serde::Deserialize)]
+struct NostrEvent {
+    id: String,
+    pubkey: String,
+    created_at: i64,
+    kind: u32,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: String,
+}
+
+/// A NIP-01 event, checked here rather than trusted from the client that
+/// relayed it: the pin it becomes is what decides an app's powers.
+pub fn verify_manifest_event(event_json: &str) -> Result<VerifiedManifest, String> {
+    use crate::protocol::{APP_MANIFEST_D, APP_MANIFEST_KIND, MAX_MANIFEST_EVENT_BYTES};
+    if event_json.len() > MAX_MANIFEST_EVENT_BYTES {
+        return Err("manifest event is too large".into());
+    }
+    let ev: NostrEvent =
+        serde_json::from_str(event_json).map_err(|e| format!("manifest is not an event: {e}"))?;
+    if ev.kind != APP_MANIFEST_KIND {
+        return Err(format!("manifest must be kind {APP_MANIFEST_KIND}"));
+    }
+    let d = ev
+        .tags
+        .iter()
+        .find(|t| t.first().is_some_and(|n| n == "d"))
+        .and_then(|t| t.get(1));
+    if d.map(String::as_str) != Some(APP_MANIFEST_D) {
+        return Err(format!("manifest needs the d tag {APP_MANIFEST_D}"));
+    }
+    let canonical = serde_json::json!([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
+    let id: [u8; 32] = Sha256::digest(canonical.to_string().as_bytes()).into();
+    if hex::encode(id) != ev.id {
+        return Err("manifest id does not match its content".into());
+    }
+    let pubkey_bytes = hex::decode(&ev.pubkey).map_err(|e| format!("pubkey not hex: {e}"))?;
+    let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
+        .map_err(|e| format!("invalid nostr pubkey: {e}"))?;
+    let sig_bytes = hex::decode(&ev.sig).map_err(|e| format!("signature not hex: {e}"))?;
+    let sig =
+        Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid schnorr signature: {e}"))?;
+    Secp256k1::verification_only()
+        .verify_schnorr(&sig, &Message::from_digest(id), &xonly)
+        .map_err(|e| format!("manifest signature did not verify: {e}"))?;
+    let manifest: crate::protocol::AppManifest = serde_json::from_str(&ev.content)
+        .map_err(|e| format!("manifest content is not a manifest: {e}"))?;
+    Ok(VerifiedManifest {
+        pubkey: ev.pubkey,
+        manifest: crate::protocol::validate_manifest(manifest)?,
+        event: event_json.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -801,6 +801,7 @@ async fn moderation_guard_rails() {
             name: "HelpBot".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -1103,6 +1104,7 @@ async fn read_only_channel_gates_posting() {
             name: "NewsBot".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -1131,6 +1133,7 @@ async fn read_only_channel_gates_posting() {
             name: "NewsBot".into(),
             permissions: vec![Permission::SendMessages, Permission::ManageMessages],
             intents: vec![],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -2431,6 +2434,7 @@ async fn a_bot_cannot_rename_itself() {
             name: "PingBot".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -2740,6 +2744,7 @@ async fn experience_is_earned_once_a_minute_by_people_only() {
             name: "Grindbot".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages],
+            manifest: None,
         })
         .await
         .unwrap();

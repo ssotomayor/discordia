@@ -446,6 +446,8 @@ pub struct AppState {
     pub host_info: Option<HostInfo>,
     pub transport: Transport,
     pub integrations: HashMap<Id, Vec<BotInstall>>,
+    /// What the host answered `FetchAppManifest` with, by bot key.
+    pub app_manifest_events: HashMap<String, Option<String>>,
     /// By bot pubkey. What each bot's profile card offers to press.
     pub bot_commands: HashMap<String, Vec<crate::protocol::BotCommand>>,
     /// A bot's private answers: never stored anywhere, gone on reconnect.
@@ -585,6 +587,7 @@ impl AppState {
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),
+            app_manifest_events: HashMap::new(),
             bot_commands: HashMap::new(),
             command_notes: Vec::new(),
             guild_emojis: HashMap::new(),

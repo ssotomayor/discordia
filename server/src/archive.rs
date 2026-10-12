@@ -224,6 +224,8 @@ impl Store {
         for b in &archive.bot_installs {
             let mut install = b.clone();
             install.guild_id = new_guild_id;
+            // An archive carries no signature for it, and approving grants it.
+            install.pending = None;
             self.upsert_bot_install(&install).await?;
         }
 

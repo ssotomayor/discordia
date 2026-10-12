@@ -133,6 +133,7 @@ fn InstallForm(guild_id: Id) -> Element {
             name: nm,
             permissions: perms(),
             intents: intents(),
+            manifest: None,
         });
         pubkey.set(String::new());
         name.set(String::new());

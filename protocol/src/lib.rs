@@ -1230,6 +1230,169 @@ pub struct BotInstall {
     pub name: String,
     pub permissions: Vec<Permission>,
     pub intents: Vec<Intent>,
+    /// The manifest an admin approved. A newer one that asks for more waits in
+    /// `pending` until an admin approves that too.
+    #[serde(default)]
+    pub app: Option<AppManifest>,
+    #[serde(default)]
+    pub pending: Option<AppManifest>,
+}
+
+/// NIP-89's handler kind, so a relay already knows to keep only the latest.
+pub const APP_MANIFEST_KIND: u32 = 31990;
+pub const APP_MANIFEST_D: &str = "discordia-app";
+pub const MAX_APP_NAME: usize = 32;
+pub const MAX_APP_DESCRIPTION: usize = 300;
+pub const MAX_APP_ICON: usize = 16;
+pub const MAX_APP_URL: usize = 512;
+pub const MAX_ACTIVITY_PLAYERS: u8 = 16;
+pub const MAX_MANIFEST_EVENT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityCapability {
+    UserRead,
+    ChannelRead,
+    MessageSend,
+    Instance,
+}
+
+impl ActivityCapability {
+    pub fn label(self) -> &'static str {
+        match self {
+            ActivityCapability::UserRead => "See your name and public key",
+            ActivityCapability::ChannelRead => "See the channel it was opened in",
+            ActivityCapability::MessageSend => "Post messages as you in that channel",
+            ActivityCapability::Instance => "Play with others who join it",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityManifest {
+    /// Hex sha256 of the bundle file. The client refuses any other bytes.
+    pub sha256: String,
+    #[serde(default)]
+    pub capabilities: Vec<ActivityCapability>,
+    #[serde(default = "one_player")]
+    pub max_players: u8,
+    /// Where an admin can download the bundle to upload it. Members never
+    /// fetch from it.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+fn one_player() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppManifest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// An emoji, never a URL: drawing it must not reach anyone's server.
+    #[serde(default)]
+    pub icon: String,
+    pub version: u64,
+    #[serde(default)]
+    pub permissions: Vec<Permission>,
+    #[serde(default)]
+    pub intents: Vec<Intent>,
+    #[serde(default)]
+    pub commands: Vec<BotCommand>,
+    #[serde(default)]
+    pub activity: Option<ActivityManifest>,
+}
+
+impl AppManifest {
+    /// Anything a guild has not yet approved. A new bundle hash alone is not:
+    /// the bundle runs with the capabilities it was given, and no more.
+    pub fn widens(&self, newer: &AppManifest) -> bool {
+        let caps = |m: &AppManifest| {
+            m.activity
+                .as_ref()
+                .map(|a| a.capabilities.clone())
+                .unwrap_or_default()
+        };
+        let players = |m: &AppManifest| m.activity.as_ref().map_or(0, |a| a.max_players);
+        let old_caps = caps(self);
+        newer
+            .permissions
+            .iter()
+            .any(|p| !self.permissions.contains(p))
+            || newer.intents.iter().any(|i| !self.intents.contains(i))
+            || caps(newer).iter().any(|c| !old_caps.contains(c))
+            || players(newer) > players(self).max(1)
+    }
+}
+
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A manifest is drawn on a consent screen and pinned in every guild that
+/// installs it, so it is refused whole rather than trimmed.
+pub fn validate_manifest(raw: AppManifest) -> Result<AppManifest, String> {
+    let name = sanitize_line(&raw.name, MAX_APP_NAME);
+    if name.is_empty() {
+        return Err("an app needs a name".into());
+    }
+    if raw.description.chars().count() > MAX_APP_DESCRIPTION {
+        return Err(format!(
+            "description is over {MAX_APP_DESCRIPTION} characters"
+        ));
+    }
+    let icon = raw.icon.trim().to_string();
+    if icon.chars().count() > MAX_APP_ICON || icon.contains("://") {
+        return Err("the icon must be a short emoji".into());
+    }
+    if let Some(bad) = raw
+        .permissions
+        .iter()
+        .find(|p| !Permission::BOT_INSTALLABLE.contains(p))
+    {
+        return Err(format!("{bad:?} isn't grantable to bots"));
+    }
+    let commands = validate_commands(raw.commands)?;
+    let activity = match raw.activity {
+        None => None,
+        Some(a) => {
+            if !is_sha256_hex(&a.sha256) {
+                return Err("activity sha256 must be 64 lowercase hex characters".into());
+            }
+            if a.max_players == 0 || a.max_players > MAX_ACTIVITY_PLAYERS {
+                return Err(format!("max_players must be 1 to {MAX_ACTIVITY_PLAYERS}"));
+            }
+            if let Some(url) = &a.url
+                && (url.len() > MAX_APP_URL || !url.starts_with("https://"))
+            {
+                return Err("the bundle url must be https".into());
+            }
+            let mut capabilities = a.capabilities;
+            capabilities.sort_unstable();
+            capabilities.dedup();
+            Some(ActivityManifest { capabilities, ..a })
+        }
+    };
+    let mut permissions = raw.permissions;
+    permissions.sort_unstable_by_key(|p| format!("{p:?}"));
+    permissions.dedup();
+    let mut intents = raw.intents;
+    intents.sort_unstable_by_key(|i| format!("{i:?}"));
+    intents.dedup();
+    Ok(AppManifest {
+        name,
+        description: raw.description.trim().to_string(),
+        icon,
+        version: raw.version,
+        permissions,
+        intents,
+        commands,
+        activity,
+    })
 }
 
 impl BotInstall {
@@ -1786,6 +1949,22 @@ pub enum ClientMessage {
         name: String,
         permissions: Vec<Permission>,
         intents: Vec<Intent>,
+        /// The app's signed manifest event, as JSON. With it the server pins
+        /// what was approved; permissions and intents must lie within it.
+        #[serde(default)]
+        manifest: Option<String>,
+    },
+    /// Bot only. A signed manifest event; a newer version than a guild pinned
+    /// applies at once if it asks for no more, else waits for an admin.
+    RegisterManifest {
+        event: String,
+    },
+    ApproveAppUpdate {
+        guild_id: Id,
+        bot_pubkey: String,
+    },
+    FetchAppManifest {
+        bot_pubkey: String,
     },
     UninstallBot {
         guild_id: Id,
@@ -2202,6 +2381,11 @@ pub enum ServerMessage {
     GuildIntegrations {
         guild_id: Id,
         bots: Vec<BotInstall>,
+    },
+    /// The latest manifest event this host has seen from that bot, if any.
+    AppManifestEvent {
+        bot_pubkey: String,
+        event: Option<String>,
     },
     BotCommands(BotCommandSet),
     CommandInvoked(Invocation),

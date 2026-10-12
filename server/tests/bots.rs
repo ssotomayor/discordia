@@ -86,6 +86,7 @@ async fn bot_install_and_ping_roundtrip() {
             name: "PingBot".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages, Intent::MessageContent],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -151,6 +152,7 @@ async fn intents_and_permissions_are_enforced() {
             name: "QuietBot".into(),
             permissions: vec![],
             intents: vec![Intent::GuildMessages],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -222,6 +224,7 @@ async fn an_installed_bot_posts_under_the_name_its_installer_chose() {
             name: " Ping\u{202E}Bot\u{0} ".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -266,6 +269,7 @@ async fn install(owner: &mut Bot, guild_id: Id, bot: &BotIdentity, name: &str) {
             name: name.into(),
             permissions: vec![Permission::SendMessages, Permission::ReadMessageHistory],
             intents: vec![Intent::GuildMessages, Intent::MessageContent],
+            manifest: None,
         })
         .await
         .unwrap();
@@ -324,7 +328,12 @@ async fn a_bot_sees_which_messages_another_bot_wrote() {
         }
     };
     for m in &history {
-        assert_eq!(m.author_bot, m.author.pubkey == a_id.pubkey(), "{}", m.content);
+        assert_eq!(
+            m.author_bot,
+            m.author.pubkey == a_id.pubkey(),
+            "{}",
+            m.content
+        );
     }
     assert_eq!(history.len(), 2);
 

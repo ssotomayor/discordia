@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 
 pub use dioxusfun_protocol as protocol;
-use protocol::{BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
+use protocol::{AppManifest, BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
 
 mod quic;
 
@@ -91,6 +91,37 @@ impl BotIdentity {
         let digest: [u8; 32] = Sha256::digest(&msg).into();
         let m = Message::from_digest(digest);
         hex::encode(secp.sign_schnorr_no_aux_rand(&m, &keypair).serialize())
+    }
+
+    /// The signed NIP-89 event a guild installs from. Publish it to relays, or
+    /// hand it to a host with `Bot::register_manifest`.
+    pub fn sign_manifest(&self, manifest: &AppManifest) -> String {
+        let content = serde_json::to_string(manifest).expect("manifest serializes");
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let kind = dioxusfun_protocol::APP_MANIFEST_KIND;
+        let tags = vec![vec![
+            "d".to_string(),
+            dioxusfun_protocol::APP_MANIFEST_D.to_string(),
+        ]];
+        let canonical =
+            serde_json::json!([0, self.pubkey_hex, created_at, kind, tags, content]).to_string();
+        let id: [u8; 32] = Sha256::digest(canonical.as_bytes()).into();
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &self.secret);
+        let sig = secp.sign_schnorr_no_aux_rand(&Message::from_digest(id), &keypair);
+        serde_json::json!({
+            "id": hex::encode(id),
+            "pubkey": self.pubkey_hex,
+            "created_at": created_at,
+            "kind": kind,
+            "tags": tags,
+            "content": content,
+            "sig": hex::encode(sig.serialize()),
+        })
+        .to_string()
     }
 }
 
@@ -251,6 +282,17 @@ impl Bot {
 
     /// Replaces every command declared before. Call it after `Ready`, on each
     /// connect: the server keeps them only while it runs.
+    pub async fn register_manifest(
+        &mut self,
+        identity: &BotIdentity,
+        manifest: &AppManifest,
+    ) -> Result<()> {
+        self.send(&ClientMessage::RegisterManifest {
+            event: identity.sign_manifest(manifest),
+        })
+        .await
+    }
+
     pub async fn register_commands(&mut self, commands: Vec<BotCommand>) -> Result<()> {
         self.send(&ClientMessage::RegisterCommands { commands })
             .await

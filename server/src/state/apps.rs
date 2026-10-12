@@ -1,0 +1,213 @@
+use super::{AppState, durable};
+use crate::auth::{VerifiedManifest, verify_manifest_event};
+use crate::protocol::{AppManifest, BotInstall, Id, Permission};
+
+pub enum ManifestOutcome {
+    /// Older than or equal to what this host already holds.
+    Stale,
+    Recorded {
+        changed: Vec<Id>,
+    },
+}
+
+impl AppState {
+    pub fn verified_manifest_for(
+        &self,
+        bot_pubkey: &str,
+        event: &str,
+    ) -> Result<VerifiedManifest, String> {
+        let v = verify_manifest_event(event)?;
+        if v.pubkey != bot_pubkey {
+            return Err("that manifest is signed by a different key".into());
+        }
+        Ok(v)
+    }
+
+    pub fn app_manifest_event(&self, bot_pubkey: &str) -> Option<String> {
+        self.app_manifests.get(bot_pubkey).map(|m| m.1.clone())
+    }
+
+    pub fn guild_managers(&self, guild_id: Id) -> Vec<String> {
+        self.guild_member_pubkeys(guild_id)
+            .into_iter()
+            .filter(|p| self.has_permission(guild_id, p, Permission::ManageGuild))
+            .collect()
+    }
+
+    /// A newer manifest applies at once where it asks for nothing a guild has
+    /// not approved, and narrows the grant with it; otherwise it waits.
+    pub async fn register_manifest(
+        &self,
+        bot_pubkey: &str,
+        event: &str,
+    ) -> Result<ManifestOutcome, String> {
+        let v = self.verified_manifest_for(bot_pubkey, event)?;
+        let _write = self.durable_writes.lock().await;
+        let held = self.app_manifests.get(bot_pubkey).map(|m| m.0);
+        if held.is_some_and(|h| h >= v.manifest.version) {
+            return Ok(ManifestOutcome::Stale);
+        }
+        let mut changed = Vec::new();
+        for install in self.bot_guilds(bot_pubkey) {
+            if let Some(next) = apply_newer(install, &v.manifest) {
+                changed.push(next);
+            }
+        }
+        durable(
+            self.store
+                .record_manifest(bot_pubkey, v.manifest.version, &v.event, &changed)
+                .await,
+            "app manifest",
+        )?;
+        self.app_manifests
+            .insert(bot_pubkey.to_string(), (v.manifest.version, v.event));
+        let ids = changed.iter().map(|i| i.guild_id).collect();
+        for install in changed {
+            self.put_install(install);
+        }
+        Ok(ManifestOutcome::Recorded { changed: ids })
+    }
+
+    pub async fn approve_app_update(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let mut install = self
+            .bot_install(guild_id, bot_pubkey)
+            .ok_or("that bot isn't installed here")?;
+        let pending = install
+            .pending
+            .take()
+            .ok_or("there is no update to approve")?;
+        install.permissions = pending.permissions.clone();
+        install.intents = pending.intents.clone();
+        install.app = Some(pending);
+        durable(self.store.upsert_bot_install(&install).await, "app update")?;
+        self.put_install(install);
+        Ok(())
+    }
+
+    fn put_install(&self, install: BotInstall) {
+        self.bot_installs
+            .entry(install.bot_pubkey.clone())
+            .or_default()
+            .insert(install.guild_id, install);
+    }
+}
+
+/// `None` when the install has no pin, or already holds this version or newer.
+fn apply_newer(mut install: BotInstall, newer: &AppManifest) -> Option<BotInstall> {
+    let pinned = install.app.as_ref()?;
+    if newer.version <= pinned.version {
+        return None;
+    }
+    if install
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.version >= newer.version)
+    {
+        return None;
+    }
+    if pinned.widens(newer) {
+        install.pending = Some(newer.clone());
+    } else {
+        install
+            .permissions
+            .retain(|p| newer.permissions.contains(p));
+        install.intents.retain(|i| newer.intents.contains(i));
+        install.app = Some(newer.clone());
+        install.pending = None;
+    }
+    Some(install)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{ActivityCapability, ActivityManifest, Intent};
+
+    fn manifest(
+        version: u64,
+        perms: Vec<Permission>,
+        caps: Vec<ActivityCapability>,
+    ) -> AppManifest {
+        AppManifest {
+            name: "Game".into(),
+            description: String::new(),
+            icon: "🎮".into(),
+            version,
+            permissions: perms,
+            intents: vec![Intent::GuildMessages],
+            commands: Vec::new(),
+            activity: Some(ActivityManifest {
+                sha256: "a".repeat(64),
+                capabilities: caps,
+                max_players: 2,
+                url: None,
+            }),
+        }
+    }
+
+    fn install(app: Option<AppManifest>) -> BotInstall {
+        BotInstall {
+            guild_id: Id::new_v4(),
+            bot_pubkey: "b".repeat(64),
+            name: "Game".into(),
+            permissions: vec![Permission::SendMessages, Permission::AddReactions],
+            intents: vec![Intent::GuildMessages],
+            app,
+            pending: None,
+        }
+    }
+
+    #[test]
+    fn a_narrower_update_applies_and_shrinks_the_grant() {
+        let v1 = manifest(
+            1,
+            vec![Permission::SendMessages, Permission::AddReactions],
+            vec![],
+        );
+        let v2 = manifest(2, vec![Permission::SendMessages], vec![]);
+        let next = apply_newer(install(Some(v1)), &v2).unwrap();
+        assert_eq!(next.app.as_ref().unwrap().version, 2);
+        assert_eq!(next.permissions, vec![Permission::SendMessages]);
+        assert!(next.pending.is_none());
+    }
+
+    #[test]
+    fn a_wider_update_waits_and_changes_nothing_granted() {
+        let v1 = manifest(1, vec![Permission::SendMessages], vec![]);
+        let v2 = manifest(
+            2,
+            vec![Permission::SendMessages],
+            vec![ActivityCapability::MessageSend],
+        );
+        let before = install(Some(v1));
+        let next = apply_newer(before.clone(), &v2).unwrap();
+        assert_eq!(next.app, before.app);
+        assert_eq!(next.permissions, before.permissions);
+        assert_eq!(next.pending.unwrap().version, 2);
+    }
+
+    #[test]
+    fn an_unpinned_or_older_manifest_changes_nothing() {
+        let v2 = manifest(2, vec![], vec![]);
+        assert!(apply_newer(install(None), &v2).is_none());
+        let v1 = manifest(1, vec![], vec![]);
+        assert!(apply_newer(install(Some(v2)), &v1).is_none());
+    }
+
+    #[test]
+    fn a_new_bundle_alone_is_not_wider() {
+        let v1 = manifest(1, vec![], vec![ActivityCapability::UserRead]);
+        let mut v2 = manifest(2, vec![], vec![ActivityCapability::UserRead]);
+        v2.activity.as_mut().unwrap().sha256 = "c".repeat(64);
+        assert!(!v1.widens(&v2));
+        v2.activity.as_mut().unwrap().max_players = 4;
+        assert!(v1.widens(&v2));
+    }
+}

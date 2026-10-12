@@ -127,11 +127,12 @@ pub async fn handle_connection<S>(
                             | ClientMessage::SendMessage { .. }
                             | ClientMessage::React { .. }
                             | ClientMessage::RegisterCommands { .. }
+                            | ClientMessage::RegisterManifest { .. }
                             | ClientMessage::RespondToCommand { .. }
                     )
                 {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
-                        message: "bots may only fetch history, send messages, react, and answer commands".into(),
+                        message: "bots may only fetch history, send messages, react, declare commands and manifests, and answer commands".into(),
                     }).await;
                     continue;
                 }
@@ -967,7 +968,7 @@ pub async fn handle_connection<S>(
                             }
                         }
                     }
-                    ClientMessage::InstallBot { guild_id, bot_pubkey, name, permissions, intents } => {
+                    ClientMessage::InstallBot { guild_id, bot_pubkey, name, permissions, intents, manifest } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -975,7 +976,7 @@ pub async fn handle_connection<S>(
                             continue;
                         };
                         match ctx.state.install_bot(
-                            guild_id, &bot_pubkey, &name, permissions, intents, &u.pubkey,
+                            guild_id, &bot_pubkey, &name, permissions, intents, manifest, &u.pubkey,
                         ).await {
                             Ok((install, member)) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot installed");
@@ -1019,6 +1020,69 @@ pub async fn handle_connection<S>(
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             }
                         }
+                    }
+                    ClientMessage::RegisterManifest { event } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !is_bot {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "only a bot registers a manifest".into(),
+                            }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.register_manifest(&u.pubkey, &event).await {
+                            Ok(crate::state::ManifestOutcome::Recorded { changed }) => {
+                                tracing::info!(bot = %u.pubkey, guilds = changed.len(), "app manifest recorded");
+                                for guild_id in changed {
+                                    ctx.state.deliver(ctx.state.guild_managers(guild_id), ServerMessage::GuildIntegrations {
+                                        guild_id,
+                                        bots: ctx.state.guild_installs(guild_id),
+                                    });
+                                }
+                            }
+                            Ok(crate::state::ManifestOutcome::Stale) => {}
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::ApproveAppUpdate { guild_id, bot_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.approve_app_update(guild_id, &bot_pubkey, &u.pubkey).await {
+                            Ok(()) => {
+                                tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "app update approved");
+                                ctx.state.deliver(ctx.state.guild_managers(guild_id), ServerMessage::GuildIntegrations {
+                                    guild_id,
+                                    bots: ctx.state.guild_installs(guild_id),
+                                });
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchAppManifest { bot_pubkey } => {
+                        if user.is_none() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        }
+                        let event = ctx.state.app_manifest_event(&bot_pubkey);
+                        let _ = send(&mut ws_tx, &ServerMessage::AppManifestEvent { bot_pubkey, event }).await;
                     }
                     ClientMessage::FetchIntegrations { guild_id } => {
                         let Some(u) = user.as_ref() else {

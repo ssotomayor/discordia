@@ -230,6 +230,8 @@ impl Store {
                 permissions TEXT NOT NULL DEFAULT '[]',
                 intents TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (guild_id, bot_pubkey))",
+            "CREATE TABLE IF NOT EXISTS app_manifests (
+                bot_pubkey TEXT PRIMARY KEY, version INTEGER NOT NULL, event TEXT NOT NULL)",
         ];
         for stmt in ddl {
             sqlx::query(stmt).execute(&self.pool).await?;
@@ -250,6 +252,8 @@ impl Store {
             "ALTER TABLE guilds ADD COLUMN leveling TEXT",
             "ALTER TABLE channels ADD COLUMN access TEXT",
             "ALTER TABLE channels ADD COLUMN divider TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN app TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -428,7 +432,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents FROM bot_installs")
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending FROM bot_installs")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -438,6 +442,12 @@ impl Store {
                 name: r.get(2),
                 permissions: serde_json::from_str(&r.get::<String, _>(3)).unwrap_or_default(),
                 intents: serde_json::from_str(&r.get::<String, _>(4)).unwrap_or_default(),
+                app: r
+                    .get::<Option<String>, _>(5)
+                    .and_then(|j| serde_json::from_str(&j).ok()),
+                pending: r
+                    .get::<Option<String>, _>(6)
+                    .and_then(|j| serde_json::from_str(&j).ok()),
             });
         }
         Ok(out)
@@ -960,19 +970,57 @@ impl Store {
         i: &BotInstall,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(guild_id, bot_pubkey) DO UPDATE SET name=excluded.name,
-               permissions=excluded.permissions, intents=excluded.intents",
+               permissions=excluded.permissions, intents=excluded.intents,
+               app=excluded.app, pending=excluded.pending",
         )
         .bind(i.guild_id.to_string())
         .bind(&i.bot_pubkey)
         .bind(&i.name)
         .bind(serde_json::to_string(&i.permissions).unwrap_or_else(|_| "[]".into()))
         .bind(serde_json::to_string(&i.intents).unwrap_or_else(|_| "[]".into()))
+        .bind(i.app.as_ref().and_then(|m| serde_json::to_string(m).ok()))
+        .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .execute(executor)
         .await?;
         Ok(())
+    }
+
+    pub async fn app_manifests(&self) -> Result<Vec<(String, u64, String)>> {
+        let rows = sqlx::query("SELECT bot_pubkey, version, event FROM app_manifests")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), r.get::<i64, _>(1) as u64, r.get(2)))
+            .collect())
+    }
+
+    /// The manifest and every install it changed land together, or a crash
+    /// leaves a guild pinned to a version the host no longer remembers.
+    pub async fn record_manifest(
+        &self,
+        bot_pubkey: &str,
+        version: u64,
+        event: &str,
+        installs: &[BotInstall],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO app_manifests (bot_pubkey, version, event) VALUES (?, ?, ?)
+             ON CONFLICT(bot_pubkey) DO UPDATE SET version=excluded.version, event=excluded.event",
+        )
+        .bind(bot_pubkey)
+        .bind(version as i64)
+        .bind(event)
+        .execute(&mut *tx)
+        .await?;
+        for i in installs {
+            Self::write_bot_install(&mut *tx, i).await?;
+        }
+        tx.commit().await
     }
 
     pub async fn delete_bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Result<()> {
