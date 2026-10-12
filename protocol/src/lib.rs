@@ -982,6 +982,10 @@ pub struct Message {
     pub id: Id,
     pub channel_id: Id,
     pub author: User,
+    /// Set by the server from the guild's installs, so a bot can skip other
+    /// bots and two of them cannot answer each other forever.
+    #[serde(default)]
+    pub author_bot: bool,
     pub content: String,
     #[serde(default)]
     pub image: Option<String>,

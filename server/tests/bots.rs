@@ -257,3 +257,76 @@ async fn an_installed_bot_posts_under_the_name_its_installer_chose() {
 
     handle.abort();
 }
+
+async fn install(owner: &mut Bot, guild_id: Id, bot: &BotIdentity, name: &str) {
+    owner
+        .send(&ClientMessage::InstallBot {
+            guild_id,
+            bot_pubkey: bot.pubkey().to_string(),
+            name: name.into(),
+            permissions: vec![Permission::SendMessages, Permission::ReadMessageHistory],
+            intents: vec![Intent::GuildMessages, Intent::MessageContent],
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildIntegrations { bots, .. } = next_timeout(owner).await
+            && bots.iter().any(|b| b.bot_pubkey == bot.pubkey())
+        {
+            return;
+        }
+    }
+}
+
+async fn ready(url: &str, id: &BotIdentity, name: &str) -> Bot {
+    let mut bot = Bot::connect(url, id, name).await.unwrap();
+    while !matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {}
+    bot
+}
+
+#[tokio::test]
+async fn a_bot_sees_which_messages_another_bot_wrote() {
+    let (url, handle) = spawn_gateway().await;
+    let owner_id = BotIdentity::generate();
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
+    while !matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }) {}
+    let (guild_id, text) = create_guild(&mut owner, "Bots").await;
+
+    let (a_id, b_id) = (BotIdentity::generate(), BotIdentity::generate());
+    install(&mut owner, guild_id, &a_id, "A").await;
+    install(&mut owner, guild_id, &b_id, "B").await;
+    let mut a = ready(&url, &a_id, "A").await;
+    let mut b = ready(&url, &b_id, "B").await;
+
+    owner.send_message(text, "from a person").await.unwrap();
+    a.send_message(text, "from a bot").await.unwrap();
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut b).await {
+            seen.push((m.content, m.author_bot));
+        }
+    }
+    assert!(seen.contains(&("from a person".into(), false)));
+    assert!(seen.contains(&("from a bot".into(), true)));
+
+    b.send(&ClientMessage::FetchMessages {
+        channel_id: text,
+        limit: 10,
+        before_ms: None,
+    })
+    .await
+    .unwrap();
+    let history = loop {
+        if let ServerMessage::MessageHistory { messages, .. } = next_timeout(&mut b).await {
+            break messages;
+        }
+    };
+    for m in &history {
+        assert_eq!(m.author_bot, m.author.pubkey == a_id.pubkey(), "{}", m.content);
+    }
+    assert_eq!(history.len(), 2);
+
+    handle.abort();
+}

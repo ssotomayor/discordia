@@ -134,11 +134,12 @@ impl AppState {
                     return Err("invalid search filter".into());
                 }
                 query.text = query.text.trim().to_owned();
-                let messages = self
+                let mut messages = self
                     .store
                     .search_messages(channel_id, &query, offset)
                     .await
                     .map_err(|e| e.to_string())?;
+                self.mark_bot_authors(channel_id, &mut messages);
                 Ok(Some(ServerMessage::MessageSearchResults {
                     channel_id,
                     request_id,
@@ -235,6 +236,7 @@ impl AppState {
                     image_metadata: None,
                     id: uuid::Uuid::new_v4(),
                     channel_id,
+                    author_bot: self.is_installed_bot(channel_id, &user.pubkey),
                     author: user.clone(),
                     content: content.trim().to_owned(),
                     image: None,

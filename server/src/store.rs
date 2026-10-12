@@ -1252,6 +1252,7 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         })
     });
     Message {
+        author_bot: false,
         image_metadata: r
             .get::<Option<String>, _>("image_metadata")
             .and_then(|raw| serde_json::from_str(&raw).ok()),

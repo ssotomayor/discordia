@@ -1739,6 +1739,7 @@ mod tests {
 
     fn at(id: Id, channel_id: Id, secs: i64) -> Message {
         Message {
+            author_bot: false,
             image_metadata: None,
             attachment: None,
             pinned: false,
@@ -2041,6 +2042,7 @@ mod tests {
         let entry = s.messages.entry(cid).or_default();
         for at in ats {
             entry.push(Message {
+                author_bot: false,
                 image_metadata: None,
                 attachment: None,
                 pinned: false,

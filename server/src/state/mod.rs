@@ -2457,7 +2457,10 @@ impl AppState {
         before_ms: Option<i64>,
     ) -> Vec<Message> {
         match self.store.history(channel_id, limit, before_ms).await {
-            Ok(messages) => messages,
+            Ok(mut messages) => {
+                self.mark_bot_authors(channel_id, &mut messages);
+                messages
+            }
             Err(e) => {
                 tracing::error!(error = %e, "history query failed");
                 Vec::new()
@@ -2611,6 +2614,27 @@ impl AppState {
         }
     }
 
+    /// Installs are the record, not the row: an uninstalled bot's old messages
+    /// stop counting as a bot's, the same way its name stops being overridden.
+    pub fn mark_bot_authors(&self, channel_id: Id, messages: &mut [Message]) {
+        let Some(guild_id) = self.channel_guild(channel_id) else {
+            return;
+        };
+        let bots: std::collections::HashSet<String> = self
+            .guild_installs(guild_id)
+            .into_iter()
+            .map(|i| i.bot_pubkey)
+            .collect();
+        for m in messages {
+            m.author_bot = bots.contains(&m.author.pubkey);
+        }
+    }
+
+    fn is_installed_bot(&self, channel_id: Id, pubkey: &str) -> bool {
+        self.channel_guild(channel_id)
+            .is_some_and(|gid| self.bot_install(gid, pubkey).is_some())
+    }
+
     fn attributed_author(&self, channel_id: Id, author: User) -> User {
         let Some(guild_id) = self.channel_guild(channel_id) else {
             return author;
@@ -2639,6 +2663,7 @@ impl AppState {
             pinned: false,
             id: Uuid::new_v4(),
             channel_id,
+            author_bot: self.is_installed_bot(channel_id, &author.pubkey),
             author,
             content,
             image,

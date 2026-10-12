@@ -707,6 +707,13 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                 "#{discriminator(&message.author.pubkey)}"
                             }
                         }
+                        if message.author_bot {
+                            span {
+                                class: "self-center px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider",
+                                title: "Installed bot",
+                                "Bot"
+                            }
+                        }
                         if let Some(rank) = rank.clone() {
                             span { class: "self-center text-[12px]",
                                 super::tooltip::Tooltip { text: rank.name.clone(),
