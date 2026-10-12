@@ -470,6 +470,10 @@ pub struct AppState {
     pub guild_activities: HashMap<Id, Vec<crate::protocol::GuildActivity>>,
     /// Joinable activities running in each channel we can see.
     pub activity_instances: HashMap<Id, Vec<crate::protocol::ActivityInstance>>,
+    /// Per guild, from its host: curators followed and the lists it holds.
+    pub guild_blocklists: HashMap<Id, (Vec<String>, Vec<crate::protocol::AppBlocklist>)>,
+    /// Blocklist events our relays served, newest per curator, with `created_at`.
+    pub relay_blocklists: HashMap<String, (i64, String)>,
     /// By bot pubkey. What each bot's profile card offers to press.
     pub bot_commands: HashMap<String, Vec<crate::protocol::BotCommand>>,
     /// A bot's private answers: never stored anywhere, gone on reconnect.
@@ -617,6 +621,8 @@ impl AppState {
             relay_app_manifests: HashMap::new(),
             guild_activities: HashMap::new(),
             activity_instances: HashMap::new(),
+            guild_blocklists: HashMap::new(),
+            relay_blocklists: HashMap::new(),
             bot_commands: HashMap::new(),
             command_notes: Vec::new(),
             guild_emojis: HashMap::new(),

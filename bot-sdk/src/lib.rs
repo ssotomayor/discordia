@@ -97,15 +97,40 @@ impl BotIdentity {
     /// hand it to a host with `Bot::register_manifest`.
     pub fn sign_manifest(&self, manifest: &AppManifest) -> String {
         let content = serde_json::to_string(manifest).expect("manifest serializes");
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let kind = dioxusfun_protocol::APP_MANIFEST_KIND;
         let tags = vec![vec![
             "d".to_string(),
             dioxusfun_protocol::APP_MANIFEST_D.to_string(),
         ]];
+        self.sign_event(
+            dioxusfun_protocol::APP_MANIFEST_KIND,
+            tags,
+            &content,
+            now_secs(),
+        )
+    }
+
+    /// A curator's list of app keys guilds may follow (NIP-51 kind 30000).
+    pub fn sign_blocklist(&self, app_keys: &[&str], created_at: i64) -> String {
+        let mut tags = vec![vec![
+            "d".to_string(),
+            dioxusfun_protocol::APP_BLOCKLIST_D.to_string(),
+        ]];
+        tags.extend(
+            app_keys
+                .iter()
+                .map(|k| vec!["p".to_string(), k.to_string()]),
+        );
+        self.sign_event(dioxusfun_protocol::APP_BLOCKLIST_KIND, tags, "", created_at)
+    }
+
+    /// Any NIP-01 event signed by this key, as JSON.
+    pub fn sign_event(
+        &self,
+        kind: u32,
+        tags: Vec<Vec<String>>,
+        content: &str,
+        created_at: i64,
+    ) -> String {
         let canonical =
             serde_json::json!([0, self.pubkey_hex, created_at, kind, tags, content]).to_string();
         let id: [u8; 32] = Sha256::digest(canonical.as_bytes()).into();
@@ -123,6 +148,13 @@ impl BotIdentity {
         })
         .to_string()
     }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 pub struct Bot {

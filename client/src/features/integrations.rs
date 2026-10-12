@@ -119,6 +119,7 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                     }
                     InstallForm { guild_id }
+                    BlocklistsSection { guild_id }
                 }
             }
         }
@@ -131,6 +132,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
     let pk = bot.bot_pubkey.clone();
     let approve_pk = bot.bot_pubkey.clone();
     let approve_gw = gateway.clone();
+    let blocked = blocked_by(&use_app_state().read(), guild_id, &bot.bot_pubkey);
     let update = match (&bot.app, &bot.pending) {
         (Some(pinned), Some(next)) => Some((next.version, asks_more(pinned, next))),
         _ => None,
@@ -174,6 +176,11 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                         },
                         "{i.label()}"
                     }
+                }
+            }
+            if let Some(curator) = blocked {
+                div { class: "text-[11px] text-[var(--danger)]",
+                    "On a blocklist this guild follows ({truncate_pubkey(&npub_of(&curator))}). Consider removing it."
                 }
             }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
@@ -468,6 +475,8 @@ fn AppConsent(
     on_done: EventHandler<()>,
 ) -> Element {
     let gateway = use_gateway();
+    let state = use_app_state();
+    let blocked = blocked_by(&state.read(), guild_id, &bot_pubkey);
     let privileged = manifest.intents.iter().any(|i| i.is_privileged());
     let npub = npub_of(&bot_pubkey);
     let install = {
@@ -534,7 +543,13 @@ fn AppConsent(
             div { class: "text-[10px] text-[var(--text-dim)]",
                 "A later version that asks for more waits for your approval."
             }
+            if let Some(curator) = &blocked {
+                div { class: "text-[11px] text-[var(--danger)]",
+                    "This app is on a blocklist this guild follows ({truncate_pubkey(&npub_of(curator))}), so it can't be installed."
+                }
+            }
             button {
+                disabled: blocked.is_some(),
                 class: if privileged {
                     "w-full rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/40 hover:bg-[var(--warn)]/10 transition-colors"
                 } else {
@@ -598,6 +613,26 @@ mod tests {
                 .unwrap_err()
                 .contains("signature")
         );
+    }
+
+    #[test]
+    fn only_a_followed_list_blocks() {
+        let mut state = crate::state::AppState::empty();
+        let guild = Id::new_v4();
+        let list = crate::protocol::AppBlocklist {
+            curator: "c".repeat(64),
+            created_at: 1,
+            blocked: vec!["b".repeat(64)],
+        };
+        state
+            .guild_blocklists
+            .insert(guild, (vec![list.curator.clone()], vec![list]));
+        assert_eq!(
+            blocked_by(&state, guild, &"b".repeat(64)),
+            Some("c".repeat(64))
+        );
+        assert_eq!(blocked_by(&state, guild, &"a".repeat(64)), None);
+        assert_eq!(blocked_by(&state, Id::new_v4(), &"b".repeat(64)), None);
     }
 
     #[test]
@@ -790,6 +825,136 @@ fn AppCallsRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Elemen
                         "A call can't do more than the calling app may, or than the person who started it may."
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The curator whose followed list names `app`, from what the host sent.
+pub fn blocked_by(state: &crate::state::AppState, guild_id: Id, app: &str) -> Option<String> {
+    state
+        .guild_blocklists
+        .get(&guild_id)?
+        .1
+        .iter()
+        .find(|l| l.blocked.iter().any(|k| k == app))
+        .map(|l| l.curator.clone())
+}
+
+/// Curators' lists are fetched here, by an admin's client, and handed to the
+/// host: the host has no relays of its own to read them from.
+#[component]
+fn BlocklistsSection(guild_id: Id) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let nostr = try_use_context::<NostrTx>();
+    let mut input = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+    let mut handed = use_signal(std::collections::HashSet::<(String, i64)>::new);
+
+    let (curators, lists) = state
+        .read()
+        .guild_blocklists
+        .get(&guild_id)
+        .cloned()
+        .unwrap_or_default();
+
+    let ask_relays = curators.clone();
+    use_effect(use_reactive!(|ask_relays| {
+        if let Some(n) = &nostr {
+            n.send(NostrCmd::FetchBlocklists {
+                authors: ask_relays,
+            });
+        }
+    }));
+
+    let upload_gw = gateway.clone();
+    use_effect(move || {
+        let s = state.read();
+        let Some((curators, lists)) = s.guild_blocklists.get(&guild_id) else {
+            return;
+        };
+        for curator in curators {
+            let Some((at, json)) = s.relay_blocklists.get(curator) else {
+                continue;
+            };
+            let held = lists
+                .iter()
+                .find(|l| &l.curator == curator)
+                .map(|l| l.created_at);
+            let key = (curator.clone(), *at);
+            if held.is_none_or(|h| h < *at) && !handed.peek().contains(&key) {
+                handed.write().insert(key);
+                upload_gw.send(ClientMessage::UploadBlocklist {
+                    event: json.clone(),
+                });
+            }
+        }
+    });
+
+    let set_gw = gateway.clone();
+    let follow = {
+        let curators = curators.clone();
+        move |_| match pubkey_from_input(&input()) {
+            Ok(key) => {
+                let mut next = curators.clone();
+                next.push(key);
+                set_gw.send(ClientMessage::SetGuildBlocklists {
+                    guild_id,
+                    curators: next,
+                });
+                input.set(String::new());
+                error.set(None);
+            }
+            Err(e) => error.set(Some(e)),
+        }
+    };
+
+    rsx! {
+        div { class: "border-t border-[var(--border)] pt-3 space-y-2",
+            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
+                "App blocklists"
+            }
+            div { class: "text-[10px] text-[var(--text-dim)]",
+                "Follow someone's list of apps to refuse. Nothing is followed unless you add it here."
+            }
+            for curator in curators.iter().cloned() {
+                div { key: "{curator}", class: "flex items-center gap-2 text-[11px]",
+                    span { class: "font-mono text-[var(--text)] truncate flex-1", title: "{npub_of(&curator)}",
+                        "{truncate_pubkey(&npub_of(&curator))}"
+                    }
+                    span { class: "text-[var(--text-dim)]",
+                        match lists.iter().find(|l| l.curator == curator) {
+                            Some(l) => format!("{} app(s)", l.blocked.len()),
+                            None => "not fetched yet".to_string(),
+                        }
+                    }
+                    button {
+                        class: "text-[10px] uppercase tracking-wider text-[var(--danger)] hover:underline",
+                        onclick: {
+                            let gateway = gateway.clone();
+                            let rest: Vec<String> = curators.iter().filter(|c| **c != curator).cloned().collect();
+                            move |_| gateway.send(ClientMessage::SetGuildBlocklists { guild_id, curators: rest.clone() })
+                        },
+                        "Unfollow"
+                    }
+                }
+            }
+            div { class: "flex gap-2",
+                input {
+                    class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
+                    placeholder: "Curator npub1…",
+                    value: "{input}",
+                    oninput: move |e| input.set(e.value()),
+                }
+                button {
+                    class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                    onclick: follow,
+                    "Follow"
+                }
+            }
+            if let Some(err) = error() {
+                div { class: "text-[11px] text-[var(--danger)]", "{err}" }
             }
         }
     }

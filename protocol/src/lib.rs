@@ -1283,6 +1283,18 @@ pub fn looks_like_bundle(bytes: &[u8]) -> bool {
     text.get(start..start + 1) == Some(b"<")
 }
 
+/// NIP-51's set kind: a curator's named list of app keys a guild may follow.
+pub const APP_BLOCKLIST_KIND: u32 = 30000;
+pub const APP_BLOCKLIST_D: &str = "discordia-app-blocklist";
+pub const MAX_GUILD_BLOCKLISTS: usize = 8;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppBlocklist {
+    pub curator: String,
+    pub created_at: i64,
+    pub blocked: Vec<String>,
+}
+
 /// Activities every client ships, by id, with how many may play at once.
 /// The host knows them so it can size a game it has no manifest for.
 pub const BUILTIN_ACTIVITIES: &[(&str, u8)] = &[("dice", 1), ("rps", 2)];
@@ -2156,6 +2168,17 @@ pub enum ClientMessage {
         #[serde(default)]
         data: Option<String>,
     },
+    /// Manage guild. The curators whose app blocklists this guild follows;
+    /// none is followed unless an admin adds it.
+    SetGuildBlocklists {
+        guild_id: Id,
+        curators: Vec<String>,
+    },
+    /// A curator's signed list, fetched from relays by a client. Kept only if
+    /// some guild here follows that curator, and only if newer.
+    UploadBlocklist {
+        event: String,
+    },
     /// Manage guild. Which installed apps this one may call.
     SetAppCalls {
         guild_id: Id,
@@ -2563,6 +2586,12 @@ pub enum ServerMessage {
     GuildActivities {
         guild_id: Id,
         activities: Vec<GuildActivity>,
+    },
+    /// To a guild's managers: who it follows and what each curator lists.
+    GuildBlocklists {
+        guild_id: Id,
+        curators: Vec<String>,
+        lists: Vec<AppBlocklist>,
     },
     /// Every instance running in a channel, to everyone who can see it.
     ActivityInstances {

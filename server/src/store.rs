@@ -234,6 +234,10 @@ impl Store {
                 PRIMARY KEY (guild_id, bot_pubkey))",
             "CREATE TABLE IF NOT EXISTS app_manifests (
                 bot_pubkey TEXT PRIMARY KEY, version INTEGER NOT NULL, event TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS guild_blocklists (
+                guild_id TEXT NOT NULL, curator TEXT NOT NULL, PRIMARY KEY (guild_id, curator))",
+            "CREATE TABLE IF NOT EXISTS app_blocklists (
+                curator TEXT PRIMARY KEY, created_at INTEGER NOT NULL, blocked TEXT NOT NULL)",
         ];
         for stmt in ddl {
             sqlx::query(stmt).execute(&self.pool).await?;
@@ -1017,6 +1021,59 @@ impl Store {
         .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .bind(serde_json::to_string(&i.may_call).unwrap_or_else(|_| "[]".into()))
         .execute(executor)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn guild_blocklists(&self) -> Result<Vec<(Id, String)>> {
+        let rows = sqlx::query("SELECT guild_id, curator FROM guild_blocklists")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (parse_id(&r.get::<String, _>(0)), r.get(1)))
+            .collect())
+    }
+
+    pub async fn set_guild_blocklists(&self, guild_id: Id, curators: &[String]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM guild_blocklists WHERE guild_id = ?")
+            .bind(guild_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for c in curators {
+            sqlx::query("INSERT INTO guild_blocklists (guild_id, curator) VALUES (?, ?)")
+                .bind(guild_id.to_string())
+                .bind(c)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn app_blocklists(&self) -> Result<Vec<crate::protocol::AppBlocklist>> {
+        let rows = sqlx::query("SELECT curator, created_at, blocked FROM app_blocklists")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::protocol::AppBlocklist {
+                curator: r.get(0),
+                created_at: r.get(1),
+                blocked: serde_json::from_str(&r.get::<String, _>(2)).unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    pub async fn upsert_app_blocklist(&self, list: &crate::protocol::AppBlocklist) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO app_blocklists (curator, created_at, blocked) VALUES (?, ?, ?)
+             ON CONFLICT(curator) DO UPDATE SET created_at=excluded.created_at, blocked=excluded.blocked",
+        )
+        .bind(&list.curator)
+        .bind(list.created_at)
+        .bind(serde_json::to_string(&list.blocked).unwrap_or_else(|_| "[]".into()))
+        .execute(&self.pool)
         .await?;
         Ok(())
     }

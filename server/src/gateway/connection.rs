@@ -1129,6 +1129,42 @@ pub async fn handle_connection<S>(
                         let activities = ctx.state.guild_activities(guild_id);
                         let _ = send(&mut ws_tx, &ServerMessage::GuildActivities { guild_id, activities }).await;
                     }
+                    ClientMessage::SetGuildBlocklists { guild_id, curators } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_guild_blocklists(guild_id, curators, &u.pubkey).await {
+                            Ok(()) => share_guild_apps(&ctx.state, guild_id),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::UploadBlocklist { event } => {
+                        if user.is_none() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.upload_blocklist(&event).await {
+                            Ok(guilds) => {
+                                for guild_id in guilds {
+                                    share_guild_apps(&ctx.state, guild_id);
+                                }
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
                     ClientMessage::SetAppCalls { guild_id, bot_pubkey, may_call } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -1243,6 +1279,8 @@ pub async fn handle_connection<S>(
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             continue;
                         }
+                        let (curators, lists) = ctx.state.guild_blocklists(guild_id);
+                        let _ = send(&mut ws_tx, &ServerMessage::GuildBlocklists { guild_id, curators, lists }).await;
                         let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
                             guild_id,
                             bots: ctx.state.guild_installs(guild_id),
@@ -2989,6 +3027,15 @@ fn share_instances(state: &crate::state::AppState, channels: Vec<Id>) {
 
 /// Managers see the installs, everyone sees the activities they can open.
 fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
+    let (curators, lists) = state.guild_blocklists(guild_id);
+    state.deliver(
+        state.guild_managers(guild_id),
+        ServerMessage::GuildBlocklists {
+            guild_id,
+            curators,
+            lists,
+        },
+    );
     state.deliver(
         state.guild_managers(guild_id),
         ServerMessage::GuildIntegrations {

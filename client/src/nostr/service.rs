@@ -78,6 +78,10 @@ pub enum NostrCmd {
     FetchAppManifest {
         author: String,
     },
+    /// The app blocklists a guild follows, to hand to its host.
+    FetchBlocklists {
+        authors: Vec<String>,
+    },
 }
 
 /// Handle the UI holds.
@@ -325,6 +329,19 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             }],
                         );
                     }
+                    Some(NostrCmd::FetchBlocklists { authors }) => {
+                        if !authors.is_empty() {
+                            pool.subscribe(
+                                SUB_BLOCKLISTS,
+                                vec![Filter {
+                                    kinds: Some(vec![crate::protocol::APP_BLOCKLIST_KIND as u16]),
+                                    authors: Some(authors),
+                                    d: Some(vec![crate::protocol::APP_BLOCKLIST_D.to_string()]),
+                                    ..Default::default()
+                                }],
+                            );
+                        }
+                    }
                     Some(NostrCmd::PublishXp(total)) => {
                         if state.read().global_xp.get(&our_pubkey) != Some(&total) {
                             state.write().global_xp.insert(our_pubkey.clone(), total);
@@ -438,6 +455,21 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                                     .insert(event.pubkey.clone(), (event.created_at, json));
                             }
                         }
+                        k if u32::from(k) == crate::protocol::APP_BLOCKLIST_KIND
+                            && event.tag("d") == Some(crate::protocol::APP_BLOCKLIST_D) =>
+                        {
+                            let newer = state
+                                .peek()
+                                .relay_blocklists
+                                .get(&event.pubkey)
+                                .is_none_or(|(at, _)| *at < event.created_at);
+                            if newer && let Ok(json) = serde_json::to_string(&*event) {
+                                state
+                                    .write()
+                                    .relay_blocklists
+                                    .insert(event.pubkey.clone(), (event.created_at, json));
+                            }
+                        }
                         xp::KIND_APP_DATA => {
                             // Self-asserted: stored beside the key that signed
                             // it and drawn as a claim, never used to gate.
@@ -524,6 +556,7 @@ const SUB_DM: &str = "dxf-dm";
 const SUB_NAMES: &str = "dxf-names";
 /// One app at a time: each lookup replaces the last under this id.
 const SUB_APP: &str = "dxf-app";
+const SUB_BLOCKLISTS: &str = "dxf-app-blocklists";
 
 /// Most keys the name subscription will ask about at once.
 ///

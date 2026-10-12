@@ -13,6 +13,7 @@ use crate::protocol::{
 use crate::store::Store;
 
 mod apps;
+mod blocklists;
 mod chat_tools;
 mod commands;
 mod instances;
@@ -98,6 +99,9 @@ pub struct AppState {
     /// The newest manifest event each bot has handed this host, by version.
     pub app_manifests: DashMap<String, (u64, String)>,
     activity_instances: instances::Instances,
+    /// The curators each guild follows, and the newest list each curator signed.
+    followed_blocklists: DashMap<Id, Vec<String>>,
+    app_blocklists: DashMap<String, crate::protocol::AppBlocklist>,
     /// Per caller and callee: when the minute started and calls made in it.
     app_calls: DashMap<(String, String), (std::time::Instant, u32)>,
     invocations: DashMap<Id, commands::Pending>,
@@ -143,6 +147,8 @@ impl AppState {
             bot_commands: DashMap::new(),
             app_manifests: DashMap::new(),
             activity_instances: Default::default(),
+            followed_blocklists: DashMap::new(),
+            app_blocklists: DashMap::new(),
             app_calls: DashMap::new(),
             invocations: DashMap::new(),
             roles: DashMap::new(),
@@ -244,6 +250,16 @@ impl AppState {
         }
         for (bot, version, event) in state.store.app_manifests().await? {
             state.app_manifests.insert(bot, (version, event));
+        }
+        for (guild_id, curator) in state.store.guild_blocklists().await? {
+            state
+                .followed_blocklists
+                .entry(guild_id)
+                .or_default()
+                .push(curator);
+        }
+        for list in state.store.app_blocklists().await? {
+            state.app_blocklists.insert(list.curator.clone(), list);
         }
 
         state.detach_inline_images().await;
@@ -3031,6 +3047,12 @@ impl AppState {
         }
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        if let Some(curator) = self.blocked_by(guild_id, bot_pubkey) {
+            return Err(format!(
+                "that app is on a blocklist this guild follows (curated by {})",
+                &curator[..12]
+            ));
+        }
         if bot_pubkey.trim().is_empty() {
             return Err("bot pubkey is required".into());
         }

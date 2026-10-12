@@ -1511,6 +1511,13 @@ fn apply(
         } => {
             s.guild_activities.insert(guild_id, activities);
         }
+        ServerMessage::GuildBlocklists {
+            guild_id,
+            curators,
+            lists,
+        } => {
+            s.guild_blocklists.insert(guild_id, (curators, lists));
+        }
         ServerMessage::ActivityInstances {
             channel_id,
             instances,

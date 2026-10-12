@@ -18,17 +18,17 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4893 |
-| `server/src/state/mod.rs` | 3384 |
+| `server/src/state/mod.rs` | 3402 |
 | `server/tests/owner_controls.rs` | 3157 |
-| `server/src/gateway/connection.rs` | 3460 |
+| `server/src/gateway/connection.rs` | 3507 |
 | `client/src/features/channels.rs` | 2181 |
 | `client/src/features/screenshare.rs` | 3273 |
-| `protocol/src/lib.rs` | 3310 |
-| `client/src/state.rs` | 2612 |
+| `protocol/src/lib.rs` | 3339 |
+| `client/src/state.rs` | 2618 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2536 |
+| `client/src/net.rs` | 2543 |
 | `client/src/features/chat.rs` | 2449 |
-| `server/src/store.rs` | 1448 |
+| `server/src/store.rs` | 1505 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1216 |
 | `client/src/features/discord_import.rs` | 1113 |
@@ -122,6 +122,7 @@ that direction says a file is safe to open when it is not.
 | Published name ownership | `rendezvous/src/registry.rs`, `rendezvous/tests/handshake.rs` | A name is free text (≤ `MAX_NAME_CHARS`), listed as written; what is reserved is `protocol::rendezvous::join_code` of it — ASCII, so another script's lookalike cannot squat a code — and `/resolve` and the client's code box apply the same function to what is typed. A reservation lapses a day after its last session; the owner's own registration replaces a lingering session (`HostEntry::superseded`, `release` only removes its own entry); `connect::ReservedNames` lists and releases over `rendezvous::list_names`/`release_name`. `claim_host` reserves the name and session under one lock, including quotas and persistence. Hex key casing does not change ownership; disconnect clears the session/grants, while the signed owner keeps its reservation until `release_name`. Reopen and concurrent claims are tested. |
 | A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | An app calling an app | `server/src/state/commands.rs`, `client/src/features/integrations.rs` | `app_call_chain` — the caller's install lists the callee in `may_call` (`SetAppCalls`, `AppCallsRow`), the command is `callable_by_apps`, a `parent` must be an invocation the caller is handling, `via` may not repeat a key or exceed `MAX_CALL_DEPTH`, the command's permission is held to the calling install **and** the person at `via[0]`, and `spend_call` caps each pair per minute. `RespondToCommand::data` is JSON text for the calling app. SDK: `Bot::invoke`, `respond_with_data`, `BotCommand::callable_by_apps` |
+| App blocklists | `server/src/state/blocklists.rs`, `server/src/auth.rs`, `client/src/features/integrations.rs` | A curator signs a NIP-51 kind 30000 set (`d` = `discordia-app-blocklist`, `p` per app key; SDK `BotIdentity::sign_blocklist`). A guild follows curators with `SetGuildBlocklists` — none by default. The host has no relays, so `BlocklistsSection` fetches followed lists (`NostrCmd::FetchBlocklists`) and hands newer ones over (`UploadBlocklist`); `verify_blocklist_event` checks them and `upload_blocklist` keeps the newest per followed curator. `install_bot` refuses a listed key (`blocked_by`); the consent card and installed rows warn |
 | An app's manifest and its pin | `server/src/state/apps.rs`, `server/src/auth.rs`, `client/src/features/integrations.rs` | `protocol::AppManifest` is a kind 31990 event (`d` = `discordia-app`) signed by the app key; `verify_manifest_event` checks it on the host, `read_manifest` on the client before the consent screen. `BotInstall::app` is what was approved; `register_manifest` → `apply_newer` applies a newer version that `AppManifest::widens` nothing, else parks it in `pending` for `approve_app_update`. `InstallForm` asks the host (`FetchAppManifest`) and the account's relays (`NostrCmd::FetchAppManifest`) and takes the higher version. SDK: `BotIdentity::sign_manifest`, `Bot::register_manifest` |
 | An app's activity bundle | `server/src/state/apps.rs`, `client/src/activity_bundle.rs`, `client/src/features/activities.rs` | An admin uploads the zip or page (`UploadActivityBundle`, `BundleRow`); the host stores it as `media:<sha>.dxa` only if the hash is the pinned or pending manifest's. `guild_activities` lists the held ones to any member (`FetchGuildActivities`, `GuildActivities`); `FetchEmoji` serves a `.dxa` only through `bundle_available`. The client refuses bytes that do not hash to the manifest (`verified_bytes`) and unpacks with path and size limits (`unpack`) before `activity_window::open` |
 | A shared activity (rock paper scissors) | `server/src/state/instances.rs`, `client/src/features/activities.rs` | `ActivityStart`/`Join`/`Leave`/`Send` → `start_instance` etc.; an instance lives in memory, ends with its last participant, and goes to `viewers_of` its channel via `share_instances` (plus the app's bot, its backend). Spectators never `ActivitySend`; `ActivityEvent` is dropped, not fatal, on a full queue. On the client one coroutine in `ActivityHost` owns the window's calls and the instance's frames: `instance.commit`/`reveal` hash in Rust (`commit_hash`), and a reveal is `valid` only against the commitment this client saw. `Session::backlog` holds frames until the page first calls in. `InstanceCard` offers Join/Watch. `client/tests/activity_rps.cjs` plays a match |

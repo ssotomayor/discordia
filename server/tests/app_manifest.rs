@@ -339,3 +339,108 @@ async fn a_bundle_is_held_only_when_it_is_the_one_the_manifest_names() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn a_followed_blocklist_refuses_an_install_and_only_a_newer_list_replaces_it() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, guild_id) = owner_with_guild(&url).await;
+    let curator = BotIdentity::generate();
+    let (bad, good) = (BotIdentity::generate(), BotIdentity::generate());
+
+    owner
+        .send(&ClientMessage::UploadBlocklist {
+            event: curator.sign_blocklist(&[bad.pubkey()], 100),
+        })
+        .await
+        .unwrap();
+    assert!(
+        next_error(&mut owner)
+            .await
+            .contains("no guild here follows")
+    );
+
+    owner
+        .send(&ClientMessage::SetGuildBlocklists {
+            guild_id,
+            curators: vec![curator.pubkey().to_string()],
+        })
+        .await
+        .unwrap();
+    let lists = async |owner: &mut Bot| loop {
+        if let ServerMessage::GuildBlocklists {
+            curators, lists, ..
+        } = next_timeout(owner).await
+        {
+            break (curators, lists);
+        }
+    };
+    let (curators, held) = lists(&mut owner).await;
+    assert_eq!(curators, vec![curator.pubkey().to_string()]);
+    assert!(
+        held.is_empty(),
+        "following is not holding: the list arrives from a client"
+    );
+
+    owner
+        .send(&ClientMessage::UploadBlocklist {
+            event: curator.sign_blocklist(&[bad.pubkey()], 100),
+        })
+        .await
+        .unwrap();
+    let (_, held) = lists(&mut owner).await;
+    assert_eq!(held[0].blocked, vec![bad.pubkey().to_string()]);
+
+    owner
+        .send(&install(
+            guild_id,
+            &bad,
+            vec![],
+            bad.sign_manifest(&manifest(1, vec![])),
+        ))
+        .await
+        .unwrap();
+    assert!(next_error(&mut owner).await.contains("blocklist"));
+    owner
+        .send(&install(
+            guild_id,
+            &good,
+            vec![],
+            good.sign_manifest(&manifest(1, vec![])),
+        ))
+        .await
+        .unwrap();
+    integrations(&mut owner, good.pubkey()).await;
+
+    owner
+        .send(&ClientMessage::UploadBlocklist {
+            event: curator.sign_blocklist(&[], 50),
+        })
+        .await
+        .unwrap();
+    owner
+        .send(&install(
+            guild_id,
+            &bad,
+            vec![],
+            bad.sign_manifest(&manifest(1, vec![])),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        next_error(&mut owner).await.contains("blocklist"),
+        "an older list changes nothing"
+    );
+
+    let mut forged: serde_json::Value =
+        serde_json::from_str(&curator.sign_blocklist(&[bad.pubkey()], 200)).unwrap();
+    forged["tags"] = serde_json::json!([["d", "discordia-app-blocklist"]]);
+    owner
+        .send(&ClientMessage::UploadBlocklist {
+            event: forged.to_string(),
+        })
+        .await
+        .unwrap();
+    assert!(next_error(&mut owner).await.contains("id does not match"));
+
+    handle.abort();
+}
