@@ -1247,6 +1247,38 @@ pub const MAX_APP_ICON: usize = 16;
 pub const MAX_APP_URL: usize = 512;
 pub const MAX_ACTIVITY_PLAYERS: u8 = 16;
 pub const MAX_MANIFEST_EVENT_BYTES: usize = 64 * 1024;
+/// Fits one gateway frame as base64, beside the rest of the message.
+pub const MAX_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
+pub const BUNDLE_MIME: &str = "application/x-discordia-activity";
+
+/// The blob name a host keeps an activity bundle under: its hash is the name,
+/// so an install needs nothing stored to find it.
+pub fn bundle_blob(sha256: &str) -> String {
+    format!("{sha256}.dxa")
+}
+
+/// A zip, or one HTML page.
+pub fn looks_like_bundle(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"PK\x03\x04") {
+        return true;
+    }
+    let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let start = text
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(0);
+    text.get(start..start + 1) == Some(b"<")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuildActivity {
+    pub bot_pubkey: String,
+    pub name: String,
+    pub icon: String,
+    pub sha256: String,
+    pub capabilities: Vec<ActivityCapability>,
+    pub max_players: u8,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1966,6 +1998,16 @@ pub enum ClientMessage {
     FetchAppManifest {
         bot_pubkey: String,
     },
+    /// Manage guild. The bytes must hash to the approved or pending manifest's
+    /// `activity.sha256`.
+    UploadActivityBundle {
+        guild_id: Id,
+        bot_pubkey: String,
+        data_url: String,
+    },
+    FetchGuildActivities {
+        guild_id: Id,
+    },
     UninstallBot {
         guild_id: Id,
         bot_pubkey: String,
@@ -2386,6 +2428,11 @@ pub enum ServerMessage {
     AppManifestEvent {
         bot_pubkey: String,
         event: Option<String>,
+    },
+    /// Activities whose bundle this host holds, for any member.
+    GuildActivities {
+        guild_id: Id,
+        activities: Vec<GuildActivity>,
     },
     BotCommands(BotCommandSet),
     CommandInvoked(Invocation),

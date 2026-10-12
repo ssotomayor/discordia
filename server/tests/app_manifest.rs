@@ -1,12 +1,14 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use base64::Engine;
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::LiveKitConfig;
 use dioxusfun_server::protocol::{
     ActivityCapability, ActivityManifest, AppManifest, BotInstall, ChannelKind, ClientMessage, Id,
     Intent, Permission, ServerMessage,
 };
+use sha2::{Digest, Sha256};
 
 async fn next_timeout(bot: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), bot.next_event())
@@ -235,6 +237,105 @@ async fn only_a_bot_registers_a_manifest_and_only_its_own() {
     .await
     .unwrap();
     assert!(next_error(&mut bot).await.contains("id does not match"));
+
+    handle.abort();
+}
+
+fn data_url(bytes: &[u8]) -> String {
+    format!(
+        "data:{};base64,{}",
+        dioxusfun_server::protocol::BUNDLE_MIME,
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+async fn blobs(session: &mut Bot, image: &str) -> Vec<String> {
+    session
+        .send(&ClientMessage::FetchEmoji {
+            images: vec![image.to_string()],
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::EmojiBlobs { blobs } = next_timeout(session).await {
+            return blobs.into_iter().map(|b| b.data_url).collect();
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_bundle_is_held_only_when_it_is_the_one_the_manifest_names() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, guild_id) = owner_with_guild(&url).await;
+    let page = b"<!doctype html><p>rock</p>".to_vec();
+    let sha = hex::encode(Sha256::digest(&page));
+    let app = BotIdentity::generate();
+    let mut m = manifest(1, vec![]);
+    m.activity.as_mut().unwrap().sha256 = sha.clone();
+    owner
+        .send(&install(guild_id, &app, vec![], app.sign_manifest(&m)))
+        .await
+        .unwrap();
+    integrations(&mut owner, app.pubkey()).await;
+
+    owner
+        .send(&ClientMessage::FetchGuildActivities { guild_id })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildActivities { activities, .. } = next_timeout(&mut owner).await {
+            assert!(activities.is_empty(), "no bundle yet, so nothing to open");
+            break;
+        }
+    }
+
+    let upload = |bytes: &[u8]| ClientMessage::UploadActivityBundle {
+        guild_id,
+        bot_pubkey: app.pubkey().to_string(),
+        data_url: data_url(bytes),
+    };
+    owner
+        .send(&upload(b"<p>a different page</p>"))
+        .await
+        .unwrap();
+    assert!(next_error(&mut owner).await.contains("not the bundle"));
+    owner
+        .send(&upload(b"\x89PNG\r\n\x1a\nnot a page"))
+        .await
+        .unwrap();
+    assert!(next_error(&mut owner).await.contains("invalid file"));
+
+    owner.send(&upload(&page)).await.unwrap();
+    let listed = loop {
+        if let ServerMessage::GuildActivities { activities, .. } = next_timeout(&mut owner).await {
+            break activities;
+        }
+    };
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].sha256, sha);
+    assert_eq!(listed[0].max_players, 2);
+
+    let blob = dioxusfun_server::protocol::bundle_blob(&sha);
+    let got = blobs(&mut owner, &blob).await;
+    assert_eq!(got, vec![data_url(&page)]);
+
+    let stranger_id = BotIdentity::generate();
+    let mut stranger = Bot::connect_as_user(&url, &stranger_id, "Stranger")
+        .await
+        .unwrap();
+    while !matches!(
+        next_timeout(&mut stranger).await,
+        ServerMessage::Ready { .. }
+    ) {}
+    assert!(
+        blobs(&mut stranger, &blob).await.is_empty(),
+        "a non-member gets no bundle"
+    );
+    stranger
+        .send(&ClientMessage::FetchGuildActivities { guild_id })
+        .await
+        .unwrap();
+    assert!(next_error(&mut stranger).await.contains("not a member"));
 
     handle.abort();
 }

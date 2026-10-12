@@ -935,6 +935,21 @@ impl Store {
                 out.insert(name.to_string());
             }
         }
+        // A bundle is named by its manifest's hash; the pending one is kept so
+        // an admin can upload it before approving.
+        for r in sqlx::query("SELECT app, pending FROM bot_installs")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            for col in 0..2 {
+                let app = r
+                    .get::<Option<String>, _>(col)
+                    .and_then(|j| serde_json::from_str::<crate::protocol::AppManifest>(&j).ok());
+                if let Some(activity) = app.and_then(|a| a.activity) {
+                    out.insert(crate::protocol::bundle_blob(&activity.sha256));
+                }
+            }
+        }
         // Profiles and guilds point at blobs too; a sweep that forgot them
         // deleted every avatar older than a day.
         for sql in [

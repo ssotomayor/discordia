@@ -1,6 +1,6 @@
 use super::{AppState, durable};
 use crate::auth::{VerifiedManifest, verify_manifest_event};
-use crate::protocol::{AppManifest, BotInstall, Id, Permission};
+use crate::protocol::{AppManifest, BotInstall, GuildActivity, Id, Permission, bundle_blob};
 
 pub enum ManifestOutcome {
     /// Older than or equal to what this host already holds.
@@ -89,6 +89,95 @@ impl AppState {
         durable(self.store.upsert_bot_install(&install).await, "app update")?;
         self.put_install(install);
         Ok(())
+    }
+
+    pub fn upload_bundle(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+        data_url: &str,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let install = self
+            .bot_install(guild_id, bot_pubkey)
+            .ok_or("that bot isn't installed here")?;
+        let wanted: Vec<String> = [&install.app, &install.pending]
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.activity.as_ref().map(|a| bundle_blob(&a.sha256)))
+            .collect();
+        if wanted.is_empty() {
+            return Err("that app's manifest has no activity".into());
+        }
+        let stored = self
+            .media
+            .store_bundle_data_url(data_url)
+            .map_err(|e| e.to_string())?;
+        let name = stored.strip_prefix("media:").unwrap_or(&stored);
+        if !wanted.iter().any(|w| w == name) {
+            // Left for the sweep: nothing references it.
+            return Err("that file is not the bundle the manifest names".into());
+        }
+        Ok(())
+    }
+
+    /// Only bundles the host holds, so a member never sees an activity it
+    /// cannot open.
+    pub fn guild_activities(&self, guild_id: Id) -> Vec<GuildActivity> {
+        let mut out: Vec<GuildActivity> = self
+            .guild_installs(guild_id)
+            .into_iter()
+            .filter_map(|i| {
+                let app = i.app?;
+                let activity = app.activity?;
+                self.media
+                    .existing(&format!("media:{}", bundle_blob(&activity.sha256)))?;
+                Some(GuildActivity {
+                    bot_pubkey: i.bot_pubkey,
+                    name: i.name,
+                    icon: app.icon,
+                    sha256: activity.sha256,
+                    capabilities: activity.capabilities,
+                    max_players: activity.max_players,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// A member of a guild running that approved bundle, or a manager of one
+    /// holding it as a pending update.
+    pub fn bundle_available(&self, pubkey: &str, blob: &str) -> bool {
+        let names = |m: &Option<AppManifest>| {
+            m.as_ref()
+                .and_then(|m| m.activity.as_ref())
+                .is_some_and(|a| bundle_blob(&a.sha256) == blob)
+        };
+        // Collected first: the permission check reads `bot_installs` again,
+        // and a second read on a shard this loop holds can hang (trap 27).
+        let guilds: Vec<(Id, bool, bool)> = self
+            .bot_installs
+            .iter()
+            .flat_map(|g| {
+                g.value()
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.value().guild_id,
+                            names(&e.value().app),
+                            names(&e.value().pending),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|(_, app, pending)| *app || *pending)
+            .collect();
+        guilds.into_iter().any(|(guild_id, app, pending)| {
+            (app && self.is_guild_member(guild_id, pubkey))
+                || (pending && self.has_permission(guild_id, pubkey, Permission::ManageGuild))
+        })
     }
 
     fn put_install(&self, install: BotInstall) {

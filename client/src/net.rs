@@ -1501,6 +1501,12 @@ fn apply(
         ServerMessage::AppManifestEvent { bot_pubkey, event } => {
             s.app_manifest_events.insert(bot_pubkey, event);
         }
+        ServerMessage::GuildActivities {
+            guild_id,
+            activities,
+        } => {
+            s.guild_activities.insert(guild_id, activities);
+        }
         ServerMessage::BotCommands(set) => {
             s.bot_commands.insert(set.bot_pubkey, set.commands);
         }

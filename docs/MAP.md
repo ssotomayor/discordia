@@ -20,15 +20,15 @@ name instead.
 | `client/src/features/voice.rs` | 4895 |
 | `server/src/state/mod.rs` | 3364 |
 | `server/tests/owner_controls.rs` | 3157 |
-| `server/src/gateway/connection.rs` | 3243 |
+| `server/src/gateway/connection.rs` | 3304 |
 | `client/src/features/channels.rs` | 2182 |
 | `client/src/features/screenshare.rs` | 3236 |
-| `protocol/src/lib.rs` | 3114 |
-| `client/src/state.rs` | 2601 |
+| `protocol/src/lib.rs` | 3161 |
+| `client/src/state.rs` | 2604 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2495 |
+| `client/src/net.rs` | 2501 |
 | `client/src/features/chat.rs` | 2449 |
-| `server/src/store.rs` | 1415 |
+| `server/src/store.rs` | 1430 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1216 |
 | `client/src/features/discord_import.rs` | 1113 |
@@ -121,6 +121,7 @@ that direction says a file is safe to open when it is not.
 | Published name ownership | `rendezvous/src/registry.rs`, `rendezvous/tests/handshake.rs` | A name is free text (≤ `MAX_NAME_CHARS`), listed as written; what is reserved is `protocol::rendezvous::join_code` of it — ASCII, so another script's lookalike cannot squat a code — and `/resolve` and the client's code box apply the same function to what is typed. A reservation lapses a day after its last session; the owner's own registration replaces a lingering session (`HostEntry::superseded`, `release` only removes its own entry); `connect::ReservedNames` lists and releases over `rendezvous::list_names`/`release_name`. `claim_host` reserves the name and session under one lock, including quotas and persistence. Hex key casing does not change ownership; disconnect clears the session/grants, while the signed owner keeps its reservation until `release_name`. Reopen and concurrent claims are tested. |
 | A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | An app's manifest and its pin | `server/src/state/apps.rs`, `server/src/auth.rs`, `client/src/features/integrations.rs` | `protocol::AppManifest` is a kind 31990 event (`d` = `discordia-app`) signed by the app key; `verify_manifest_event` checks it on the host, `read_manifest` on the client before the consent screen. `BotInstall::app` is what was approved; `register_manifest` → `apply_newer` applies a newer version that `AppManifest::widens` nothing, else parks it in `pending` for `approve_app_update`. `InstallForm` asks the host (`FetchAppManifest`) and the account's relays (`NostrCmd::FetchAppManifest`) and takes the higher version. SDK: `BotIdentity::sign_manifest`, `Bot::register_manifest` |
+| An app's activity bundle | `server/src/state/apps.rs`, `client/src/activity_bundle.rs`, `client/src/features/activities.rs` | An admin uploads the zip or page (`UploadActivityBundle`, `BundleRow`); the host stores it as `media:<sha>.dxa` only if the hash is the pinned or pending manifest's. `guild_activities` lists the held ones to any member (`FetchGuildActivities`, `GuildActivities`); `FetchEmoji` serves a `.dxa` only through `bundle_available`. The client refuses bytes that do not hash to the manifest (`verified_bytes`) and unpacks with path and size limits (`unpack`) before `activity_window::open` |
 | Voice session ownership | `server/src/gateway/connection.rs`, `server/src/gateway/voice_ownership_tests.rs` | `set_voice_channel_owned` assigns the call to a connection. Owner cleanup expires after the reconnect grace even with chat siblings; atomic ownership checks preserve a handed-off call and reject sibling publication updates. Presence still follows the last session |
 | Concurrent self-hosts | `server/src/livekit_bundle/ownership.rs`, `client/src/host.rs` | `HostLease` excludes hosts sharing a data directory; each SFU owns its directory and TCP/UDP ports until its subprocess drops. Concurrent hosts use separate configuration directories and disjoint `DISCORDIA_LIVEKIT_PORT` blocks. Scoped executable names prevent stale PID records from reclaiming another directory's SFU; two real SFUs are covered by the existing ignored-test CI step |
 | Guild unread indicators | `client/src/state.rs`, `client/src/features/guilds.rs`, `client/src/features/channels.rs` | `channel_unread` tracks new messages outside the open guild channel, excluding self and duplicates. Guild dots aggregate its channels; opening a channel clears only its dot. History pages do not add unread state; leaving the server clears it |

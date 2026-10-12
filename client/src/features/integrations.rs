@@ -78,7 +78,10 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
 
     {
         let gw = gateway.clone();
-        use_hook(move || gw.send(ClientMessage::FetchIntegrations { guild_id }));
+        use_hook(move || {
+            gw.send(ClientMessage::FetchIntegrations { guild_id });
+            gw.send(ClientMessage::FetchGuildActivities { guild_id });
+        });
     }
 
     rsx! {
@@ -167,6 +170,9 @@ fn InstalledRow(guild_id: Id, bot: BotInstall) -> Element {
                         "{i.label()}"
                     }
                 }
+            }
+            if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
+                BundleRow { guild_id, bot_pubkey: bot.bot_pubkey.clone(), activity }
             }
             if let Some((version, more)) = update {
                 div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
@@ -602,4 +608,128 @@ mod tests {
         assert_eq!(more.len(), 3, "{more:?}");
         assert!(more.contains(&"Up to 4 players".to_string()));
     }
+}
+
+#[component]
+fn BundleRow(
+    guild_id: Id,
+    bot_pubkey: String,
+    activity: crate::protocol::ActivityManifest,
+) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut busy = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let held = state
+        .read()
+        .guild_activities
+        .get(&guild_id)
+        .is_some_and(|list| {
+            list.iter()
+                .any(|a| a.bot_pubkey == bot_pubkey && a.sha256 == activity.sha256)
+        });
+    let upload =
+        use_callback(
+            move |bytes: Vec<u8>| match bundle_data_url(&bytes, &activity.sha256) {
+                Ok(data_url) => gateway.send(ClientMessage::UploadActivityBundle {
+                    guild_id,
+                    bot_pubkey: bot_pubkey.clone(),
+                    data_url,
+                }),
+                Err(e) => error.set(Some(e)),
+            },
+        );
+    let url = activity.url.clone();
+    rsx! {
+        div { class: "text-[11px] flex flex-col gap-1",
+            if held {
+                div { class: "text-[var(--text-muted)]", "Activity ready for members" }
+            } else {
+                div { class: "text-[var(--warn)]", "Activity bundle missing — members can't open it yet" }
+                div { class: "flex gap-2",
+                    button {
+                        class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
+                        disabled: busy(),
+                        onclick: move |_| {
+                            spawn(async move {
+                                let Some(file) = rfd::AsyncFileDialog::new()
+                                    .add_filter("Activity bundle", &["zip", "html", "htm"])
+                                    .pick_file()
+                                    .await
+                                else {
+                                    return;
+                                };
+                                busy.set(true);
+                                error.set(None);
+                                upload.call(file.read().await);
+                                busy.set(false);
+                            });
+                        },
+                        "Upload file…"
+                    }
+                    if let Some(url) = url {
+                        button {
+                            class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
+                            title: "Downloads from {url} — that site sees your address. Members never do.",
+                            disabled: busy(),
+                            onclick: move |_| {
+                                let url = url.clone();
+                                spawn(async move {
+                                    busy.set(true);
+                                    error.set(None);
+                                    match download_bundle(&url).await {
+                                        Ok(bytes) => upload.call(bytes),
+                                        Err(e) => error.set(Some(e)),
+                                    }
+                                    busy.set(false);
+                                });
+                            },
+                            "Download from the developer"
+                        }
+                    }
+                }
+            }
+            if let Some(err) = error() {
+                div { class: "text-[var(--danger)]", "{err}" }
+            }
+        }
+    }
+}
+
+/// Checked before upload too, so a wrong file fails here with a reason
+/// rather than at the host.
+fn bundle_data_url(bytes: &[u8], sha256: &str) -> Result<String, String> {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    if bytes.len() > crate::protocol::MAX_BUNDLE_BYTES {
+        return Err("the bundle is over 2 MiB".into());
+    }
+    if hex::encode(Sha256::digest(bytes)) != sha256 {
+        return Err("that file is not the bundle this version names".into());
+    }
+    crate::activity_bundle::unpack(bytes)?;
+    Ok(format!(
+        "data:{};base64,{}",
+        crate::protocol::BUNDLE_MIME,
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+async fn download_bundle(url: &str) -> Result<Vec<u8>, String> {
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("download failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("download failed: {e}"))?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > crate::protocol::MAX_BUNDLE_BYTES as u64)
+    {
+        return Err("the bundle is over 2 MiB".into());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    Ok(bytes.to_vec())
 }
