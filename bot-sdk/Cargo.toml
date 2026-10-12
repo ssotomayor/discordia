@@ -21,3 +21,9 @@ rand = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+# Its game rules are tested, so `cargo test` runs them like any other.
+[[example]]
+name = "wizards"
+path = "examples/wizards/main.rs"
+test = true
