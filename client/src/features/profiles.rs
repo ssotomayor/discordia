@@ -7,25 +7,6 @@ use crate::state::{use_app_state, use_gateway};
 
 #[component]
 fn ActivityCard(activity: crate::protocol::Activity) -> Element {
-    let mut now_ms = use_signal(|| chrono::Utc::now().timestamp_millis());
-
-    // The clock has to move on its own: nothing else re-renders this card
-    // between one activity update and the next.
-    let ticking = activity.started_ms.is_some();
-    use_future(move || async move {
-        if !ticking {
-            return;
-        }
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            now_ms.set(chrono::Utc::now().timestamp_millis());
-        }
-    });
-
-    let elapsed = activity
-        .started_ms
-        .and_then(|start| elapsed_since(start, now_ms()));
-
     rsx! {
         div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background-color: var(--bg2); display: flow-root;",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
@@ -45,11 +26,33 @@ fn ActivityCard(activity: crate::protocol::Activity) -> Element {
             if let Some(st) = activity.state.as_deref() {
                 div { class: "text-xs text-[var(--text-muted)] break-words mt-0.5", "{st}" }
             }
-            if let Some(e) = elapsed {
-                div { class: "text-xs text-[var(--text-dim)] font-mono mt-1", "{e} elapsed" }
+            if let Some(start) = activity.started_ms {
+                ActivityElapsed { started_ms: start }
             }
         }
     }
+}
+
+#[component]
+fn ActivityElapsed(started_ms: i64) -> Element {
+    let text = elapsed_since(started_ms, chrono::Utc::now().timestamp_millis())
+        .map(|e| format!("{e} elapsed"))
+        .unwrap_or_default();
+    rsx! { div {
+        class: "text-xs text-[var(--text-dim)] font-mono mt-1",
+        "data-activity-start": "{started_ms}",
+        "data-activity-clock": "",
+        "{text}"
+    } }
+}
+
+#[component]
+fn ProfileActivity(pubkey: String) -> Element {
+    let state = use_app_state();
+    let activity = use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
+        state.read().activity_of(&pubkey).cloned()
+    }));
+    rsx! { if let Some(activity) = activity() { ActivityCard { activity } } }
 }
 
 /// "Playing Factorio" — the one line a member row has space for.
@@ -135,6 +138,44 @@ pub(crate) fn embed_image(cropped: String) -> (Option<String>, Option<String>) {
     (Some(cropped), None)
 }
 
+fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<std::sync::Arc<String>>> {
+    let state = use_app_state();
+    let pubkey = pubkey.to_owned();
+    use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
+        let s = state.read();
+        let profile = s.profile_of(&pubkey)?;
+        let address = if banner {
+            profile.banner.as_deref()
+        } else {
+            profile.avatar.as_deref()
+        }?;
+        let resolved = if banner {
+            s.banner_of(&pubkey)
+        } else {
+            s.avatar_of(&pubkey)
+        }?;
+        match address.strip_prefix("media:") {
+            Some(blob) => s
+                .emoji_images
+                .get_shared(blob)
+                .filter(|data| !data.is_empty()),
+            None => Some(std::sync::Arc::new(resolved.to_owned())),
+        }
+    }))
+}
+
+#[component]
+fn ProfileBanner(pubkey: String, accent: String) -> Element {
+    let image = use_profile_image(&pubkey, true);
+    rsx! {
+        if let Some(b) = image() {
+            img { class: "h-24 w-full object-cover block", src: "{b}", alt: "banner" }
+        } else {
+            div { class: "h-24 w-full", style: "background: linear-gradient(150deg, {accent}, transparent 80%), var(--bg2);" }
+        }
+    }
+}
+
 #[component]
 pub fn Avatar(
     #[props(into)] pubkey: String,
@@ -142,8 +183,8 @@ pub fn Avatar(
     #[props(into)] size: String,
     #[props(into, default = "text-xs".to_string())] text: String,
 ) -> Element {
-    let state = use_app_state();
-    let avatar = state.read().avatar_of(&pubkey).map(|s| s.to_string());
+    let image = use_profile_image(&pubkey, false);
+    let avatar = image();
     let initial = name.chars().next().unwrap_or('?').to_ascii_uppercase();
 
     rsx! {
@@ -163,79 +204,107 @@ pub fn ProfileCard() -> Element {
     let mut state = use_app_state();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
 
-    let snapshot = state.read();
-    let Some(pubkey) = snapshot.profile_card.clone() else {
+    let profile = use_memo(move || {
+        let snapshot = state.read();
+        let pubkey = snapshot.profile_card.clone()?;
+        let name = snapshot.display_name(&pubkey);
+        let bio = snapshot
+            .profile_of(&pubkey)
+            .and_then(|p| p.bio.clone())
+            .filter(|b| !b.trim().is_empty());
+        let status = snapshot.presence_of(&pubkey).to_string();
+        let custom_status = snapshot
+            .profile_of(&pubkey)
+            .and_then(|p| p.custom_status.clone())
+            .filter(|s| !s.trim().is_empty());
+        let global = snapshot.global_xp_of(&pubkey).filter(|g| g.xp > 0);
+        let is_self = snapshot
+            .self_user
+            .as_ref()
+            .map(|u| u.pubkey == pubkey)
+            .unwrap_or(false);
+        drop(snapshot);
+
+        let is_contact = state.read().contacts.contains(&pubkey);
+        let xp = state
+            .read()
+            .selected_guild
+            .and_then(|gid| {
+                state
+                    .read()
+                    .members
+                    .iter()
+                    .find(|m| m.guild_id == gid && m.user.pubkey == pubkey)
+                    .map(|m| m.xp)
+            })
+            .unwrap_or(0);
+        let rank = state
+            .read()
+            .selected_guild
+            .map(|gid| state.read().leveling_of(gid))
+            .filter(|r| r.enabled)
+            .and_then(|r| r.tier_at(xp).cloned());
+        let member_roles: Vec<crate::protocol::Role> = {
+            let s = state.read();
+            s.selected_guild
+                .map(|gid| {
+                    let assigned = s
+                        .members
+                        .iter()
+                        .find(|m| m.guild_id == gid && m.user.pubkey == pubkey)
+                        .map(|m| m.roles.clone())
+                        .unwrap_or_default();
+                    let mut held: Vec<_> = s
+                        .roles_of(gid)
+                        .iter()
+                        .filter(|r| assigned.contains(&r.id))
+                        .cloned()
+                        .collect();
+                    held.sort_by_key(|r| r.position);
+                    held
+                })
+                .unwrap_or_default()
+        };
+
+        Some((
+            pubkey,
+            name,
+            bio,
+            status,
+            custom_status,
+            global,
+            is_self,
+            is_contact,
+            xp,
+            rank,
+            member_roles,
+        ))
+    });
+    let Some((
+        pubkey,
+        name,
+        bio,
+        status,
+        custom_status,
+        global,
+        is_self,
+        is_contact,
+        xp,
+        rank,
+        member_roles,
+    )) = profile()
+    else {
         return rsx! { Fragment {} };
     };
-    let name = snapshot.display_name(&pubkey);
-    let bio = snapshot
-        .profile_of(&pubkey)
-        .and_then(|p| p.bio.clone())
-        .filter(|b| !b.trim().is_empty());
-    let banner = snapshot.banner_of(&pubkey).map(str::to_string);
-    let status = snapshot.presence_of(&pubkey).to_string();
-    let custom_status = snapshot
-        .profile_of(&pubkey)
-        .and_then(|p| p.custom_status.clone())
-        .filter(|s| !s.trim().is_empty());
-    let activity = snapshot.activity_of(&pubkey).cloned();
-    let global = snapshot.global_xp_of(&pubkey).filter(|g| g.xp > 0);
-    let is_self = snapshot
-        .self_user
-        .as_ref()
-        .map(|u| u.pubkey == pubkey)
-        .unwrap_or(false);
-    drop(snapshot);
-
     let disc = discriminator(&pubkey);
     let dm_pubkey = pubkey.clone();
     let contact_pubkey = pubkey.clone();
     let nostr_contact = nostr.clone();
-    let is_contact = state.read().contacts.contains(&pubkey);
     let signature = crate::identity::color_signature(&pubkey, 15);
     let accent = crate::identity::signature_accent(&pubkey);
-    let xp = state
-        .read()
-        .selected_guild
-        .and_then(|gid| {
-            state
-                .read()
-                .members
-                .iter()
-                .find(|m| m.guild_id == gid && m.user.pubkey == pubkey)
-                .map(|m| m.xp)
-        })
-        .unwrap_or(0);
     let (level, into, span) = crate::protocol::level_progress(xp);
-    let rank = state
-        .read()
-        .selected_guild
-        .map(|gid| state.read().leveling_of(gid))
-        .filter(|r| r.enabled)
-        .and_then(|r| r.tier_at(xp).cloned());
     let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
     let copy_pubkey = pubkey.clone();
-    let member_roles: Vec<crate::protocol::Role> = {
-        let s = state.read();
-        s.selected_guild
-            .map(|gid| {
-                let assigned = s
-                    .members
-                    .iter()
-                    .find(|m| m.guild_id == gid && m.user.pubkey == pubkey)
-                    .map(|m| m.roles.clone())
-                    .unwrap_or_default();
-                let mut held: Vec<_> = s
-                    .roles_of(gid)
-                    .iter()
-                    .filter(|r| assigned.contains(&r.id))
-                    .cloned()
-                    .collect();
-                held.sort_by_key(|r| r.position);
-                held
-            })
-            .unwrap_or_default()
-    };
 
     rsx! {
         div {
@@ -244,13 +313,7 @@ pub fn ProfileCard() -> Element {
             div {
                 class: "dxf-modal-in w-[22rem] bg-[var(--panel2)] border border-[var(--edge)] rounded-2xl shadow-2xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
-                if let Some(b) = banner {
-                    img { class: "h-24 w-full object-cover block", src: "{b}", alt: "banner" }
-                } else {
-                    div { class: "h-24 w-full",
-                        style: "background: linear-gradient(150deg, {accent}, transparent 80%), var(--bg2);"
-                    }
-                }
+                ProfileBanner { pubkey: pubkey.clone(), accent: accent.clone() }
                 div { class: "px-5 pb-5 -mt-10",
                     div { class: "inline-block rounded-2xl p-1", style: "background: var(--panel2);",
                         Avatar {
@@ -274,9 +337,7 @@ pub fn ProfileCard() -> Element {
                     if let Some(cs) = custom_status {
                         div { class: "mt-1 text-sm text-[var(--text-muted)] italic", "{cs}" }
                     }
-                    if let Some(a) = activity {
-                        ActivityCard { activity: a }
-                    }
+                    ProfileActivity { pubkey: pubkey.clone() }
                     div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
                         div { class: "flex items-center justify-between mb-1.5",
                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]", "Nostr public key" }
