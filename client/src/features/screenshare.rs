@@ -1094,6 +1094,42 @@ window.dxScreen = window.dxScreen || (function () {
       post('e2ee-error', { detail: String((e && e.message) || e) });
     }
   }
+  let cameraPreviewStream = null, cameraPreviewGen = 0;
+  function stopCameraPreview() {
+    cameraPreviewGen++;
+    if (cameraPreviewStream) cameraPreviewStream.getTracks().forEach(function(t) { t.stop(); });
+    cameraPreviewStream = null;
+    const container = document.getElementById('camera-setup-video');
+    if (container) container.innerHTML = '';
+  }
+  async function previewCamera(opts, containerId) {
+    stopCameraPreview();
+    const gen = cameraPreviewGen;
+    try {
+      if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error('Camera capture is unavailable in this webview.');
+      const video = { width: { ideal: opts.width }, height: { ideal: opts.height }, frameRate: { ideal: opts.fps } };
+      if (opts.deviceId) video.deviceId = { exact: opts.deviceId };
+      const stream = await navigator.mediaDevices.getUserMedia({ video: video, audio: false });
+      const container = document.getElementById(containerId);
+      if (gen !== cameraPreviewGen || !container) {
+        stream.getTracks().forEach(function(t) { t.stop(); });
+        return { error: 'Camera preview was cancelled.' };
+      }
+      cameraPreviewStream = stream;
+      const element = document.createElement('video');
+      element.srcObject = stream;
+      element.muted = true; element.autoplay = true; element.playsInline = true;
+      element.style.cssText = 'width:100%;height:100%;object-fit:contain;transform:scaleX(-1)';
+      container.innerHTML = ''; container.appendChild(element);
+      await element.play();
+      if (gen !== cameraPreviewGen) return { error: 'Camera preview was cancelled.' };
+      const settings = stream.getVideoTracks()[0].getSettings();
+      return { width: settings.width, height: settings.height };
+    } catch (e) {
+      if (gen === cameraPreviewGen) stopCameraPreview();
+      return { error: String((e && e.message) || e) };
+    }
+  }
   async function stopCamera() {
     cameraGen++;
     const vt = localCameraTrack;
@@ -1118,6 +1154,7 @@ window.dxScreen = window.dxScreen || (function () {
   } catch (e) {}
 
   async function disconnect() {
+    stopCameraPreview();
     const request = {};
     connectionRequest = request;
     const previous = room;
@@ -1134,7 +1171,7 @@ window.dxScreen = window.dxScreen || (function () {
     e2eeProvider = null;
   }
   if (window.__dxfScreenStatsEnabled) setStatsEnabled(true);
-  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, previewCamera: previewCamera, stopCameraPreview: stopCameraPreview, setE2eeKey: setE2eeKey };
 })();
 "#;
 

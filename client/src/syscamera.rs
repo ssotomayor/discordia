@@ -3,19 +3,154 @@ pub fn supported() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows::{Capture, devices, start};
+pub use windows::{Capture, PreviewCommand, devices, preview_controller, start};
 
 #[cfg(target_os = "windows")]
 mod windows {
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
-    use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+    use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+    use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFrame, VideoRotation};
     use livekit::webrtc::video_source::native::NativeVideoSource;
     use webrtc_sys::camera_capture::{CameraSink, CameraSinkWrapper, ffi};
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
+    use crate::camera_quality::CameraQuality;
     use crate::state::CameraDevice;
+
+    pub enum PreviewCommand {
+        Configure {
+            revision: u64,
+            device: Option<String>,
+            quality: CameraQuality,
+        },
+        Stop(tokio::sync::oneshot::Sender<()>),
+    }
+
+    #[derive(Clone, Default)]
+    pub struct PreviewFrame {
+        pub revision: u64,
+        pub image: Option<String>,
+        pub error: Option<String>,
+        pub dimensions: Option<(u32, u32)>,
+    }
+
+    pub fn preview_controller() -> (
+        tokio::sync::mpsc::UnboundedSender<PreviewCommand>,
+        tokio::sync::watch::Receiver<PreviewFrame>,
+    ) {
+        let (commands, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let (frames, receiver) = tokio::sync::watch::channel(PreviewFrame::default());
+        tokio::spawn(async move {
+            let mut next = requests.recv().await;
+            while let Some(mut command) = next {
+                while let Ok(newer) = requests.try_recv() {
+                    if let PreviewCommand::Stop(done) = command {
+                        let _ = done.send(());
+                    }
+                    command = newer;
+                }
+                if requests.is_closed() {
+                    break;
+                }
+                let PreviewCommand::Configure {
+                    revision,
+                    device,
+                    quality,
+                } = command
+                else {
+                    if let PreviewCommand::Stop(done) = command {
+                        let _ = done.send(());
+                    }
+                    next = requests.recv().await;
+                    continue;
+                };
+                let quality = quality.normalized();
+                frames.send_replace(PreviewFrame {
+                    revision,
+                    ..Default::default()
+                });
+                let (raw_frames, mut stream) = tokio::sync::mpsc::channel(1);
+                let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel();
+                match start_capture(device, None, quality, Some(raw_frames), fatal_tx).await {
+                    Err(error) => {
+                        frames.send_replace(PreviewFrame {
+                            revision,
+                            error: Some(error),
+                            ..Default::default()
+                        });
+                        next = requests.recv().await;
+                    }
+                    Ok(capture) => {
+                        let mut last = std::time::Instant::now() - Duration::from_secs(1);
+                        let mut failed = false;
+                        next = loop {
+                            tokio::select! {
+                                biased;
+                                command = requests.recv() => break command,
+                                Some(error) = fatal_rx.recv() => {
+                                    frames.send_replace(PreviewFrame { revision, error: Some(error), ..Default::default() });
+                                    failed = true;
+                                    break None;
+                                }
+                                frame = stream.recv() => {
+                                    let Some(frame) = frame else {
+                                        frames.send_replace(PreviewFrame { revision, error: Some("Camera preview stopped".into()), ..Default::default() });
+                                        failed = true;
+                                        break None;
+                                    };
+                                    if last.elapsed() < Duration::from_millis(125) { continue; }
+                                    last = std::time::Instant::now();
+                                    let dimensions = (frame.width(), frame.height());
+                                    let encoded = tokio::task::spawn_blocking(move || preview_image(frame)).await;
+                                    match encoded {
+                                        Ok(Ok(image)) => { frames.send_replace(PreviewFrame { revision, image: Some(image), dimensions: Some(dimensions), error: None }); }
+                                        result => { frames.send_replace(PreviewFrame { revision, error: Some(format!("Camera preview failed: {result:?}")), ..Default::default() }); }
+                                    }
+                                }
+                            }
+                        };
+                        // Release the device before opening another mode or publishing it.
+                        capture.stop().await;
+                        if failed {
+                            next = requests.recv().await;
+                        }
+                    }
+                }
+            }
+        });
+        (commands, receiver)
+    }
+
+    fn preview_image(mut buffer: I420Buffer) -> Result<String, String> {
+        use base64::Engine;
+        use livekit::webrtc::video_frame::VideoFormatType;
+        let scale = (640.0 / f64::from(buffer.width()))
+            .min(360.0 / f64::from(buffer.height()))
+            .min(1.0);
+        let width = (f64::from(buffer.width()) * scale).max(1.0) as u32;
+        let height = (f64::from(buffer.height()) * scale).max(1.0) as u32;
+        let buffer = buffer.scale(width as i32, height as i32);
+        let mut pixels = vec![0; (width * height * 4) as usize];
+        buffer.to_argb(
+            VideoFormatType::ABGR,
+            &mut pixels,
+            width * 4,
+            width as i32,
+            height as i32,
+        );
+        let image =
+            image::RgbaImage::from_raw(width, height, pixels).ok_or("Invalid camera preview")?;
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 75)
+            .encode_image(&image::DynamicImage::ImageRgba8(image))
+            .map_err(|e| e.to_string())?;
+        Ok(format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(jpeg)
+        ))
+    }
 
     struct Apartment;
 
@@ -80,7 +215,8 @@ mod windows {
     }
 
     struct Sink {
-        source: NativeVideoSource,
+        source: Option<NativeVideoSource>,
+        preview: Option<tokio::sync::mpsc::Sender<I420Buffer>>,
         first: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         alive: Arc<Mutex<std::time::Instant>>,
     }
@@ -97,12 +233,17 @@ mod windows {
             let Some(buffer) = copy_frame(width, height, strides, planes) else {
                 return;
             };
-            self.source.capture_frame(&VideoFrame {
-                rotation: VideoRotation::VideoRotation0,
-                timestamp_us,
-                frame_metadata: None,
-                buffer,
-            });
+            if let Some(source) = &self.source {
+                source.capture_frame(&VideoFrame {
+                    rotation: VideoRotation::VideoRotation0,
+                    timestamp_us,
+                    frame_metadata: None,
+                    buffer,
+                });
+            } else if let Some(preview) = &self.preview {
+                // A slow webview must never accumulate full-resolution camera frames.
+                let _ = preview.try_send(buffer);
+            }
             if let Ok(mut alive) = self.alive.lock() {
                 *alive = std::time::Instant::now();
             }
@@ -160,8 +301,20 @@ mod windows {
     pub async fn start(
         device: Option<String>,
         source: NativeVideoSource,
+        quality: CameraQuality,
         fatal: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<Capture, String> {
+        start_capture(device, Some(source), quality, None, fatal).await
+    }
+
+    async fn start_capture(
+        device: Option<String>,
+        source: Option<NativeVideoSource>,
+        quality: CameraQuality,
+        preview: Option<tokio::sync::mpsc::Sender<I420Buffer>>,
+        fatal: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<Capture, String> {
+        let quality = quality.normalized();
         let (stop, stopped) = mpsc::channel();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (first_tx, first_rx) = tokio::sync::oneshot::channel();
@@ -181,11 +334,12 @@ mod windows {
                     })?;
                     let capture = ffi::start_camera_capture(
                         &selected.id,
-                        1280,
-                        720,
-                        30,
+                        quality.width(),
+                        quality.height,
+                        quality.fps,
                         Box::new(CameraSinkWrapper::new(Box::new(Sink {
                             source,
+                            preview,
                             first: Mutex::new(Some(first_tx)),
                             alive: alive.clone(),
                         }))),
@@ -266,6 +420,49 @@ mod windows {
         use super::*;
 
         #[test]
+        fn preview_scales_frames_and_bounds_the_capture_queue() {
+            use base64::Engine;
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let sink = Sink {
+                source: None,
+                preview: Some(tx),
+                first: Mutex::new(None),
+                alive: Arc::new(Mutex::new(std::time::Instant::now())),
+            };
+            let y = vec![81; 1280 * 720];
+            let u = vec![90; 640 * 360];
+            let v = vec![240; 640 * 360];
+            for _ in 0..3 {
+                sink.on_frame(1280, 720, (1280, 640, 640), (&y, &u, &v), 0);
+            }
+            let frame = rx.try_recv().unwrap();
+            assert!(rx.try_recv().is_err());
+            let encoded = preview_image(frame).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded.strip_prefix("data:image/jpeg;base64,").unwrap())
+                .unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            assert_eq!(image.dimensions(), (640, 360));
+            let pixel = image.get_pixel(320, 180).0;
+            assert!(pixel[0] > 240 && pixel[1] < 15 && pixel[2] < 15);
+        }
+
+        #[tokio::test]
+        async fn closing_idle_preview_acknowledges_release_and_exits() {
+            let (commands, mut frames) = preview_controller();
+            let (done, stopped) = tokio::sync::oneshot::channel();
+            commands.send(PreviewCommand::Stop(done)).unwrap();
+            stopped.await.unwrap();
+            drop(commands);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(2), frames.changed())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+        }
+
+        #[test]
         fn padded_odd_camera_planes_are_copied_without_padding() {
             let frame = copy_frame(
                 3,
@@ -301,9 +498,14 @@ mod windows {
             );
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             assert!(
-                start(Some("discordia-nonexistent-camera".into()), source, tx)
-                    .await
-                    .is_err()
+                start(
+                    Some("discordia-nonexistent-camera".into()),
+                    source,
+                    Default::default(),
+                    tx
+                )
+                .await
+                .is_err()
             );
         }
     }

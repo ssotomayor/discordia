@@ -17,16 +17,16 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4895 |
+| `client/src/features/voice.rs` | 4893 |
 | `server/src/state/mod.rs` | 3308 |
 | `server/tests/owner_controls.rs` | 3152 |
 | `server/src/gateway/connection.rs` | 3179 |
-| `client/src/features/channels.rs` | 2169 |
-| `client/src/features/screenshare.rs` | 3236 |
+| `client/src/features/channels.rs` | 2168 |
+| `client/src/features/screenshare.rs` | 3273 |
 | `protocol/src/lib.rs` | 2924 |
-| `client/src/state.rs` | 2357 |
+| `client/src/state.rs` | 2362 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2483 |
+| `client/src/net.rs` | 2490 |
 | `client/src/features/chat.rs` | 2442 |
 | `server/src/store.rs` | 1366 |
 | `client/src/features/guild_settings.rs` | 1135 |
@@ -94,7 +94,7 @@ that direction says a file is safe to open when it is not.
 | Typing a message | `client/src/features/chat.rs`, `client/tests/chat_composer.cjs` | `Composer` is a multiline contenteditable whose children belong to `COMPOSER_JS` (trap 34). Enter sends or picks a suggestion; Shift+Enter inserts a newline and text paste preserves line breaks. Custom emoji chips serialize to `:code:`; browser BR/block boundaries and caret prefixes preserve newlines. `active_token` finds `:ab…` at the caret; `emoji_suggestions` ranks guild emoji and named `EMOJIS` (prefix before substring, eight at most). ↑↓, Tab and Escape control suggestions while `suggest(true)` |
 | Attaching chat images | `client/src/chat_image.rs`, `client/src/features/chat.rs` | Native clipboard RGBA becomes bounded PNG; Dioxus drop/file-picker events provide paths for bounded Rust reads and content validation. Workers prepare data URLs under the 2 MiB upload cap; keyed composers and request generations discard stale loads. The WebView only signals image paste and displays previews |
 | Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches 19 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block. Session-owned `CallAlert` repeats distinct incoming/outgoing DM rings every 3 s, cancels queued/playing rings on phase changes and plays connection/end cues. Audio settings expose separate persisted App sounds/Soundboard controls and a native app-sound preview |
-| Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs` | Windows camera enumeration/capture uses WebRTC through a small C++ bridge; Rust owns the COM worker, validated I420 copies, first-frame/stall checks and publication. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently; the WebView renders previews/viewers. macOS/Linux retain browser camera capture |
+| Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs`, `client/src/features/camera_setup.rs`, `client/src/camera_quality.rs` | The camera button opens a root-mounted local setup preview with device, 480p/720p/1080p and 15/30/60 FPS selection; `CameraQuality` normalizes persisted values and derives the automatic encoding budget. Windows `preview_controller` serializes device changes and acknowledges release before publication, using a one-frame queue and bounded JPEG previews without an SFU track. Native capture and browser publication apply the same quality settings. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently. `camera_preview_bridge.cjs` covers browser preview cancellation, stale permission results, quality changes and call teardown |
 | Keys on this machine | `client/src/identity.rs` | `detected` derives and deduplicates pubkeys from the secret, skipping unreadable keys; `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Gateway admission and diagnostics | `client/src/net.rs`, `client/src/features/connect.rs`, `client/src/features/workspace.rs`, `server/src/gateway/connection.rs` | `gateway_ready` waits for admission before profile/heartbeat writes. Failed sends recover buffered server reasons; `ConnectionErrorPanel` copies version, platform, UTC time, transport, operation and payload size. Reconnects retain their first failure until Ready. Socket cap admits two image fields; server warnings retain refusals and receive failures |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `seal`/`unseal` hold the phrase's entropy beside it; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
