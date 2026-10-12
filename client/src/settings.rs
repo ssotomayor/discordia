@@ -39,8 +39,11 @@ pub struct ClientSettings {
     pub pattern: String,
     pub background: Option<String>,
     pub background_dim: u8,
+    /// Every one is browsed; a host publishes on `publish_rendezvous` alone.
     #[serde(default = "default_rendezvous_servers")]
     pub rendezvous_servers: Vec<String>,
+    #[serde(default)]
+    pub publish_rendezvous: Option<String>,
 
     #[serde(default)]
     pub dm_relays: Vec<String>,
@@ -247,6 +250,76 @@ fn default_emoji_blob_server() -> Option<String> {
     Some(crate::nostr::blossom::PRESETS[0].to_string())
 }
 
+/// A rendezvous serves plain `ws://` on 7700 (it must see real peer
+/// addresses, so no TLS proxy); `wss://` is the exception, on 443.
+pub const RENDEZVOUS_PORT: u16 = 7700;
+pub const RENDEZVOUS_TLS_PORT: u16 = 443;
+
+pub fn default_rendezvous_port(secure: bool) -> u16 {
+    if secure {
+        RENDEZVOUS_TLS_PORT
+    } else {
+        RENDEZVOUS_PORT
+    }
+}
+
+/// What someone typed or pasted, split into the parts they left out or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendezvousParts {
+    pub secure: Option<bool>,
+    pub host: String,
+    pub port: Option<u16>,
+}
+
+pub fn split_rendezvous(text: &str) -> Option<RendezvousParts> {
+    let text = text.trim();
+    let (secure, rest) = match text.split_once("://") {
+        Some((scheme, rest)) => match scheme.to_ascii_lowercase().as_str() {
+            "ws" | "http" => (Some(false), rest),
+            "wss" | "https" => (Some(true), rest),
+            _ => return None,
+        },
+        None => (None, text),
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (addr, after) = v6.split_once(']')?;
+        let port = match after.strip_prefix(':') {
+            Some(p) => Some(p.parse().ok()?),
+            None if after.is_empty() => None,
+            None => return None,
+        };
+        (format!("[{addr}]"), port)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h.to_string(), Some(p.parse().ok()?)),
+            // A bare IPv6 address: every colon is the address's own.
+            Some(_) => (format!("[{authority}]"), None),
+            None => (authority.to_string(), None),
+        }
+    };
+    let valid = !host.is_empty() && !host.contains(char::is_whitespace) && port != Some(0);
+    valid.then_some(RendezvousParts { secure, host, port })
+}
+
+/// The one spelling of a rendezvous, so the same one is never browsed twice.
+pub fn rendezvous_url(secure: bool, host: &str, port: u16) -> String {
+    let scheme = if secure { "wss" } else { "ws" };
+    let host = host.to_ascii_lowercase();
+    if secure && port == RENDEZVOUS_TLS_PORT {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    }
+}
+
+pub fn normalize_rendezvous(text: &str) -> Option<String> {
+    let parts = split_rendezvous(text)?;
+    let secure = parts.secure.unwrap_or(false);
+    let port = parts.port.unwrap_or(default_rendezvous_port(secure));
+    Some(rendezvous_url(secure, &parts.host, port))
+}
+
 fn default_rendezvous_servers() -> Vec<String> {
     vec![default_rendezvous_url()]
 }
@@ -264,6 +337,7 @@ impl Default for ClientSettings {
             background: None,
             background_dim: 55,
             rendezvous_servers: default_rendezvous_servers(),
+            publish_rendezvous: None,
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
             dm_clock_offset: Vec::new(),
@@ -315,21 +389,22 @@ impl Default for ClientSettings {
 }
 
 impl ClientSettings {
-    pub fn active_rendezvous(&self) -> String {
-        self.rendezvous_servers
-            .first()
+    pub fn publish_rendezvous(&self) -> String {
+        self.publish_rendezvous
+            .as_ref()
+            .filter(|url| self.rendezvous_servers.contains(url))
+            .or(self.rendezvous_servers.first())
             .cloned()
             .unwrap_or_else(default_rendezvous_url)
     }
 
-    pub fn use_rendezvous(&mut self, url: &str) {
-        let url = url.trim().trim_end_matches('/').to_string();
-        if url.is_empty() {
-            return;
+    /// The normalized address, or `None` when there is nothing to add.
+    pub fn add_rendezvous(&mut self, url: &str) -> Option<String> {
+        let url = normalize_rendezvous(url)?;
+        if !self.rendezvous_servers.contains(&url) {
+            self.rendezvous_servers.push(url.clone());
         }
-        self.rendezvous_servers.retain(|s| s != &url);
-        self.rendezvous_servers.insert(0, url);
-        self.rendezvous_servers.truncate(8);
+        Some(url)
     }
 
     pub fn blob_server_choices(&self) -> Vec<String> {
@@ -500,6 +575,73 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rendezvous_is_listed_once_however_it_is_typed() {
+        let mut s = ClientSettings {
+            rendezvous_servers: vec!["ws://a.example:7700".into()],
+            ..ClientSettings::default()
+        };
+        s.add_rendezvous(" http://A.example:7700/ ");
+        s.add_rendezvous("a.example");
+        s.add_rendezvous("https://b.example:443/discover");
+        assert_eq!(s.add_rendezvous("  "), None);
+        assert_eq!(
+            s.rendezvous_servers,
+            ["ws://a.example:7700", "wss://b.example"]
+        );
+    }
+
+    #[test]
+    fn a_bare_name_gets_the_rendezvous_defaults() {
+        assert_eq!(
+            normalize_rendezvous("192.168.0.61").as_deref(),
+            Some("ws://192.168.0.61:7700")
+        );
+        assert_eq!(
+            normalize_rendezvous("wss://r.example").as_deref(),
+            Some("wss://r.example")
+        );
+        assert_eq!(
+            normalize_rendezvous("wss://r.example:7700").as_deref(),
+            Some("wss://r.example:7700")
+        );
+        assert_eq!(
+            normalize_rendezvous("[::1]:9000").as_deref(),
+            Some("ws://[::1]:9000")
+        );
+        assert_eq!(
+            normalize_rendezvous("::1").as_deref(),
+            Some("ws://[::1]:7700")
+        );
+    }
+
+    #[test]
+    fn nonsense_is_not_a_rendezvous() {
+        for bad in [
+            "",
+            "ftp://x",
+            "x:port",
+            "x:0",
+            "x:70000",
+            "my server",
+            "ws://",
+        ] {
+            assert_eq!(normalize_rendezvous(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_forgotten_publish_target_falls_back_to_the_first() {
+        let mut s = ClientSettings {
+            rendezvous_servers: vec!["ws://a".into(), "ws://b".into()],
+            publish_rendezvous: Some("ws://b".into()),
+            ..ClientSettings::default()
+        };
+        assert_eq!(s.publish_rendezvous(), "ws://b");
+        s.remove_rendezvous("ws://b");
+        assert_eq!(s.publish_rendezvous(), "ws://a");
+    }
 
     #[test]
     fn emoji_go_to_a_blob_server_unless_turned_off() {

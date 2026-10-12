@@ -1,0 +1,249 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wizards</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column; gap: 10px; padding: 14px;
+    font-family: ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace; font-size: 12px;
+    background: radial-gradient(ellipse at 50% 30%, #2a2140 0%, #120e1c 70%); color: #e9e3f5; overflow: hidden; }
+  #status { text-align: center; font-size: 14px; min-height: 20px; letter-spacing: .02em; }
+  #status.mine { color: #ffd54a; }
+  #arena { display: flex; justify-content: center; align-items: flex-end; gap: 12px; min-height: 196px; }
+  .wizard { position: relative; width: 132px; padding: 8px 6px; border-radius: 10px; text-align: center;
+    border: 1px solid transparent; transition: transform .15s ease, border-color .15s ease, background .15s ease; }
+  .wizard.turn { border-color: #ffd54a66; background: #ffd54a0d; }
+  .wizard.targetable { cursor: crosshair; border-color: #ff7a4566; }
+  .wizard.targetable:hover { transform: translateY(-3px); border-color: #ff7a45; background: #ff7a4514; }
+  .wizard canvas { width: 96px; height: 108px; image-rendering: pixelated; display: block; margin: 0 auto; }
+  .wizard.down canvas { transform: rotate(90deg) translateX(18px); filter: grayscale(1) opacity(.45); }
+  .name { margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .name .me { color: #ffd54a; }
+  .bar { height: 8px; margin: 5px 6px 0; background: #00000066; border-radius: 4px; overflow: hidden; border: 1px solid #ffffff1a; }
+  .bar > div { height: 100%; background: linear-gradient(#7ee081, #3fa34d); transition: width .4s ease; }
+  .bar.low > div { background: linear-gradient(#ffb36b, #d9622b); }
+  .hp { font-size: 10px; color: #b9b0cc; margin-top: 2px; }
+  .init { position: absolute; top: 4px; right: 6px; font-size: 10px; color: #b9b0cc; }
+  .float { position: absolute; left: 50%; top: 18px; transform: translateX(-50%); font-weight: bold; font-size: 18px;
+    pointer-events: none; animation: rise .9s ease-out forwards; text-shadow: 0 2px 0 #000; }
+  @keyframes rise { from { opacity: 1; margin-top: 0; } to { opacity: 0; margin-top: -36px; } }
+  .fx-fire { animation: shake .35s; } .fx-fire canvas { filter: drop-shadow(0 0 10px #ff6a00) saturate(1.4); }
+  .fx-ice canvas { filter: drop-shadow(0 0 10px #6ad3ff) hue-rotate(160deg) brightness(1.25); }
+  .cast { animation: hop .3s; }
+  @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+  @keyframes hop { 50% { transform: translateY(-8px); } }
+  #controls, #lobby { display: flex; justify-content: center; gap: 10px; min-height: 44px; align-items: center; }
+  button { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid #5b4a80; background: #1d1630;
+    color: #e9e3f5; cursor: pointer; transition: all .12s ease; }
+  button:hover:not(:disabled) { border-color: #ffd54a; }
+  button.picked { border-color: #ffd54a; background: #2c2240; color: #ffd54a; }
+  button:disabled { opacity: .4; cursor: default; }
+  button small { display: block; font-size: 10px; color: #b9b0cc; margin-top: 2px; }
+  #hint { text-align: center; color: #b9b0cc; min-height: 16px; }
+  #log { flex: 1; overflow: auto; margin: 0; padding: 8px 12px; list-style: none; background: #00000040;
+    border-radius: 8px; border: 1px solid #ffffff12; }
+  #log li { padding: 2px 0; color: #cfc6e0; } #log li:first-child { color: #fff; }
+</style>
+</head>
+<body>
+  <div id="status">Summoning the arena…</div>
+  <div id="arena"></div>
+  <div id="controls"></div>
+  <div id="lobby"></div>
+  <div id="hint"></div>
+  <ol id="log"></ol>
+<script>
+  // Pixels: H/B robe, b robe shade, * hat star, S skin, E eyes, W beard,
+  // w staff, o orb, d boots, . empty.
+  const SPRITE = [
+    '......H.......o.',
+    '.....HHH.....ooo',
+    '.....H*H......o.',
+    '....HHHHH.....w.',
+    '...HHHHHHH....w.',
+    '..HHHHHHHHH...w.',
+    '....SSSSS.....w.',
+    '....SESES.....w.',
+    '....SSSSS....Sw.',
+    '....WWWWW...BBw.',
+    '...BWWWWWBBBB.w.',
+    '..BBBWWWBBB...w.',
+    '..BBBBWBBBB...w.',
+    '..bBBBBBBBb...w.',
+    '..bBBBBBBBb...w.',
+    '.bbBBBBBBBbb..w.',
+    '.bbbbbbbbbbb..w.',
+    '..dd.....dd...w.',
+  ];
+  const ROBES = [['#c8413a', '#8f2924'], ['#3a77d8', '#244e98'], ['#36a466', '#22704a']];
+  const FIXED = { '*': '#ffe066', S: '#f1c27d', E: '#1a1424', W: '#eeeeee', w: '#8b5a2b', o: '#ffd54a', d: '#3b2a1a' };
+  const SPELLS = {
+    fireball: { label: '🔥 Fireball', note: '40% · 30–40' },
+    freeze: { label: '❄️ Freeze', note: '60% · 15–22' },
+  };
+  const MAX_HP = 100;
+
+  let info = null, state = null, spell = null, waiting = false, seenSeq = -1, heardFromApp = false;
+  const $ = (id) => document.getElementById(id);
+
+  function draw(canvas, robe) {
+    const ctx = canvas.getContext('2d');
+    canvas.width = 16; canvas.height = SPRITE.length;
+    SPRITE.forEach((row, y) => [...row].forEach((c, x) => {
+      const color = c === 'H' || c === 'B' ? robe[0] : c === 'b' ? robe[1] : FIXED[c];
+      if (!color) return;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, 1, 1);
+    }));
+  }
+
+  const escape = (t) => { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
+  const nameOf = (k) => { const p = info && info.participants.find(p => p.pubkey === k); return p ? p.name : 'a wizard'; };
+  const me = () => info && info.me;
+  const myRole = () => { const p = info && info.participants.find(p => p.pubkey === me()); return p && p.role; };
+  const players = () => (info ? info.participants.filter(p => p.role === 'player').map(p => p.pubkey) : []);
+  const send = (data) => discordia.call('instance.send', { data, to: info.app });
+
+  // In the lobby the arena shows who is seated; once a duel starts, the turn order.
+  function seats() {
+    if (state && state.phase !== 'lobby' && state.wizards.length) return state.wizards;
+    return players().map(key => ({ key, hp: MAX_HP, initiative: null }));
+  }
+
+  function render() {
+    if (!info) return;
+    const playing = state && state.phase === 'playing';
+    const myTurn = playing && state.turn === me();
+    const status = $('status');
+    status.className = myTurn ? 'mine' : '';
+    if (!heardFromApp) status.textContent = 'Waiting for the Wizards app to answer — its bot has to be running.';
+    else if (playing) status.textContent = myTurn ? 'Your turn!' : nameOf(state.turn) + "'s turn";
+    else if (state && state.phase === 'over') status.textContent = state.winner ? '🏆 ' + nameOf(state.winner) + ' wins!' : 'Nobody is left standing.';
+    else status.textContent = 'The arena is open';
+
+    const arena = $('arena');
+    arena.innerHTML = '';
+    seats().forEach((w, i) => {
+      const card = document.createElement('div');
+      card.className = 'wizard';
+      card.dataset.key = w.key;
+      if (w.hp <= 0) card.classList.add('down');
+      if (playing && state.turn === w.key) card.classList.add('turn');
+      const canTarget = myTurn && spell && w.key !== me() && w.hp > 0 && !waiting;
+      if (canTarget) {
+        card.classList.add('targetable');
+        card.onclick = () => cast(w.key);
+      }
+      const canvas = document.createElement('canvas');
+      draw(canvas, ROBES[i % ROBES.length]);
+      const pct = Math.max(0, w.hp) / MAX_HP * 100;
+      card.innerHTML = (w.initiative ? '<div class="init">⚄ ' + w.initiative + '</div>' : '');
+      card.appendChild(canvas);
+      card.insertAdjacentHTML('beforeend',
+        '<div class="name">' + (w.key === me() ? '<span class="me">' + escape(nameOf(w.key)) + '</span>' : escape(nameOf(w.key))) + '</div>' +
+        '<div class="bar' + (pct <= 30 ? ' low' : '') + '"><div style="width:' + pct + '%"></div></div>' +
+        '<div class="hp">' + Math.max(0, w.hp) + ' / ' + MAX_HP + '</div>');
+      arena.appendChild(card);
+    });
+
+    const controls = $('controls');
+    controls.innerHTML = '';
+    if (myTurn) {
+      Object.entries(SPELLS).forEach(([id, s]) => {
+        const b = document.createElement('button');
+        b.innerHTML = s.label + '<small>' + s.note + '</small>';
+        if (spell === id) b.className = 'picked';
+        b.disabled = waiting;
+        b.onclick = () => { spell = id; render(); };
+        controls.appendChild(b);
+      });
+    }
+    $('hint').textContent = myTurn ? (spell ? 'Now click a wizard to target.' : 'Pick a spell.') : '';
+
+    const lobby = $('lobby');
+    lobby.innerHTML = '';
+    if (!playing && heardFromApp) {
+      if (myRole() === 'player' && players().length >= 2) {
+        const b = document.createElement('button');
+        b.textContent = state && state.phase === 'over' ? '⚔️ Rematch' : '⚔️ Start the duel';
+        b.disabled = waiting;
+        b.onclick = () => { waiting = true; render(); send({ t: 'start' }).catch(() => { waiting = false; render(); }); };
+        lobby.appendChild(b);
+      } else {
+        lobby.textContent = players().length < 2 ? 'Waiting for a second wizard (up to 3)…' : 'Watching — a player starts the duel.';
+      }
+    }
+
+    const log = $('log');
+    log.innerHTML = '';
+    (state ? state.log.slice().reverse() : []).forEach(line => {
+      const li = document.createElement('li');
+      li.textContent = describe(line);
+      log.appendChild(li);
+    });
+  }
+
+  function describe(l) {
+    switch (l.k) {
+      case 'init': return '🎲 ' + nameOf(l.who) + ' rolls initiative: ' + l.roll;
+      case 'tie': return '🎲 A tie! ' + l.who.map(nameOf).join(' and ') + ' roll again';
+      case 'hit': return l.spell === 'fireball'
+        ? '🔥 ' + nameOf(l.by) + ' hurls a fireball at ' + nameOf(l.target) + ' — ' + l.damage + ' damage'
+        : '❄️ ' + nameOf(l.by) + ' freezes ' + nameOf(l.target) + ' — ' + l.damage + ' damage';
+      case 'miss': return '💨 ' + nameOf(l.by) + "'s " + l.spell + ' misses ' + nameOf(l.target);
+      case 'down': return '💀 ' + nameOf(l.who) + ' falls!';
+      case 'skip': return '⏳ ' + nameOf(l.who) + ' took too long';
+      case 'left': return '🚪 ' + nameOf(l.who) + ' left the duel';
+      case 'win': return '🏆 ' + nameOf(l.who) + ' is the last wizard standing!';
+      default: return '';
+    }
+  }
+
+  function cast(target) {
+    if (!spell || waiting) return;
+    waiting = true;
+    send({ t: 'attack', spell, target }).catch(() => { waiting = false; render(); });
+    render();
+  }
+
+  function animate(last) {
+    const card = (k) => document.querySelector('.wizard[data-key="' + k + '"]');
+    const by = card(last.by), target = card(last.target);
+    if (by) by.classList.add('cast');
+    if (!target) return;
+    target.classList.add(last.k === 'miss' ? 'cast' : last.spell === 'fireball' ? 'fx-fire' : 'fx-ice');
+    const f = document.createElement('div');
+    f.className = 'float';
+    f.style.color = last.k === 'miss' ? '#cfc6e0' : last.spell === 'fireball' ? '#ff8a3d' : '#7fdcff';
+    f.textContent = last.k === 'miss' ? 'Miss!' : '-' + last.damage;
+    target.appendChild(f);
+  }
+
+  discordia.on('instance.update', (next) => { info = next; render(); });
+  discordia.on('instance.message', (e) => {
+    // Players can send too, so only the app's own key speaks for the game.
+    if (!info || e.from !== info.app) return;
+    const d = e.data || {};
+    heardFromApp = true;
+    if (d.t === 'state') {
+      const fresh = d.seq !== seenSeq;
+      state = d; seenSeq = d.seq; waiting = false;
+      if (state.turn !== me()) spell = null;
+      render();
+      if (fresh && d.last) animate(d.last);
+    } else if (d.t === 'error') {
+      waiting = false;
+      render();
+      $('hint').textContent = d.message;
+    }
+  });
+
+  discordia.call('instance.info').then((i) => {
+    info = i;
+    render();
+    if (myRole() === 'player') send({ t: 'hello' }).catch(() => {});
+  }).catch(() => { $('status').textContent = 'This duel has ended.'; });
+</script>
+</body>
+</html>

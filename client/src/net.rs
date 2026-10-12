@@ -249,6 +249,30 @@ fn ws_scheme(base: &str) -> String {
     }
 }
 
+/// The first rendezvous to answer for `code`. A code is unique only within
+/// one, so a clash goes to whichever replies first.
+pub(crate) async fn find_code(rendezvous: &[String], code: &str) -> Option<String> {
+    use futures_util::StreamExt;
+    let code = code.trim();
+    let typed = crate::protocol::rendezvous::join_code(code);
+    let code = typed.as_deref().unwrap_or(code);
+    let mut asks: futures_util::stream::FuturesUnordered<_> = rendezvous
+        .iter()
+        .map(|base| async move {
+            let base = base.trim().trim_end_matches('/');
+            resolve_host(&ws_scheme(base), code)
+                .await
+                .map(|_| base.to_string())
+        })
+        .collect();
+    while let Some(answer) = asks.next().await {
+        if answer.is_some() {
+            return answer;
+        }
+    }
+    None
+}
+
 async fn resolve_host(
     ws_base: &str,
     code: &str,
@@ -1502,6 +1526,8 @@ fn apply(
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
         }
+        // Sent only to an app's bot.
+        ServerMessage::BundleWanted { .. } => {}
         ServerMessage::AppManifestEvent { bot_pubkey, event } => {
             s.app_manifest_events.insert(bot_pubkey, event);
         }

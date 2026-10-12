@@ -25,7 +25,7 @@ These CPU reductions do not describe total app usage or release performance.
 CPU savings come from avoiding component work and sorting. Clock tests cover
 focus/visibility suspension, catch-up, removal and preserving Dioxus text nodes.
 Full-app visual validation and RAM including WebView were unavailable locally.
-Branch checks: 630 client unit tests, 28 grid-layout tests and 35 JavaScript
+Branch checks: 637 client unit tests, 28 grid-layout tests and 35 JavaScript
 tests passed; formatting and Clippy passed.
 
 | Reproduce | Command |

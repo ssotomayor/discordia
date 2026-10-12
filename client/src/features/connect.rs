@@ -25,10 +25,10 @@ enum JoinBy {
     Nothing,
 }
 
-fn join_by(server_url: &str, code: &str, rendezvous_url: &str) -> JoinBy {
+fn join_by(server_url: &str, code: &str, rendezvous: &[String]) -> JoinBy {
     if !server_url.trim().is_empty() {
         JoinBy::Url
-    } else if !code.trim().is_empty() && !rendezvous_url.trim().is_empty() {
+    } else if !code.trim().is_empty() && !rendezvous.is_empty() {
         JoinBy::Code
     } else {
         JoinBy::Nothing
@@ -82,7 +82,8 @@ pub fn ConnectForm(
     on_connect: EventHandler<SessionParams>,
 ) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let default_rendezvous = settings.read().active_rendezvous();
+    let rendezvous = settings.read().rendezvous_servers.clone();
+    let publish_target = settings.read().publish_rendezvous();
     let media = dioxusfun_server::livekit_bundle::ports();
     let (media_ws, media_tcp, media_udp) = (media.ws, media.tcp, media.udp);
 
@@ -91,8 +92,11 @@ pub fn ConnectForm(
     let mut allow_lan = use_signal(|| true);
     let mut manual_ip = use_signal(String::new);
     let mut publish_to_rendezvous = use_signal(|| true);
-    let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
     let mut code = use_signal(String::new);
+    // Where a listed host was picked, so its code is asked of that rendezvous.
+    let mut picked = use_signal(|| None::<(String, String)>);
+    let mut looking_up = use_signal(|| false);
+    let mut lookup_error = use_signal(|| None::<String>);
 
     let mut publish_name = use_signal(String::new);
     let mut description = use_signal(String::new);
@@ -102,31 +106,51 @@ pub fn ConnectForm(
 
     let identity_for_rows = identity.clone();
     let identity_for_submit = identity.clone();
+    let rendezvous_for_submit = rendezvous.clone();
+    let publish_for_submit = publish_target.clone();
     let submit = move |_| {
+        lookup_error.set(None);
         let params = match mode() {
-            Mode::Join => match join_by(&server_url(), &code(), &rendezvous_url()) {
+            Mode::Join => match join_by(&server_url(), &code(), &rendezvous_for_submit) {
                 JoinBy::Url => SessionParams {
                     mode: SessionMode::Remote {
                         server_url: server_url().trim().to_string(),
                     },
                     identity: identity_for_submit.clone(),
                 },
-                JoinBy::Code => SessionParams {
-                    mode: SessionMode::ByCode {
-                        rendezvous_url: rendezvous_url().trim().to_string(),
-                        code: code().trim().to_string(),
-                    },
-                    identity: identity_for_submit.clone(),
-                },
+                JoinBy::Code => {
+                    let typed = code().trim().to_string();
+                    let known = picked()
+                        .filter(|(_, c)| *c == typed)
+                        .map(|(r, _)| r)
+                        .or_else(|| match rendezvous_for_submit.as_slice() {
+                            [only] => Some(only.clone()),
+                            _ => None,
+                        });
+                    match known {
+                        Some(r) => by_code(r, typed, identity_for_submit.clone()),
+                        None => {
+                            let all = rendezvous_for_submit.clone();
+                            let identity = identity_for_submit.clone();
+                            looking_up.set(true);
+                            spawn(async move {
+                                let found = crate::net::find_code(&all, &typed).await;
+                                looking_up.set(false);
+                                match found {
+                                    Some(r) => on_connect.call(by_code(r, typed, identity)),
+                                    None => lookup_error.set(Some(format!(
+                                        "No rendezvous in your list knows \u{201c}{typed}\u{201d}. Check the code, or add the rendezvous your friend publishes on."
+                                    ))),
+                                }
+                            });
+                            return;
+                        }
+                    }
+                }
                 JoinBy::Nothing => return,
             },
             Mode::Create => {
-                let r_url = if publish_to_rendezvous() {
-                    let r = rendezvous_url().trim().to_string();
-                    if r.is_empty() { None } else { Some(r) }
-                } else {
-                    None
-                };
+                let r_url = publish_to_rendezvous().then(|| publish_for_submit.clone());
                 let pn = publish_name().trim().to_string();
                 let desc = description().trim().to_string();
                 SessionParams {
@@ -148,13 +172,6 @@ pub fn ConnectForm(
                 }
             }
         };
-        let r = rendezvous_url().trim().to_string();
-        if !r.is_empty() {
-            let mut next = settings.read().clone();
-            next.use_rendezvous(&r);
-            settings.set(next.clone());
-            crate::settings::save(&next);
-        }
         on_connect.call(params);
     };
 
@@ -170,7 +187,9 @@ pub fn ConnectForm(
         publish_to_rendezvous() && !publish_name().trim().is_empty() && publish_code.is_none();
     let disabled = match mode() {
         Mode::Create => bad_ip || bad_name,
-        Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
+        Mode::Join => {
+            looking_up() || join_by(&server_url(), &code(), &rendezvous) == JoinBy::Nothing
+        }
     };
     // Going grey says "not yet" without saying why; this names both ways in.
     let hint = match last_session.as_ref() {
@@ -231,12 +250,9 @@ pub fn ConnectForm(
                 // (which is `CreateGuild` and requires an existing
                 // connection). Bare "Join"/"Create" caused user confusion.
                 div { class: "space-y-2",
-                    RendezvousPicker {
-                        selected: rendezvous_url(),
-                        on_select: move |u: String| rendezvous_url.set(u),
-                    }
+                    RendezvousList {}
                     div { class: "text-xs text-[var(--text-dim)] leading-relaxed text-pretty",
-                        "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
+                        "The public list gathers every one of these, and a code is looked up in all of them. A server of your own is published on one."
                     }
                 }
 
@@ -245,7 +261,7 @@ pub fn ConnectForm(
                     TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
                 }
 
-                if let Some(err) = error {
+                if let Some(err) = lookup_error().or(error) {
                     ConnectionErrorPanel { message: err }
                 }
 
@@ -266,21 +282,16 @@ pub fn ConnectForm(
                             }
 
                             BrowseTab {
-                                on_pick: move |entry: DiscoverEntry| {
-                                    code.set(entry.shortcode);
+                                on_pick: move |host: Listed| {
+                                    code.set(host.entry.shortcode.clone());
+                                    picked.set(Some((host.rendezvous, host.entry.shortcode)));
                                 },
-                                on_enter: move |entry: DiscoverEntry| {
-                                    let params = SessionParams {
-                                        mode: SessionMode::ByCode {
-                                            rendezvous_url: rendezvous_url().trim().to_string(),
-                                            code: entry.shortcode,
-                                        },
-                                        identity: row_identity.clone(),
-                                    };
-                                    on_connect.call(params);
+                                on_enter: move |host: Listed| {
+                                    on_connect.call(by_code(host.rendezvous, host.entry.shortcode, row_identity.clone()));
                                 },
                                 picked_shortcode: code(),
-                                rendezvous_url: rendezvous_url(),
+                                picked_rendezvous: picked().filter(|(_, c)| *c == code().trim()).map(|(r, _)| r),
+                                rendezvous: rendezvous.clone(),
                             }
 
                             // Folded because gateway address entry is rare and
@@ -310,7 +321,7 @@ pub fn ConnectForm(
                     Mode::Create => rsx! {
                         div { class: "rounded-[11px] bg-[var(--panel)] border border-[var(--edge)] px-4 py-3.5 text-[12.5px] space-y-3.5",
                             p { class: "text-[var(--text-muted)]",
-                                "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
+                                "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous it is published on supplies its own."
                             }
                             label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                 input {
@@ -358,6 +369,35 @@ pub fn ConnectForm(
                             if publish_to_rendezvous() {
                                 div { class: "pl-3 border-l border-[var(--border)] space-y-2",
                                     div { class: "space-y-1",
+                                        label { class: LABEL, "Publish on" }
+                                        div { class: "relative",
+                                            select {
+                                                // The native arrow is the one part of a select that no
+                                                // stylesheet reaches, so it is replaced rather than styled.
+                                                class: "w-full appearance-none rounded-[10px] border border-[var(--edge-strong)] pl-3.5 pr-9 py-2 font-mono text-[12.5px] focus:outline-none focus:border-[var(--accent)] transition-colors",
+                                                style: "color: var(--text); background: var(--panel2);",
+                                                onchange: move |e| {
+                                                    let mut next = settings.read().clone();
+                                                    next.publish_rendezvous = Some(e.value());
+                                                    settings.set(next.clone());
+                                                    crate::settings::save(&next);
+                                                },
+                                                for url in rendezvous.iter().cloned() {
+                                                    option {
+                                                        key: "{url}",
+                                                        value: "{url}",
+                                                        selected: url == publish_target,
+                                                        style: "color: var(--text); background: var(--panel-solid);",
+                                                        "{url}"
+                                                    }
+                                                }
+                                            }
+                                            span { class: "absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--text-dim)] pointer-events-none",
+                                                "\u{25bc}"
+                                            }
+                                        }
+                                    }
+                                    div { class: "space-y-1",
                                         label { class: LABEL, "Server name" }
                                         input {
                                             class: INPUT_SM,
@@ -384,7 +424,7 @@ pub fn ConnectForm(
                                         }
                                     }
                                     ReservedNames {
-                                        rendezvous_url,
+                                        rendezvous_url: publish_target.clone(),
                                         identity: row_identity.clone(),
                                         on_pick: move |code: String| publish_name.set(code),
                                     }
@@ -458,11 +498,12 @@ pub fn ConnectForm(
                         r#type: "submit",
                         disabled,
                         {match mode() {
+                            Mode::Join if looking_up() => "Looking up the code\u{2026}",
                             Mode::Join => "Connect  →",
                             Mode::Create => "Launch  →",
                         }}
                     }
-                    if disabled && mode() == Mode::Join {
+                    if disabled && !looking_up() && mode() == Mode::Join {
                         div { class: "mt-2 text-center text-xs text-[var(--text-dim)]", "{hint}" }
                     }
                 }
@@ -473,27 +514,51 @@ pub fn ConnectForm(
     }
 }
 
+fn by_code(rendezvous_url: String, code: String, identity: Identity) -> SessionParams {
+    SessionParams {
+        mode: SessionMode::ByCode {
+            rendezvous_url,
+            code,
+        },
+        identity,
+    }
+}
+
 #[component]
-pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
+fn RendezvousList() -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut adding = use_signal(|| false);
-    let mut draft = use_signal(String::new);
+    let mut host = use_signal(String::new);
+    let mut port = use_signal(|| crate::settings::RENDEZVOUS_PORT.to_string());
+    let mut secure = use_signal(|| false);
     let servers = settings.read().rendezvous_servers.clone();
+    let removable = servers.len() > 1;
+    let candidate = compose_rendezvous(&host(), secure(), &port());
+    let known = candidate.as_ref().is_some_and(|url| servers.contains(url));
+    let addable = candidate.clone().filter(|_| !known);
 
-    let mut commit = move |url: String| {
-        let mut next = settings.read().clone();
-        next.use_rendezvous(&url);
+    let mut store = move |next: crate::settings::ClientSettings| {
         settings.set(next.clone());
         crate::settings::save(&next);
-        on_select.call(next.active_rendezvous());
-        draft.set(String::new());
-        adding.set(false);
+    };
+    let mut commit = move || {
+        let Some(url) = compose_rendezvous(&host(), secure(), &port()) else {
+            return;
+        };
+        let mut next = settings.read().clone();
+        if next.add_rendezvous(&url).is_some() {
+            store(next);
+            host.set(String::new());
+            port.set(crate::settings::RENDEZVOUS_PORT.to_string());
+            secure.set(false);
+            adding.set(false);
+        }
     };
 
     rsx! {
         div { class: "space-y-2",
             div { class: "flex items-baseline gap-2",
-                span { class: "{LABEL} flex-1", "Rendezvous server" }
+                span { class: "{LABEL} flex-1", "Rendezvous servers" }
                 button {
                     r#type: "button",
                     class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
@@ -501,73 +566,129 @@ pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> El
                     if adding() { "Cancel" } else { "+ Add" }
                 }
             }
-            if adding() {
-                div { class: "flex gap-1.5",
-                    input {
-                        class: "{INPUT_SM} font-mono",
-                        r#type: "text",
-                        placeholder: "ws://192.168.0.61:7700",
-                        value: "{draft}",
-                        autofocus: true,
-                        oninput: move |e| draft.set(e.value()),
-                        onkeydown: move |e| {
-                            if e.key() == Key::Enter {
-                                let v = draft().trim().to_string();
-                                if !v.is_empty() { commit(v); }
-                            } else if e.key() == Key::Escape {
-                                adding.set(false);
-                            }
-                        },
-                    }
-                    button {
-                        r#type: "button",
-                        class: "px-3 rounded-[10px] text-[12.5px] font-medium text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                        onclick: move |_| {
-                            let v = draft().trim().to_string();
-                            if !v.is_empty() { commit(v); }
-                        },
-                        "Save"
-                    }
-                }
-            }
-            div { class: "flex items-center gap-2",
-                div { class: "flex-1 min-w-0 relative",
-                    select {
-                        // The native arrow is the one part of a select that no
-                        // stylesheet reaches, so it is replaced rather than styled.
-                        class: "w-full appearance-none rounded-[10px] border border-[var(--edge-strong)] pl-3.5 pr-9 py-2.5 font-mono text-[12.5px] focus:outline-none focus:border-[var(--accent)] transition-colors",
-                        style: "color: var(--text); background: var(--panel2);",
-                        onchange: move |e| on_select.call(e.value()),
-                        for url in servers.iter().cloned() {
-                            option {
-                                key: "{url}",
-                                value: "{url}",
-                                selected: url == selected,
-                                style: "color: var(--text); background: var(--panel-solid);",
-                                "{url}"
+            div { class: "space-y-1.5",
+                for (url, forget) in servers.iter().map(|u| (u.clone(), u.clone())) {
+                    div {
+                        key: "{url}",
+                        class: "flex items-center gap-2 rounded-[10px] border border-[var(--edge-strong)] bg-[var(--panel2)] pl-3.5 pr-2 py-1",
+                        span { class: "flex-1 min-w-0 truncate font-mono text-[12.5px] text-[var(--text)]", title: "{url}", "{url}" }
+                        // The last one stays: without a rendezvous there is no list and no code.
+                        if removable {
+                            button {
+                                r#type: "button",
+                                class: "w-7 h-7 shrink-0 rounded-md flex items-center justify-center text-xs text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                title: "Forget this rendezvous",
+                                onclick: move |_| {
+                                    let mut next = settings.read().clone();
+                                    next.remove_rendezvous(&forget);
+                                    store(next);
+                                },
+                                "\u{2715}"
                             }
                         }
                     }
-                    span { class: "absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--text-dim)] pointer-events-none",
-                        "▼"
-                    }
                 }
-                button {
-                    r#type: "button",
-                    class: "w-[38px] h-10 shrink-0 rounded-[10px] border border-[var(--border)] flex items-center justify-center text-xs text-[var(--text-dim)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
-                    title: "Forget this server",
-                    onclick: move |_| {
-                        let mut next = settings.read().clone();
-                        next.remove_rendezvous(&selected);
-                        settings.set(next.clone());
-                        crate::settings::save(&next);
-                        on_select.call(next.active_rendezvous());
-                    },
-                    "✕"
+            }
+            if adding() {
+                div { class: "space-y-2 px-4 py-3.5 rounded-[11px] bg-[var(--panel)] border border-[var(--edge)]",
+                    div { class: "flex gap-1.5",
+                        div { class: "flex-1 min-w-0 space-y-1",
+                            label { class: LABEL, "Address" }
+                            input {
+                                class: "{INPUT_SM} font-mono",
+                                r#type: "text",
+                                placeholder: "rendezvous.example.com",
+                                value: "{host}",
+                                autofocus: true,
+                                oninput: move |e| host.set(e.value()),
+                                // A pasted full address fills the other fields, once typing is done.
+                                onchange: move |e| {
+                                    if let Some(parts) = crate::settings::split_rendezvous(&e.value()) {
+                                        if let Some(s) = parts.secure { secure.set(s); }
+                                        if let Some(p) = parts.port { port.set(p.to_string()); }
+                                        host.set(parts.host);
+                                    }
+                                },
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        e.prevent_default();
+                                        commit();
+                                    } else if e.key() == Key::Escape {
+                                        adding.set(false);
+                                    }
+                                },
+                            }
+                        }
+                        div { class: "shrink-0 space-y-1", style: "width: 5.5rem;",
+                            label { class: LABEL, "Port" }
+                            input {
+                                class: "{INPUT_SM} font-mono",
+                                r#type: "text",
+                                inputmode: "numeric",
+                                maxlength: 5,
+                                placeholder: "{crate::settings::default_rendezvous_port(secure())}",
+                                value: "{port}",
+                                oninput: move |e| port.set(e.value().chars().filter(char::is_ascii_digit).collect()),
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        e.prevent_default();
+                                        commit();
+                                    }
+                                },
+                            }
+                        }
+                    }
+                    div { class: "flex items-center gap-2",
+                        label {
+                            class: "flex-1 flex items-center gap-2 cursor-pointer text-[12px] text-[var(--text)]",
+                            title: "Only for a rendezvous behind a TLS proxy. Most are not, so leave this off unless its owner says otherwise.",
+                            input {
+                                r#type: "checkbox",
+                                checked: secure(),
+                                oninput: move |e| {
+                                    let on = e.value() == "true";
+                                    let was = crate::settings::default_rendezvous_port(secure()).to_string();
+                                    if port().is_empty() || port() == was {
+                                        port.set(crate::settings::default_rendezvous_port(on).to_string());
+                                    }
+                                    secure.set(on);
+                                },
+                            }
+                            "Secure connection (wss://)"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "px-3 py-1.5 rounded-[10px] text-[12.5px] font-medium text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                            disabled: addable.is_none(),
+                            onclick: move |_| commit(),
+                            "Add"
+                        }
+                    }
+                    div { class: "text-[11px] text-[var(--text-dim)] font-mono truncate",
+                        match (candidate, known) {
+                            (Some(url), true) => rsx! { "{url} is already in the list" },
+                            (Some(url), false) => rsx! { "Adds {url}" },
+                            (None, _) if host().trim().is_empty() => rsx! { "Just the name or IP is enough; the port is filled in." },
+                            (None, _) => rsx! { "That isn't an address" },
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/// Explicit parts of what was typed in the address box beat the other fields,
+/// so a pasted `wss://…` is right even before it is split out.
+fn compose_rendezvous(host: &str, secure: bool, port: &str) -> Option<String> {
+    let parts = crate::settings::split_rendezvous(host)?;
+    let secure = parts.secure.unwrap_or(secure);
+    let port = match parts.port {
+        Some(p) => p,
+        None if port.trim().is_empty() => crate::settings::default_rendezvous_port(secure),
+        None => port.trim().parse().ok().filter(|p| *p != 0)?,
+    };
+    Some(crate::settings::rendezvous_url(secure, &parts.host, port))
 }
 
 #[component]
@@ -716,7 +837,7 @@ pub(crate) fn BlobServerField() -> Element {
 /// last session, and a key holds only a few: this is where one is let go early.
 #[component]
 fn ReservedNames(
-    rendezvous_url: Signal<String>,
+    rendezvous_url: ReadSignal<String>,
     identity: Identity,
     on_pick: EventHandler<String>,
 ) -> Element {
@@ -1063,71 +1184,131 @@ fn initials(name: &str) -> String {
         .to_uppercase()
 }
 
+/// A host as one rendezvous lists it. Codes are unique only within one, so the
+/// pair is the identity of a row and a pin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listed {
+    rendezvous: String,
+    entry: DiscoverEntry,
+}
+
+impl Listed {
+    fn key(&self) -> String {
+        listed_key(&self.rendezvous, &self.entry.shortcode)
+    }
+}
+
+fn listed_key(rendezvous: &str, code: &str) -> String {
+    format!("{rendezvous} {code}")
+}
+
+fn rendezvous_label(url: &str) -> &str {
+    url.split_once("://").map_or(url, |(_, rest)| rest)
+}
+
+async fn discover(rendezvous: &str) -> Result<Vec<DiscoverEntry>, String> {
+    let url = format!("{}/discover", ws_to_http(rendezvous));
+    reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("fetch: {e}"))?
+        .json::<Vec<DiscoverEntry>>()
+        .await
+        .map_err(|e| format!("decode: {e}"))
+}
+
+/// Every rendezvous's hosts in list order, and the ones that did not answer.
+fn merge(
+    answers: Vec<(String, Result<Vec<DiscoverEntry>, String>)>,
+) -> (Vec<Listed>, Vec<(String, String)>) {
+    let mut hosts = Vec::new();
+    let mut failed = Vec::new();
+    for (rendezvous, answer) in answers {
+        match answer {
+            Ok(entries) => hosts.extend(entries.into_iter().map(|entry| Listed {
+                rendezvous: rendezvous.clone(),
+                entry,
+            })),
+            Err(e) => failed.push((rendezvous, e)),
+        }
+    }
+    (hosts, failed)
+}
+
 #[component]
 fn BrowseTab(
-    rendezvous_url: String,
-    on_pick: EventHandler<DiscoverEntry>,
-    on_enter: EventHandler<DiscoverEntry>,
+    rendezvous: ReadSignal<Vec<String>>,
+    on_pick: EventHandler<Listed>,
+    on_enter: EventHandler<Listed>,
     picked_shortcode: String,
+    picked_rendezvous: Option<String>,
 ) -> Element {
     let mut refresh_tick = use_signal(|| 0u32);
-    let url_for_fetch = rendezvous_url.clone();
-    let entries = use_resource(move || {
+    let answers = use_resource(move || {
         let _ = refresh_tick();
-        let base = ws_to_http(&url_for_fetch);
+        let all = rendezvous();
         async move {
-            let url = format!("{base}/discover");
-            reqwest::Client::new()
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| format!("fetch: {e}"))?
-                .json::<Vec<DiscoverEntry>>()
-                .await
-                .map_err(|e| format!("decode: {e}"))
+            let asks = all
+                .iter()
+                .map(|r| async move { (r.clone(), discover(r).await) });
+            merge(futures_util::future::join_all(asks).await)
         }
     });
 
-    let list: Vec<DiscoverEntry> = match &*entries.read_unchecked() {
-        Some(Ok(l)) => l.clone(),
-        _ => Vec::new(),
+    let (list, failed) = match &*answers.read_unchecked() {
+        Some((l, f)) => (l.clone(), f.clone()),
+        None => (Vec::new(), Vec::new()),
     };
+    let selected = list
+        .iter()
+        .find(|h| {
+            h.entry.shortcode == picked_shortcode
+                && picked_rendezvous
+                    .as_ref()
+                    .is_none_or(|r| *r == h.rendezvous)
+        })
+        .map(Listed::key);
     let pins: Vec<GlobePin> = list
         .iter()
-        .filter_map(|e| {
-            let p = e.location?;
+        .filter_map(|h| {
+            let p = h.entry.location?;
+            let name = h.entry.name.as_ref().unwrap_or(&h.entry.shortcode);
             Some(GlobePin {
-                code: e.shortcode.clone(),
-                label: e.name.clone().unwrap_or_else(|| e.shortcode.clone()),
+                code: h.key(),
+                label: format!("{name} \u{b7} {}", rendezvous_label(&h.rendezvous)),
                 lat: p.lat,
                 lon: p.lon,
-                fresh: e.idle_secs < HOST_STALE_AFTER_SECS,
+                fresh: h.entry.idle_secs < HOST_STALE_AFTER_SECS,
             })
         })
         .collect();
     let pin_list = list.clone();
 
-    let status = match &*entries.read_unchecked() {
+    let status = match &*answers.read_unchecked() {
         None => Some(rsx! {
             div { class: "text-[12.5px] text-[var(--text-dim)] px-6 py-5 text-center border border-[var(--edge-strong)] rounded-xl", "Loading\u{2026}" }
         }),
-        Some(Err(e)) => Some(rsx! {
-            div { class: "text-[12.5px] px-6 py-5 space-y-1.5 border border-[var(--edge-strong)] rounded-xl",
-                div { class: "font-semibold text-[var(--danger)]", "Couldn't reach the server directory." }
-                div { class: "text-[var(--text-dim)] leading-relaxed text-pretty",
-                    "A code from a friend still works, or create your own server. ({e})"
+        Some((l, f)) if l.is_empty() && !f.is_empty() && f.len() == rendezvous().len() => {
+            Some(rsx! {
+                div { class: "text-[12.5px] px-6 py-5 space-y-1.5 border border-[var(--edge-strong)] rounded-xl",
+                    div { class: "font-semibold text-[var(--danger)]", "Couldn't reach any server directory." }
+                    div { class: "text-[var(--text-dim)] leading-relaxed text-pretty",
+                        "A code from a friend still works, or create your own server."
+                    }
                 }
-            }
-        }),
-        Some(Ok(l)) if l.is_empty() => Some(rsx! {
+            })
+        }
+        Some((l, _)) if l.is_empty() => Some(rsx! {
             div { class: "px-6 py-5 text-center bg-[var(--panel)] border border-dashed border-[var(--edge-strong)] rounded-xl",
-                div { class: "text-sm font-semibold text-[var(--text-muted)]", "Nothing listed here yet" }
+                div { class: "text-sm font-semibold text-[var(--text-muted)]", "Nothing listed yet" }
                 div { class: "mt-1.5 mx-auto max-w-[380px] text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
                     "A code from a friend works without one \u{2014} or make your own from the Create tab."
                 }
             }
         }),
-        Some(Ok(_)) => None,
+        Some(_) => None,
     };
 
     rsx! {
@@ -1147,28 +1328,37 @@ fn BrowseTab(
                 div {
                     class: "overflow-y-auto space-y-1.5 pr-0.5",
                     style: "max-height: {HOST_LIST_MAX_HEIGHT};",
-                    for entry in list.iter().cloned() {
+                    for host in list.iter().cloned() {
                         HostRow {
-                            key: "{entry.shortcode}",
-                            selected: picked_shortcode == entry.shortcode,
-                            entry,
+                            key: "{host.key()}",
+                            selected: selected.as_deref() == Some(host.key().as_str()),
+                            host,
                             on_pick,
                             on_enter,
                         }
                     }
                 }
             }
+            for (url, e) in failed {
+                div {
+                    key: "{url}",
+                    class: "text-[11px] text-[var(--text-dim)] truncate",
+                    title: "{e}",
+                    span { class: "text-[var(--danger)]", "Unreachable: " }
+                    span { class: "font-mono", "{rendezvous_label(&url)}" }
+                }
+            }
             div { class: "rounded-xl bg-[var(--panel)] border border-[var(--edge-strong)] overflow-hidden",
                 Globe {
                     pins,
-                    selected: (!picked_shortcode.is_empty()).then(|| picked_shortcode.clone()),
+                    selected,
                     pick: false,
                     place: None::<GeoPoint>,
                     height: 260,
-                    on_pick: move |code: String| {
-                        if let Some(e) = pin_list.iter().find(|e| e.shortcode == code) {
-                            on_pick.call(e.clone());
-                            scroll_to_host(&code);
+                    on_pick: move |key: String| {
+                        if let Some(h) = pin_list.iter().find(|h| h.key() == key) {
+                            on_pick.call(h.clone());
+                            scroll_to_host(&key);
                         }
                     },
                     on_place: move |_| {},
@@ -1186,24 +1376,25 @@ const HOST_LIST_MAX_HEIGHT: &str = "calc(6 * 4.25rem + 5 * 0.375rem)";
 const HOST_ROW_HEIGHT: &str = "4.25rem";
 
 /// A pin can belong to a row scrolled out of the list's six.
-fn scroll_to_host(code: &str) {
-    let id = serde_json::to_string(&host_row_id(code)).unwrap_or_default();
+fn scroll_to_host(key: &str) {
+    let id = serde_json::to_string(&host_row_id(key)).unwrap_or_default();
     document::eval(&format!(
         "document.getElementById({id})?.scrollIntoView({{block: 'nearest'}});"
     ));
 }
 
-fn host_row_id(code: &str) -> String {
-    format!("host-row-{code}")
+fn host_row_id(key: &str) -> String {
+    format!("host-row-{key}")
 }
 
 #[component]
 fn HostRow(
-    entry: DiscoverEntry,
+    host: Listed,
     selected: bool,
-    on_pick: EventHandler<DiscoverEntry>,
-    on_enter: EventHandler<DiscoverEntry>,
+    on_pick: EventHandler<Listed>,
+    on_enter: EventHandler<Listed>,
 ) -> Element {
+    let entry = &host.entry;
     let sc = entry.shortcode.clone();
     let title = entry.name.clone().unwrap_or_else(|| sc.clone());
     let named = entry.name.is_some();
@@ -1226,11 +1417,12 @@ fn HostRow(
     };
     let mark = initials(&title);
     let where_ = entry.location.map(describe);
-    let for_pick = entry.clone();
-    let for_enter = entry.clone();
+    let via = rendezvous_label(&host.rendezvous);
+    let for_pick = host.clone();
+    let for_enter = host.clone();
     rsx! {
         div {
-            id: host_row_id(&entry.shortcode),
+            id: host_row_id(&host.key()),
             class: "flex items-center gap-3 pl-2.5 pr-2.5 py-2 rounded-lg border transition-colors {row_cls}",
             style: "border-left: 3px solid {stripe}; min-height: {HOST_ROW_HEIGHT};",
             button {
@@ -1251,9 +1443,12 @@ fn HostRow(
                             }
                         }
                     }
-                    span { class: "block truncate text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
+                    span {
+                        class: "block truncate text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
+                        title: "Listed by {host.rendezvous}",
                         if direct { "{fresh_label} \u{b7} direct" } else { "{fresh_label} \u{b7} relayed" }
                         if let Some(w) = where_ { " \u{b7} {w}" }
+                        span { style: "text-transform: none; letter-spacing: normal;", " \u{b7} via {via}" }
                     }
                     if let Some(d) = entry.description.clone() {
                         span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{d}" }
@@ -1283,9 +1478,14 @@ fn ws_to_http(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{JoinBy, Mode, initial_mode, join_by};
+    use super::{JoinBy, Mode, compose_rendezvous, initial_mode, join_by, merge};
+    use crate::protocol::rendezvous::DiscoverEntry;
 
-    const R: &str = "ws://rendezvous.example:7700";
+    const NONE: &[String] = &[];
+
+    fn r() -> Vec<String> {
+        vec!["ws://rendezvous.example:7700".into()]
+    }
 
     #[test]
     fn a_launch_opens_on_the_half_that_costs_nothing() {
@@ -1294,29 +1494,75 @@ mod tests {
 
     #[test]
     fn an_untouched_address_does_not_beat_a_code() {
-        assert_eq!(join_by("", "purple-fox-42", R), JoinBy::Code);
+        assert_eq!(join_by("", "purple-fox-42", &r()), JoinBy::Code);
     }
 
     #[test]
     fn a_typed_address_beats_a_code() {
         assert_eq!(
-            join_by("ws://box.local:9000", "purple-fox-42", R),
+            join_by("ws://box.local:9000", "purple-fox-42", &r()),
             JoinBy::Url
         );
     }
 
     #[test]
     fn blank_space_is_not_an_address() {
-        assert_eq!(join_by("   ", "purple-fox-42", R), JoinBy::Code);
+        assert_eq!(join_by("   ", "purple-fox-42", &r()), JoinBy::Code);
     }
 
     #[test]
     fn a_code_without_a_directory_is_not_submittable() {
-        assert_eq!(join_by("", "purple-fox-42", ""), JoinBy::Nothing);
+        assert_eq!(join_by("", "purple-fox-42", NONE), JoinBy::Nothing);
     }
 
     #[test]
     fn an_empty_form_has_nothing_to_submit() {
-        assert_eq!(join_by("", "", R), JoinBy::Nothing);
+        assert_eq!(join_by("", "", &r()), JoinBy::Nothing);
+    }
+
+    fn entry(code: &str) -> DiscoverEntry {
+        DiscoverEntry {
+            shortcode: code.into(),
+            name: None,
+            description: None,
+            idle_secs: 0,
+            transport_key: None,
+            transport_addrs: Vec::new(),
+            relay_url: None,
+            location: None,
+        }
+    }
+
+    #[test]
+    fn the_add_form_fills_in_what_was_left_out() {
+        assert_eq!(
+            compose_rendezvous("r.example", false, "7700").as_deref(),
+            Some("ws://r.example:7700")
+        );
+        assert_eq!(
+            compose_rendezvous("r.example", true, "").as_deref(),
+            Some("wss://r.example")
+        );
+        assert_eq!(
+            compose_rendezvous("wss://r.example:8443", false, "7700").as_deref(),
+            Some("wss://r.example:8443")
+        );
+        assert_eq!(compose_rendezvous("r.example", false, "0"), None);
+        assert_eq!(compose_rendezvous("", false, "7700"), None);
+    }
+
+    #[test]
+    fn one_code_on_two_rendezvous_is_two_hosts() {
+        let (hosts, failed) = merge(vec![
+            ("ws://a".into(), Ok(vec![entry("fox"), entry("owl")])),
+            ("ws://down".into(), Err("fetch: refused".into())),
+            ("ws://b".into(), Ok(vec![entry("fox")])),
+        ]);
+        let keys: Vec<String> = hosts.iter().map(|h| h.key()).collect();
+        assert_eq!(keys, ["ws://a fox", "ws://a owl", "ws://b fox"]);
+        assert_eq!(
+            failed,
+            [("ws://down".to_string(), "fetch: refused".to_string())]
+        );
     }
 }

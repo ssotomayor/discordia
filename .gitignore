@@ -34,3 +34,6 @@ CLAUDE.local.md
 # Fetched by the Windows release workflow before `dx bundle` and embedded by
 # client/nsis/webview2.nsh — a build input, not source.
 client/nsis/MicrosoftEdgeWebview2Setup.exe
+
+# The Wizards example keeps its app key here; it is a secret.
+wizards.key
