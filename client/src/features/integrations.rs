@@ -688,7 +688,8 @@ fn BundleRow(
             if held {
                 div { class: "text-[var(--text-muted)]", "Activity ready for members" }
             } else {
-                div { class: "text-[var(--warn)]", "Activity bundle missing — members can't open it yet" }
+                div { class: "text-[var(--warn)]", "Waiting for the app to send its activity — its bot sends it when online." }
+                div { class: "text-[10px] text-[var(--text-dim)]", "Or provide the file yourself:" }
                 div { class: "flex gap-2",
                     button {
                         class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",

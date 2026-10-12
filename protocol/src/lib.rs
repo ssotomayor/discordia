@@ -2103,6 +2103,11 @@ pub enum ClientMessage {
     FetchAppManifest {
         bot_pubkey: String,
     },
+    /// Bot only, answering `BundleWanted`: the app's own activity bundle. Who
+    /// sends the bytes does not matter; the hash a guild approved does.
+    OfferActivityBundle {
+        data_url: String,
+    },
     /// Manage guild. The bytes must hash to the approved or pending manifest's
     /// `activity.sha256`.
     UploadActivityBundle {
@@ -2581,6 +2586,10 @@ pub enum ServerMessage {
     AppManifestEvent {
         bot_pubkey: String,
         event: Option<String>,
+    },
+    /// To an app's bot: a guild approved this bundle and the host lacks it.
+    BundleWanted {
+        sha256: String,
     },
     /// Activities whose bundle this host holds, for any member.
     GuildActivities {

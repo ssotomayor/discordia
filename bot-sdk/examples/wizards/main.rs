@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         id.pubkey()
     );
     eprintln!(
-        "  activity bundle (Upload file…): bot-sdk/examples/wizards/index.html, sha256 {}",
+        "  the activity reaches the host by itself; its sha256 is {}",
         m.activity.as_ref().map(|a| a.sha256.as_str()).unwrap_or("")
     );
     loop {
@@ -106,6 +106,12 @@ async fn run(server: &str, id: &BotIdentity) -> Result<(), Box<dyn std::error::E
                 }
                 Some(ServerMessage::ActivityEvent { instance_id, from, data }) => {
                     act(&mut bot, &mut tables, instance_id, &from, &data).await?;
+                }
+                Some(ServerMessage::BundleWanted { sha256 }) => {
+                    if manifest().activity.is_some_and(|a| a.sha256 == sha256) {
+                        bot.offer_bundle(BUNDLE.as_bytes()).await?;
+                        eprintln!("sent the activity to the host");
+                    }
                 }
                 Some(ServerMessage::Error { message }) => eprintln!("host: {message}"),
                 Some(_) => {}

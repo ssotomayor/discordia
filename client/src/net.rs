@@ -1502,6 +1502,8 @@ fn apply(
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
         }
+        // Sent only to an app's bot.
+        ServerMessage::BundleWanted { .. } => {}
         ServerMessage::AppManifestEvent { bot_pubkey, event } => {
             s.app_manifest_events.insert(bot_pubkey, event);
         }
