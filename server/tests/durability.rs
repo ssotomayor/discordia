@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
-use dioxusfun_server::protocol::{ChannelKind, Guild, Permission, User};
+use dioxusfun_server::protocol::{ChannelKind, Guild, Permission, Profile, User};
 use dioxusfun_server::state::AppState;
 use dioxusfun_server::store::Store;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -238,14 +238,11 @@ async fn failed_profile_and_invite_changes_preserve_previous_values() {
     f.fail("INSERT", "profiles").await;
     assert!(
         f.state
-            .set_profile(
-                &f.owner.pubkey,
-                None,
-                None,
-                Some("unsaved".into()),
-                None,
-                None
-            )
+            .set_profile(Profile {
+                pubkey: f.owner.pubkey.clone(),
+                bio: Some("unsaved".into()),
+                ..Default::default()
+            })
             .await
             .is_err()
     );

@@ -543,7 +543,9 @@ pub async fn handle_connection<S>(
                             }
                         }
                     }
-                    ClientMessage::SetProfile { avatar, banner, bio, status, custom_status } => {
+                    ClientMessage::SetProfile {
+                        avatar, banner, bio, status, custom_status, hide_guild_owner, hide_operator,
+                    } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -587,9 +589,17 @@ pub async fn handle_connection<S>(
                             }).await;
                             continue;
                         }
-                        let profile = ctx.state.set_profile(
-                            &u.pubkey, avatar, banner, bio, status, custom_status,
-                        ).await;
+                        let profile = ctx.state.set_profile(crate::protocol::Profile {
+                            pubkey: u.pubkey.clone(),
+                            avatar,
+                            banner,
+                            bio,
+                            status,
+                            custom_status,
+                            hide_guild_owner,
+                            hide_operator,
+                            operator: false,
+                        }).await;
                         match profile {
                             Ok(profile) => ctx.state.broadcast(ServerMessage::ProfileUpdate(profile)),
                             Err(message) => { let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await; }

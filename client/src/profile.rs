@@ -16,6 +16,10 @@ pub struct LocalProfile {
     pub status: Option<String>,
     #[serde(default)]
     pub custom_status: Option<String>,
+    #[serde(default)]
+    pub hide_guild_owner: bool,
+    #[serde(default)]
+    pub hide_operator: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -143,6 +143,7 @@ pub fn profile(p: &mut Profile) -> bool {
     p.bio = paragraph(p.bio.take(), BIO);
     p.status = p.status.take().filter(|s| PRESENCES.contains(&s.as_str()));
     p.custom_status = line(p.custom_status.take(), CUSTOM_STATUS);
+    p.operator = false;
     !p.pubkey.is_empty()
 }
 

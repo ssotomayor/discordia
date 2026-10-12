@@ -422,27 +422,17 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn set_profile(
-        &self,
-        pubkey: &str,
-        avatar: Option<String>,
-        banner: Option<String>,
-        bio: Option<String>,
-        status: Option<String>,
-        custom_status: Option<String>,
-    ) -> Result<Profile, String> {
+    pub async fn set_profile(&self, profile: Profile) -> Result<Profile, String> {
         let _write = self.durable_writes.lock().await;
-        let profile = Profile {
-            pubkey: pubkey.to_string(),
-            avatar,
-            banner,
-            bio,
-            status,
-            custom_status,
-        };
         durable(self.store.upsert_profile(&profile).await, "profile")?;
-        self.profiles.insert(pubkey.to_string(), profile.clone());
-        Ok(profile)
+        self.profiles
+            .insert(profile.pubkey.clone(), profile.clone());
+        Ok(self.shown_profile(profile))
+    }
+
+    fn shown_profile(&self, mut p: Profile) -> Profile {
+        p.operator = !p.hide_operator && self.operators.contains(&p.pubkey);
+        p
     }
 
     pub fn xp_of(&self, guild_id: Id, pubkey: &str) -> u64 {
@@ -740,7 +730,22 @@ impl AppState {
     }
 
     pub fn profiles_snapshot(&self) -> Vec<Profile> {
-        self.profiles.iter().map(|p| p.value().clone()).collect()
+        let mut out: Vec<Profile> = self
+            .profiles
+            .iter()
+            .map(|p| self.shown_profile(p.value().clone()))
+            .collect();
+        // An operator who never edited a profile still wears the badge; one
+        // who never connected is not named, so a configured key stays private.
+        for pk in &self.operators {
+            if !self.profiles.contains_key(pk) && self.users.contains_key(pk) {
+                out.push(self.shown_profile(Profile {
+                    pubkey: pk.clone(),
+                    ..Default::default()
+                }));
+            }
+        }
+        out
     }
 
     /// Everyone who shares a guild with this key, themselves included. The
