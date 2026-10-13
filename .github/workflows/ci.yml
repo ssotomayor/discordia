@@ -414,14 +414,6 @@ jobs:
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
-      - name: Free disk space
-        # Two release builds left hdiutil no room for its scratch image ("No
-        # space left on device"); the Android and .NET SDKs are never used here.
-        run: |
-          df -h /
-          sudo rm -rf "${ANDROID_HOME:-$HOME/Library/Android/sdk}" "$HOME/.dotnet" /usr/local/share/dotnet
-          xcrun simctl runtime delete all >/dev/null 2>&1 || true
-          df -h /
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

@@ -64,7 +64,10 @@ mkdir -p "$output_dir"
 rm -rf "$output_app"
 cp -R "$app" "$output_app"
 rm -f "$dmg"
-hdiutil create -srcfolder "$stage" -volname Discordia -ov -format UDZO "$dmg" >/dev/null
+# hdiutil's own estimate from -srcfolder can undershoot, and it then reports
+# "No space left on device" about the image, not the disk.
+size_mb=$(( $(du -sm "$stage" | cut -f1) * 5 / 4 + 32 ))
+hdiutil create -srcfolder "$stage" -volname Discordia -size "${size_mb}m" -ov -format UDZO "$dmg" >/dev/null
 [[ -n "$identity" ]] && codesign --force --sign "$identity" "$dmg" >/dev/null 2>&1 || true
 
 echo
