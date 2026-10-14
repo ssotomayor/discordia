@@ -622,22 +622,22 @@ fn parse_ice_configuration(raw: &str, relay_only: bool) -> Result<RtcConfigurati
     {
         return Err("Relay-only calls require a TURN server.".into());
     }
-    Ok(RtcConfiguration {
-        ice_servers: servers
-            .into_iter()
-            .map(|s| IceServer {
-                urls: s.urls,
-                username: s.username,
-                password: s.password,
-            })
-            .collect(),
-        continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
-        ice_transport_type: if relay_only {
-            IceTransportsType::Relay
-        } else {
-            IceTransportsType::All
-        },
-    })
+    let mut config = RtcConfiguration::default();
+    config.ice_servers = servers
+        .into_iter()
+        .map(|s| IceServer {
+            urls: s.urls,
+            username: s.username,
+            password: s.password,
+        })
+        .collect();
+    config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+    config.ice_transport_type = if relay_only {
+        IceTransportsType::Relay
+    } else {
+        IceTransportsType::All
+    };
+    Ok(config)
 }
 
 async fn apply_description(peer: &PeerConnection, sdp: &str, kind: SdpType) -> Result<(), String> {

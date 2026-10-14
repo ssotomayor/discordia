@@ -13,16 +13,22 @@
 // limitations under the License.
 
 use libwebrtc::prelude::*;
-use livekit_api::signal_client::{SignalError, SignalOptions};
 use livekit_datatrack::backend as dt;
 use livekit_protocol as proto;
-use livekit_runtime::JoinHandle;
+use livekit_signaling::{SignalError, SignalOptions};
 use parking_lot::{RwLock, RwLockReadGuard};
-use std::{borrow::Cow, fmt::Debug, sync::Arc, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::HashSet,
+    fmt::Debug,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::sync::{
     mpsc, oneshot, Notify, RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard,
 };
+use tokio::task::JoinHandle;
 
 pub use self::rtc_session::{SessionStats, INITIAL_BUFFERED_AMOUNT_LOW_THRESHOLD};
 use crate::prelude::ParticipantIdentity;
@@ -42,10 +48,10 @@ use crate::{ChatMessage, E2eeManager, TranscriptionSegment};
 mod dc_sender;
 pub mod lk_runtime;
 mod peer_transport;
-mod start_bitrate;
 mod reconnect_strategy;
 mod rtc_events;
 mod rtc_session;
+mod start_bitrate;
 
 // Re-exported to preserve the public `rtc_engine::RECONNECT_*` paths.
 pub use reconnect_strategy::{
@@ -56,17 +62,27 @@ pub(crate) type EngineEmitter = mpsc::UnboundedSender<EngineEvent>;
 pub(crate) type EngineEvents = mpsc::UnboundedReceiver<EngineEvent>;
 pub(crate) type EngineResult<T> = Result<T, EngineError>;
 
-/// Settling delay before checking PeerConnection state on the resume path.
+/// How long a resume waits before accepting "this transport never left `Connected`" as
+/// evidence that it is still good.
 ///
-/// Lets a freshly issued ICE-restart offer/answer round-trip take effect when the
-/// underlying PC was still in `Connected` at the moment we started the reconnect
-/// (e.g. signal-only failure). Without this, the resume can return success
-/// immediately and the next failure detector then trips the engine into a real
-/// disconnect.
+/// Only the ambiguous case waits: a transport that re-entered `Connected` during the resume
+/// has demonstrably reconnected and is accepted immediately. But a transport whose far end
+/// has silently gone away also still reports `Connected`, because ICE holds that state until
+/// its receiving timeout — so this has to outlast that timeout, or a dead transport is
+/// accepted as healthy.
 ///
-/// Only applied to the resume path. Full reconnect builds brand-new PCs which
-/// don't suffer from the "looks-Connected-but-isn't" race.
-pub const PC_RECONNECT_SETTLE_DELAY: Duration = Duration::from_secs(1);
+/// The cost is resume latency for a signal-only failure, where the media plane was fine and
+/// there is no reconnection to short-circuit on. Resume-only; a full reconnect builds new
+/// PeerConnections and has no stale state to misread.
+///
+/// This window cannot be replaced by watching for an ICE restart to take effect. Measured
+/// against a dev server, a same-node resume does perform a real subscriber ICE restart — the
+/// server's offer carries a fresh ice-ufrag and both transports gather a new generation — yet
+/// neither `IceConnectionState` nor `PeerConnectionState` leaves `Connected` at any point,
+/// because libwebrtc keeps the old candidate pair selected until the new one is ready. So
+/// "nothing transitioned" is the *normal* outcome of a healthy resume, and requiring an
+/// observed transition would time out every signal-only resume into a full reconnect.
+pub const PC_RECONNECT_SETTLE_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SimulateScenario {
@@ -115,6 +131,12 @@ pub struct EngineOptions {
 pub enum EngineEvent {
     ParticipantUpdate {
         updates: Vec<proto::ParticipantInfo>,
+    },
+    /// A signal resume fully recovered; any known participant whose identity
+    /// is not in `seen_identities` left the room while the signal link was
+    /// down and its disconnection must be synthesized.
+    ParticipantReconcile {
+        seen_identities: HashSet<ParticipantIdentity>,
     },
     MediaTrack {
         track: MediaStreamTrack,
@@ -205,6 +227,7 @@ pub enum EngineEvent {
     DataStreamTrailer {
         trailer: proto::data_stream::Trailer,
         participant_identity: String,
+        encryption_type: proto::encryption::Type,
     },
     DataChannelBufferedAmountLowThresholdChanged {
         kind: DataPacketKind,
@@ -221,6 +244,8 @@ pub enum EngineEvent {
     SubscribedQualityUpdate {
         update: proto::SubscribedQualityUpdate,
     },
+    /// A publisher answer was applied; dynacast layers must be re-applied.
+    RefreshPublishingLayers,
     LocalDataTrackInput(dt::local::InputEvent),
     RemoteDataTrackInput(dt::remote::InputEvent),
 }
@@ -242,6 +267,12 @@ struct EngineHandle {
     // Carried through so that, if reconnection ultimately fails, the engine
     // closes with the original cause rather than a generic `UnknownReason`.
     reconnect_reason: DisconnectReason,
+
+    // The cause reported to the server on each resume attempt of this episode, so
+    // server-side telemetry can attribute why clients reconnect. Set from the
+    // failure that started the episode and not overwritten by later failures,
+    // which are consequences of the first.
+    reported_reconnect_reason: proto::ReconnectReason,
     engine_task: Option<(JoinHandle<()>, oneshot::Sender<()>)>,
 }
 
@@ -305,6 +336,15 @@ impl RtcEngine {
 
     pub async fn close(&self, reason: DisconnectReason) {
         self.inner.close(reason).await
+    }
+
+    /// Test-only: returns a probe that reports whether the engine internals have been
+    /// dropped. `Drop` running is not observable from the outside, and a reference cycle
+    /// would silently prevent it, so lifecycle tests assert on this instead.
+    #[cfg(feature = "__lk-e2e-test")]
+    pub fn drop_probe(&self) -> impl Fn() -> bool + Send + Sync + 'static {
+        let inner = Arc::downgrade(&self.inner);
+        move || inner.upgrade().is_none()
     }
 
     pub async fn publish_data(
@@ -393,7 +433,7 @@ impl RtcEngine {
 
     pub fn publisher_negotiation_needed(&self) {
         let inner = self.inner.clone();
-        livekit_runtime::spawn(async move {
+        tokio::spawn(async move {
             if let Ok((handle, _)) = inner.wait_reconnection().await {
                 handle.session.publisher_negotiation_needed()
             }
@@ -427,7 +467,9 @@ impl RtcEngine {
     /// deterministically exercise the resume-failure → full-reconnect escalation.
     #[cfg(feature = "__lk-e2e-test")]
     pub fn fail_next_resume_attempts(&self, count: u32) {
-        self.inner.fail_resume_attempts.store(count, std::sync::atomic::Ordering::Release);
+        self.inner
+            .fail_resume_attempts
+            .store(count, std::sync::atomic::Ordering::Release);
     }
 
     /// Test-only: arm a one-shot fault so the next resume attempt simulates a
@@ -438,6 +480,13 @@ impl RtcEngine {
         self.inner
             .fail_transport_during_next_resume
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Test-only: drop incoming DISCONNECTED participant entries on the current
+    /// session, simulating an SFU that fails to (re)deliver disconnect updates.
+    #[cfg(feature = "__lk-e2e-test")]
+    pub fn drop_disconnected_updates(&self, enabled: bool) {
+        self.session().drop_disconnected_updates(enabled);
     }
 }
 
@@ -473,6 +522,7 @@ impl EngineInner {
                             can_reconnect: true,
                             full_reconnect: false,
                             reconnect_reason: DisconnectReason::UnknownReason,
+                            reported_reconnect_reason: proto::ReconnectReason::RrUnknown,
                             engine_task: None,
                         }),
                         options,
@@ -488,8 +538,8 @@ impl EngineInner {
 
                     // Start initial tasks
                     let (close_tx, close_rx) = oneshot::channel();
-                    let session_task = livekit_runtime::spawn(Self::engine_task(
-                        inner.clone(),
+                    let session_task = tokio::spawn(Self::engine_task(
+                        Arc::downgrade(&inner),
                         session_events,
                         close_rx,
                     ));
@@ -530,18 +580,28 @@ impl EngineInner {
         Err(last_error.unwrap())
     }
 
+    /// Forwards session events to the engine for as long as the engine is alive.
+    ///
+    /// Takes a [`Weak`] reference because the engine owns this task: its `JoinHandle` and
+    /// stop signal live in [`EngineHandle`], inside the very [`EngineInner`] this task would
+    /// otherwise hold. A strong reference makes the two keep each other alive, so nothing
+    /// but an explicit `close()` can release them, and merely dropping the engine leaks the
+    /// session, both peer connections, and the signal client with its open websocket.
+    /// Upgrading per event also lets the task stop on its own once the engine is gone.
     async fn engine_task(
-        self: Arc<Self>,
+        this: Weak<Self>,
         mut session_events: SessionEvents,
         mut close_rx: oneshot::Receiver<()>,
     ) {
         loop {
             tokio::select! {
                 Some(event) = session_events.recv() => {
+                    let Some(inner) = this.upgrade() else {
+                        break;
+                    };
                     let debug = format!("{:?}", event);
-                    let inner = self.clone();
                     let (tx, rx) = oneshot::channel();
-                    let task = livekit_runtime::spawn(async move {
+                    let task = tokio::spawn(async move {
                         if let Err(err) = inner.on_session_event(event).await {
                             log::error!("failed to handle session event: {:?}", err);
                         }
@@ -551,12 +611,12 @@ impl EngineInner {
                     // Monitor sync/async blockings
                     tokio::select! {
                         _ = rx => {},
-                        _ = livekit_runtime::sleep(Duration::from_secs(10)) => {
+                        _ = tokio::time::sleep(Duration::from_secs(10)) => {
                             log::error!("session_event is taking too much time: {}", debug);
                         }
                     }
 
-                    task.await;
+                    task.await.expect("session event handler panicked");
                 },
                  _ = &mut close_rx => {
                     break;
@@ -569,7 +629,13 @@ impl EngineInner {
 
     async fn on_session_event(self: &Arc<Self>, event: SessionEvent) -> EngineResult<()> {
         match event {
-            SessionEvent::Close { source, reason, action, retry_now } => {
+            SessionEvent::Close {
+                source,
+                reason,
+                reconnect_reason,
+                action,
+                retry_now,
+            } => {
                 match action {
                     proto::leave_request::Action::Resume
                     | proto::leave_request::Action::Reconnect => {
@@ -594,6 +660,7 @@ impl EngineInner {
                             retry_now,
                             action == proto::leave_request::Action::Reconnect,
                             reason,
+                            reconnect_reason,
                         );
                     }
                     proto::leave_request::Action::Disconnect => {
@@ -603,7 +670,7 @@ impl EngineInner {
 
                         // Spawning a new task because the close function wait for the engine_task to
                         // finish. (So it doesn't make sense to await it here)
-                        livekit_runtime::spawn({
+                        tokio::spawn({
                             let inner = self.clone();
                             async move {
                                 inner.close(reason).await;
@@ -629,24 +696,47 @@ impl EngineInner {
                     encryption_type,
                 });
             }
-            SessionEvent::ChatMessage { participant_identity, message } => {
-                let _ =
-                    self.engine_tx.send(EngineEvent::ChatMessage { participant_identity, message });
+            SessionEvent::ChatMessage {
+                participant_identity,
+                message,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::ChatMessage {
+                    participant_identity,
+                    message,
+                });
             }
-            SessionEvent::SipDTMF { participant_identity, code, digit } => {
-                let _ =
-                    self.engine_tx.send(EngineEvent::SipDTMF { participant_identity, code, digit });
+            SessionEvent::SipDTMF {
+                participant_identity,
+                code,
+                digit,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::SipDTMF {
+                    participant_identity,
+                    code,
+                    digit,
+                });
             }
-            SessionEvent::Transcription { participant_identity, track_sid, segments } => {
+            SessionEvent::Transcription {
+                participant_identity,
+                track_sid,
+                segments,
+            } => {
                 let _ = self.engine_tx.send(EngineEvent::Transcription {
                     participant_identity,
                     track_sid,
                     segments,
                 });
             }
-            SessionEvent::SipDTMF { participant_identity, code, digit } => {
-                let _ =
-                    self.engine_tx.send(EngineEvent::SipDTMF { participant_identity, code, digit });
+            SessionEvent::SipDTMF {
+                participant_identity,
+                code,
+                digit,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::SipDTMF {
+                    participant_identity,
+                    code,
+                    digit,
+                });
             }
             SessionEvent::RpcRequest {
                 caller_identity,
@@ -665,24 +755,45 @@ impl EngineInner {
                     version,
                 });
             }
-            SessionEvent::RpcResponse { request_id, payload, error } => {
-                let _ =
-                    self.engine_tx.send(EngineEvent::RpcResponse { request_id, payload, error });
+            SessionEvent::RpcResponse {
+                request_id,
+                payload,
+                error,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::RpcResponse {
+                    request_id,
+                    payload,
+                    error,
+                });
             }
             SessionEvent::RpcAck { request_id } => {
                 let _ = self.engine_tx.send(EngineEvent::RpcAck { request_id });
             }
-            SessionEvent::MediaTrack { track, stream, transceiver } => {
-                let _ = self.engine_tx.send(EngineEvent::MediaTrack { track, stream, transceiver });
+            SessionEvent::MediaTrack {
+                track,
+                stream,
+                transceiver,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::MediaTrack {
+                    track,
+                    stream,
+                    transceiver,
+                });
             }
             SessionEvent::ParticipantUpdate { updates } => {
-                let _ = self.engine_tx.send(EngineEvent::ParticipantUpdate { updates });
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::ParticipantUpdate { updates });
             }
             SessionEvent::SpeakersChanged { speakers } => {
-                let _ = self.engine_tx.send(EngineEvent::SpeakersChanged { speakers });
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::SpeakersChanged { speakers });
             }
             SessionEvent::ConnectionQuality { updates } => {
-                let _ = self.engine_tx.send(EngineEvent::ConnectionQuality { updates });
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::ConnectionQuality { updates });
             }
             SessionEvent::RoomUpdate { room } => {
                 let _ = self.engine_tx.send(EngineEvent::RoomUpdate { room });
@@ -691,26 +802,42 @@ impl EngineInner {
                 let _ = self.engine_tx.send(EngineEvent::RoomMoved { moved });
             }
             SessionEvent::LocalTrackSubscribed { track_sid } => {
-                let _ = self.engine_tx.send(EngineEvent::LocalTrackSubscribed { track_sid });
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::LocalTrackSubscribed { track_sid });
             }
-            SessionEvent::DataStreamHeader { header, participant_identity, encryption_type } => {
+            SessionEvent::DataStreamHeader {
+                header,
+                participant_identity,
+                encryption_type,
+            } => {
                 let _ = self.engine_tx.send(EngineEvent::DataStreamHeader {
                     header,
                     participant_identity,
                     encryption_type,
                 });
             }
-            SessionEvent::DataStreamChunk { chunk, participant_identity, encryption_type } => {
+            SessionEvent::DataStreamChunk {
+                chunk,
+                participant_identity,
+                encryption_type,
+            } => {
                 let _ = self.engine_tx.send(EngineEvent::DataStreamChunk {
                     chunk,
                     participant_identity,
                     encryption_type,
                 });
             }
-            SessionEvent::DataStreamTrailer { trailer, participant_identity } => {
-                let _ = self
-                    .engine_tx
-                    .send(EngineEvent::DataStreamTrailer { trailer, participant_identity });
+            SessionEvent::DataStreamTrailer {
+                trailer,
+                participant_identity,
+                encryption_type,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::DataStreamTrailer {
+                    trailer,
+                    participant_identity,
+                    encryption_type,
+                });
             }
             SessionEvent::DataChannelBufferedAmountLowThresholdChanged { kind, threshold } => {
                 let _ = self.engine_tx.send(
@@ -718,19 +845,28 @@ impl EngineInner {
                 );
             }
             SessionEvent::RefreshToken { url, token } => {
-                let _ = self.engine_tx.send(EngineEvent::RefreshToken { url, token });
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::RefreshToken { url, token });
             }
             SessionEvent::TrackMuted { sid, muted } => {
                 let _ = self.engine_tx.send(EngineEvent::TrackMuted { sid, muted });
             }
             SessionEvent::SubscribedQualityUpdate { update } => {
-                let _ = self.engine_tx.send(EngineEvent::SubscribedQualityUpdate { update });
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::SubscribedQualityUpdate { update });
+            }
+            SessionEvent::RefreshPublishingLayers => {
+                let _ = self.engine_tx.send(EngineEvent::RefreshPublishingLayers);
             }
             SessionEvent::LocalDataTrackInput(event) => {
                 let _ = self.engine_tx.send(EngineEvent::LocalDataTrackInput(event));
             }
             SessionEvent::RemoteDataTrackInput(event) => {
-                let _ = self.engine_tx.send(EngineEvent::RemoteDataTrackInput(event));
+                let _ = self
+                    .engine_tx
+                    .send(EngineEvent::RemoteDataTrackInput(event));
             }
         }
         Ok(())
@@ -794,6 +930,7 @@ impl EngineInner {
         retry_now: bool,
         full_reconnect: bool,
         reason: DisconnectReason,
+        reported_reconnect_reason: proto::ReconnectReason,
     ) {
         let mut running_handle = self.running_handle.write();
 
@@ -828,10 +965,11 @@ impl EngineInner {
         // full reconnect in `try_restart_connection`.
         running_handle.full_reconnect |= full_reconnect;
         // Remember the cause so a failed reconnection closes with it rather than
-        // a generic UnknownReason.
+        // a generic UnknownReason, and so each attempt can report it to the server.
         running_handle.reconnect_reason = reason;
+        running_handle.reported_reconnect_reason = reported_reconnect_reason;
 
-        livekit_runtime::spawn({
+        tokio::spawn({
             let inner = self.clone();
             async move {
                 // Hold the reconnection lock for the whole reconnection time
@@ -917,7 +1055,9 @@ impl EngineInner {
             };
 
             if is_closed {
-                return Err(EngineError::Connection("attempt canncelled, engine is closed".into()));
+                return Err(EngineError::Connection(
+                    "attempt canncelled, engine is closed".into(),
+                ));
             }
 
             if full_reconnect {
@@ -1015,7 +1155,7 @@ impl EngineInner {
             // `is_closed` check then returns) instead of waiting out the backoff.
             let backoff = reconnect_strategy::delay(i);
             tokio::select! {
-                _ = livekit_runtime::sleep(backoff) => {}
+                _ = tokio::time::sleep(backoff) => {}
                 _ = self.retry_now_notify.notified() => {
                     log::debug!("retry_now signalled, skipping reconnect backoff");
                 }
@@ -1060,7 +1200,9 @@ impl EngineInner {
         // On SignalRestarted, the room will try to unpublish the local tracks
         // NOTE: Doing operations that use rtc_session will not use the new one
         let (tx, rx) = oneshot::channel();
-        let _ = self.engine_tx.send(EngineEvent::SignalRestarted { join_response, tx });
+        let _ = self
+            .engine_tx
+            .send(EngineEvent::SignalRestarted { join_response, tx });
         let _ = rx.await;
 
         new_session.wait_pc_connection().await?;
@@ -1075,7 +1217,11 @@ impl EngineInner {
         handle.full_reconnect = false;
 
         let (close_tx, close_rx) = oneshot::channel();
-        let task = livekit_runtime::spawn(self.clone().engine_task(session_events, close_rx));
+        let task = tokio::spawn(Self::engine_task(
+            Arc::downgrade(self),
+            session_events,
+            close_rx,
+        ));
         handle.engine_task = Some((task, close_tx));
 
         Ok(())
@@ -1087,9 +1233,10 @@ impl EngineInner {
     /// each non-trivial seam is its own method so the sequence — and the reason
     /// for the ordering — is explicit rather than implied by statement order.
     /// Mirrors the resume chain in `livekit/specs/signalling-reconnection.allium`:
+    ///   0. sample the PC transition counts, before anything can perturb them;
     ///   1. reopen the signalling link (queue gate stays on until step 4);
     ///   2. SyncState before the publisher re-offer;
-    ///   3. re-offer the publisher, then await PC reconnection + settle;
+    ///   3. re-offer the publisher, then await *demonstrated* PC recovery;
     ///   4. re-check link liveness, then drain the queue.
     async fn try_resume_connection(self: &Arc<Self>) -> EngineResult<()> {
         // Test-only: force the configured number of resume attempts to fail so tests
@@ -1099,9 +1246,12 @@ impl EngineInner {
             use std::sync::atomic::Ordering;
             let remaining = self.fail_resume_attempts.load(Ordering::Acquire);
             if remaining > 0 {
-                self.fail_resume_attempts.store(remaining - 1, Ordering::Release);
+                self.fail_resume_attempts
+                    .store(remaining - 1, Ordering::Release);
                 log::warn!("test fault injection: forcing resume attempt to fail");
-                return Err(EngineError::Connection("forced resume failure (test)".into()));
+                return Err(EngineError::Connection(
+                    "forced resume failure (test)".into(),
+                ));
             }
 
             // Simulate a transport failure (server Leave{Resume} / PC Failed) arriving
@@ -1110,26 +1260,42 @@ impl EngineInner {
             // proceeds and succeeds — reproducing a resume that reports success while a
             // failure was pending. Post-fix this sticks a full-reconnect escalation onto
             // the next cycle; pre-fix it was dropped and the engine resumed again.
-            if self.fail_transport_during_next_resume.swap(false, Ordering::AcqRel) {
+            if self
+                .fail_transport_during_next_resume
+                .swap(false, Ordering::AcqRel)
+            {
                 log::warn!("test fault injection: simulating concurrent failure during resume");
-                self.reconnection_needed(false, false, DisconnectReason::UnknownReason);
+                self.reconnection_needed(
+                    false,
+                    false,
+                    DisconnectReason::UnknownReason,
+                    proto::ReconnectReason::RrUnknown,
+                );
             }
         }
 
         let session = self.running_handle.read().session.clone();
 
+        // 0. Sample the transports' connection-state transition counts BEFORE anything can
+        //    perturb them, so step 3 can tell a transport that reconnected from one still
+        //    reporting a `Connected` that predates the failure.
+        let pc_snapshot = session.pc_generation_snapshot();
+
         // 1. Reopen the signalling link. The SignalClient stays gated
         //    (`reconnecting=true`) so queueable mutations buffer until step 4.
-        let reconnect_response = session.restart().await?;
+        let reported_reason = self.running_handle.read().reported_reconnect_reason;
+        let reconnect_response = session.restart(reported_reason).await?;
 
         // 2. Hand the ReconnectResponse to the room and wait until it has sent
         //    SyncState, which must precede the publisher re-offer.
         self.resume_sync_state(reconnect_response).await;
 
-        // 3. Re-offer the publisher (strictly AFTER SyncState) and wait for the
-        //    PeerConnections to reconnect, applying the settle delay.
+        // 3. Re-offer the publisher (strictly AFTER SyncState), then wait for the transports
+        //    to have demonstrably reconnected rather than merely to report `Connected`.
         session.restart_publisher().await?;
-        session.wait_pc_reconnected(PC_RECONNECT_SETTLE_DELAY).await?;
+        session
+            .wait_pc_reconnected(pc_snapshot, PC_RECONNECT_SETTLE_DELAY)
+            .await?;
 
         // 4. Re-check link liveness and drain the queued mutations.
         self.resume_finalize(&session).await
@@ -1140,7 +1306,10 @@ impl EngineInner {
     /// server immediately even though the SignalClient is still gated.
     async fn resume_sync_state(&self, reconnect_response: proto::ReconnectResponse) {
         let (tx, rx) = oneshot::channel();
-        let _ = self.engine_tx.send(EngineEvent::SignalResumed { reconnect_response, tx });
+        let _ = self.engine_tx.send(EngineEvent::SignalResumed {
+            reconnect_response,
+            tx,
+        });
         // The room replies on `tx` once SyncState has gone out.
         let _ = rx.await;
     }
@@ -1151,13 +1320,26 @@ impl EngineInner {
     /// void; bail instead and let the engine try a fresh resume (or escalate).
     async fn resume_finalize(&self, session: &RtcSession) -> EngineResult<()> {
         if !session.signal_client().is_connected().await {
-            return Err(EngineError::Connection("signal connection severed during resume".into()));
+            return Err(EngineError::Connection(
+                "signal connection severed during resume".into(),
+            ));
         }
 
         // Flush queued mutations and clear the `reconnecting` gate — the resume
         // has fully recovered, so deferred subscription updates / mutes / etc.
         // should now reach the server. Mirrors `client.setReconnected()`.
         session.signal_client().set_reconnected().await;
+
+        // Anyone who left while the signal link was down never got their
+        // DISCONNECTED update delivered to us; the room synthesizes those
+        // disconnects from the identities seen since the resume began. Sent
+        // from this task — the same producer that sends `Resumed` next — so
+        // they reach the application before `Reconnected`.
+        if let Some(seen_identities) = session.finish_resume() {
+            let _ = self
+                .engine_tx
+                .send(EngineEvent::ParticipantReconcile { seen_identities });
+        }
         Ok(())
     }
 }
@@ -1191,9 +1373,9 @@ fn leave_disconnect_reason(err: &EngineError) -> Option<DisconnectReason> {
 ///
 /// We key on `SignalError::Client(401|403)`, which is produced by the server's
 /// `rtc/validate` probe (see [`super`]'s `SignalInner::validate`) — an
-/// authoritative classification. We deliberately do NOT key on the raw
-/// `WsError::Http` upgrade status, because that can be a fabricated 401 masking a
-/// transient server error (e.g. a 503 from a saturated node), which IS
+/// authoritative classification. We deliberately do NOT key on a raw WebSocket
+/// upgrade status (`SignalError::Handshake`), because that can be a fabricated 401
+/// masking a transient server error (e.g. a 503 from a saturated node), which IS
 /// retryable. A resume that hits a raw 401 simply escalates to a full reconnect,
 /// whose connect path runs `validate()` and surfaces the authoritative status.
 fn auth_failure_reason(err: &EngineError) -> Option<DisconnectReason> {
@@ -1221,9 +1403,10 @@ mod tests {
             "Disconnect action should propagate the server reason"
         );
 
-        for action in
-            [proto::leave_request::Action::Reconnect, proto::leave_request::Action::Resume]
-        {
+        for action in [
+            proto::leave_request::Action::Reconnect,
+            proto::leave_request::Action::Resume,
+        ] {
             let err = EngineError::Signal(SignalError::LeaveRequest {
                 reason: DisconnectReason::ServerShutdown,
                 action,

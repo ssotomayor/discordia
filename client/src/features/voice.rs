@@ -656,18 +656,18 @@ struct ActiveVoice {
 /// relay its rendezvous runs; with nothing listed, libwebrtc gathers host
 /// candidates only, as before.
 pub fn rtc_config(servers: &[IceServer]) -> RtcConfiguration {
-    RtcConfiguration {
-        ice_servers: servers
-            .iter()
-            .map(|s| RtcIceServer {
-                urls: s.urls.clone(),
-                username: s.username.clone(),
-                password: s.credential.clone(),
-            })
-            .collect(),
-        continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
-        ice_transport_type: IceTransportsType::All,
-    }
+    let mut config = RtcConfiguration::default();
+    config.ice_servers = servers
+        .iter()
+        .map(|s| RtcIceServer {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            password: s.credential.clone(),
+        })
+        .collect();
+    config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+    config.ice_transport_type = IceTransportsType::All;
+    config
 }
 
 impl ActiveVoice {
@@ -1684,14 +1684,15 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
         }),
         video_start_bitrate: Some(
             match (settings.height, settings.fps) {
-                (720, 60) => 2_500_000,
-                (720, _) => 1_500_000,
-                (1080, 60) => 5_000_000,
-                (1080, _) => 3_000_000,
-                (1440, 30) => 6_000_000,
+                (720, 60) => 3_000_000,
+                (720, _) => 2_000_000,
+                (1080, 60) => 6_000_000,
+                (1080, _) => 4_000_000,
+                (1440, 30) => 8_000_000,
                 (1440, 60) => 10_000_000,
-                (1440, _) => 4_000_000,
-                (2160, _) => 20_000_000,
+                (1440, _) => 5_000_000,
+                (2160, 60) => 14_000_000,
+                (2160, _) => 12_000_000,
                 _ => (settings.max_bitrate / 2).clamp(1_000_000, 4_000_000),
             }
             .min(settings.max_bitrate)
@@ -4074,16 +4075,16 @@ mod tests {
     #[test]
     fn screen_startup_bitrate_reaches_sdk_and_stays_inside_budget() {
         for (height, fps, cap, expected) in [
-            (720, 30, 8_000_000, 1_500_000),
-            (720, 60, 8_000_000, 2_500_000),
-            (1080, 15, 14_000_000, 3_000_000),
-            (1080, 30, 14_000_000, 3_000_000),
-            (1080, 60, 17_000_000, 5_000_000),
-            (1440, 30, 21_000_000, 6_000_000),
+            (720, 30, 8_000_000, 2_000_000),
+            (720, 60, 8_000_000, 3_000_000),
+            (1080, 15, 14_000_000, 4_000_000),
+            (1080, 30, 14_000_000, 4_000_000),
+            (1080, 60, 17_000_000, 6_000_000),
+            (1440, 30, 21_000_000, 8_000_000),
             (1440, 60, 34_000_000, 10_000_000),
-            (1440, 15, 21_000_000, 4_000_000),
-            (2160, 30, 42_000_000, 20_000_000),
-            (2160, 60, 50_000_000, 20_000_000),
+            (1440, 15, 21_000_000, 5_000_000),
+            (2160, 30, 42_000_000, 12_000_000),
+            (2160, 60, 50_000_000, 14_000_000),
         ] {
             let mut settings = crate::features::screenshare::native_settings("smooth");
             settings.height = height;
@@ -4170,7 +4171,9 @@ mod tests {
         let verify_simulcast = std::env::var_os("DISCORDIA_TEST_SIMULCAST").is_some();
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
         let verify_nvenc_rates = std::env::var_os("DISCORDIA_TEST_NVENC_RATES").is_some();
-        let verify_1440p = std::env::var_os("DISCORDIA_TEST_NVENC_1440P").is_some();
+        let verify_1440p60 = std::env::var_os("DISCORDIA_TEST_NVENC_1440P60").is_some();
+        let verify_1440p =
+            verify_1440p60 || std::env::var_os("DISCORDIA_TEST_NVENC_1440P").is_some();
         let legacy_start = std::env::var_os("DISCORDIA_TEST_LEGACY_START").is_some();
         assert!(!verify_1440p || verify_nvenc_rates);
         let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
@@ -4184,7 +4187,10 @@ mod tests {
         );
         if require_mf || verify_mf_fallback || verify_nvenc_rates || modern_codec.is_some() {
             let _subscriber = tracing_subscriber::fmt()
-                .with_env_filter("libwebrtc=debug,webrtc_sys=debug,livekit=warn")
+                .with_env_filter(
+                    std::env::var("DISCORDIA_TEST_MEDIA_LOG")
+                        .unwrap_or_else(|_| "libwebrtc=debug,webrtc_sys=debug,livekit=warn".into()),
+                )
                 .with_test_writer()
                 .try_init();
         }
@@ -4326,6 +4332,11 @@ mod tests {
                     settings.width = 2560;
                     settings.height = 1440;
                     settings.max_bitrate = 12_000_000;
+                    if verify_1440p60 {
+                        settings = crate::features::screenshare::native_settings("ultra");
+                        settings.codec = codec;
+                        settings.encoder = encoder;
+                    }
                 }
             }
             if modern_codec.is_some() {
@@ -4372,16 +4383,18 @@ mod tests {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_bytes = None;
             let mut measured_bps = 0.0;
+            let mut peak_target_bps = 0.0_f64;
             let frame_count = if verify_simulcast {
                 360
             } else if verify_1440p {
-                900
+                u64::from(settings.fps) * 30
             } else if verify_nvenc_rates {
                 450
             } else {
                 300
             };
             let mut noise_tile = vec![0; 65_536];
+            let motion_started = Instant::now();
             for index in 0..frame_count {
                 interval.tick().await;
                 let mut buffer = I420Buffer::new(settings.width, settings.height);
@@ -4417,6 +4430,7 @@ mod tests {
                             _ => None,
                         })
                         .expect("outbound rate");
+                    peak_target_bps = peak_target_bps.max(outbound.outbound.target_bitrate);
                     if index == 59 {
                         eprintln!(
                             "NVENC startup legacy={legacy_start} target={:.0} bps",
@@ -4462,12 +4476,16 @@ mod tests {
                 if verify_1440p {
                     assert_eq!(stats.encoded_width, Some(2560));
                     assert_eq!(stats.encoded_height, Some(1440));
-                    assert!(stats.encoded_fps.is_some_and(|fps| fps >= 25.0));
+                    assert!(
+                        stats
+                            .encoded_fps
+                            .is_some_and(|fps| fps >= f64::from(settings.fps) * 0.85)
+                    );
                     if !legacy_start {
                         assert!(
-                            outbound.outbound.target_bitrate >= settings.max_bitrate as f64 * 0.9,
-                            "loopback must reach the 1440p30 budget: {}",
-                            outbound.outbound.target_bitrate
+                            peak_target_bps >= settings.max_bitrate as f64 * 0.9,
+                            "loopback must reach the 1440p budget: {}",
+                            peak_target_bps
                         );
                     }
                 }
@@ -4532,6 +4550,17 @@ mod tests {
                 outbound.outbound.total_encode_time * 1000.0
                     / f64::from(outbound.outbound.frames_encoded.max(1)),
             );
+            if verify_nvenc_rates {
+                let elapsed = motion_started.elapsed().as_secs_f64();
+                eprintln!(
+                    "Motion totals: {frame_count} supplied; {} encoded; {:.3} seconds; {:.2} encoded FPS average; {:.2} decoded FPS average; {} bps cap",
+                    outbound.outbound.frames_encoded,
+                    elapsed,
+                    f64::from(outbound.outbound.frames_encoded) / elapsed,
+                    received.load(Ordering::Relaxed) as f64 / elapsed,
+                    settings.max_bitrate,
+                );
+            }
             assert!(
                 received.load(Ordering::Relaxed) > 0,
                 "no video reached the decoder"

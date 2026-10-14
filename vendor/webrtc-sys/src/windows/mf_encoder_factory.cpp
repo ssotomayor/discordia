@@ -24,6 +24,7 @@
 #include <thread>
 
 #include "api/video/encoded_image.h"
+#include "api/array_view.h"
 #include "api/video/i420_buffer.h"
 #include "api/video_codecs/video_encoder.h"
 #include "api/video_codecs/video_encoder_factory_template.h"
@@ -306,7 +307,7 @@ struct Session {
     image.SetColorSpace(metadata->second.color_space());
     image.SetSimulcastIndex(0);
     image._frameType = VideoFrameType::kVideoFrameDelta;
-    for (const auto& nalu : H264::FindNaluIndices(MakeArrayView(data->data(), length))) {
+    for (const auto& nalu : H264::FindNaluIndices(ArrayView<const uint8_t>(data->data(), length))) {
       auto type = H264::ParseNaluType(data->data()[nalu.payload_start_offset]);
       if ((type == H264::kIdr || type == H264::kSlice)
           && (nalu.payload_size < 2
