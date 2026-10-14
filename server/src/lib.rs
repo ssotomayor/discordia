@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod auth;
+pub mod connection_routes;
 pub mod gateway;
 pub mod http;
 pub mod livekit;
@@ -39,9 +40,13 @@ pub struct AppContext {
 /// Dropping the listener is not enough: axum spawns a task per connection and
 /// `on_upgrade` spawns another, both detached from it, so a stopped host would
 /// otherwise go on serving everyone already connected.
-pub struct GatewayShutdown(Arc<tokio::sync::watch::Sender<bool>>);
+#[derive(Clone)]
+pub struct GatewayShutdown(Arc<tokio::sync::watch::Sender<bool>>, Arc<state::AppState>);
 
 impl GatewayShutdown {
+    pub fn connections(&self) -> Vec<connection_routes::HostConnection> {
+        self.1.connection_routes()
+    }
     /// `send_replace`, not `send`: the value has to stick even with nobody
     /// watching yet, or a socket accepted a moment later reads a channel that
     /// still says the server is running.
@@ -155,7 +160,8 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
         }
     });
 
-    Ok((ctx, GatewayShutdown(shutdown)))
+    let monitor = GatewayShutdown(shutdown, ctx.state.clone());
+    Ok((ctx, monitor))
 }
 
 pub async fn spawn(

@@ -19,6 +19,7 @@ pub mod guild_leveling;
 pub mod guild_settings;
 pub mod guilds;
 pub mod home;
+mod host_connections;
 pub mod icons;
 pub mod identity_setup;
 pub mod image_editor;

@@ -22,6 +22,20 @@ pub async fn handle_connection<S>(
         + futures_util::Sink<WsMessage, Error = axum::Error>
         + Unpin,
 {
+    handle_connection_with_route(socket, ctx, client_host, peer, None).await;
+}
+
+pub(crate) async fn handle_connection_with_route<S>(
+    socket: S,
+    ctx: Arc<AppContext>,
+    client_host: Option<String>,
+    peer: Option<std::net::IpAddr>,
+    route: Option<crate::connection_routes::RouteSource>,
+) where
+    S: futures_util::Stream<Item = Result<WsMessage, axum::Error>>
+        + futures_util::Sink<WsMessage, Error = axum::Error>
+        + Unpin,
+{
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (conn_id, mut outbound_rx) = match ctx.state.register_conn(peer) {
         Ok(registered) => registered,
@@ -39,6 +53,9 @@ pub async fn handle_connection<S>(
     };
 
     let nonce = auth::fresh_nonce();
+    if let Some(route) = route {
+        ctx.state.set_connection_route(conn_id, route);
+    }
     if send(
         &mut ws_tx,
         &ServerMessage::Hello {

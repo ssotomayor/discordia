@@ -53,6 +53,7 @@ async fn gateway_upgrade(
     State(ctx): State<Arc<AppContext>>,
     headers: axum::http::HeaderMap,
     peer: Option<ConnectInfo<SocketAddr>>,
+    route: Option<axum::Extension<crate::connection_routes::RouteSource>>,
 ) -> Response {
     if headers.contains_key(header::ORIGIN) {
         return (
@@ -69,6 +70,14 @@ async fn gateway_upgrade(
     tracing::info!(?client_host, ?peer_ip, "gateway upgrade requested");
     ws.max_message_size(gateway::MAX_FRAME_BYTES)
         .max_frame_size(gateway::MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| gateway::handle_connection(socket, ctx, client_host, peer_ip))
+        .on_upgrade(move |socket| {
+            gateway::handle_connection_with_route(
+                socket,
+                ctx,
+                client_host,
+                peer_ip,
+                route.map(|route| route.0),
+            )
+        })
         .into_response()
 }

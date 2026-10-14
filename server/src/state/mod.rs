@@ -53,6 +53,7 @@ pub const MAX_IMAGE_LEN: usize = 3_000_000;
 struct Conn {
     tx: mpsc::Sender<ServerMessage>,
     ip: Option<std::net::IpAddr>,
+    route: crate::connection_routes::RouteSource,
 }
 
 #[derive(Debug, Clone)]
@@ -338,7 +339,14 @@ impl AppState {
         }
         let id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(CONN_QUEUE_CAP);
-        self.conns.insert(id, Conn { tx, ip });
+        self.conns.insert(
+            id,
+            Conn {
+                tx,
+                ip,
+                route: crate::connection_routes::RouteSource::Socket(ip),
+            },
+        );
         Ok((id, rx))
     }
 
@@ -355,6 +363,50 @@ impl AppState {
         set.insert(conn_id);
         self.bump_session_revision(pubkey);
         Ok(())
+    }
+
+    pub(crate) fn set_connection_route(
+        &self,
+        id: u64,
+        route: crate::connection_routes::RouteSource,
+    ) {
+        if let Some(mut conn) = self.conns.get_mut(&id) {
+            conn.route = route;
+        }
+    }
+
+    pub fn connection_routes(&self) -> Vec<crate::connection_routes::HostConnection> {
+        let sessions: Vec<_> = self
+            .conn_ids_by_pubkey
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.value().iter().copied().collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let mut result = Vec::new();
+        for (pubkey, ids) in sessions {
+            let name = self
+                .users
+                .get(&pubkey)
+                .map(|user| user.username.clone())
+                .unwrap_or_else(|| pubkey.clone());
+            for id in ids {
+                let source = self.conns.get(&id).map(|conn| conn.route.clone());
+                if let Some(source) = source {
+                    result.push(crate::connection_routes::HostConnection {
+                        id,
+                        pubkey: pubkey.clone(),
+                        name: name.clone(),
+                        route: source.current(),
+                    });
+                }
+            }
+        }
+        result.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        result
     }
 
     /// The only way out of `conns`, so the per-address count follows the

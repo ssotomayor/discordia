@@ -21,6 +21,8 @@ pub enum Reachability {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostInfo {
+    pub offered_routes: Vec<discordia_server::connection_routes::GatewayRoute>,
+    pub connections: Vec<discordia_server::connection_routes::HostConnection>,
     pub gateway_addr: SocketAddr,
     pub livekit_url: String,
     /// Plain WebSocket, loopback only: what this machine's own client dials.
@@ -80,6 +82,12 @@ pub struct HostHandle {
     runtime: tokio::runtime::Handle,
     _port_mapping: Option<portmap::MappingGuard>,
     _data_lease: livekit_bundle::HostLease,
+}
+
+impl HostHandle {
+    pub fn connection_monitor(&self) -> Option<discordia_server::GatewayShutdown> {
+        self.shutdown.clone()
+    }
 }
 
 /// How long the QUIC door stays open after the sockets are told to go, so the
@@ -621,6 +629,30 @@ pub async fn start_self_host(
 
     Ok(HostHandle {
         info: HostInfo {
+            offered_routes: {
+                use discordia_server::connection_routes::GatewayRoute;
+                let mut routes = Vec::new();
+                if mapped.as_ref().is_some_and(|mapping| mapping.quic) {
+                    routes.push(GatewayRoute::Ipv4);
+                }
+                if !public_v6.is_empty() {
+                    routes.push(GatewayRoute::Ipv6);
+                }
+                if transport_addrs.iter().any(|addr| {
+                    addr.parse::<SocketAddr>()
+                        .is_ok_and(|addr| addr.is_ipv4() && !public_address(addr.ip()))
+                }) {
+                    routes.push(GatewayRoute::Local);
+                }
+                if transport_addrs
+                    .iter()
+                    .any(|addr| addr.starts_with("http://") || addr.starts_with("https://"))
+                {
+                    routes.push(GatewayRoute::Relay);
+                }
+                routes
+            },
+            connections: Vec::new(),
             gateway_addr,
             livekit_url: livekit_display,
             local_url,

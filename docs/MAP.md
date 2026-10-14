@@ -18,15 +18,15 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4936 |
-| `server/src/state/mod.rs` | 3418 |
+| `server/src/state/mod.rs` | 3470 |
 | `server/tests/owner_controls.rs` | 3157 |
-| `server/src/gateway/connection.rs` | 3565 |
+| `server/src/gateway/connection.rs` | 3582 |
 | `client/src/features/channels.rs` | 2181 |
 | `client/src/features/screenshare.rs` | 3478 |
 | `protocol/src/lib.rs` | 3348 |
 | `client/src/state.rs` | 2622 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2750 |
+| `client/src/net.rs` | 2765 |
 | `client/src/features/chat.rs` | 2449 |
 | `server/src/store.rs` | 1505 |
 | `client/src/features/guild_settings.rs` | 1135 |
@@ -103,6 +103,7 @@ that direction says a file is safe to open when it is not.
 | Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches 19 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block. Session-owned `CallAlert` repeats distinct incoming/outgoing DM rings every 3 s, cancels queued/playing rings on phase changes and plays connection/end cues. Audio settings expose separate persisted App sounds/Soundboard controls and a native app-sound preview |
 | Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs`, `client/src/features/camera_setup.rs`, `client/src/camera_quality.rs` | The camera button opens a root-mounted local setup preview with device, 480p/720p/1080p and 15/30/60 FPS selection; `CameraQuality` normalizes persisted values and derives the automatic encoding budget. Windows `preview_controller` serializes device changes and acknowledges release before publication, using a one-frame queue and bounded JPEG previews without an SFU track. Native capture and browser publication apply the same quality settings. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently. `camera_preview_bridge.cjs` covers browser preview cancellation, stale permission results, quality changes and call teardown |
 | Keys on this machine | `client/src/identity.rs` | `detected` derives and deduplicates pubkeys from the secret, skipping unreadable keys; `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
+| Host connection routes | `client/src/features/host_connections.rs`, `client/src/host.rs`, `client/src/net.rs`, `server/src/connection_routes.rs`, `server/src/state/mod.rs`, `server/src/quic.rs` | The host Server button lists advertised routes separately from authenticated active gateway connections. Local-only `GatewayShutdown::connections` snapshots selected QUIC paths every 5 s: IPv4, IPv6, relay or unknown; TCP loopback is local/proxy. Excludes the host identity on loopback, retains its other-device sessions, removes disconnected/refused sockets and shows no IP addresses. No new wire message or remote endpoint; voice/media routes stay separate. `server/tests/bot_quic.rs` checks real direct IPv4/IPv6, relay entry and teardown |
 | Gateway admission and diagnostics | `client/src/net.rs`, `client/src/features/connect.rs`, `client/src/features/workspace.rs`, `server/src/gateway/connection.rs` | `gateway_ready` waits for admission before profile/heartbeat writes. Failed sends recover buffered server reasons; `ConnectionErrorPanel` copies version, platform, UTC time, transport, operation and payload size. Reconnects omit the banner for host stops and unattributed transport interruptions, retaining that first display decision until Ready; raw reasons remain logged. Socket cap admits two image fields; server warnings retain refusals and receive failures |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `seal`/`unseal` hold the phrase's entropy beside it; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Seeing the phrase again | `client/src/features/connect.rs` | `RecoveryPhrase` on `IdentityCard` — reveal, confirm, hides after a minute; only the home screen mounts the card |
