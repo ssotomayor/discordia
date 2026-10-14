@@ -9,7 +9,7 @@ livekit = { path = "vendor/livekit" }
 dioxus-desktop = { path = "vendor/dioxus-desktop" }
 
 [workspace.dependencies]
-discordia-server = { path = "server" }
+discordia-server = { path = "server", default-features = false }
 discordia-protocol = { path = "protocol" }
 
 dioxus = { version = "0.7", default-features = false, features = ["launch", "lib"] }
@@ -28,6 +28,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 bs58 = "0.5"
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
 secp256k1 = { version = "0.29", default-features = false, features = ["std", "rand-std"] }
 hex = "0.4"
 

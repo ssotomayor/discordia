@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 rand = "0.8"
+clap = { workspace = true }
+toml = { workspace = true }
 livekit-api = { workspace = true, features = ["services-tokio", "rustls-tls-native-roots"] }
 secp256k1 = { workspace = true }
 sha2 = "0.10"

@@ -1,311 +1,140 @@
-use std::net::SocketAddr;
+mod archive;
+mod options;
+mod serve;
+mod setup;
 
+use std::path::{Path, PathBuf};
+
+use clap::{CommandFactory, Parser, Subcommand};
+use discordia_rendezvous::run::drop_empty_env;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() {
+use options::{ConfigFile, ServerOptions};
+
+/// Where `setup` writes, and so where every other command looks when told nothing.
+pub const SYSTEM_CONFIG: &str = "/etc/discordia/discordia.toml";
+
+/// A Discordia server. Run with no command to serve; `sudo discordia-server setup` installs one.
+#[derive(Parser)]
+#[command(version, args_conflicts_with_subcommands = true)]
+struct Cli {
+    /// TOML file with [server] and [rendezvous] tables; flags and variables win over it
+    /// [default: /etc/discordia/discordia.toml when it exists]
+    #[arg(long, global = true, env = "DISCORDIA_CONFIG")]
+    config: Option<PathBuf>,
+    #[command(flatten)]
+    server: ServerOptions,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Discovery and NAT relay for hosts behind NAT
+    Rendezvous(Box<discordia_rendezvous::run::Options>),
+    /// Install this machine as a server, a rendezvous or both: systemd, or --docker
+    Setup(setup::SetupArgs),
+    /// Print the quic:// address friends paste to join
+    Share,
+    /// Write guilds to JSON archives
+    Export {
+        /// One guild; without it, every guild into <OUT> as a directory
+        #[arg(long)]
+        guild: Option<uuid::Uuid>,
+        out: PathBuf,
+    },
+    /// Read a guild archive in under fresh ids; pubkeys are kept
+    Import { archive: PathBuf },
+}
+
+fn main() {
+    drop_empty_env(&Cli::command());
+    let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str) {
-        Some("export") => return run_export(&args[2..]).await,
-        Some("import") => return run_import(&args[2..]).await,
-        _ => {}
+    let config_path = cli.config.clone().or_else(|| {
+        let system = PathBuf::from(SYSTEM_CONFIG);
+        system.exists().then_some(system)
+    });
+    let file = match config_path.as_deref().map(ConfigFile::load).transpose() {
+        Ok(file) => file.unwrap_or_default(),
+        Err(e) => fail(2, &e),
+    };
+
+    if let Some(Command::Setup(args)) = cli.command {
+        let target = cli.config.unwrap_or_else(|| args.default_config_path());
+        if let Err(e) = setup::run(args, &target) {
+            fail(1, &e);
+        }
+        return;
     }
 
-    let addr: SocketAddr = std::env::var("DISCORDIA_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:9000".into())
-        .parse()
-        .expect("DISCORDIA_ADDR must be host:port");
-
-    let data_dir = cli_data_dir();
-    let _data_lease = match discordia_server::livekit_bundle::HostLease::claim(&data_dir) {
-        Ok(lease) => lease,
-        Err(error) => {
-            tracing::error!(%error, "host ownership refused");
-            return;
-        }
-    };
-    tracing::info!(data_dir = %data_dir.display(), "durable data directory");
-
-    let mut livekit_cfg = discordia_server::livekit::LiveKitConfig::from_env(&data_dir);
-
-    let want_autospawn = std::env::var("DISCORDIA_LIVEKIT_AUTOSPAWN")
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
-        .unwrap_or(true);
-    let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
-
-    let _livekit_handle = if want_autospawn && !livekit_present {
-        livekit_cfg.port = discordia_server::livekit_bundle::ports().ws;
-        let creds = discordia_server::livekit_bundle::Credentials {
-            key: livekit_cfg.api_key.clone(),
-            secret: livekit_cfg.api_secret.clone(),
-        };
-        match discordia_server::livekit_bundle::spawn_livekit(
-            discordia_server::livekit_bundle::Advertise::Local,
-            &creds,
-            &data_dir,
-        )
-        .await
-        {
-            Ok(child) => {
-                tracing::info!(port = livekit_cfg.port, "bundled livekit-server started");
-                Some(child)
+    let server = cli.server.or(file.server.clone().unwrap_or_default());
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let result = runtime.block_on(async {
+        match cli.command {
+            None => {
+                if let Some(path) = &config_path {
+                    tracing::info!(path = %path.display(), "config file");
+                }
+                serve::serve(server).await
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "livekit subprocess not started — voice will be unavailable unless you set LIVEKIT_URL");
-                None
+            Some(Command::Rendezvous(opts)) => {
+                discordia_rendezvous::run::run((*opts).or(file.rendezvous.unwrap_or_default()))
+                    .await
             }
+            Some(Command::Share) => share(&server).map(|s| println!("{s}")),
+            Some(Command::Export { guild, out }) => {
+                archive::export(&server.data_dir(), guild, &out).await;
+                Ok(())
+            }
+            Some(Command::Import { archive }) => {
+                archive::import(&server.data_dir(), &archive).await;
+                Ok(())
+            }
+            Some(Command::Setup(_)) => unreachable!(),
         }
-    } else {
-        if !want_autospawn {
-            tracing::info!("DISCORDIA_LIVEKIT_AUTOSPAWN=0, not spawning bundled livekit");
-        } else {
-            tracing::info!("LIVEKIT_URL set, assuming external livekit instance");
-        }
-        None
-    };
+    });
+    if let Err(e) = result {
+        fail(1, &e);
+    }
+}
 
-    tracing::info!(
-        explicit_url = ?livekit_cfg.explicit_url,
-        port = livekit_cfg.port,
-        "livekit configured (URLs handed to clients are derived per-connection unless explicit_url is set)"
-    );
+fn fail(code: i32, message: &str) -> ! {
+    eprintln!("error: {message}");
+    std::process::exit(code)
+}
 
-    let operators: std::collections::HashSet<String> = std::env::var("DISCORDIA_OPERATORS")
-        .unwrap_or_default()
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if !operators.is_empty() {
-        tracing::info!(
-            count = operators.len(),
-            "operators configured for system guilds"
+/// Read-only: a missing key means the server has not run yet, and minting one
+/// here would be a key it never serves under.
+pub fn share(opts: &ServerOptions) -> Result<String, String> {
+    let data_dir = opts.data_dir();
+    let key_file: &Path = &data_dir.join("quic-secret");
+    if !key_file.exists() {
+        return Err(format!(
+            "no {} yet: start the server once first",
+            key_file.display()
+        ));
+    }
+    let port = opts
+        .quic_port
+        .unwrap_or(discordia_server::quic::DEFAULT_PORT);
+    if port == discordia_server::quic::RANDOM_PORT {
+        return Err(
+            "quic_port is 0, a new port each start: the server logs the share string".into(),
         );
     }
-
-    let identities = discordia_server::declared_identities(
-        &std::env::var("DISCORDIA_PUBLIC_HOSTS").unwrap_or_default(),
-        addr.port(),
-    );
-    if !identities.is_empty() {
-        tracing::info!(?identities, "public names clients may dial");
-    }
-
-    let media_max_bytes = std::env::var("DISCORDIA_MEDIA_MAX_BYTES")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(discordia_server::media::DEFAULT_MAX_BYTES);
-
-    let mut cfg = discordia_server::ServerConfig {
-        livekit: livekit_cfg,
-        operators,
-        data_dir: data_dir.clone(),
-        identities,
-        media_max_bytes,
-    };
-
-    // The plaintext socket is for loopback and a TLS proxy; anything reaching
-    // this box directly from elsewhere comes in over QUIC with the key below.
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!(%addr, error = %e, "cannot bind the gateway");
-            std::process::exit(1);
-        }
-    };
-    let bound = listener.local_addr().unwrap_or(addr);
-    cfg.identities
-        .extend(discordia_server::local_identities(bound.port()));
-
-    let coordination = match std::env::var("DISCORDIA_RELAY_URL") {
-        Ok(url) if !url.trim().is_empty() => {
-            discordia_server::quic::Coordination::Relay(url.trim().to_string())
-        }
+    let secret = discordia_server::quic::persistent_secret(&data_dir).map_err(|e| e.to_string())?;
+    let coordination = match opts.relay_url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() => discordia_server::quic::Coordination::Relay(url.into()),
         _ => discordia_server::quic::Coordination::None,
     };
-    let quic_secret = discordia_server::quic::persistent_secret(&data_dir).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "cannot persist the QUIC key; friends will have to re-add this server after a restart");
-        iroh::SecretKey::generate()
-    });
-    let quic_port: u16 = match std::env::var("DISCORDIA_QUIC_PORT") {
-        Ok(v) if !v.trim().is_empty() => v
-            .trim()
-            .parse()
-            .expect("DISCORDIA_QUIC_PORT must be a UDP port number; 0 picks a random one"),
-        _ => discordia_server::quic::DEFAULT_PORT,
-    };
-    let quic_endpoint = match discordia_server::quic::bind_quic(
-        Some(quic_secret),
+    Ok(serve::share_string(
+        &secret.public().to_string(),
+        opts.public_address.as_deref(),
+        port,
         &coordination,
-        quic_port,
-    )
-    .await
-    {
-        Ok(ep) => Some(ep),
-        Err(e) => {
-            tracing::warn!(error = %e, port = quic_port, "QUIC endpoint not bound — only loopback and a TLS proxy can reach this gateway");
-            None
-        }
-    };
-    if let Some(ep) = quic_endpoint.as_ref() {
-        cfg.identities
-            .insert(discordia_server::protocol::quic_origin(
-                &ep.id().to_string(),
-            ));
-    }
-
-    let router = match discordia_server::build_router(cfg).await {
-        Ok(router) => router,
-        Err(e) => {
-            tracing::error!(error = %e, "server failed to start");
-            std::process::exit(1);
-        }
-    };
-
-    let _quic = quic_endpoint.and_then(|ep| {
-        let key = ep.id().to_string();
-        match discordia_server::quic::serve_on_with(ep, router.clone(), coordination.clone()) {
-            Ok(handle) => {
-                let port = handle.sockets.first().map(|s| s.port()).unwrap_or(0);
-                let mut addrs: Vec<String> = discordia_server::local_identities(port)
-                    .into_iter()
-                    .filter(|a| !a.starts_with("localhost") && !a.starts_with("127.") && !a.starts_with("[::1]"))
-                    .collect();
-                addrs.sort();
-                if let discordia_server::quic::Coordination::Relay(url) = &coordination {
-                    addrs.push(url.clone());
-                }
-                tracing::info!(
-                    share = %discordia_server::protocol::format_quic_share(&key, &addrs),
-                    "friends connect with this address (replace a private IP with your public one if you forward the UDP port)"
-                );
-                Some(handle)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "QUIC gateway not serving");
-                None
-            }
-        }
-    });
-
-    let gateway = discordia_server::serve_router(listener, router);
-    tracing::info!(%bound, "plaintext gateway listening (loopback and TLS proxies only)");
-
-    tokio::signal::ctrl_c().await.ok();
-    tracing::info!("ctrl+c — shutting down");
-    gateway.abort();
-}
-
-fn cli_data_dir() -> std::path::PathBuf {
-    std::env::var("DISCORDIA_DATA_DIR")
-        .unwrap_or_else(|_| "./discordia-data".into())
-        .into()
-}
-
-async fn open_store() -> discordia_server::store::Store {
-    let dir = cli_data_dir();
-    discordia_server::store::Store::open_in(&dir)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("error: cannot open store at {}: {e}", dir.display());
-            std::process::exit(1);
-        })
-}
-
-async fn run_export(args: &[String]) {
-    let store = open_store().await;
-    match args.first().map(String::as_str) {
-        Some("--guild") => {
-            let (Some(id_str), Some(out)) = (args.get(1), args.get(2)) else {
-                eprintln!("usage: discordia export --guild <uuid> <out.json>");
-                std::process::exit(2);
-            };
-            let guild_id = id_str.parse().unwrap_or_else(|_| {
-                eprintln!("error: '{id_str}' is not a valid guild id");
-                std::process::exit(2);
-            });
-            let archive = store.export_guild(guild_id).await.unwrap_or_else(|e| {
-                eprintln!("export failed: {e}");
-                std::process::exit(1);
-            });
-            let Some(archive) = archive else {
-                eprintln!("error: no guild {guild_id}");
-                std::process::exit(1);
-            };
-            let json = serde_json::to_string_pretty(&archive).unwrap();
-            std::fs::write(out, json).unwrap_or_else(|e| {
-                eprintln!("error: cannot write {out}: {e}");
-                std::process::exit(1);
-            });
-            println!("exported guild '{}' → {out}", archive.guild.name);
-        }
-        Some("--all") => {
-            let Some(dir) = args.get(1) else {
-                eprintln!("usage: discordia export --all <out-dir>");
-                std::process::exit(2);
-            };
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                eprintln!("could not create {dir}: {e}");
-                std::process::exit(1);
-            }
-            let loaded = store.load_all().await.unwrap();
-            let (mut n, mut failed) = (0, 0);
-            for g in &loaded.guilds {
-                let path = format!("{dir}/{}.json", g.id);
-                match store.export_guild(g.id).await {
-                    Ok(Some(archive)) => {
-                        let json = serde_json::to_string_pretty(&archive).unwrap();
-                        match std::fs::write(&path, json) {
-                            Ok(()) => n += 1,
-                            Err(e) => {
-                                eprintln!("could not write {path}: {e}");
-                                failed += 1;
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        eprintln!("could not export {}: {e}", g.id);
-                        failed += 1;
-                    }
-                }
-            }
-            println!("exported {n} guild(s) → {dir}/");
-            if failed > 0 {
-                eprintln!("{failed} guild(s) failed");
-                std::process::exit(1);
-            }
-        }
-        _ => {
-            eprintln!("usage: discordia export --guild <uuid> <out.json> | --all <out-dir>");
-            std::process::exit(2);
-        }
-    }
-}
-
-async fn run_import(args: &[String]) {
-    let store = open_store().await;
-    let Some(path) = args.first() else {
-        eprintln!("usage: discordia import <archive.json>");
-        std::process::exit(2);
-    };
-    let json = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("error: cannot read {path}: {e}");
-        std::process::exit(1);
-    });
-    let archive: discordia_server::archive::GuildArchive = serde_json::from_str(&json)
-        .unwrap_or_else(|e| {
-            eprintln!("error: {path} is not a valid guild archive: {e}");
-            std::process::exit(1);
-        });
-    let name = archive.guild.name.clone();
-    let new_id = store.import_guild(&archive).await.unwrap_or_else(|e| {
-        eprintln!("import failed: {e}");
-        std::process::exit(1);
-    });
-    println!("imported guild '{name}' as {new_id}");
+    ))
 }

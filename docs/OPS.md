@@ -5,7 +5,7 @@
 | Rung | For | How |
 |---|---|---|
 | One click | friend groups | "Host my own" in the client — runs the gateway in-process and launches a bundled SFU child; the rendezvous's SFU is used only when friends cannot reach this machine's media ports |
-| One box | communities | `cargo run -p discordia-server`, or Docker (`Dockerfile`, `docker-compose.yml` — what the test deployment runs) |
+| One box | communities | `curl -fsSL https://discordia.world/install.sh \| sh` on a Linux VPS — [Setting up a box](#setting-up-a-box); `cargo run -p discordia-server` to develop |
 | Cluster | giants | not built (entry: demand-gated) |
 
 ## Environment
@@ -20,10 +20,18 @@ Windows/runtime version. The installer leaves one top-level Start Menu icon and
 no separate uninstall shortcut, so Uninstall lives on that icon's context menu.
 Cargo is a development launcher, not a shipped service.
 
+Every server and rendezvous variable below is also a `--flag` and a key in a
+TOML file's `[server]` or `[rendezvous]` table: drop `DISCORDIA_` (or
+`DISCORDIA_RENDEZVOUS_`) and lowercase (`DISCORDIA_QUIC_PORT` → `quic_port`,
+`LIVEKIT_URL` → `livekit_url`). A flag beats the variable, which beats the file.
+`--config`/`DISCORDIA_CONFIG` names the file, else `/etc/discordia/discordia.toml`
+when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a variable only.
+
 **Server**
 
 | Var | Default | Meaning |
 |---|---|---|
+| `DISCORDIA_PUBLIC_ADDRESS` | — | IP or DNS name friends reach the box at: first in the share string, and what the bundled SFU advertises and hands callers. Without it, a box behind 1:1 NAT (most clouds) hands callers a private address |
 | `DISCORDIA_ADDR` | `0.0.0.0:9000` | plaintext gateway bind — for loopback and a TLS proxy; clients refuse `ws://` to anything else |
 | `DISCORDIA_QUIC_PORT` | `9001` | UDP port the QUIC endpoint binds — the one to publish and open; `0` takes a random free one |
 | `DISCORDIA_RELAY_URL` | — | an iroh relay (a rendezvous's `/config` names one) that introduces friends behind NAT and carries ciphertext when a punch fails |
@@ -206,7 +214,38 @@ of the signaling URL; missing stats remain unknown. Click Voice for local
 endpoints and route reports from current callers, refreshed every five seconds.
 Only route labels are shared, only within that channel; reports are client telemetry.
 
-## Deploying a box
+## Setting up a box
+
+On a Linux x86_64 VPS:
+
+```bash
+curl -fsSL https://discordia.world/install.sh | sh              # systemd, the default
+curl -fsSL https://discordia.world/install.sh | sh -s -- --docker
+sudo discordia-server setup --dry-run                             # every file and command, nothing done
+```
+
+The installer downloads the latest `discordia-server-linux`, checks it against
+`release-signing.pub` with minisign, installs it in `/usr/local/bin` and runs
+`setup`. Rerun it to upgrade: with a config present and no arguments it only
+replaces the binary and restarts. `setup` asks what runs here (server,
+rendezvous or both), the public address (detected: an interface's public IPv4,
+else STUN), operator keys, and whether to run TURN and lend the SFU to other
+hosts. Every question is a flag, and `--yes` takes the defaults (`setup --help`).
+A rerun reads the existing file as its defaults and keeps keys it does not manage.
+
+| | systemd (default) | `--docker` |
+|---|---|---|
+| Config | `/etc/discordia/discordia.toml`, 0640 root:discordia | `/opt/discordia/discordia.toml` (`--dir`), mounted read-only |
+| Runs | `discordia-server.service`, `discordia-rendezvous.service`, user `discordia`, hardened, state in `/var/lib/discordia` | published images at `--image-tag`; compose `name: discordia` pins the project |
+| SFU | bundled child of the server, advertising the public address on 7880–7882 | `livekit` container, host network, `deploy/livekit.yaml`, keys in `.env` |
+| Plaintext gateway | `127.0.0.1:9000` | published on `127.0.0.1:9000` |
+| Firewall | `ufw` or `firewalld` when active, else the port list is printed | same |
+| Share string | printed at the end; later `sudo discordia-server share` | `docker compose -f … exec discordia discordia-server share` |
+
+Back up `quic-secret` in the server's data directory: it is the key in the
+share string. TLS is not set up (`wss://` through a proxy, `public_hosts`); QUIC needs none.
+
+## Deploying the test box
 
 CI builds the two images on every push to `master` (`deploy-images` in
 `ci.yml`, gated on `test`) and pushes them to

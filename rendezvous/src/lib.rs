@@ -2,6 +2,7 @@ pub mod limits;
 pub mod registry;
 pub mod relay;
 pub mod relay_server;
+pub mod run;
 pub mod shortcode;
 pub mod turn_relay;
 pub mod verify;
