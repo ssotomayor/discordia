@@ -2,6 +2,24 @@ use serde_json::Value;
 
 use crate::state::ScreenShareStats;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(super) fn screen_device_limited(
+    target_fps: f64,
+    capture_fps: f64,
+    encoded_fps: f64,
+    processing_ms: Option<f64>,
+    encode_ms: Option<f64>,
+) -> bool {
+    if !target_fps.is_finite() || target_fps <= 0.0 {
+        return false;
+    }
+    let budget = 800.0 / target_fps;
+    (capture_fps < target_fps * 0.75 && processing_ms.is_some_and(|ms| ms >= budget))
+        || (capture_fps > 10.0
+            && encoded_fps < capture_fps * 0.75
+            && encode_ms.is_some_and(|ms| ms >= budget))
+}
+
 #[derive(Default)]
 pub(super) struct WebViewStats {
     outbound: Option<Sample>,
@@ -85,6 +103,7 @@ impl WebViewStats {
             codec_implementation: text_field("codecImplementation"),
             power_efficient: msg.get("powerEfficient").and_then(Value::as_bool),
             quality_limitation_reason: text_field("qualityLimitationReason"),
+            device_limited: false,
             frames: u64_field("frames"),
             packets: u64_field("packets"),
             packets_lost: msg.get("packetsLost").and_then(Value::as_i64),
@@ -98,6 +117,24 @@ impl WebViewStats {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn device_limitation_requires_slow_frames_and_processing_pressure() {
+        use super::screen_device_limited as limited;
+        for fps in [15.0, 30.0, 60.0] {
+            assert!(!limited(
+                fps,
+                fps,
+                fps,
+                Some(1000.0 / fps),
+                Some(1000.0 / fps)
+            ));
+            assert!(!limited(fps, fps / 2.0, fps / 2.0, Some(1.0), Some(1.0)));
+            assert!(limited(fps, fps / 2.0, fps / 2.0, Some(900.0 / fps), None));
+            assert!(limited(fps, fps, fps / 2.0, None, Some(900.0 / fps)));
+            assert!(!limited(fps, fps / 2.0, fps / 2.0, None, None));
+        }
+        assert!(!limited(0.0, 0.0, 0.0, Some(100.0), None));
+    }
     use super::*;
     use serde_json::json;
 

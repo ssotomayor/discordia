@@ -145,6 +145,7 @@ pub struct ScreenShareStats {
     pub codec_implementation: Option<String>,
     pub power_efficient: Option<bool>,
     pub quality_limitation_reason: Option<String>,
+    pub device_limited: bool,
     pub frames: Option<u64>,
     pub packets: Option<u64>,
     pub packets_lost: Option<i64>,

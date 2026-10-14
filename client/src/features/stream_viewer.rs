@@ -606,6 +606,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
     use_drop(move || evaluate(&super::screenshare::detach_js(&detach)));
     let mut received = use_signal(|| "Waiting for stream…".to_owned());
     let mut quality_reason = use_signal(String::new);
+    let mut health_reason = use_signal(String::new);
     let pk = stream.pubkey.clone();
     let window = dioxus::desktop::use_window();
     use_future(move || {
@@ -618,6 +619,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 let _ =
                     document::eval(&format!("window.dxScreen?.setViewerVisibility({visible});"));
                 if !visible {
+                    health_reason.set(String::new());
                     continue;
                 }
                 let mut eval = document::eval(&format!(
@@ -625,6 +627,12 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                     json(&pk)
                 ));
                 if let Ok(value) = eval.recv::<serde_json::Value>().await {
+                    health_reason.set(
+                        value["healthReason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
                     quality_reason.set(
                         value["qualityReason"]
                             .as_str()
@@ -691,7 +699,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
             div { class: "grid items-center gap-2 px-3 py-2 shrink-0", style: "grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);",
                 div { class: "min-w-0",
                     span { class: "text-xs text-[var(--text-muted)]", "{received}" }
-                    super::screenshare::StreamQualityNotice { reason: quality_reason() }
+                    super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
                 }
                 div { class: "flex items-center gap-2",
                 button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { "Unmute" } else { "Mute" } }

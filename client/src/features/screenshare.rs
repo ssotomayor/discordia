@@ -6,18 +6,44 @@ use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
 #[component]
-pub(crate) fn StreamQualityNotice(reason: String) -> Element {
+pub(crate) fn StreamQualityNotice(
+    reason: String,
+    #[props(default)] health_reason: String,
+) -> Element {
     let message = match reason.as_str() {
         "sender" => {
             "Quality limited by the broadcaster’s connection. Quality will recover automatically when possible."
         }
         "receiver" => {
-            "Reduced quality for your connection. Quality will recover automatically when possible."
+            "Simulcast is sending you a lower resolution for your connection. Full quality will recover automatically when possible."
         }
-        _ => return rsx! {},
+        _ => "",
+    };
+    let health = match health_reason.as_str() {
+        "receiver-network" => {
+            "Your reception is losing packets and affecting playback. Your network path may be congested."
+        }
+        "receiver-device" => {
+            "Your device appears unable to decode or display this stream smoothly."
+        }
+        "sender-network" => "The broadcaster reports an upload connection limitation.",
+        "sender-device" => {
+            "The broadcaster reports a capture or encoding limitation on their device."
+        }
+        "local-network" => "Your upload connection is limiting this stream.",
+        "local-device" => "Your device is struggling to capture or encode this stream smoothly.",
+        "unstable" => {
+            "Playback is interrupted. There is not enough information to identify the cause."
+        }
+        _ => "",
     };
     rsx! {
-        span { class: "block text-[10px] text-[var(--accent)]", role: "status", "{message}" }
+        if !message.is_empty() {
+            span { class: "block text-[10px] text-[var(--accent)]", role: "status", "{message}" }
+        }
+        if !health.is_empty() {
+            span { class: "block text-[10px] text-[var(--warn)]", role: "status", "{health}" }
+        }
     }
 }
 
@@ -46,6 +72,7 @@ window.dxScreen = window.dxScreen || (function () {
   }
   const videoReports = new WeakMap();
   const qualityReports = new Map();
+  const healthReports = new Map();
   const screenPubs = new Map();
   // A LiveKit track carries no participant back-reference, so keep the one that
   // arrived with it: the Poor gate reads it long after TrackSubscribed returned.
@@ -127,6 +154,7 @@ window.dxScreen = window.dxScreen || (function () {
   function setViewerVisibility(visible) {
     if (viewerVisible === visible) return;
     viewerVisible = visible;
+    for (const key of healthReports.keys()) if (key !== 'local') healthReports.delete(key);
     refreshViewerSubscriptions(true);
   }
   const LK = () => window.LivekitClient || window.LiveKitClient;
@@ -305,6 +333,7 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function clearRemoteTracks() {
     qualityReports.clear();
+    healthReports.clear();
     screenPubs.clear();
     screenParticipants.clear();
     qualityPolicy.clear();
@@ -402,6 +431,10 @@ window.dxScreen = window.dxScreen || (function () {
         const status = JSON.parse(new TextDecoder().decode(bytes));
         if (!participant.trackPublications.has(status.sid)) return;
         if (![status.width, status.height, status.primaryWidth, status.primaryHeight].every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 16384; })) return;
+        if (['cpu', 'captureLimited', 'bandwidth', 'adaptive'].some(field =>
+            status[field] !== undefined && typeof status[field] !== 'boolean')) return;
+        if (['captureFps', 'primaryFps'].some(field => status[field] !== undefined &&
+            (!Number.isFinite(status[field]) || status[field] < 0 || status[field] > 240))) return;
         const previous = qualityReports.get(status.sid);
         const fresh = previous && Date.now() - previous.at < 10000;
         qualityReports.set(status.sid, { status: status, at: Date.now(), reason: fresh ? previous.reason : '', since: fresh ? previous.since : Date.now() });
@@ -470,6 +503,7 @@ window.dxScreen = window.dxScreen || (function () {
         screenPubs.set(track.sid, pub);
         screenParticipants.set(track.sid, participant);
         qualityPolicy.delete(track.sid);
+        healthReports.delete(track);
         requestHighQuality(pub);
         if (screenStatsEnabled) pollRemoteScreenStats();
       }
@@ -491,6 +525,7 @@ window.dxScreen = window.dxScreen || (function () {
         screenPubs.delete(track.sid);
         screenParticipants.delete(track.sid);
         qualityPolicy.delete(track.sid);
+        healthReports.delete(track);
       }
       if (kind === 'screen' && remoteShareVideoTrack === track) {
         remoteShareVideoTrack = null;
@@ -510,6 +545,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (room !== thisRoom) return;
       if (!pub.track || pub.track.kind !== 'video') return;
       if (pub.track === localShareVideoTrack) {
+        healthReports.delete('local');
         localShareVideoTrack = null;
         screenCaptureTrack = null;
         post('screen-stats', { active: false });
@@ -741,6 +777,113 @@ window.dxScreen = window.dxScreen || (function () {
     const lowerLayer = received.height < status.height * 0.9 || received.width < status.width * 0.9;
     return lowerLayer && status.adaptive === true && (!senderReduced || belowPrimary) ? 'receiver' : '';
   }
+  function healthDelta(current, previous, field) {
+    const a = current[field], b = previous[field];
+    return Number.isFinite(a) && Number.isFinite(b) && a >= b ? a - b : null;
+  }
+  function playbackSample(track) {
+    let selected = null, area = 0;
+    for (const [id, view] of Object.entries(attached)) {
+      const el = view.el;
+      if (view.track !== track || !el || el.paused || typeof el.getVideoPlaybackQuality !== 'function') continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width * rect.height <= area) continue;
+      const quality = el.getVideoPlaybackQuality();
+      area = rect.width * rect.height;
+      selected = { playbackId: id, renderFrames: quality.totalVideoFrames, renderDropped: quality.droppedVideoFrames };
+    }
+    return selected || {};
+  }
+  function healthState(key, sample, now) {
+    let state = healthReports.get(key);
+    if (!state || now < state.at || now - state.at > 3000 ||
+        (sample.id !== state.sample.id) || sample.playbackId !== state.sample.playbackId ||
+        ['framesDecoded', 'packetsReceived', 'totalDecodeTime', 'freezeCount', 'renderFrames'].some(field =>
+          Number.isFinite(sample[field]) && Number.isFinite(state.sample[field]) && sample[field] < state.sample[field]) ||
+        (Number.isFinite(sample.timestamp) && Number.isFinite(state.sample.timestamp) && sample.timestamp < state.sample.timestamp)) {
+      state = { started: now, at: now, sample, pending: '', since: now, shown: '' };
+      healthReports.set(key, state);
+    }
+    return state;
+  }
+  function healthNotice(state, reason, now) {
+    if (state.pending !== reason) { state.pending = reason; state.since = now; }
+    if (now - state.started >= 4000 && now - state.since >= 3000) state.shown = reason;
+    state.at = now;
+    return state.shown;
+  }
+  function inboundHealth(key, sample, status, now) {
+    const state = healthState(key, sample, now);
+    const previous = state.sample;
+    const seconds = (sample.timestamp - previous.timestamp) / 1000;
+    if (!(seconds > 0 && seconds <= 3)) {
+      state.sample = sample;
+      return healthNotice(state, '', now);
+    }
+    const packets = healthDelta(sample, previous, 'packetsReceived');
+    const lost = healthDelta(sample, previous, 'packetsLost');
+    const frames = healthDelta(sample, previous, 'framesDecoded');
+    const dropped = healthDelta(sample, previous, 'framesDropped');
+    const decode = healthDelta(sample, previous, 'totalDecodeTime');
+    const freezes = healthDelta(sample, previous, 'freezeCount');
+    const frozen = healthDelta(sample, previous, 'totalFreezesDuration');
+    const rendered = healthDelta(sample, previous, 'renderFrames');
+    const renderDropped = healthDelta(sample, previous, 'renderDropped');
+    const renderDropRate = rendered > 0 && renderDropped !== null ? renderDropped / rendered : null;
+    const loss = packets !== null && lost !== null && packets + lost > 0 ? lost / (packets + lost) : null;
+    const dropRate = frames !== null && dropped !== null && frames + dropped > 0 ? dropped / (frames + dropped) : null;
+    const sameLayer = status && sample.frameHeight >= status.primaryHeight * 0.9 && sample.frameWidth >= status.primaryWidth * 0.9;
+    const lowFps = sameLayer && status.primaryFps > 10 && Number.isFinite(sample.framesPerSecond) && sample.framesPerSecond < status.primaryFps * 0.75;
+    const interrupted = freezes > 0 || frozen / seconds > 0.15 || (frames === 0 && packets >= 100);
+    const struggling = interrupted || lowFps || dropRate >= 0.05;
+    let reason = '';
+    if (loss >= 0.03 && struggling) reason = 'receiver-network';
+    else if (status && status.bandwidth === true) reason = 'sender-network';
+    else if (status && (status.cpu === true || status.captureLimited === true)) reason = 'sender-device';
+    else if (loss !== null && loss < 0.01 && frames > 0 && decode !== null &&
+        (interrupted || dropRate >= 0.05 || (lowFps && frames >= 5 * seconds)) &&
+        decode / frames >= 0.8 / Math.max(10, sameLayer && status.primaryFps || sample.framesPerSecond || frames / seconds)) reason = 'receiver-device';
+    else if (loss !== null && loss < 0.01 && frames >= 5 * seconds && renderDropRate >= 0.05) reason = 'receiver-device';
+    else if (interrupted) reason = 'unstable';
+    state.sample = sample;
+    return healthNotice(state, reason, now);
+  }
+  async function senderHealth(nativeStatus) {
+    if (nativeStatus && nativeStatus.active === false) { healthReports.delete('local'); return ''; }
+    let status = nativeStatus;
+    let key = 'local';
+    if (!status) {
+      const track = localShareVideoTrack, currentRoom = room;
+      if (!track || !currentRoom) { healthReports.delete('local'); return ''; }
+      const report = await videoStatsReport(track);
+      if (track !== localShareVideoTrack || currentRoom !== room || !report) return '';
+      let outbound = null;
+      report.forEach(function (entry) {
+        if (entry.type === 'outbound-rtp' && (entry.kind === 'video' || entry.mediaType === 'video') &&
+            (!outbound || (entry.frameWidth || 0) * (entry.frameHeight || 0) > (outbound.frameWidth || 0) * (outbound.frameHeight || 0))) outbound = entry;
+      });
+      if (!outbound) return '';
+      status = { id: statsSampleKey(track, outbound), bandwidth: outbound.qualityLimitationReason === 'bandwidth', cpu: outbound.qualityLimitationReason === 'cpu' };
+      const state = healthReports.get(key);
+      if (!state || state.sample.id !== status.id || Date.now() - (state.sent || 0) >= 3000) {
+        const capture = screenCaptureTrack ? screenCaptureTrack.getSettings() : {};
+        const payload = { sid: track.sid, width: capture.width || 0, height: capture.height || 0,
+          primaryWidth: outbound.frameWidth || 0, primaryHeight: outbound.frameHeight || 0,
+          primaryFps: outbound.framesPerSecond || 0, captureFps: capture.frameRate || 0,
+          adaptive: false, bandwidth: status.bandwidth, cpu: status.cpu };
+        try {
+          await currentRoom.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(payload)), { topic: 'discordia.screen-quality.v1' });
+        } catch (e) { console.warn('[dxScreen] screen health status unavailable', e); }
+        if (track !== localShareVideoTrack || currentRoom !== room) return '';
+        healthState(key, status, Date.now()).sent = Date.now();
+      }
+    }
+    const now = Date.now();
+    const state = healthState(key, status, now);
+    const reason = status.bandwidth === true ? 'local-network' : status.cpu === true || status.captureLimited === true ? 'local-device' : '';
+    state.sample = status;
+    return healthNotice(state, reason, now);
+  }
   function requestQuality(pub, quality) {
     if (!pub || typeof pub.setVideoQuality !== 'function') return;
     try { pub.setVideoQuality(quality); } catch (e) { console.warn('[dxScreen] quality request failed', e); }
@@ -762,17 +905,23 @@ window.dxScreen = window.dxScreen || (function () {
     return !!(lk && lk.ConnectionQuality && participant && participant.connectionQuality === lk.ConnectionQuality.Poor);
   }
   async function previewStats(identity) {
+    if (!viewerVisible) return null;
     const track = videoTrackFor(identity, 'screen');
     if (!track) return null;
     try {
       const report = await videoStatsReport(track);
+      if (videoTrackFor(identity, 'screen') !== track) return null;
       let result = null;
+      let inbound = null;
       if (report) report.forEach(function (entry) {
         if (entry.type === 'inbound-rtp' && (entry.kind === 'video' || entry.mediaType === 'video')) {
+          inbound = Object.assign({}, entry, playbackSample(track));
           result = { width: entry.frameWidth || null, height: entry.frameHeight || null, fps: Number.isFinite(entry.framesPerSecond) ? entry.framesPerSecond : null };
         }
       });
       const sample = qualityReports.get(track.sid);
+      if (result && inbound) result.healthReason = inboundHealth(track, inbound,
+        sample && Date.now() - sample.at < 10000 ? sample.status : null, Date.now());
       if (result && sample && Date.now() - sample.at < 10000) {
         const now = Date.now();
         const reason = screenQualityReason(sample.status, result);
@@ -967,6 +1116,7 @@ window.dxScreen = window.dxScreen || (function () {
     try { at.stop(); } catch (e) {}
   }
   async function stopShare() {
+    healthReports.delete('local');
     await stopLocalShareAudio();
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
@@ -1171,7 +1321,7 @@ window.dxScreen = window.dxScreen || (function () {
     e2eeProvider = null;
   }
   if (window.__dxfScreenStatsEnabled) setStatsEnabled(true);
-  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, previewCamera: previewCamera, stopCameraPreview: stopCameraPreview, setE2eeKey: setE2eeKey };
+  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, senderHealth: senderHealth, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, previewCamera: previewCamera, stopCameraPreview: stopCameraPreview, setE2eeKey: setE2eeKey };
 })();
 "#;
 
@@ -2311,6 +2461,37 @@ pub fn ScreenSelfPreview() -> Element {
         let _ = document::eval("window.dxScreen.setSelfPreview(null,true);");
     });
 
+    let mut health_reason = use_signal(String::new);
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let payload = {
+                let s = state.read();
+                if !s.screen_sharing {
+                    serde_json::json!({ "active": false })
+                } else if native_capture {
+                    s.screen_share_stats.as_ref().map_or_else(
+                        || serde_json::json!({ "active": false }),
+                        |stats| serde_json::json!({
+                            "id": format!("{}/{:?}", s.voice_session_epoch, s.screen_share_target),
+                            "bandwidth": stats.quality_limitation_reason.as_deref() == Some("bandwidth"),
+                            "cpu": stats.quality_limitation_reason.as_deref() == Some("cpu"),
+                            "captureLimited": stats.device_limited,
+                        }),
+                    )
+                } else {
+                    Value::Null
+                }
+            };
+            let mut eval = document::eval(&format!(
+                "dioxus.send(await window.dxScreen?.senderHealth({payload}));"
+            ));
+            if let Ok(reason) = eval.recv::<String>().await {
+                health_reason.set(reason);
+            }
+        }
+    });
+
     if !sharing() {
         return rsx! { Fragment {} };
     }
@@ -2406,6 +2587,11 @@ pub fn ScreenSelfPreview() -> Element {
                     div {
                         class: "absolute inset-0 flex items-center justify-center bg-black text-[var(--text-dim)] text-[10px]",
                         "Preview paused while the app is in the background"
+                    }
+                }
+                if !health_reason().is_empty() {
+                    div { class: "absolute left-2 right-2 top-2 px-2 py-1 rounded bg-black/70 pointer-events-none",
+                        StreamQualityNotice { reason: String::new(), health_reason: health_reason() }
                     }
                 }
                 if native_capture {
@@ -2733,6 +2919,7 @@ fn ScreenWatchTile(
     let stats_pk = pk.clone();
     let mut received_label = use_signal(|| "Waiting for stream measurements…".to_owned());
     let mut quality_reason = use_signal(String::new);
+    let mut health_reason = use_signal(String::new);
     let window = dioxus::desktop::use_window();
     use_future(move || {
         let identity = js_str(&stats_pk);
@@ -2741,12 +2928,19 @@ fn ScreenWatchTile(
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 if !window.window.is_visible() || window.window.is_minimized() {
+                    health_reason.set(String::new());
                     continue;
                 }
                 let mut eval = document::eval(&format!(
                     "dioxus.send(await window.dxScreen.previewStats({identity}));"
                 ));
                 if let Ok(value) = eval.recv::<Value>().await {
+                    health_reason.set(
+                        value["healthReason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
                     quality_reason.set(
                         value["qualityReason"]
                             .as_str()
@@ -2869,7 +3063,7 @@ fn ScreenWatchTile(
                 class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
                 div {
                     span { class: "text-[10px] text-[var(--text-dim)]", "{received_label}" }
-                    StreamQualityNotice { reason: quality_reason() }
+                    StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
                 }
                 div {
                     class: "flex flex-wrap items-center gap-1.5",

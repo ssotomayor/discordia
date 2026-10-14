@@ -17,14 +17,14 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4923 |
+| `client/src/features/voice.rs` | 4936 |
 | `server/src/state/mod.rs` | 3418 |
 | `server/tests/owner_controls.rs` | 3157 |
 | `server/src/gateway/connection.rs` | 3565 |
 | `client/src/features/channels.rs` | 2181 |
-| `client/src/features/screenshare.rs` | 3284 |
+| `client/src/features/screenshare.rs` | 3478 |
 | `protocol/src/lib.rs` | 3348 |
-| `client/src/state.rs` | 2618 |
+| `client/src/state.rs` | 2622 |
 | `client/src/update.rs` | 1228 |
 | `client/src/net.rs` | 2545 |
 | `client/src/features/chat.rs` | 2449 |
@@ -168,6 +168,7 @@ repeated here.
 | Platform paths | `client/tests/live_sfu.rs`, `#[ignore]`d unit tests | need an SFU, an audio device or a screen grant — hence ignored, not optional |
 | Windows native screen capture | `client/src/sysvideo/windows.rs` | ignored `selected_windows_and_monitors_feed_livekit_and_stop` needs an interactive desktop; validates selected sources, video handoff, dimensions and teardown |
 | A received screen share at half size and 3 FPS | `client/src/features/voice.rs` | `screen_video_options` uses one quality by default. Optional `screenshare_adaptive_quality` adds an explicit 720p/360p layer capped at 30 FPS instead of LiveKit’s 3 FPS default; two RTP layers use high/medium RIDs. Native metrics broadcast actual source and primary dimensions every 3 s; `previewStats` waits 2.5 s before showing connection notices, discards stale reports, and feeds inline/external `StreamQualityNotice`. Viewers initially request full quality. A sustained receiver-side reduction pins Medium once, then probes High after 30-120 s even while receiving the lower layer; each probe gets 12 s before failure/recovery is decided. The SFU may still reduce it per connection; `scripts/test-stream-quality.mjs` covers recovery without rejoining |
+| Stream health warnings | `client/src/features/screenshare.rs`, `screen_stats.rs`, `voice.rs`, `stream_viewer.rs` | Inline/external viewers and sender preview poll without Diagnostics. Health notices wait 4 s after startup and 3 s of sustained evidence/recovery; track changes, hidden viewer intervals and polling gaps reset them. Packet loss with playback symptoms suggests the receiving network path; measured decode/display pressure suggests the receiving device. Native/browser publishers share bandwidth/CPU state every 3 s; native processing pressure accompanies slow capture/encoding. Reports expire after 10 s; unknown interruptions remain unattributed. Simulcast resolution notices retain the existing layer policy. `scripts/test-stream-quality.mjs` and `screen_stats` tests cover attribution, false positives and recovery |
 | Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples per-capture `metrics::Metrics` and encoder stats once per second; capture size/FPS, processing ms/frame and encoding ms/frame identify separate bottlenecks. Windows debug fields separate source callbacks, pacing skips, largest callback gap, GPU readback and conversion costs; stage/frame totals share one snapshot lock. `ScreenSelfPreview` shows CPU/GPU for known encoder implementations; unreported or unknown implementations remain unclassified. Debug logs identify track SIDs, native keyframes/retransmissions and WebView freezes/NACK/PLI counters; inbound polling discards reports for replaced tracks |
 | Release optimization experiment | `Cargo.toml`, `docs/OPS.md` | `release-lto` inherits release with thin LTO and debuginfo stripping; default release is unchanged. Protocol tests pass in both profiles; this comparison is not a full-client size/performance benchmark |
 | Native GPU-frame investigation | `docs/VIDEO_PIPELINE.md` | Existing macOS CVPixelBuffer handoff; Windows GPU readback/I420/upload boundaries and SDK/encoder requirements for a texture path |

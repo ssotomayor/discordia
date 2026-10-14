@@ -14,16 +14,21 @@ const reports = new Map();
 const screenPubs = new Map();
 const policy = new Map();
 const participants = new Map();
+const healthReports = new Map();
+const screenTrack = { sid: 'screen' };
 const context = vm.createContext({
   qualityReports: reports,
   screenPubs,
   screenParticipants: participants,
   qualityPolicy: policy,
+  healthReports,
+  viewerVisible: true,
+  attached: {},
   LK: () => ({ VideoQuality: { LOW: 0, MEDIUM: 1, HIGH: 2 },
     ConnectionQuality: { Poor: 'poor', Excellent: 'excellent' } }),
   console: { warn: () => {}, error: () => {}, log: () => {} },
   Date: { now: () => now },
-  videoTrackFor: () => ({ sid: 'screen' }),
+  videoTrackFor: () => screenTrack,
   videoStatsReport: async () => new Map([['video', {
     type: 'inbound-rtp', kind: 'video', frameWidth: incoming.width,
     frameHeight: incoming.height, framesPerSecond: incoming.fps,
@@ -183,6 +188,8 @@ test('quality reports must belong to the sending participant and preserve the wa
   assert.equal(reports.size, 0);
   handler(packet, sender, null, 'discordia.screen-quality.v1');
   assert.equal(reports.size, 1);
+  handler(new TextEncoder().encode(JSON.stringify({ ...full, sid: 'screen', cpu: 'true' })), sender, null, 'discordia.screen-quality.v1');
+  assert.equal(reports.get('screen').status.cpu, undefined, 'malformed optional health fields cannot replace a valid report');
   reports.get('screen').reason = 'receiver';
   const since = reports.get('screen').since;
   now += 3000;
@@ -207,6 +214,7 @@ test('hidden viewers pause video while only inline-watched screens subscribe', (
     ['self', participant('self', 'screen')], ['camera', participant('camera', 'camera')],
   ]) };
   const visibilityContext = vm.createContext({ room, selfPreviewIdentity: 'self',
+    healthReports,
     refreshAudioWatches: () => {},
     selfPreviewEnabled: false, applySelfPreviewSubscription: () => {},
     baseIdentity: (identity) => identity, kindOf: (pub) => pub.source,
@@ -255,4 +263,133 @@ test('camera requests follow their largest rendered view without lowering screen
   cameraContext.requestCameraDimensions(camera);
   assert.equal(requested.width, 640);
   assert.equal(requested.height, 360);
+});
+
+function healthSequence(status = full) {
+  healthReports.clear();
+  const key = {};
+  let sample = { id: 'inbound', timestamp: 0, frameWidth: 2560, frameHeight: 1440,
+    framesPerSecond: 60, packetsReceived: 0, packetsLost: 0, framesDecoded: 0,
+    framesDropped: 0, totalDecodeTime: 0, freezeCount: 0, totalFreezesDuration: 0 };
+  context.inboundHealth(key, sample, status, 0);
+  return (changes = {}, report = status) => {
+    sample = { ...sample, timestamp: sample.timestamp + 1000,
+      packetsReceived: sample.packetsReceived + 1000,
+      framesDecoded: sample.framesDecoded + 60,
+      totalDecodeTime: sample.totalDecodeTime + 0.06, ...changes };
+    return context.inboundHealth(key, sample, report, sample.timestamp);
+  };
+}
+
+test('56 FPS, high jitter, low bitrate and an isolated lost packet do not blame the network', () => {
+  const tick = healthSequence();
+  for (let i = 0; i < 12; i++) assert.equal(tick({ framesPerSecond: 56, jitter: 0.15, packetsLost: 1, bytesReceived: 3000 }), '');
+});
+
+test('sustained loss with interrupted playback warns, then requires stable recovery', () => {
+  const tick = healthSequence();
+  for (let i = 1; i <= 3; i++) assert.equal(tick({ packetsLost: i * 60, framesPerSecond: 30 }), '');
+  assert.equal(tick({ packetsLost: 240, framesPerSecond: 30 }), 'receiver-network');
+  for (let i = 0; i < 3; i++) assert.equal(tick({ framesPerSecond: 60 }), 'receiver-network');
+  assert.equal(tick({ framesPerSecond: 60 }), '');
+});
+
+test('decoder attribution needs processing cost, playback symptoms and measured low loss', () => {
+  const tick = healthSequence();
+  let result;
+  for (let i = 1; i <= 5; i++) result = tick({ framesPerSecond: 30, totalDecodeTime: i * 1.2 });
+  assert.equal(result, 'receiver-device');
+  const unknown = healthSequence();
+  for (let i = 1; i <= 5; i++) result = unknown({ framesPerSecond: 30, totalDecodeTime: i * 1.2, packetsLost: undefined });
+  assert.equal(result, '', 'missing loss counters are not proof of a healthy network');
+});
+
+test('simulcast at 720p/30 does not count as a 1440p/60 playback failure', () => {
+  const tick = healthSequence();
+  for (let i = 1; i <= 6; i++) assert.equal(tick({ frameWidth: 1280, frameHeight: 720,
+    framesPerSecond: 30, totalDecodeTime: i * 1.5 }), '');
+});
+
+test('display drops with healthy decoding and low loss identify the receiving device', () => {
+  const tick = healthSequence();
+  let result;
+  for (let i = 1; i <= 6; i++) result = tick({ playbackId: 'visible-video', renderFrames: i * 60, renderDropped: i * 10 });
+  assert.equal(result, 'receiver-device');
+  assert.equal(tick({ playbackId: undefined, renderFrames: undefined, renderDropped: undefined }), '');
+});
+
+test('repeated freezes without attribution get a generic warning; static content does not', () => {
+  const tick = healthSequence();
+  let result;
+  for (let i = 1; i <= 5; i++) result = tick({ freezeCount: i });
+  assert.equal(result, 'unstable');
+  const still = healthSequence();
+  for (let i = 1; i <= 6; i++) assert.equal(still({ framesPerSecond: 1, framesDecoded: i, packetsReceived: i * 2 }), '');
+});
+
+test('fresh sender reports distinguish connection and device limitations', () => {
+  for (const [status, expected] of [[{ ...full, bandwidth: true }, 'sender-network'],
+    [{ ...full, cpu: true }, 'sender-device'], [{ ...full, captureLimited: true }, 'sender-device']]) {
+    const tick = healthSequence(status);
+    let result;
+    for (let i = 0; i < 5; i++) result = tick();
+    assert.equal(result, expected);
+    for (let i = 0; i < 4; i++) result = tick({}, null);
+    assert.equal(result, '', 'expired metadata cannot keep attributing a sender limitation');
+  }
+});
+
+test('local sender notices debounce, recover, and reset across sessions', async () => {
+  healthReports.clear();
+  const limited = { id: 'share-1', cpu: true };
+  now = 0;
+  assert.equal(await context.senderHealth(limited), '');
+  now = 4000;
+  assert.equal(await context.senderHealth(limited), '', 'a polling gap restarts observation');
+  for (now = 5000; now <= 8000; now += 1000) await context.senderHealth(limited);
+  assert.equal(await context.senderHealth(limited), 'local-device');
+  assert.equal(await context.senderHealth({ id: 'share-2', bandwidth: true }), '');
+  assert.equal(await context.senderHealth({ active: false }), '');
+  assert.equal(healthReports.size, 0);
+});
+
+test('track replacement, counter reset and a hidden interval cannot inherit a playback warning', () => {
+  const tick = healthSequence();
+  for (let i = 1; i <= 5; i++) tick({ freezeCount: i });
+  assert.equal(tick({ id: 'replacement', timestamp: 0, freezeCount: 0 }), '');
+  const reset = healthSequence();
+  for (let i = 1; i <= 5; i++) reset({ freezeCount: i });
+  assert.equal(reset({ framesDecoded: 0, freezeCount: 0 }), '', 'counter rollback begins a fresh observation');
+  const key = {};
+  context.inboundHealth(key, { id: 'track', timestamp: 1000 }, full, 1000);
+  const state = healthReports.get(key);
+  state.shown = 'receiver-network';
+  assert.equal(context.inboundHealth(key, { id: 'track', timestamp: 5000 }, full, 5000), '');
+});
+
+test('browser sender shares authenticated track status without enabling Diagnostics and ignores a replaced room', async () => {
+  const sent = [];
+  const localTrack = { sid: 'local-screen' };
+  const localRoom = { localParticipant: { publishData: async (bytes, options) => sent.push({ status: JSON.parse(new TextDecoder().decode(bytes)), options }) } };
+  const senderContext = vm.createContext({ healthReports: new Map(), localShareVideoTrack: localTrack,
+    room: localRoom, screenCaptureTrack: { getSettings: () => ({ width: 1920, height: 1080, frameRate: 60 }) },
+    videoStatsReport: async () => new Map([['out', { type: 'outbound-rtp', kind: 'video',
+      frameWidth: 1920, frameHeight: 1080, framesPerSecond: 30, qualityLimitationReason: 'cpu' }]]),
+    statsSampleKey: () => 'local-sample', Date: { now: () => now }, TextEncoder, console });
+  vm.runInContext(bridge.slice(start, end), senderContext);
+  now = 1000;
+  assert.equal(await senderContext.senderHealth(null), '');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].status.cpu, true);
+  assert.equal(sent[0].status.sid, localTrack.sid);
+  assert.equal(sent[0].options.topic, 'discordia.screen-quality.v1');
+  now = 2000;
+  await senderContext.senderHealth(null);
+  assert.equal(sent.length, 1, 'status reports are paced independently of the polling frequency');
+  now = 4000;
+  await senderContext.senderHealth(null);
+  assert.equal(sent.length, 2);
+  senderContext.videoStatsReport = async () => { senderContext.room = {}; return new Map(); };
+  assert.equal(await senderContext.senderHealth(null), '');
+  assert.equal(sent.length, 2, 'a report awaited in an old room cannot publish into its replacement');
 });
