@@ -20,7 +20,9 @@ impl Fixture {
         let dir =
             std::env::temp_dir().join(format!("discordia-durability-{}", uuid::Uuid::new_v4()));
         let store = Store::open_in(&dir).await.unwrap();
+        // SQLite caches schemas per connection; fault DDL must see its own previous drop.
         let faults = SqlitePoolOptions::new()
+            .max_connections(1)
             .connect_with(SqliteConnectOptions::new().filename(dir.join("discordia.db")))
             .await
             .unwrap();
@@ -235,36 +237,39 @@ async fn failed_guild_bundle_creates_neither_rows_nor_memory_state() {
 #[tokio::test]
 async fn failed_profile_and_invite_changes_preserve_previous_values() {
     let f = Fixture::new().await;
-    f.fail("INSERT", "profiles").await;
-    assert!(
-        f.state
-            .set_profile(Profile {
-                pubkey: f.owner.pubkey.clone(),
-                bio: Some("unsaved".into()),
-                ..Default::default()
-            })
+    for _ in 0..8 {
+        f.fail("INSERT", "profiles").await;
+        assert!(
+            f.state
+                .set_profile(Profile {
+                    pubkey: f.owner.pubkey.clone(),
+                    bio: Some("unsaved".into()),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+        );
+        assert!(!f.state.profiles.contains_key(&f.owner.pubkey));
+        f.recover().await;
+        let invite = f
+            .state
+            .get_or_create_invite(f.guild.id, false, None, None, &f.owner.pubkey)
             .await
-            .is_err()
-    );
-    assert!(!f.state.profiles.contains_key(&f.owner.pubkey));
-    f.recover().await;
-    let invite = f
-        .state
-        .get_or_create_invite(f.guild.id, false, None, None, &f.owner.pubkey)
-        .await
-        .unwrap();
-    f.fail("INSERT", "invites").await;
-    assert!(
-        f.state
-            .get_or_create_invite(f.guild.id, true, None, None, &f.owner.pubkey)
-            .await
-            .is_err()
-    );
-    assert_eq!(f.state.invite_guild(&invite.code), Some(f.guild.id));
-    assert_eq!(
-        f.reloaded().await.invite_guild(&invite.code),
-        Some(f.guild.id)
-    );
+            .unwrap();
+        f.fail("INSERT", "invites").await;
+        assert!(
+            f.state
+                .get_or_create_invite(f.guild.id, true, None, None, &f.owner.pubkey)
+                .await
+                .is_err()
+        );
+        assert_eq!(f.state.invite_guild(&invite.code), Some(f.guild.id));
+        assert_eq!(
+            f.reloaded().await.invite_guild(&invite.code),
+            Some(f.guild.id)
+        );
+        f.recover().await;
+    }
 }
 
 #[tokio::test]

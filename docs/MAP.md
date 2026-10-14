@@ -30,7 +30,7 @@ name instead.
 | `client/src/features/chat.rs` | 2449 |
 | `server/src/store.rs` | 1505 |
 | `client/src/features/guild_settings.rs` | 1135 |
-| `client/src/identity.rs` | 1216 |
+| `client/src/identity.rs` | 1239 |
 | `client/src/features/discord_import.rs` | 1113 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
