@@ -2,6 +2,7 @@ use tao::window::WindowId;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2ProcessFailedEventArgs2, COREWEBVIEW2_PROCESS_FAILED_KIND,
     COREWEBVIEW2_PROCESS_FAILED_REASON, COREWEBVIEW2_WEB_ERROR_STATUS,
+    COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
 };
 use webview2_com::{NavigationCompletedEventHandler, ProcessFailedEventHandler};
 use windows_core::{Interface, BOOL};
@@ -56,7 +57,11 @@ pub(crate) fn install(webview: &wry::WebView, window_id: WindowId) {
                 } else {
                     let mut status = COREWEBVIEW2_WEB_ERROR_STATUS::default();
                     args.WebErrorStatus(&mut status)?;
-                    tracing::error!(?window_id, status = status.0, "WebView2 navigation failed");
+                    if status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED {
+                        tracing::info!(?window_id, status = status.0, "WebView2 navigation canceled");
+                    } else {
+                        tracing::error!(?window_id, status = status.0, "WebView2 navigation failed");
+                    }
                 }
             }
             Ok(())
