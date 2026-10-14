@@ -5,9 +5,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ClientMessage, Id, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ClientMessage, Id, ServerMessage};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -20,7 +20,7 @@ fn temp_data_dir() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "dioxusfun-joingate-{}-{}-{n}",
+        "discordia-joingate-{}-{}-{n}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -29,16 +29,16 @@ fn temp_data_dir() -> PathBuf {
     ))
 }
 
-async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_on(dir: &Path) -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.to_path_buf(),
     };
-    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+    let handle = discordia_server::spawn(preferred, 100, cfg)
         .await
         .expect("spawn");
     (format!("ws://{}", handle.addr), handle)

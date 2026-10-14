@@ -3,7 +3,7 @@
 # anything here still has open egress.
 set -euo pipefail
 
-REPO=/Users/tehsoto/Projects/dioxusfun-monorepo
+REPO=/Users/tehsoto/Projects/discordia
 cd "$REPO"
 
 sudo /usr/local/bin/prepare-mounts.sh
@@ -83,8 +83,8 @@ First run in a session, once each:
 What CI checks, in CI's own two groups (trap 14 — one group misses half):
 
   cargo fmt --all --check
-  cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous --all-targets -- -D warnings
-  cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
+  cargo clippy -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-rendezvous --all-targets -- -D warnings
+  cargo clippy -p discordia -p dioxus-grid-layout --all-targets -- -D warnings
   cargo test --workspace
   cargo audit
 
@@ -94,10 +94,10 @@ config write. Use
   git push origin HEAD  &&  gh pr create --head "$(git branch --show-current)"
 
 The client compiles in here but cannot run: no display for wry, no audio
-device, and screen capture is Windows/macOS-only. `dx build --package dioxusfun`
+device, and screen capture is Windows/macOS-only. `dx build --package discordia`
 still works and is how client/assets/tailwind.css gets regenerated (trap 13).
 
-LIVEKIT_BUNDLE_SKIP=1 is set, so `cargo run -p dioxusfun-server` starts a
+LIVEKIT_BUNDLE_SKIP=1 is set, so `cargo run -p discordia-server` starts a
 gateway with no SFU. Unset it to build a server that embeds one.
 
 Egress is default-deny; a new upstream host needs a line in

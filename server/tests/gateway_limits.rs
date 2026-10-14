@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::ClientMessage;
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::ClientMessage;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -13,7 +13,7 @@ fn temp_data_dir() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "dioxusfun-limits-{}-{}-{n}",
+        "discordia-limits-{}-{}-{n}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -22,17 +22,17 @@ fn temp_data_dir() -> PathBuf {
     ))
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let dir = temp_data_dir();
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     };
-    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+    let handle = discordia_server::spawn(preferred, 100, cfg)
         .await
         .expect("spawn");
     (format!("ws://{}/gateway", handle.addr), handle)
@@ -130,7 +130,7 @@ async fn an_oversized_frame_ends_the_connection() {
         .await
         .expect("connect");
 
-    let huge = "x".repeat(dioxusfun_server::gateway::MAX_FRAME_BYTES + 1);
+    let huge = "x".repeat(discordia_server::gateway::MAX_FRAME_BYTES + 1);
     let _ = ws.send(WsMessage::Text(huge)).await;
 
     assert!(
@@ -148,7 +148,7 @@ async fn a_frame_under_the_cap_is_still_read() {
         .await
         .expect("connect");
 
-    let big = "x".repeat(dioxusfun_server::state::MAX_IMAGE_LEN);
+    let big = "x".repeat(discordia_server::state::MAX_IMAGE_LEN);
     ws.send(WsMessage::Text(big))
         .await
         .expect("send a legal-sized frame");
@@ -178,7 +178,7 @@ async fn a_combined_profile_upload_reaches_the_handler() {
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("connect");
-    let image = "x".repeat(dioxusfun_server::state::MAX_IMAGE_LEN);
+    let image = "x".repeat(discordia_server::state::MAX_IMAGE_LEN);
     let profile = ClientMessage::SetProfile {
         avatar: Some(image.clone()),
         banner: Some(image),
@@ -214,10 +214,10 @@ async fn a_combined_profile_upload_reaches_the_handler() {
 /// one NAT is locked out a socket at a time.
 #[tokio::test]
 async fn a_socket_dropped_for_a_full_queue_gives_its_address_the_slot_back() {
-    use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
-    use dioxusfun_server::protocol::ServerMessage;
-    use dioxusfun_server::state::{AppState, MAX_CONNECTIONS_PER_IP};
-    use dioxusfun_server::store::Store;
+    use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+    use discordia_server::protocol::ServerMessage;
+    use discordia_server::state::{AppState, MAX_CONNECTIONS_PER_IP};
+    use discordia_server::store::Store;
 
     let dir = temp_data_dir();
     let store = Store::open_in(&dir).await.expect("store");
@@ -254,7 +254,7 @@ async fn a_socket_dropped_for_a_full_queue_gives_its_address_the_slot_back() {
 /// past the cap the newcomer is told why and closed before it costs a queue.
 #[tokio::test]
 async fn one_address_cannot_hold_more_than_its_share_of_sockets() {
-    use dioxusfun_server::state::MAX_CONNECTIONS_PER_IP;
+    use discordia_server::state::MAX_CONNECTIONS_PER_IP;
 
     let (url, _h) = spawn_gateway().await;
     let mut held = Vec::new();

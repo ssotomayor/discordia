@@ -96,10 +96,10 @@ impl LiveKitConfig {
 
     pub fn from_env(data_dir: &Path) -> Self {
         let env = |name| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-        let ice_servers = env("DIOXUSFUN_ICE_SERVERS")
+        let ice_servers = env("DISCORDIA_ICE_SERVERS")
             .map(|json| {
                 serde_json::from_str::<Vec<IceServer>>(&json).unwrap_or_else(|e| {
-                    panic!("DIOXUSFUN_ICE_SERVERS is not a JSON list of ICE servers: {e}")
+                    panic!("DISCORDIA_ICE_SERVERS is not a JSON list of ICE servers: {e}")
                 })
             })
             .unwrap_or_default();

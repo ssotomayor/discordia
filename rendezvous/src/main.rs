@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router, turn_relay};
+use discordia_rendezvous::{AppCtx, Config, registry::Registry, router, turn_relay};
 use tracing_subscriber::EnvFilter;
 
 /// Unset and empty read the same, so a compose file may pass `${VAR:-}`.
@@ -18,45 +18,45 @@ async fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let addr: SocketAddr = std::env::var("DIOXUSFUN_RENDEZVOUS_ADDR")
+    let addr: SocketAddr = std::env::var("DISCORDIA_RENDEZVOUS_ADDR")
         // 7700, not 7000: macOS reserves 7000 for AirPlay Receiver.
         .unwrap_or_else(|_| "0.0.0.0:7700".into())
         .parse()
-        .expect("DIOXUSFUN_RENDEZVOUS_ADDR must be host:port");
+        .expect("DISCORDIA_RENDEZVOUS_ADDR must be host:port");
 
-    let relay_url = env("DIOXUSFUN_RENDEZVOUS_RELAY_URL");
-    let relay_bind: SocketAddr = std::env::var("DIOXUSFUN_RENDEZVOUS_RELAY_ADDR")
+    let relay_url = env("DISCORDIA_RENDEZVOUS_RELAY_URL");
+    let relay_bind: SocketAddr = std::env::var("DISCORDIA_RENDEZVOUS_RELAY_ADDR")
         .unwrap_or_else(|_| {
             format!(
                 "0.0.0.0:{}",
-                dioxusfun_rendezvous::relay_server::DEFAULT_RELAY_PORT
+                discordia_rendezvous::relay_server::DEFAULT_RELAY_PORT
             )
         })
         .parse()
-        .expect("DIOXUSFUN_RENDEZVOUS_RELAY_ADDR must be host:port");
-    let _relay = dioxusfun_rendezvous::relay_server::spawn(relay_bind, relay_url.clone()).await;
+        .expect("DISCORDIA_RENDEZVOUS_RELAY_ADDR must be host:port");
+    let _relay = discordia_rendezvous::relay_server::spawn(relay_bind, relay_url.clone()).await;
 
-    let (turn, _turn_server) = match env("DIOXUSFUN_RENDEZVOUS_TURN_URL") {
+    let (turn, _turn_server) = match env("DISCORDIA_RENDEZVOUS_TURN_URL") {
         Some(url) => {
-            let bind: SocketAddr = std::env::var("DIOXUSFUN_RENDEZVOUS_TURN_ADDR")
+            let bind: SocketAddr = std::env::var("DISCORDIA_RENDEZVOUS_TURN_ADDR")
                 .unwrap_or_else(|_| format!("0.0.0.0:{}", turn_relay::DEFAULT_PORT))
                 .parse()
-                .expect("DIOXUSFUN_RENDEZVOUS_TURN_ADDR must be host:port");
-            let relay_ip = match env("DIOXUSFUN_RENDEZVOUS_TURN_RELAY_IP") {
+                .expect("DISCORDIA_RENDEZVOUS_TURN_ADDR must be host:port");
+            let relay_ip = match env("DISCORDIA_RENDEZVOUS_TURN_RELAY_IP") {
                 Some(ip) => ip
                     .parse()
-                    .expect("DIOXUSFUN_RENDEZVOUS_TURN_RELAY_IP must be an IP address"),
+                    .expect("DISCORDIA_RENDEZVOUS_TURN_RELAY_IP must be an IP address"),
                 None => turn_relay::resolve_relay_ip(&url).await.expect(
-                    "DIOXUSFUN_RENDEZVOUS_TURN_URL must name this machine's public address",
+                    "DISCORDIA_RENDEZVOUS_TURN_URL must name this machine's public address",
                 ),
             };
             // Credentials are minted per registration and renewed over the control
             // stream, so a secret that changes with the process costs nothing.
-            let secret = env("DIOXUSFUN_RENDEZVOUS_TURN_SECRET")
+            let secret = env("DISCORDIA_RENDEZVOUS_TURN_SECRET")
                 .unwrap_or_else(|| hex::encode(rand::random::<[u8; 32]>()));
-            let ports = match env("DIOXUSFUN_RENDEZVOUS_TURN_PORTS") {
+            let ports = match env("DISCORDIA_RENDEZVOUS_TURN_PORTS") {
                 Some(spec) => {
-                    turn_relay::parse_ports(&spec).expect("DIOXUSFUN_RENDEZVOUS_TURN_PORTS")
+                    turn_relay::parse_ports(&spec).expect("DISCORDIA_RENDEZVOUS_TURN_PORTS")
                 }
                 None => turn_relay::DEFAULT_PORTS,
             };
@@ -88,7 +88,7 @@ async fn main() {
         "rendezvous configured"
     );
 
-    let data_dir: std::path::PathBuf = std::env::var("DIOXUSFUN_RENDEZVOUS_DATA_DIR")
+    let data_dir: std::path::PathBuf = std::env::var("DISCORDIA_RENDEZVOUS_DATA_DIR")
         .unwrap_or_else(|_| "./rendezvous-data".into())
         .into();
     let reservations_path = data_dir.join("reservations.json");
@@ -103,7 +103,7 @@ async fn main() {
         let mut every = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
         loop {
             every.tick().await;
-            sweeper.sweep(dioxusfun_rendezvous::registry::now_unix());
+            sweeper.sweep(discordia_rendezvous::registry::now_unix());
         }
     });
 
@@ -115,7 +115,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    tracing::info!(%addr, "dioxusfun-rendezvous listening");
+    tracing::info!(%addr, "discordia-rendezvous listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

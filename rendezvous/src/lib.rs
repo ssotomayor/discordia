@@ -16,7 +16,7 @@ use axum::extract::{ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use dioxusfun_protocol::rendezvous::DiscoverEntry;
+use discordia_protocol::rendezvous::DiscoverEntry;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::registry::Registry;
@@ -78,7 +78,7 @@ pub fn router(ctx: AppCtx) -> Router {
 }
 
 async fn root() -> &'static str {
-    "dioxusfun-rendezvous. Endpoints: /config, /discover, /resolve/:code, /voice-token, /voice-evict, /control"
+    "discordia-rendezvous. Endpoints: /config, /discover, /resolve/:code, /voice-token, /voice-evict, /control"
 }
 
 async fn config(State(ctx): State<AppCtx>) -> Json<serde_json::Value> {
@@ -110,7 +110,7 @@ async fn resolve(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     ctx.registry
-        .lookup(&dioxusfun_protocol::rendezvous::join_code(&code).unwrap_or_default())
+        .lookup(&discordia_protocol::rendezvous::join_code(&code).unwrap_or_default())
         .map(|mut entry| {
             entry.relay_url = ctx.config.relay_url.clone();
             Json(entry)
@@ -180,7 +180,7 @@ fn grants_for(room: String, can_publish: bool) -> livekit_api::access_token::Vid
 
 async fn voice_evict(
     State(ctx): State<AppCtx>,
-    Json(req): Json<dioxusfun_protocol::rendezvous::VoiceEvictRequest>,
+    Json(req): Json<discordia_protocol::rendezvous::VoiceEvictRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let shortcode = ctx
         .registry

@@ -30,8 +30,8 @@ tests passed; formatting and Clippy passed.
 
 | Reproduce | Command |
 |---|---|
-| CPU/duration/DOM edits | `cargo test -p dioxusfun --bin Discordia benchmark_selective_ui -- --ignored --nocapture --test-threads=1` |
-| Build RAM fixture | `cargo test -p dioxusfun --bin Discordia --no-run` |
+| CPU/duration/DOM edits | `cargo test -p discordia --bin Discordia benchmark_selective_ui -- --ignored --nocapture --test-threads=1` |
+| Build RAM fixture | `cargo test -p discordia --bin Discordia --no-run` |
 | Sample RAM (Windows) | `python scripts/measure-ui-memory.py <test-executable> --samples 3` |
 | Clock regression tests | `node --test scripts/test-activity-clock.mjs` |
 

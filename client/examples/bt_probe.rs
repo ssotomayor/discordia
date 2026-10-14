@@ -1,9 +1,9 @@
 //! Bisects a Bluetooth headset stuck in HFP after a call. Watch the headset's
 //! format in Audio MIDI Setup at each prompt.
 //!
-//!     cargo run -p dioxusfun --example bt_probe            # cpal alone
-//!     cargo run -p dioxusfun --example bt_probe -- livekit # plus LiveKit's runtime
-//!     cargo run -p dioxusfun --example bt_probe -- room    # a real room, on a LiveKit it starts itself
+//!     cargo run -p discordia --example bt_probe            # cpal alone
+//!     cargo run -p discordia --example bt_probe -- livekit # plus LiveKit's runtime
+//!     cargo run -p discordia --example bt_probe -- room    # a real room, on a LiveKit it starts itself
 //!
 //! `room` spawns the bundled livekit-server on loopback with throwaway keys,
 //! so nothing else needs to run. `RUST_LOG=libwebrtc=debug` shows libwebrtc's
@@ -142,7 +142,7 @@ async fn with_runtime() {
 
 /// The bundled LiveKit on loopback with keys made up for this run; the
 /// handle kills it on drop.
-fn token_for(creds: &dioxusfun_server::livekit_bundle::Credentials, identity: &str) -> String {
+fn token_for(creds: &discordia_server::livekit_bundle::Credentials, identity: &str) -> String {
     AccessToken::with_api_key(&creds.key, &creds.secret)
         .with_identity(identity)
         .with_name(identity)
@@ -167,16 +167,16 @@ fn e2ee() -> Option<E2eeOptions> {
 
 async fn start_livekit() -> (
     String,
-    dioxusfun_server::livekit_bundle::Credentials,
-    dioxusfun_server::livekit_bundle::LivekitSubprocess,
+    discordia_server::livekit_bundle::Credentials,
+    discordia_server::livekit_bundle::LivekitSubprocess,
 ) {
-    use dioxusfun_server::livekit_bundle::{Credentials, ports, spawn_livekit};
+    use discordia_server::livekit_bundle::{Credentials, ports, spawn_livekit};
     let creds = Credentials::generate();
     let data_dir = std::env::temp_dir().join(format!("bt-probe-{}", std::process::id()));
     std::fs::create_dir_all(&data_dir).expect("temp dir");
     eprintln!("starting the bundled livekit-server on loopback…");
     let child = spawn_livekit(
-        dioxusfun_server::livekit_bundle::Advertise::Local,
+        discordia_server::livekit_bundle::Advertise::Local,
         &creds,
         &data_dir,
     )

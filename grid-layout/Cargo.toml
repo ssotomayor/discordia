@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2024"
 description = "A draggable, resizable grid layout for Dioxus — equivalent to react-grid-layout."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/tehsoto/dioxusfun-monorepo"
+repository = "https://github.com/ssotomayor/discordia"
 keywords = ["dioxus", "grid", "layout", "dashboard", "drag-and-drop"]
 categories = ["gui"]
 

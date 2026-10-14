@@ -25,7 +25,7 @@ const SERVICE: &str = "com.discordia.app";
 const ACCOUNT: &str = "identity-vault";
 const BACKEND_MARKER: &str = "vault.backend";
 const KEY_FILE: &str = "vault.key";
-pub const ENV_BACKEND: &str = "DIOXUSFUN_VAULT";
+pub const ENV_BACKEND: &str = "DISCORDIA_VAULT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -196,6 +196,7 @@ pub fn encrypt(secret: &[u8; 32], passphrase: &str, log_n: u8) -> Result<String,
 }
 
 const SEALED_VERSION: u8 = 0x01;
+// The project's old name, kept: a new AAD would leave every sealed phrase unreadable.
 const SEALED_AAD: &[u8] = b"dioxusfun/sealed/v1";
 const SEALED_HEAD: usize = 1 + 1 + SALT_LEN + NONCE_LEN;
 

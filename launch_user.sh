@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="${DIOXUSFUN_DEV_BASE:-/tmp/dioxusfun-users}"
+BASE_DIR="${DISCORDIA_DEV_BASE:-/tmp/discordia-users}"
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   echo "usage: $(basename "$0") <username> [extra args...]" >&2
@@ -28,6 +28,6 @@ mkdir -p "$CONFIG_DIR"
 echo "▶ launching Discordia as '${USERNAME}'"
 echo "  config dir: ${CONFIG_DIR}"
 
-( cd "$REPO_DIR" && cargo build -p dioxusfun )
+( cd "$REPO_DIR" && cargo build -p discordia )
 
-DIOXUSFUN_CONFIG_DIR="$CONFIG_DIR" exec "$REPO_DIR/target/debug/Discordia" "$@"
+DISCORDIA_CONFIG_DIR="$CONFIG_DIR" exec "$REPO_DIR/target/debug/Discordia" "$@"

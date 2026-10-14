@@ -3,8 +3,8 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::post;
-use dioxusfun_protocol::rendezvous::VoiceEvictRequest;
-use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
+use discordia_protocol::rendezvous::VoiceEvictRequest;
+use discordia_rendezvous::{AppCtx, Config, registry::Registry, router};
 
 async fn serve(app: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

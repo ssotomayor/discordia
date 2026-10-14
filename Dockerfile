@@ -14,20 +14,20 @@ ENV LIVEKIT_BUNDLE_SKIP=1
 # The recipe leaves out the `[patch]` crates, which the workspace excludes.
 COPY vendor vendor
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release -p dioxusfun-server --recipe-path recipe.json
+RUN cargo chef cook --release -p discordia-server --recipe-path recipe.json
 COPY . .
-RUN cargo build --release -p dioxusfun-server
+RUN cargo build --release -p discordia-server
 
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /src/target/release/dioxusfun-server /usr/local/bin/discordia-server
+COPY --from=builder /src/target/release/discordia-server /usr/local/bin/discordia-server
 
-ENV DIOXUSFUN_ADDR=0.0.0.0:9000 \
-    DIOXUSFUN_QUIC_PORT=9001 \
-    DIOXUSFUN_DATA_DIR=/data \
-    DIOXUSFUN_LIVEKIT_AUTOSPAWN=0
+ENV DISCORDIA_ADDR=0.0.0.0:9000 \
+    DISCORDIA_QUIC_PORT=9001 \
+    DISCORDIA_DATA_DIR=/data \
+    DISCORDIA_LIVEKIT_AUTOSPAWN=0
 VOLUME /data
 EXPOSE 9000 9001/udp
 ENTRYPOINT ["discordia-server"]

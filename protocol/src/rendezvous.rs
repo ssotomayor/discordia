@@ -1,4 +1,4 @@
-//! Here rather than in `dioxusfun-rendezvous` because the client speaks the
+//! Here rather than in `discordia-rendezvous` because the client speaks the
 //! host side of it, and nothing depends on the relay crate.
 
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,7 @@ pub enum HostToRendezvous {
 }
 
 /// What a `ListNames` signature signs in place of a name.
-pub const LIST_NAMES: &str = "dioxusfun:list-names";
+pub const LIST_NAMES: &str = "discordia:list-names";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ReservedName {

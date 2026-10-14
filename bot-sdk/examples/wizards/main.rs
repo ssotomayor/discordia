@@ -1,6 +1,6 @@
 //! Wizards: a turn-based duel for two or three, installable as an app.
 //!
-//! `cargo run -p dioxusfun-bot --example wizards -- [SERVER_URL]`
+//! `cargo run -p discordia-bot --example wizards -- [SERVER_URL]`
 //!
 //! SERVER_URL defaults to `ws://127.0.0.1:9000`, a self-host on this machine;
 //! elsewhere pass the host's `quic://…` share string. The key is kept in
@@ -11,11 +11,11 @@ mod game;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use dioxusfun_bot::protocol::{
+use discordia_bot::protocol::{
     ActivityCapability, ActivityInstance, ActivityManifest, ActivityRole, AppManifest, Id,
     ServerMessage,
 };
-use dioxusfun_bot::{Bot, BotIdentity};
+use discordia_bot::{Bot, BotIdentity};
 use game::{Game, Phase, Spell};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

@@ -6,9 +6,9 @@ use axum::extract::ConnectInfo;
 use iroh::endpoint::{BindOpts, IncomingAddr, presets};
 use iroh::{Endpoint, EndpointId, SecretKey};
 
-pub use dioxusfun_protocol::GATEWAY_ALPN;
+pub use discordia_protocol::GATEWAY_ALPN;
 
-/// UDP port the standalone server binds unless `DIOXUSFUN_QUIC_PORT` says otherwise;
+/// UDP port the standalone server binds unless `DISCORDIA_QUIC_PORT` says otherwise;
 /// `RANDOM_PORT` is what a self-host uses, since a port mapping takes whatever it got.
 pub const DEFAULT_PORT: u16 = 9001;
 pub const RANDOM_PORT: u16 = 0;
@@ -240,7 +240,7 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "dioxusfun-quic-test-{}-{}",
+            "discordia-quic-test-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn the_quic_secret_survives_a_restart_and_is_private_to_its_directory() {
         let dir = std::env::temp_dir().join(format!(
-            "dioxusfun-quic-secret-{}-{}",
+            "discordia-quic-secret-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn an_unreadable_quic_secret_is_reported_not_replaced() {
         let dir = std::env::temp_dir().join(format!(
-            "dioxusfun-quic-secret-corrupt-{}-{}",
+            "discordia-quic-secret-corrupt-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));

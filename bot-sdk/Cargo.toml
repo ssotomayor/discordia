@@ -1,11 +1,11 @@
 [package]
-name = "dioxusfun-bot"
+name = "discordia-bot"
 version = "0.1.0"
 edition = "2024"
-description = "Async client SDK for writing dioxusfun bots (Tier 1 external bots, over WebSocket or QUIC)."
+description = "Async client SDK for writing discordia bots (Tier 1 external bots, over WebSocket or QUIC)."
 
 [dependencies]
-dioxusfun-protocol = { workspace = true }
+discordia-protocol = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tokio-tungstenite = { workspace = true }
 # A host off loopback answers only QUIC, keyed to its share string (trap 15).

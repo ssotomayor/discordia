@@ -96,32 +96,32 @@ async fn alternate_endpoint_delivers_audio(
     use futures_util::StreamExt;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
-    let creds = dioxusfun_server::livekit_bundle::Credentials::generate();
+    let creds = discordia_server::livekit_bundle::Credentials::generate();
     let data_dir = std::env::temp_dir().join(format!("discordia-direct-{}", uuid::Uuid::new_v4()));
-    let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(
-        dioxusfun_server::livekit_bundle::Advertise::Local,
+    let _sfu = discordia_server::livekit_bundle::spawn_livekit(
+        discordia_server::livekit_bundle::Advertise::Local,
         &creds,
         &data_dir,
     )
     .await
     .unwrap();
-    let port = dioxusfun_server::livekit_bundle::ports().ws;
+    let port = discordia_server::livekit_bundle::ports().ws;
     let gateway = if through_gateway {
-        let config = dioxusfun_server::ServerConfig {
-            livekit: dioxusfun_server::livekit::LiveKitConfig {
+        let config = discordia_server::ServerConfig {
+            livekit: discordia_server::livekit::LiveKitConfig {
                 explicit_url: None,
                 port,
                 api_key: creds.key.clone(),
                 api_secret: creds.secret.clone(),
-                ..dioxusfun_server::livekit::LiveKitConfig::from_env(&data_dir)
+                ..discordia_server::livekit::LiveKitConfig::from_env(&data_dir)
             },
             operators: Default::default(),
             identities: Default::default(),
-            media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+            media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
             data_dir: data_dir.join("gateway"),
         };
         Some(
-            dioxusfun_server::spawn("127.0.0.1:0".parse().unwrap(), 0, config)
+            discordia_server::spawn("127.0.0.1:0".parse().unwrap(), 0, config)
                 .await
                 .unwrap(),
         )
@@ -930,7 +930,7 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies RED survives E2EE"]
 async fn audio_red_survives_end_to_end_encryption() {
-    let creds = dioxusfun_server::livekit_bundle::Credentials {
+    let creds = discordia_server::livekit_bundle::Credentials {
         key: env_or("LIVEKIT_API_KEY", "devkey"),
         secret: env_or(
             "LIVEKIT_API_SECRET",
@@ -939,8 +939,8 @@ async fn audio_red_survives_end_to_end_encryption() {
     };
     let data_dir = std::env::temp_dir().join(format!("discordia-red-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&data_dir).unwrap();
-    let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(
-        dioxusfun_server::livekit_bundle::Advertise::Mapped(std::net::IpAddr::V4(
+    let _sfu = discordia_server::livekit_bundle::spawn_livekit(
+        discordia_server::livekit_bundle::Advertise::Mapped(std::net::IpAddr::V4(
             std::net::Ipv4Addr::LOCALHOST,
         )),
         &creds,
@@ -1154,11 +1154,11 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
     let url = env_or("LIVEKIT_URL", "ws://127.0.0.1:7880");
     let channel = uuid::Uuid::new_v4();
     let who = format!("evictee-{}", uuid::Uuid::new_v4().simple());
-    let voice_room = dioxusfun_server::livekit::room_name(channel);
-    let screen_room = dioxusfun_server::livekit::screen_room_name(channel);
-    let audio_identity = dioxusfun_server::livekit::screen_audio_identity(&who);
-    let video_identity = dioxusfun_server::livekit::screen_video_identity(&who);
-    let viewer_identity = dioxusfun_server::livekit::screen_viewer_identity(&who);
+    let voice_room = discordia_server::livekit::room_name(channel);
+    let screen_room = discordia_server::livekit::screen_room_name(channel);
+    let audio_identity = discordia_server::livekit::screen_audio_identity(&who);
+    let video_identity = discordia_server::livekit::screen_video_identity(&who);
+    let viewer_identity = discordia_server::livekit::screen_viewer_identity(&who);
 
     let mut seats = Vec::new();
     for (room, identity) in [
@@ -1175,7 +1175,7 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
         seats.push((identity, joined, events));
     }
 
-    let cfg = dioxusfun_server::livekit::LiveKitConfig {
+    let cfg = discordia_server::livekit::LiveKitConfig {
         explicit_url: Some(url.clone()),
         port: 7880,
         lan_host: None,
@@ -1190,7 +1190,7 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
         minter: None,
         ice_servers: Default::default(),
     };
-    dioxusfun_server::livekit::evict(&cfg, channel, &who).await;
+    discordia_server::livekit::evict(&cfg, channel, &who).await;
 
     for (identity, _room, mut events) in seats {
         wait_for(&mut events, &identity, |ev| {

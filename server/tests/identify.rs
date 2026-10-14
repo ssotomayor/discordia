@@ -2,15 +2,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::ServerMessage;
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::ServerMessage;
 
 fn temp_data_dir() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "dioxusfun-identify-{}-{}-{n}",
+        "discordia-identify-{}-{}-{n}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -19,17 +19,17 @@ fn temp_data_dir() -> PathBuf {
     ))
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let dir = temp_data_dir();
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     };
-    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+    let handle = discordia_server::spawn(preferred, 100, cfg)
         .await
         .expect("spawn");
     (format!("ws://{}", handle.addr), handle)
@@ -114,7 +114,7 @@ async fn raw_identify(url: &str, identity: &BotIdentity, signed_for: &str, sent:
             break nonce;
         }
     };
-    let identify = dioxusfun_server::protocol::ClientMessage::Identify {
+    let identify = discordia_server::protocol::ClientMessage::Identify {
         username: "alice".into(),
         pubkey: identity.pubkey().to_string(),
         signature: identity.sign_identify(&nonce, signed_for, "alice"),
@@ -141,7 +141,7 @@ async fn raw_identify(url: &str, identity: &BotIdentity, signed_for: &str, sent:
 }
 
 fn origin_of(url: &str) -> String {
-    dioxusfun_server::protocol::dial_origin(&format!("{url}/gateway")).unwrap()
+    discordia_server::protocol::dial_origin(&format!("{url}/gateway")).unwrap()
 }
 
 #[tokio::test]

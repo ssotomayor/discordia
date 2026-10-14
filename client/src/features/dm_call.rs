@@ -590,15 +590,15 @@ struct ServerConfig {
 }
 
 fn ice_configuration() -> Result<RtcConfiguration, String> {
-    let raw = std::env::var("DIOXUSFUN_DM_ICE_SERVERS")
+    let raw = std::env::var("DISCORDIA_DM_ICE_SERVERS")
         .unwrap_or_else(|_| "[{\"urls\":[\"stun:stun.cloudflare.com:3478\"]}]".into());
-    let relay_only = std::env::var("DIOXUSFUN_DM_RELAY_ONLY").is_ok_and(|value| value == "1");
+    let relay_only = std::env::var("DISCORDIA_DM_RELAY_ONLY").is_ok_and(|value| value == "1");
     parse_ice_configuration(&raw, relay_only)
 }
 
 fn parse_ice_configuration(raw: &str, relay_only: bool) -> Result<RtcConfiguration, String> {
     let servers: Vec<ServerConfig> = serde_json::from_str(raw)
-        .map_err(|_| "Invalid DIOXUSFUN_DM_ICE_SERVERS JSON".to_string())?;
+        .map_err(|_| "Invalid DISCORDIA_DM_ICE_SERVERS JSON".to_string())?;
     if servers.len() > 8
         || servers.iter().any(|s| {
             s.urls.is_empty()

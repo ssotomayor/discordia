@@ -193,7 +193,7 @@ fn speech_alignment(clean: &[f32], output: &[f32], start: usize) -> (usize, f64)
 #[test]
 #[ignore = "requires exported human_speech_audit WAV comparisons"]
 fn human_speech_saved_metrics() {
-    let dir = std::path::PathBuf::from(std::env::var_os("DIOXUSFUN_SPEECH_FIXTURES").unwrap());
+    let dir = std::path::PathBuf::from(std::env::var_os("DISCORDIA_SPEECH_FIXTURES").unwrap());
     let clean = read_speech(&dir.join("speech-clean.wav"));
     for name in [
         "baseline",
@@ -227,10 +227,10 @@ fn human_speech_saved_metrics() {
 }
 
 #[test]
-#[ignore = "requires DIOXUSFUN_SPEECH_FIXTURES containing Open Speech Repository female.wav and male.wav"]
+#[ignore = "requires DISCORDIA_SPEECH_FIXTURES containing Open Speech Repository female.wav and male.wav"]
 fn human_speech_audit() {
     let dir = std::path::PathBuf::from(
-        std::env::var_os("DIOXUSFUN_SPEECH_FIXTURES").expect("fixture directory"),
+        std::env::var_os("DISCORDIA_SPEECH_FIXTURES").expect("fixture directory"),
     );
     let female = read_speech(&dir.join("female.wav"));
     let male = read_speech(&dir.join("male.wav"));
@@ -259,7 +259,7 @@ fn human_speech_audit() {
     let baseline = run_speech(&clean, &silence, false, false, 10, 30);
     write_wav(&dir.join("speech-baseline.wav"), &baseline[warmup..]);
     let mut failures = Vec::new();
-    let selected = std::env::var("DIOXUSFUN_SPEECH_CASE").ok();
+    let selected = std::env::var("DISCORDIA_SPEECH_CASE").ok();
     for (name, input, reference, denoise, agc, threshold, attenuation) in [
         ("clean-denoise", &clean, &silence[..], true, false, 10, 30),
         ("aec", &noisy, far, false, false, 10, 30),

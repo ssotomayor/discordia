@@ -187,7 +187,7 @@ pub async fn handle_connection<S>(
                             Some(format!(
                                 "identify rejected: this server does not answer to '{origin}'. \
                                  A host reached through another name has to list it in \
-                                 DIOXUSFUN_PUBLIC_HOSTS"
+                                 DISCORDIA_PUBLIC_HOSTS"
                             ))
                         } else {
                             auth::verify_identify(&pubkey, &signature, &nonce, &origin, &username)

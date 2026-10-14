@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, Message, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ChannelKind, ClientMessage, Id, Message, ServerMessage};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -12,24 +12,24 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config() -> dioxusfun_server::ServerConfig {
+fn test_config() -> discordia_server::ServerConfig {
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-transport-{}-{}",
+        "discordia-transport-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19400".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 200, test_config())
+    let handle = discordia_server::spawn(preferred, 200, test_config())
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)

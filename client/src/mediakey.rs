@@ -70,7 +70,7 @@ pub fn open(
 
 fn aad(epoch: u32, recipient: &str) -> Vec<u8> {
     let mut aad = Vec::with_capacity(8 + recipient.len());
-    aad.extend_from_slice(b"dioxusfun/media-key/v1");
+    aad.extend_from_slice(b"discordia/media-key/v1");
     aad.extend_from_slice(&epoch.to_be_bytes());
     aad.extend_from_slice(recipient.as_bytes());
     aad

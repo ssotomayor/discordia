@@ -1,7 +1,7 @@
-use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, Message, MessageSearch, User};
-use dioxusfun_server::state::AppState;
-use dioxusfun_server::store::Store;
+use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+use discordia_server::protocol::{ChannelKind, ClientMessage, Id, Message, MessageSearch, User};
+use discordia_server::state::AppState;
+use discordia_server::store::Store;
 
 const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -77,15 +77,15 @@ async fn image_name_and_dimensions_survive_history_search_and_reopening_the_stor
 
 #[test]
 fn clipboard_dimensions_do_not_require_a_filename_and_bad_names_are_removed() {
-    let metadata = dioxusfun_server::media::image_metadata(PNG, None);
+    let metadata = discordia_server::media::image_metadata(PNG, None);
     assert_eq!(metadata.name, None);
     assert_eq!((metadata.width, metadata.height), (Some(1), Some(1)));
     assert_eq!(
-        dioxusfun_server::media::image_metadata(PNG, Some("../..")).name,
+        discordia_server::media::image_metadata(PNG, Some("../..")).name,
         None
     );
     assert_eq!(
-        dioxusfun_server::media::image_metadata(PNG, Some(&"a".repeat(500)))
+        discordia_server::media::image_metadata(PNG, Some(&"a".repeat(500)))
             .name
             .unwrap()
             .chars()

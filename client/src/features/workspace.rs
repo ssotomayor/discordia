@@ -460,7 +460,7 @@ pub fn WorkspaceView(
                 let _ = done_rx.await;
             };
             if tokio::time::timeout(LEAVE_TIMEOUT, teardown).await.is_err() {
-                eprintln!("[dioxusfun] media teardown timed out; leaving anyway");
+                eprintln!("[discordia] media teardown timed out; leaving anyway");
             }
             if tokio::time::timeout(LEAVE_TIMEOUT, gateway_shutdown.close())
                 .await

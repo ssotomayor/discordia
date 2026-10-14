@@ -2,7 +2,7 @@
   "name": "discordia",
   "dockerComposeFile": ["docker-compose.yml"],
   "service": "dev",
-  "workspaceFolder": "/Users/tehsoto/Projects/dioxusfun-monorepo",
+  "workspaceFolder": "/Users/tehsoto/Projects/discordia",
   "remoteUser": "vscode",
 
   "features": {
@@ -17,7 +17,7 @@
   "postStartCommand": "sudo /usr/local/bin/prepare-mounts.sh && sudo /usr/local/bin/init-firewall.sh",
 
   // The gateway and the rendezvous. Not 7880: the bundled SFU is skipped in
-  // here (DIOXUSFUN_LIVEKIT_AUTOSPAWN=0), and a forwarded port for a process
+  // here (DISCORDIA_LIVEKIT_AUTOSPAWN=0), and a forwarded port for a process
   // that never starts is a debugging red herring.
   "forwardPorts": [9000, 7700, 7701, 3100, 8787],
   "portsAttributes": {

@@ -9,4 +9,4 @@ echo "client: cargo run — every media path works, no hot reload."
 echo "        UI iteration instead: ./dev-client-hotreload.sh"
 echo
 
-exec cargo run -p dioxusfun
+exec cargo run -p discordia

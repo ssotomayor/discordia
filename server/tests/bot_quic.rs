@@ -1,21 +1,21 @@
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotError, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{self, ServerMessage};
-use dioxusfun_server::quic::{self, Coordination, QuicHandle};
+use discordia_bot::{Bot, BotError, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{self, ServerMessage};
+use discordia_server::quic::{self, Coordination, QuicHandle};
 
-fn test_config() -> dioxusfun_server::ServerConfig {
+fn test_config() -> discordia_server::ServerConfig {
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-bot-quic-{}-{}",
+        "discordia-bot-quic-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
@@ -43,7 +43,7 @@ async fn spawn_quic_gateway(
             .map(ToString::to_string)
             .collect(),
     };
-    let router = dioxusfun_server::build_router(cfg).await.expect("router");
+    let router = discordia_server::build_router(cfg).await.expect("router");
     let handle = quic::serve_on_with(endpoint, router, coordination).expect("serve quic");
     (handle.endpoint_id, addrs, handle)
 }
@@ -73,7 +73,7 @@ async fn a_bot_joins_by_share_string_over_direct_quic() {
 #[tokio::test]
 async fn a_host_reachable_only_through_its_relay_still_takes_the_bot() {
     tokio::time::timeout(Duration::from_secs(45), async {
-        let relay = dioxusfun_rendezvous::relay_server::spawn(
+        let relay = discordia_rendezvous::relay_server::spawn(
             "127.0.0.1:0".parse().unwrap(),
             Some("http://localhost/".into()),
         )

@@ -7,7 +7,7 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "must run as root (sudo prepare-mounts.sh)" >&2; exit 1; }
 
-REPO=/Users/tehsoto/Projects/dioxusfun-monorepo
+REPO=/Users/tehsoto/Projects/discordia
 
 # Docker creates the forwarded SSH agent socket owned root:root, so the
 # container user gets "Error connecting to agent: Permission denied" and both

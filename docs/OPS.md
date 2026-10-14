@@ -5,7 +5,7 @@
 | Rung | For | How |
 |---|---|---|
 | One click | friend groups | "Host my own" in the client — runs the gateway in-process and launches a bundled SFU child; the rendezvous's SFU is used only when friends cannot reach this machine's media ports |
-| One box | communities | `cargo run -p dioxusfun-server`, or Docker (`Dockerfile`, `docker-compose.yml` — what the test deployment runs) |
+| One box | communities | `cargo run -p discordia-server`, or Docker (`Dockerfile`, `docker-compose.yml` — what the test deployment runs) |
 | Cluster | giants | not built (entry: demand-gated) |
 
 ## Environment
@@ -24,32 +24,32 @@ Cargo is a development launcher, not a shipped service.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `DIOXUSFUN_ADDR` | `0.0.0.0:9000` | plaintext gateway bind — for loopback and a TLS proxy; clients refuse `ws://` to anything else |
-| `DIOXUSFUN_QUIC_PORT` | `9001` | UDP port the QUIC endpoint binds — the one to publish and open; `0` takes a random free one |
-| `DIOXUSFUN_RELAY_URL` | — | an iroh relay (a rendezvous's `/config` names one) that introduces friends behind NAT and carries ciphertext when a punch fails |
-| `DIOXUSFUN_DATA_DIR` | `./discordia-data` | SQLite, media blobs, `livekit-keys`, `quic-secret` (the key in the share string; back it up or friends re-add you) |
-| `DIOXUSFUN_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it |
-| `DIOXUSFUN_OPERATORS` | — | comma-separated hex pubkeys who moderate system guilds |
-| `DIOXUSFUN_PUBLIC_HOSTS` | — | comma-separated `host`, `host:port` or URLs clients dial (a DNS name, a reverse proxy). Loopback and every interface IP are always accepted; a login signed for any other address is refused |
+| `DISCORDIA_ADDR` | `0.0.0.0:9000` | plaintext gateway bind — for loopback and a TLS proxy; clients refuse `ws://` to anything else |
+| `DISCORDIA_QUIC_PORT` | `9001` | UDP port the QUIC endpoint binds — the one to publish and open; `0` takes a random free one |
+| `DISCORDIA_RELAY_URL` | — | an iroh relay (a rendezvous's `/config` names one) that introduces friends behind NAT and carries ciphertext when a punch fails |
+| `DISCORDIA_DATA_DIR` | `./discordia-data` | SQLite, media blobs, `livekit-keys`, `quic-secret` (the key in the share string; back it up or friends re-add you) |
+| `DISCORDIA_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it |
+| `DISCORDIA_OPERATORS` | — | comma-separated hex pubkeys who moderate system guilds |
+| `DISCORDIA_PUBLIC_HOSTS` | — | comma-separated `host`, `host:port` or URLs clients dial (a DNS name, a reverse proxy). Loopback and every interface IP are always accepted; a login signed for any other address is refused |
 | `LIVEKIT_URL` | derived per-connection | SFU URL handed to clients |
 | `LIVEKIT_API_KEY` / `_SECRET` | generated into `<data dir>/livekit-keys` on first run | set only for an external SFU (`LIVEKIT_URL`); must match it |
 | `LIVEKIT_PORT` | `7880` | port used when deriving the URL (the bundled SFU always binds 7880) |
-| `DIOXUSFUN_LIVEKIT_AUTOSPAWN` | `1` | `0` when LiveKit runs separately |
-| `DIOXUSFUN_ICE_SERVERS` | — | JSON list of `{urls, username, credential}` handed to every voice client; for a box behind NAT with its own TURN |
+| `DISCORDIA_LIVEKIT_AUTOSPAWN` | `1` | `0` when LiveKit runs separately |
+| `DISCORDIA_ICE_SERVERS` | — | JSON list of `{urls, username, credential}` handed to every voice client; for a box behind NAT with its own TURN |
 
 **Rendezvous**
 
 | Var | Default | Meaning |
 |---|---|---|
-| `DIOXUSFUN_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | HTTP bind: `/control`, `/discover`, `/resolve`, `/config`, `/voice-token`, `/voice-evict` |
-| `DIOXUSFUN_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations |
-| `DIOXUSFUN_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
-| `DIOXUSFUN_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
-| `DIOXUSFUN_RENDEZVOUS_TURN_URL` | — | enables the TURN relay: what clients dial, e.g. `turn:rendezvous.example:7702`. Hosts behind NAT keep their calls on their own SFU; friends who cannot reach it are relayed here, ciphertext only |
-| `DIOXUSFUN_RENDEZVOUS_TURN_ADDR` | `0.0.0.0:7702` | UDP bind for the relay's control socket |
-| `DIOXUSFUN_RENDEZVOUS_TURN_PORTS` | `7710-7809` | UDP range relayed media is allocated from; open it with the bind. Roughly eight ports per relayed friend, so the default seats a dozen |
-| `DIOXUSFUN_RENDEZVOUS_TURN_RELAY_IP` | resolved from the URL | the public IPv4 handed out in allocations; set it when the URL's name does not resolve to this machine |
-| `DIOXUSFUN_RENDEZVOUS_TURN_SECRET` | random per start | HMAC secret behind the time-limited credentials; hosts renew theirs over the control stream, so a restart costs nothing |
+| `DISCORDIA_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | HTTP bind: `/control`, `/discover`, `/resolve`, `/config`, `/voice-token`, `/voice-evict` |
+| `DISCORDIA_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations |
+| `DISCORDIA_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
+| `DISCORDIA_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
+| `DISCORDIA_RENDEZVOUS_TURN_URL` | — | enables the TURN relay: what clients dial, e.g. `turn:rendezvous.example:7702`. Hosts behind NAT keep their calls on their own SFU; friends who cannot reach it are relayed here, ciphertext only |
+| `DISCORDIA_RENDEZVOUS_TURN_ADDR` | `0.0.0.0:7702` | UDP bind for the relay's control socket |
+| `DISCORDIA_RENDEZVOUS_TURN_PORTS` | `7710-7809` | UDP range relayed media is allocated from; open it with the bind. Roughly eight ports per relayed friend, so the default seats a dozen |
+| `DISCORDIA_RENDEZVOUS_TURN_RELAY_IP` | resolved from the URL | the public IPv4 handed out in allocations; set it when the URL's name does not resolve to this machine |
+| `DISCORDIA_RENDEZVOUS_TURN_SECRET` | random per start | HMAC secret behind the time-limited credentials; hosts renew theirs over the control stream, so a restart costs nothing |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts whose media ports nobody outside can reach *and* that have no relay; the rendezvous mints their tokens so no host holds the secret. A host that maps its ports, or has a relay, carries its own calls and ignores this |
 
 Deploy the coordinator with `/voice-evict` alongside these clients. A host's
@@ -64,16 +64,16 @@ peer's IP, and a proxy makes every host the same peer.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `DIOXUSFUN_CONFIG_DIR` | OS config dir | identity, settings, release log |
-| `DIOXUSFUN_VAULT` | chosen on first run | `keychain` or `file`: where the passphrase that locks key files lives; changing it later means re-importing every key |
-| `DIOXUSFUN_RENDEZVOUS_URL` | `ws://rendezvous.discordia.world:7700` | presets the rendezvous; plain `ws://` because the rendezvous is never behind TLS |
-| `DIOXUSFUN_DM_ICE_SERVERS` | `[{"urls":["stun:stun.cloudflare.com:3478"]}]` | JSON list of STUN/TURN servers for private DM calls; each entry accepts `urls`, `username`, `password`. Credentials stay local and are never sent through Nostr |
-| `DIOXUSFUN_DM_RELAY_ONLY` | off | `1` requires a configured TURN server and excludes direct media connections |
+| `DISCORDIA_CONFIG_DIR` | OS config dir | identity, settings, release log; a pre-rename `dioxusfun` folder is moved here once |
+| `DISCORDIA_VAULT` | chosen on first run | `keychain` or `file`: where the passphrase that locks key files lives; changing it later means re-importing every key |
+| `DISCORDIA_RENDEZVOUS_URL` | `ws://rendezvous.discordia.world:7700` | presets the rendezvous; plain `ws://` because the rendezvous is never behind TLS |
+| `DISCORDIA_DM_ICE_SERVERS` | `[{"urls":["stun:stun.cloudflare.com:3478"]}]` | JSON list of STUN/TURN servers for private DM calls; each entry accepts `urls`, `username`, `password`. Credentials stay local and are never sent through Nostr |
+| `DISCORDIA_DM_RELAY_ONLY` | off | `1` requires a configured TURN server and excludes direct media connections |
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
 
-Guild migration: `cargo run -p dioxusfun-server -- export --guild <uuid> f.json`
+Guild migration: `cargo run -p discordia-server -- export --guild <uuid> f.json`
 then `import f.json` on the target. Fresh ids, pubkeys preserved.
 
 ## Community file attachments
@@ -82,7 +82,7 @@ then `import f.json` on the target. Fresh ids, pubkeys preserved.
 |---|---|---|
 | File size | 2 MB | Chat → Attach file → Save file limits (Manage guild); 1–2000 KB |
 | File lifetime | 7 days | Same controls; 1–365 days, applied to new uploads |
-| Total media storage | 2 GiB | `DIOXUSFUN_MEDIA_MAX_BYTES`; shared by files, pictures and sounds |
+| Total media storage | 2 GiB | `DISCORDIA_MEDIA_MAX_BYTES`; shared by files, pictures and sounds |
 
 Expired files cannot be downloaded; the message retains its name and size. The
 host checks every minute and removes blobs with no live reference, including
@@ -114,8 +114,8 @@ ports, then supply credentials to both clients. The iroh relay cannot replace it
 PowerShell example, before launching Discordia:
 
 ```powershell
-$env:DIOXUSFUN_DM_ICE_SERVERS = '[{"urls":["stun:turn.example.org:3478"]},{"urls":["turn:turn.example.org:3478?transport=udp","turns:turn.example.org:5349?transport=tcp"],"username":"alice","password":"YOUR_TURN_PASSWORD"}]'
-$env:DIOXUSFUN_DM_RELAY_ONLY = '1'
+$env:DISCORDIA_DM_ICE_SERVERS = '[{"urls":["stun:turn.example.org:3478"]},{"urls":["turn:turn.example.org:3478?transport=udp","turns:turn.example.org:5349?transport=tcp"],"username":"alice","password":"YOUR_TURN_PASSWORD"}]'
+$env:DISCORDIA_DM_RELAY_ONLY = '1'
 ```
 
 Verify two identities on different networks, then repeat with relay-only mode.
@@ -149,7 +149,7 @@ rendezvous entry. The plaintext gateway binds loopback only.
 | Self-host, nothing else | loopback | share string with the LAN address ("Accept direct connections" starts enabled for new hosts) | direct with global IPv6 and an open firewall; otherwise unreachable |
 | + rendezvous | loopback | punched, or carried by the relay | gateway introduced or relayed; voice tries usable local routes before the shared SFU |
 | + port mapping (UPnP/NAT-PMP/PCP or manual) | loopback | direct | direct on the forwarded QUIC UDP port; voice on this machine's SFU when media ports are usable |
-| Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DIOXUSFUN_PUBLIC_HOSTS`) |
+| Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DISCORDIA_PUBLIC_HOSTS`) |
 
 Port mapping failure is the normal case and never stops hosting. It also
 measures hairpin NAT for diagnostics. LiveKit keeps LAN candidates alongside the
@@ -195,7 +195,7 @@ IPv6-only host) still reaches the SFU's signaling: the gateway serves it at
 connection (direct QUIC or the relay, ciphertext either way), and tries it last.
 Media then goes by ICE, through the rendezvous's TURN when nothing direct works.
 Release builds log to `<config dir>/logs/discordia.log` (macOS
-`~/Library/Application Support/dioxusfun`, Windows `%APPDATA%\dioxusfun`);
+`~/Library/Application Support/discordia`, Windows `%APPDATA%\discordia`);
 `grep 'voice route:'` there, on the host and on a caller, shows why a call
 landed where it did. Credentials never appear in those lines.
 
@@ -240,7 +240,7 @@ file read out of a working tree is whatever revision that tree last held.
 | `.env` is required | compose uses `${LIVEKIT_API_KEY:?}`, so a missing key fails at start rather than falling back to LiveKit's public `devkey` |
 | All three restart together | the gateway, the rendezvous and the SFU must agree on the LiveKit pair |
 | `deploy/livekit.yaml` carries no `keys:` | `LIVEKIT_KEYS` supplies them, so a copied file never carries a secret |
-| Off loopback the gateway needs QUIC reachable | `9001/udp` published and open (`DIOXUSFUN_QUIC_PORT`); `DIOXUSFUN_RELAY_URL` so a blocked UDP port still connects |
+| Off loopback the gateway needs QUIC reachable | `9001/udp` published and open (`DISCORDIA_QUIC_PORT`); `DISCORDIA_RELAY_URL` so a blocked UDP port still connects |
 
 ## The website
 
@@ -308,8 +308,8 @@ learns only that somebody messaged you.
 
 | Command | Scope |
 |---|---|
-| `cargo test -p dioxusfun-protocol --release` | Existing release baseline |
-| `cargo test -p dioxusfun-protocol --profile release-lto` | Optional thin-LTO candidate; same optimization level and panic behavior |
-| `cargo build -p dioxusfun --profile release-lto` | Full-client candidate build, not measured in this iteration |
+| `cargo test -p discordia-protocol --release` | Existing release baseline |
+| `cargo test -p discordia-protocol --profile release-lto` | Optional thin-LTO candidate; same optimization level and panic behavior |
+| `cargo build -p discordia --profile release-lto` | Full-client candidate build, not measured in this iteration |
 
 The protocol test executable on Windows was 2,562,048 bytes with release and 2,538,496 with release-lto. Both ran all 59 tests successfully. This does not establish a client-wide speed or size improvement; release automation continues using its existing profile. [Cargo profile settings](https://doc.rust-lang.org/cargo/reference/profiles.html).

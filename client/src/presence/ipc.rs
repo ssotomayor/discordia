@@ -40,7 +40,7 @@ pub fn socket_names(discord_compatible: bool) -> Vec<String> {
     let stem = if discord_compatible && discord_compatible_supported() {
         "discord-ipc"
     } else {
-        "dioxusfun-ipc"
+        "discordia-ipc"
     };
     (0..SLOTS).map(|n| format!("{stem}-{n}")).collect()
 }
@@ -392,7 +392,7 @@ mod tests {
                 ours, theirs,
                 "saved Discord compatibility must not claim Discord's pipes"
             );
-            assert!(theirs.iter().all(|n| n.starts_with("dioxusfun-ipc-")));
+            assert!(theirs.iter().all(|n| n.starts_with("discordia-ipc-")));
         }
     }
 }

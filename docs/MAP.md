@@ -131,7 +131,7 @@ that direction says a file is safe to open when it is not.
 | An app's manifest and its pin | `server/src/state/apps.rs`, `server/src/auth.rs`, `client/src/features/integrations.rs` | `protocol::AppManifest` is a kind 31990 event (`d` = `discordia-app`) signed by the app key; `verify_manifest_event` checks it on the host, `read_manifest` on the client before the consent screen. `BotInstall::app` is what was approved; `register_manifest` → `apply_newer` applies a newer version that `AppManifest::widens` nothing, else parks it in `pending` for `approve_app_update`. `InstallForm` asks the host (`FetchAppManifest`) and the account's relays (`NostrCmd::FetchAppManifest`) and takes the higher version. SDK: `BotIdentity::sign_manifest`, `Bot::register_manifest` |
 | An app's activity bundle | `server/src/state/apps.rs`, `client/src/activity_bundle.rs`, `client/src/features/activities.rs` | The app delivers it: the host sends its bot `BundleWanted` (on its Ready, on install, on a new manifest or approval — `ask_for_bundles`) and keeps an `OfferActivityBundle` only if it hashes to a manifest some guild installed (`offer_bundle`). An admin may still upload the zip or page (`UploadActivityBundle`, `BundleRow`). The host stores it as `media:<sha>.dxa` only if the hash is the pinned or pending manifest's. `guild_activities` lists the held ones to any member (`FetchGuildActivities`, `GuildActivities`); `FetchEmoji` serves a `.dxa` only through `bundle_available`. The client refuses bytes that do not hash to the manifest (`verified_bytes`) and unpacks with path and size limits (`unpack`) before `activity_window::open` |
 | A shared activity (rock paper scissors) | `server/src/state/instances.rs`, `client/src/features/activities.rs` | `ActivityStart`/`Join`/`Leave`/`Send` → `start_instance` etc.; an instance lives in memory, ends with its last participant, and goes to `viewers_of` its channel via `share_instances` (plus the app's bot, its backend). Spectators never `ActivitySend`; `ActivityEvent` is dropped, not fatal, on a full queue. On the client one coroutine in `ActivityHost` owns the window's calls and the instance's frames: `instance.commit`/`reveal` hash in Rust (`commit_hash`), and a reveal is `valid` only against the commitment this client saw. `Session::backlog` holds frames until the page first calls in. `InstanceCard` offers Join/Watch. `client/tests/activity_rps.cjs` plays a match |
-| An example app end to end (Wizards) | `bot-sdk/examples/wizards/` | `main.rs` is the bot: it registers its manifest on connect (the activity's sha256 is computed from `index.html`, so bump `VERSION` with every page change), keeps one `game::Game` per instance from `ActivityInstances`, answers `BundleWanted` with `index.html`, and is the only one that rolls. `index.html` is the bundle; it trusts game state only from `info.app`. Run: `cargo run -p dioxusfun-bot --example wizards -- [SERVER_URL]`. `game.rs` tests run with `cargo test` |
+| An example app end to end (Wizards) | `bot-sdk/examples/wizards/` | `main.rs` is the bot: it registers its manifest on connect (the activity's sha256 is computed from `index.html`, so bump `VERSION` with every page change), keeps one `game::Game` per instance from `ActivityInstances`, answers `BundleWanted` with `index.html`, and is the only one that rolls. `index.html` is the bundle; it trusts game state only from `info.app`. Run: `cargo run -p discordia-bot --example wizards -- [SERVER_URL]`. `game.rs` tests run with `cargo test` |
 | Voice session ownership | `server/src/gateway/connection.rs`, `server/src/gateway/voice_ownership_tests.rs` | `set_voice_channel_owned` assigns the call to a connection. Owner cleanup expires after the reconnect grace even with chat siblings; atomic ownership checks preserve a handed-off call and reject sibling publication updates. Presence still follows the last session |
 | Concurrent self-hosts | `server/src/livekit_bundle/ownership.rs`, `client/src/host.rs` | `HostLease` excludes hosts sharing a data directory; each SFU owns its directory and TCP/UDP ports until its subprocess drops. Concurrent hosts use separate configuration directories and disjoint `DISCORDIA_LIVEKIT_PORT` blocks. Scoped executable names prevent stale PID records from reclaiming another directory's SFU; two real SFUs are covered by the existing ignored-test CI step |
 | Guild unread indicators | `client/src/state.rs`, `client/src/features/guilds.rs`, `client/src/features/channels.rs` | `channel_unread` tracks new messages outside the open guild channel, excluding self and duplicates. Guild dots aggregate its channels; opening a channel clears only its dot. History pages do not add unread state; leaving the server clears it |
@@ -149,7 +149,7 @@ repeated here.
 | Task | Touch, in order |
 |---|---|
 | New UI surface | `client/src/features/<new>.rs` → `client/src/features/mod.rs` → mount in `features/workspace.rs` (in a session) or `features/home.rs` (before one) |
-| New Tailwind class | write it → `dx build --package dioxusfun` → commit `client/assets/tailwind.css` (trap 13) |
+| New Tailwind class | write it → `dx build --package discordia` → commit `client/assets/tailwind.css` (trap 13) |
 | New Nostr event kind | `client/src/nostr/<kind>.rs` → `client/src/nostr/mod.rs` → subscribe/handle in `nostr/service.rs` → new field in `client/src/state.rs` |
 | New server permission | `protocol/src/lib.rs` (`Permission`) → `server/src/state/mod.rs` (`can`) → the handler arm in `gateway/connection.rs` → `client/src/state.rs` `can()` for hiding UI |
 | A name shown anywhere | never store it — `AppState::display_name` (trap 8) |
@@ -196,7 +196,7 @@ repeated here.
 
 ```mermaid
 flowchart LR
-  subgraph C["client/ — dioxusfun"]
+  subgraph C["client/ — discordia"]
     UI["features/*.rs"]
     NET["net.rs — WS loop<br/>apply / send"]
     ST["state.rs — AppState<br/>+ advisory can()"]
@@ -210,7 +210,7 @@ flowchart LR
     CAP-->V
     V-.->JS
   end
-  subgraph S["server/ — dioxusfun-server"]
+  subgraph S["server/ — discordia-server"]
     GW["gateway/connection.rs<br/>one task per socket"]
     AS["state/mod.rs — AppState<br/>DashMaps, authoritative"]
     DB[("store.rs — SQLite<br/>write-through")]

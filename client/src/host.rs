@@ -1,8 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use dioxusfun_server::ServerHandle;
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::livekit_bundle::{self, Advertise, LivekitSubprocess};
+use discordia_server::ServerHandle;
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::livekit_bundle::{self, Advertise, LivekitSubprocess};
 
 use crate::portmap;
 
@@ -73,8 +73,8 @@ pub struct HostHandle {
     /// What the rendezvous link does after start: lost, restored, renamed.
     pub updates: Option<tokio::sync::mpsc::UnboundedReceiver<crate::rendezvous::HostUpdate>>,
     gateway: Option<ServerHandle>,
-    quic: Option<dioxusfun_server::quic::QuicHandle>,
-    shutdown: Option<dioxusfun_server::GatewayShutdown>,
+    quic: Option<discordia_server::quic::QuicHandle>,
+    shutdown: Option<discordia_server::GatewayShutdown>,
     livekit: Option<LivekitSubprocess>,
     rendezvous_task: Option<tokio::task::JoinHandle<()>>,
     runtime: tokio::runtime::Handle,
@@ -132,7 +132,7 @@ pub async fn start_self_host(
     let data_dir = crate::identity::config_dir().join("host-data");
     let data_lease = livekit_bundle::HostLease::claim(&data_dir)?;
 
-    let listener = dioxusfun_server::bind_with_fallback(
+    let listener = discordia_server::bind_with_fallback(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000),
         20,
     )
@@ -154,20 +154,20 @@ pub async fn start_self_host(
     let quic_setup = async {
         let coordination = match rendezvous_url.as_deref() {
             Some(url) => crate::rendezvous::coordination_offered(url).await,
-            None => dioxusfun_server::quic::Coordination::None,
+            None => discordia_server::quic::Coordination::None,
         };
         let quic_endpoint = if !open_to_others {
             eprintln!("[host] nobody but this machine may connect — not opening the QUIC door");
             None
         } else {
             let transport_secret = crate::quic::secret_for(&identity);
-            match dioxusfun_server::quic::bind_quic(
+            match discordia_server::quic::bind_quic(
                 Some(transport_secret),
                 &coordination,
                 if manual_ip.is_some() {
-                    dioxusfun_server::quic::DEFAULT_PORT
+                    discordia_server::quic::DEFAULT_PORT
                 } else {
-                    dioxusfun_server::quic::RANDOM_PORT
+                    discordia_server::quic::RANDOM_PORT
                 },
             )
             .await
@@ -500,7 +500,7 @@ pub async fn start_self_host(
         .then(|| turn.clone())
         .flatten()
         .map(|creds| (creds.ice_servers(), creds));
-    let ice_servers = dioxusfun_server::livekit::shared_ice_servers(
+    let ice_servers = discordia_server::livekit::shared_ice_servers(
         relay_ice
             .as_ref()
             .map(|(servers, _)| servers.clone())
@@ -525,13 +525,13 @@ pub async fn start_self_host(
         minter: rendezvous_minter
             .clone()
             .filter(|_| !voice_bundled)
-            .map(|m| m as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
+            .map(|m| m as std::sync::Arc<dyn discordia_server::livekit::VoiceTokenMinter>),
         fallback: if voice_bundled {
             shared_offer
                 .clone()
                 .zip(rendezvous_minter.clone())
                 .map(|(url, minter)| {
-                    std::sync::Arc::new(dioxusfun_server::livekit::VoiceFallback::new(url, minter))
+                    std::sync::Arc::new(discordia_server::livekit::VoiceFallback::new(url, minter))
                 })
         } else {
             None
@@ -556,25 +556,25 @@ pub async fn start_self_host(
 
     // Every way a friend can reach this gateway, because a login signed for
     // an address not in this set is refused (see server auth.rs).
-    let mut identities = dioxusfun_server::local_identities(gateway_addr.port());
+    let mut identities = discordia_server::local_identities(gateway_addr.port());
     if let Some(key) = transport_key.as_deref() {
         identities.insert(crate::protocol::quic_origin(key));
     }
 
     let operators = std::collections::HashSet::from([operator_pubkey]);
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: livekit_cfg,
         operators,
         data_dir,
         identities,
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
     };
-    let (router, shutdown) = dioxusfun_server::build_gateway(cfg)
+    let (router, shutdown) = discordia_server::build_gateway(cfg)
         .await
         .map_err(|e| format!("embedded server: {e}"))?;
 
     let quic = quic_endpoint.and_then(|ep| {
-        match dioxusfun_server::quic::serve_on_with(ep, router.clone(), coordination.clone()) {
+        match discordia_server::quic::serve_on_with(ep, router.clone(), coordination.clone()) {
             Ok(handle) => {
                 eprintln!("[host] quic gateway at key {}", handle.endpoint_id);
                 Some(handle)
@@ -587,7 +587,7 @@ pub async fn start_self_host(
         }
     });
 
-    let gateway = dioxusfun_server::serve_router(listener, router);
+    let gateway = discordia_server::serve_router(listener, router);
     let local_url = format!("ws://127.0.0.1:{}", gateway_addr.port());
 
     let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();

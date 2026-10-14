@@ -8,6 +8,10 @@
 # Every relative path below resolves against THIS directory, because this is
 # the only compose file the devcontainer passes, and compose takes the project
 # directory from the first one. Hence `..` for the repo root.
+
+# Pinned so the volumes below keep their names when the checkout is renamed.
+name: discordia
+
 services:
   dev:
     build:
@@ -29,7 +33,7 @@ services:
       # second, empty store instead of the sessions and memory mounted below —
       # and any git worktree under .claude/worktrees/ records an absolute
       # `gitdir:` that only resolves at this path.
-      - ..:/Users/tehsoto/Projects/dioxusfun-monorepo:cached
+      - ..:/Users/tehsoto/Projects/discordia:cached
 
       # Read-only on exactly the paths that cause code to run ON THE HOST,
       # overlaying the mount above. The rest of .git stays writable, so branch,
@@ -54,16 +58,16 @@ services:
       # name a `linker` or `runner` that HOST cargo executes. The whole
       # directory rather than that one file, because cargo reads `config` as
       # well as `config.toml` and a file mount leaves the other name writable.
-      - ../.git/hooks:/Users/tehsoto/Projects/dioxusfun-monorepo/.git/hooks:ro
-      - ../.git/config:/Users/tehsoto/Projects/dioxusfun-monorepo/.git/config:ro
-      - ../.cargo:/Users/tehsoto/Projects/dioxusfun-monorepo/.cargo:ro
+      - ../.git/hooks:/Users/tehsoto/Projects/discordia/.git/hooks:ro
+      - ../.git/config:/Users/tehsoto/Projects/discordia/.git/config:ro
+      - ../.cargo:/Users/tehsoto/Projects/discordia/.cargo:ro
 
       # Build output on a named volume rather than the bind mount. Two reasons:
       # bind-mounted I/O this heavy is slow on macOS, and the host's target/
       # holds Mach-O objects a Linux toolchain would reject — it is 50GB of
       # them. One volume, not CARGO_TARGET_DIR, so `target/dx` stays where dx
       # and the workflows expect to find a bundle.
-      - target:/Users/tehsoto/Projects/dioxusfun-monorepo/target
+      - target:/Users/tehsoto/Projects/discordia/target
 
       # The host's SSH agent, which Docker Desktop exposes at this fixed path
       # inside its VM. It is what makes the full git workflow work in here
@@ -107,14 +111,14 @@ services:
       - ~/.claude/skills:/home/vscode/.claude/skills:ro
       - ~/.claude/hooks:/home/vscode/.claude/hooks:ro
       - ~/.claude/plugins:/home/vscode/.claude/plugins:ro
-      - ~/.claude/projects/-Users-tehsoto-Projects-dioxusfun-monorepo:/home/vscode/.claude/projects/-Users-tehsoto-Projects-dioxusfun-monorepo
+      - ~/.claude/projects/-Users-tehsoto-Projects-discordia:/home/vscode/.claude/projects/-Users-tehsoto-Projects-discordia
     environment:
       # server/build.rs otherwise fetches a ~51MB livekit-server release into
       # every fresh target volume, and autospawn then fails at runtime with
       # "not bundled" if it did not. Unset both to build a server binary that
       # embeds the SFU — CI refuses to publish one under 40MB.
       LIVEKIT_BUNDLE_SKIP: "1"
-      DIOXUSFUN_LIVEKIT_AUTOSPAWN: "0"
+      DISCORDIA_LIVEKIT_AUTOSPAWN: "0"
 
       # Linking the client OOM-kills GNU ld in a stock Docker Desktop VM: 16
       # CPUs means cargo starts 16 jobs, several of them linking at once,

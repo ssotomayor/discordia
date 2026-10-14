@@ -1,1 +1,1 @@
-pub use dioxusfun_protocol::*;
+pub use discordia_protocol::*;
