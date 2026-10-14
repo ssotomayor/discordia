@@ -116,9 +116,19 @@ through `scripts/install-webrtc-toolchain.sh`, with `CC=clang-21` and
 | Real encrypted native video | 1080p60 NVIDIA H.264, VP8 software and CPU H.264 decoded successfully |
 | Real SFU regressions | Camera/screen independent stop, encrypted audio RED and gateway signaling passed |
 | Synthetic motion, local SFU, encrypted H.264, RTX 5080 | 1440p30/12 Mbps: previous 30 FPS, 884 decoded frames, 7.34 ms/encode; updated 30 FPS, 883 frames, 6.80 ms/encode |
+| Synthetic motion, same host/codec/SFU, production `ultra` settings | 1440p60/34 Mbps: previous 60 FPS final, 59.09 decoded FPS average, 6.88 ms/encode; updated 60 FPS final, 59.36 decoded FPS average, 6.74 ms/encode |
 
 Motion values are one debug-build run per version using the same existing
 30-second changing-texture test, source, encoder settings and host. They exclude
 screen capture, remote networks and perceptual quality measurements; no FPS gain
 across qualities is established. Native macOS/Linux runtime validation needs
 those platforms. Resolution/FPS budgets and encoder quality settings are unchanged.
+
+The 60 FPS comparison supplies 1800 frames per run; each version encodes 1789.
+The previous/current receiver decodes 1772/1780 frames before the final sample.
+Detailed SDK logging is disabled for both measurements. Reproduce with
+`DISCORDIA_TEST_REQUIRE_NVENC=1`, `DISCORDIA_TEST_NVENC_RATES=1`,
+`DISCORDIA_TEST_NVENC_1440P60=1`, `DISCORDIA_TEST_MEDIA_LOG=warn`, then run
+`cargo test -p dioxusfun native_screen_codecs_reach_a_real_decoder -- --ignored --nocapture`.
+The rate assertion checks that allocation reaches the budget during the run;
+congestion control may lower the final allocation even on loopback.
