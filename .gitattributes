@@ -1,11 +1,7 @@
-# The vendored LiveKit SDK is checked against upstream by its sha256 (the hash
-# is in the doc comment on LIVEKIT_JS in client/src/app.rs). With
-# core.autocrlf=true — the default on Windows — a checkout would rewrite its two
-# newlines to CRLF, so the file on disk would no longer match the published one
-# and `include_str!` would compile in something two bytes off depending on who
-# cloned it. `-text` turns that off for this file only. Nothing here is about
-# JavaScript being newline-sensitive; it is about the hash staying checkable.
+# Release asset hashes must match upstream bytes; Windows checkout conversion
+# would otherwise change the embedded SDK and worker.
 client/assets/livekit-client.umd.js -text
+client/assets/livekit-client.e2ee.worker.js -text
 
 # A bundle is installed by its sha256, and the manifest the bot registers
 # hashes the file it was built from; CRLF on checkout would change the hash.

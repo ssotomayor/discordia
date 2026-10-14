@@ -68,3 +68,21 @@ verification require macOS.
 Compatibility probes were built separately under ignored `target/iroh-compat`,
 using the pre-update and current lockfiles. Audio, video and UI SDK versions
 remain unchanged; QUIC, DNS and network-discovery dependencies move with Iroh.
+
+## Browser media SDK
+
+LiveKit JavaScript 2.19.2 → 2.22.4. Both bundled files come from the official
+[`livekit-client` npm package](https://registry.npmjs.org/livekit-client/-/livekit-client-2.22.4.tgz).
+The separate `e2ee-worker-shim.js` remains applied by `AppHead`.
+
+| Artifact | SHA-256 of upstream bytes |
+|---|---|
+| `client/assets/livekit-client.umd.js` | `c7635b98785139085e0c30105404af894551d0870e19f06f64951f809812bd4a` |
+| `client/assets/livekit-client.e2ee.worker.js` | `dc707d8e2b2174a92f3f8152e64a29d23cc9817a30f7169697f0a546999999cc` |
+
+`node client/tests/e2ee_worker.cjs` runs the bundled worker with the shim,
+real WebCrypto and synthetic Opus/H.264 frames. Checks encrypted roundtrips,
+key-before-enable ordering and key isolation, including ratchet responses.
+`LIVEKIT_REFERENCE_WORKER=<previous worker file>` adds old/new checks in both
+directions. This checks encrypted bytes, not real decoding, browser playback
+or stream FPS. Existing screen/camera/audio bridge suites remain required.

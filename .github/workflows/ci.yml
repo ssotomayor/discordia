@@ -146,6 +146,7 @@ jobs:
         run: |
           node client/tests/screenshare_bridge.cjs
           node client/tests/camera_preview_bridge.cjs
+          node client/tests/e2ee_worker.cjs
           node --test scripts/test-stream-quality.mjs
           node --test scripts/test-stream-audio.mjs
           node --test scripts/test-gif-playback.mjs
