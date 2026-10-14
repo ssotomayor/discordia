@@ -38,7 +38,13 @@ That spawns a gateway and a bundled LiveKit in-process — you are the operator 
 your own Lobby, and friends join with a code that does not show your IP. Data
 lands in `<config dir>/discordia/host-data/`.
 
-Server, relay, and guild migration: `docs/OPS.md`.
+A server or rendezvous on a Linux VPS:
+
+```bash
+curl -fsSL https://discordia.world/install.sh | sh
+```
+
+Everything else about running one, and guild migration: `docs/OPS.md`.
 
 ## Build and test
 

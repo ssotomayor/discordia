@@ -608,14 +608,15 @@ pub fn migrate_legacy_config_dir() {
         return;
     };
     let (old, new) = (base.join("dioxusfun"), base.join("discordia"));
-    if old.is_dir() && !new.exists() {
-        if let Err(e) = std::fs::rename(&old, &new) {
-            eprintln!(
-                "[discordia] could not move {} to {}: {e}",
-                old.display(),
-                new.display()
-            );
-        }
+    if old.is_dir()
+        && !new.exists()
+        && let Err(e) = std::fs::rename(&old, &new)
+    {
+        eprintln!(
+            "[discordia] could not move {} to {}: {e}",
+            old.display(),
+            new.display()
+        );
     }
 }
 

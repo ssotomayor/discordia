@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
+[features]
+default = ["cli"]
+# The binary: flags, the config file, `setup`, and the rendezvous as a subcommand.
+# The client embeds the library and leaves these out.
+cli = ["dep:clap", "dep:toml", "dep:discordia-rendezvous"]
+
+[[bin]]
+name = "discordia-server"
+path = "src/bin/discordia-server/main.rs"
+required-features = ["cli"]
+
 [build-dependencies]
 ureq = { version = "2", default-features = false, features = ["tls"] }
 flate2 = "1"
@@ -19,6 +30,9 @@ tokio-tungstenite = { workspace = true }
 serde_json = { workspace = true }
 
 [dependencies]
+clap = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+discordia-rendezvous = { path = "../rendezvous", optional = true }
 axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
 # services-tokio is RemoveParticipant: evicting from the SFU, not just asking the app to leave.

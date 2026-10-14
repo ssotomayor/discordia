@@ -103,15 +103,28 @@ impl LiveKitConfig {
                 })
             })
             .unwrap_or_default();
-        let (api_key, api_secret) = match (env("LIVEKIT_API_KEY"), env("LIVEKIT_API_SECRET")) {
-            (Some(key), Some(secret)) => (key, secret),
-            _ => {
-                let c = livekit_bundle::credentials_or_ephemeral(data_dir);
-                (c.key, c.secret)
-            }
-        };
+        let pair = env("LIVEKIT_API_KEY").zip(env("LIVEKIT_API_SECRET"));
+        Self::new(
+            data_dir,
+            std::env::var("LIVEKIT_URL").ok(),
+            pair,
+            ice_servers,
+        )
+    }
+
+    /// Without a key pair, the bundled SFU's from `data_dir` (minted on first run).
+    pub fn new(
+        data_dir: &Path,
+        explicit_url: Option<String>,
+        pair: Option<(String, String)>,
+        ice_servers: Vec<IceServer>,
+    ) -> Self {
+        let (api_key, api_secret) = pair.unwrap_or_else(|| {
+            let c = livekit_bundle::credentials_or_ephemeral(data_dir);
+            (c.key, c.secret)
+        });
         Self {
-            explicit_url: std::env::var("LIVEKIT_URL").ok(),
+            explicit_url,
             port: std::env::var("LIVEKIT_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
