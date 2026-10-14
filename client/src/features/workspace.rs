@@ -1171,7 +1171,12 @@ fn TransportBadge() -> Element {
     let snapshot = state.read();
     let transport = snapshot.transport;
     let route = snapshot.gateway_route.clone();
+    let host = snapshot.host_info.clone();
     drop(snapshot);
+
+    if let Some(info) = host {
+        return rsx! { super::host_connections::HostConnections { info } };
+    }
 
     let (label, color, title) = match transport {
         crate::state::Transport::Loopback => (

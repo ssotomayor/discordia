@@ -409,6 +409,9 @@ async fn run(
     let (dial, mut host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
     let mut host_updates = host_handle.as_mut().and_then(|h| h.updates.take());
+    let host_monitor = host_handle
+        .as_ref()
+        .and_then(HostHandle::connection_monitor);
     let mut failures = 0u32;
     loop {
         let connected = tokio::select! {
@@ -424,6 +427,7 @@ async fn run(
                     s.server_origin = Some(origin.clone());
                 }
                 let links = Links {
+                    host_monitor: host_monitor.clone(),
                     tx,
                     rx: &mut rx,
                     voice_tx,
@@ -595,6 +599,7 @@ enum Socket {
 
 /// The channels a session talks over, apart from the socket itself.
 struct Links<'a> {
+    host_monitor: Option<discordia_server::GatewayShutdown>,
     tx: &'a UnboundedSender<ClientMessage>,
     rx: &'a mut UnboundedReceiver<ClientMessage>,
     voice_tx: &'a UnboundedSender<VoiceCmd>,
@@ -621,6 +626,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let Links {
+        host_monitor,
         tx,
         rx,
         voice_tx,
@@ -729,6 +735,15 @@ where
         watch.finish("session");
         tokio::select! {
             _ = route_tick.tick() => {
+                if let Some(monitor) = &host_monitor {
+                    let connections = monitor.connections().into_iter()
+                        .filter(|connection| connection.pubkey != params.identity.pubkey
+                            || connection.route != discordia_server::connection_routes::GatewayRoute::Local).collect::<Vec<_>>();
+                    let changed = state.peek().host_info.as_ref().is_some_and(|info| info.connections != connections);
+                    if changed && let Some(info) = state.write().host_info.as_mut() {
+                        info.connections = connections;
+                    }
+                }
                 let report = {
                     let s = state.peek();
                     s.server_voice_channel().map(|channel_id| ClientMessage::ConnectionRouteReport {

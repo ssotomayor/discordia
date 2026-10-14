@@ -153,6 +153,9 @@ async fn serve_connection(
         }
         _ => None,
     };
+    let router = router.layer(axum::Extension(
+        crate::connection_routes::RouteSource::Quic(conn.clone()),
+    ));
     let router = match peer {
         Some(addr) => {
             tracing::info!(%remote, %addr, "quic peer connected");
