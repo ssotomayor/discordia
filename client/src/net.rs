@@ -499,10 +499,7 @@ async fn run(
         let reason = outcome.err().unwrap_or_else(|| "connection closed".into());
         {
             let mut s = state.write();
-            s.status = ConnectionStatus::Reconnecting;
-            if s.gateway_failure.is_none() {
-                s.gateway_failure = Some(gateway_failure_report(&reason, Some(s.transport)));
-            }
+            record_gateway_interruption(&mut s, &reason);
         }
         tracing::warn!(%reason, "gateway lost; reconnecting in place");
         let delay = reconnect_delay(failures);
@@ -897,6 +894,80 @@ mod graceful_shutdown_tests {
     use super::*;
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
 
+    #[test]
+    fn stopped_and_unreachable_hosts_do_not_show_reconnect_diagnostics() {
+        let stopped = discordia_server::gateway::HOST_STOPPED;
+        for transport in [
+            Transport::Loopback,
+            Transport::Proxied,
+            Transport::Quic,
+            Transport::QuicRelayed,
+        ] {
+            for reason in [
+                stopped.to_owned(),
+                format!("{stopped}\nQUIC close: closed by peer\nRelayed: true"),
+                format!("gateway send: sending stopped by peer: error 0\nServer reason: {stopped}"),
+                "connection closed".into(),
+                "connection closed\nQUIC close: connection lost".into(),
+                "recv: IO error: connection reset by peer".into(),
+                "recv: WebSocket protocol error: Connection reset without closing handshake".into(),
+                "gateway send: IO error: sending stopped by peer: error 0\nServer reason: not received".into(),
+                "gateway send timed out".into(),
+                "the host stopped answering heartbeat probes".into(),
+                "connect failed: connection refused".into(),
+                "gateway connection timed out".into(),
+                "no answer from the host within 15s".into(),
+            ] {
+                assert!(reconnect_failure_report(&reason, transport).is_none(), "{reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn actionable_refusals_still_have_reconnect_diagnostics() {
+        for reason in [
+            "gateway admission: identify rejected: wrong origin",
+            "gateway send: sending stopped by peer\nOperation: SendMessage\nServer reason: message too large",
+            "bad server frame before Ready: invalid JSON",
+        ] {
+            let report = reconnect_failure_report(reason, Transport::Quic).unwrap();
+            assert!(report.contains(reason));
+            assert!(report.contains("Time (UTC):"));
+        }
+    }
+
+    #[test]
+    fn retry_errors_cannot_replace_a_suppressed_disconnect_report() {
+        let mut dom = VirtualDom::new(|| rsx! {});
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, || {
+            let mut state = AppState::empty();
+            state.status = ConnectionStatus::Ready;
+            record_gateway_interruption(&mut state, discordia_server::gateway::HOST_STOPPED);
+            assert_eq!(state.status, ConnectionStatus::Reconnecting);
+            assert!(state.gateway_failure.is_none());
+            record_gateway_interruption(
+                &mut state,
+                "gateway admission: server closed before Hello",
+            );
+            assert!(state.gateway_failure.is_none());
+
+            state.status = ConnectionStatus::Ready;
+            record_gateway_interruption(
+                &mut state,
+                "gateway admission: identify rejected: wrong origin",
+            );
+            let original = state.gateway_failure.clone();
+            assert!(original.is_some());
+            record_gateway_interruption(&mut state, "connect failed: connection refused");
+            assert_eq!(state.gateway_failure, original);
+
+            state.status = ConnectionStatus::Ready;
+            record_gateway_interruption(&mut state, "recv: connection reset by peer");
+            assert!(state.gateway_failure.is_none());
+        });
+    }
+
     #[tokio::test]
     async fn gateway_admission_preserves_the_rejection_before_peer_shutdown() {
         let (client, server) = tokio::io::duplex(4096);
@@ -1164,6 +1235,36 @@ fn gateway_failure_report(reason: &str, transport: Option<Transport>) -> String 
         std::env::consts::ARCH,
         chrono::Utc::now().to_rfc3339()
     )
+}
+
+fn reconnect_failure_report(reason: &str, transport: Transport) -> Option<String> {
+    let first = reason.lines().next().unwrap_or(reason);
+    let server_reason = reason
+        .lines()
+        .find_map(|line| line.strip_prefix("Server reason: "))
+        .filter(|reason| *reason != "not received");
+    let stopped = discordia_server::gateway::HOST_STOPPED;
+    if first == stopped || server_reason == Some(stopped) {
+        return None;
+    }
+    let interruption = first == "connection closed"
+        || reason.starts_with("recv:")
+        || reason.starts_with("gateway send")
+        || reason.starts_with("the host stopped answering heartbeat probes")
+        || reason.starts_with("connect failed:")
+        || reason.starts_with("gateway connection timed out")
+        || reason.starts_with("no answer from the host");
+    if interruption && server_reason.is_none() {
+        return None;
+    }
+    Some(gateway_failure_report(reason, Some(transport)))
+}
+
+fn record_gateway_interruption(state: &mut AppState, reason: &str) {
+    if state.status != ConnectionStatus::Reconnecting {
+        state.gateway_failure = reconnect_failure_report(reason, state.transport);
+    }
+    state.status = ConnectionStatus::Reconnecting;
 }
 
 /// Stable, so roles written before positions were kept apart stay in the
