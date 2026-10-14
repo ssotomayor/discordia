@@ -84,7 +84,7 @@ pub fn ConnectForm(
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let rendezvous = settings.read().rendezvous_servers.clone();
     let publish_target = settings.read().publish_rendezvous();
-    let media = dioxusfun_server::livekit_bundle::ports();
+    let media = discordia_server::livekit_bundle::ports();
     let (media_ws, media_tcp, media_udp) = (media.ws, media.tcp, media.udp);
 
     let mut mode = use_signal(initial_mode);

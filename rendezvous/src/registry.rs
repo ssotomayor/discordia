@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use dashmap::{DashMap, mapref::entry::Entry};
-use dioxusfun_protocol::rendezvous::{
+use discordia_protocol::rendezvous::{
     DiscoverEntry, GeoPoint, MAX_NAME_CHARS, ReservedName, join_code,
 };
 use serde::{Deserialize, Serialize};

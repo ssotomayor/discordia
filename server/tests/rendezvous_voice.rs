@@ -2,10 +2,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_rendezvous::{AppCtx, Config, registry::Registry, router};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -19,19 +19,19 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
+fn test_config(livekit: LiveKitConfig) -> discordia_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-rzv-voice-test-{}-{}",
+        "discordia-rzv-voice-test-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit,
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
@@ -74,9 +74,9 @@ async fn register(base: &str) -> serde_json::Value {
     }
 }
 
-async fn spawn_gateway(livekit: LiveKitConfig) -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway(livekit: LiveKitConfig) -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, test_config(livekit))
+    let handle = discordia_server::spawn(preferred, 100, test_config(livekit))
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)

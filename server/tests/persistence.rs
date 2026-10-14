@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -17,7 +17,7 @@ fn temp_data_dir() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "dioxusfun-persist-{}-{}-{n}",
+        "discordia-persist-{}-{}-{n}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -26,16 +26,16 @@ fn temp_data_dir() -> PathBuf {
     ))
 }
 
-async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_on(dir: &Path) -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.to_path_buf(),
     };
-    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+    let handle = discordia_server::spawn(preferred, 100, cfg)
         .await
         .expect("spawn");
     (format!("ws://{}", handle.addr), handle)
@@ -117,7 +117,7 @@ async fn state_survives_restart_and_media_is_offloaded() {
                 name: "games".into(),
                 kind: ChannelKind::Divider,
                 topic: None,
-                divider: dioxusfun_server::protocol::DividerStyle::Centered,
+                divider: discordia_server::protocol::DividerStyle::Centered,
             })
             .await
             .unwrap();
@@ -152,7 +152,7 @@ async fn state_survives_restart_and_media_is_offloaded() {
     };
     assert!(
         channels.iter().any(|c| c.kind == ChannelKind::Divider
-            && c.divider == dioxusfun_server::protocol::DividerStyle::Centered),
+            && c.divider == discordia_server::protocol::DividerStyle::Centered),
         "a divider and its style survived the restart"
     );
     assert!(
@@ -436,7 +436,7 @@ async fn every_kind_of_blob_reference_is_found() {
         hex::encode(sha2::Sha256::digest(page))
     };
     let app = BotIdentity::generate();
-    let manifest = dioxusfun_server::protocol::AppManifest {
+    let manifest = discordia_server::protocol::AppManifest {
         name: "Bundle".into(),
         description: String::new(),
         icon: String::new(),
@@ -444,7 +444,7 @@ async fn every_kind_of_blob_reference_is_found() {
         permissions: Vec::new(),
         intents: Vec::new(),
         commands: Vec::new(),
-        activity: Some(dioxusfun_server::protocol::ActivityManifest {
+        activity: Some(discordia_server::protocol::ActivityManifest {
             sha256: sha,
             capabilities: Vec::new(),
             max_players: 1,
@@ -470,7 +470,7 @@ async fn every_kind_of_blob_reference_is_found() {
                 use base64::Engine;
                 format!(
                     "data:{};base64,{}",
-                    dioxusfun_server::protocol::BUNDLE_MIME,
+                    discordia_server::protocol::BUNDLE_MIME,
                     base64::engine::general_purpose::STANDARD.encode(page)
                 )
             },
@@ -480,7 +480,7 @@ async fn every_kind_of_blob_reference_is_found() {
 
     tokio::time::sleep(Duration::from_millis(400)).await;
 
-    let store = dioxusfun_server::store::Store::open(&dir.join("discordia.db"))
+    let store = discordia_server::store::Store::open(&dir.join("discordia.db"))
         .await
         .expect("open the store the server just wrote");
     let referenced = store.referenced_media().await.expect("scan references");
@@ -516,7 +516,7 @@ async fn every_kind_of_blob_reference_is_found() {
 async fn concurrent_redemptions_cannot_lose_each_other() {
     let dir = temp_data_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    let store = dioxusfun_server::store::Store::open(&dir.join("discordia.db"))
+    let store = discordia_server::store::Store::open(&dir.join("discordia.db"))
         .await
         .expect("open store");
 

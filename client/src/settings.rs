@@ -242,7 +242,7 @@ fn default_pattern() -> String {
 }
 
 pub fn default_rendezvous_url() -> String {
-    std::env::var("DIOXUSFUN_RENDEZVOUS_URL")
+    std::env::var("DISCORDIA_RENDEZVOUS_URL")
         .unwrap_or_else(|_| "ws://rendezvous.discordia.world:7700".into())
 }
 

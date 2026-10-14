@@ -14,18 +14,18 @@ ENV LIVEKIT_BUNDLE_SKIP=1
 # The recipe leaves out the `[patch]` crates, which the workspace excludes.
 COPY vendor vendor
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release -p dioxusfun-rendezvous --recipe-path recipe.json
+RUN cargo chef cook --release -p discordia-rendezvous --recipe-path recipe.json
 COPY . .
-RUN cargo build --release -p dioxusfun-rendezvous
+RUN cargo build --release -p discordia-rendezvous
 
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /src/target/release/dioxusfun-rendezvous /usr/local/bin/discordia-rendezvous
+COPY --from=builder /src/target/release/discordia-rendezvous /usr/local/bin/discordia-rendezvous
 
-ENV DIOXUSFUN_RENDEZVOUS_ADDR=0.0.0.0:7700 \
-    DIOXUSFUN_RENDEZVOUS_DATA_DIR=/data
+ENV DISCORDIA_RENDEZVOUS_ADDR=0.0.0.0:7700 \
+    DISCORDIA_RENDEZVOUS_DATA_DIR=/data
 VOLUME /data
 EXPOSE 7700 7701 7702/udp 7710-7809/udp
 ENTRYPOINT ["discordia-rendezvous"]

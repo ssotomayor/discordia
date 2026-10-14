@@ -93,7 +93,7 @@ async fn handshake_deadline_closes_an_unidentified_socket_without_waiting_ten_se
 async fn identified_socket_survives_the_handshake_deadline() {
     let (incoming, mut outgoing, task, nonce) = gateway().await;
     tokio::time::resume();
-    let identity = dioxusfun_bot::BotIdentity::generate();
+    let identity = discordia_bot::BotIdentity::generate();
     let frame = ClientMessage::Identify {
         username: "member".into(),
         pubkey: identity.pubkey().into(),

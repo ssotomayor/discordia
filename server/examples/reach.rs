@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use dioxusfun_server::quic::{Coordination, GATEWAY_ALPN};
+use discordia_server::quic::{Coordination, GATEWAY_ALPN};
 use futures_util::StreamExt;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
@@ -68,19 +68,19 @@ async fn main() {
 }
 
 async fn listen(coordination: Coordination) {
-    let dir = std::env::temp_dir().join(format!("dioxusfun-reach-{}", std::process::id()));
-    let router = dioxusfun_server::build_router(dioxusfun_server::ServerConfig {
-        livekit: dioxusfun_server::livekit::LiveKitConfig::from_env(&dir),
+    let dir = std::env::temp_dir().join(format!("discordia-reach-{}", std::process::id()));
+    let router = discordia_server::build_router(discordia_server::ServerConfig {
+        livekit: discordia_server::livekit::LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     })
     .await
     .expect("build router");
 
     let endpoint =
-        dioxusfun_server::quic::bind_quic(None, &coordination, dioxusfun_server::quic::RANDOM_PORT)
+        discordia_server::quic::bind_quic(None, &coordination, discordia_server::quic::RANDOM_PORT)
             .await
             .expect("bind quic");
 
@@ -104,13 +104,13 @@ async fn listen(coordination: Coordination) {
     }
 
     let key = endpoint.id();
-    let handle = dioxusfun_server::quic::serve_on_with(endpoint, router, coordination.clone())
+    let handle = discordia_server::quic::serve_on_with(endpoint, router, coordination.clone())
         .expect("serve quic");
     println!("\nlistening as {key}\n");
     if coordination.is_coordinated() {
         println!("  dial from anywhere:  reach --coordinated <relay-url> --key {key}");
     } else {
-        for addr in dioxusfun_server::quic::dialable_addrs(&handle.sockets) {
+        for addr in discordia_server::quic::dialable_addrs(&handle.sockets) {
             println!(
                 "  reach --key {key} <this-machine's-address>:{}",
                 addr.port()

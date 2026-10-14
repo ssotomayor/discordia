@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use base64::Engine as _;
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, GuildSound, Id, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ChannelKind, ClientMessage, GuildSound, Id, ServerMessage};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -13,26 +13,26 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config() -> dioxusfun_server::ServerConfig {
+fn test_config() -> discordia_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-sound-test-{}-{}",
+        "discordia-sound-test-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19270".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, test_config())
+    let handle = discordia_server::spawn(preferred, 100, test_config())
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)

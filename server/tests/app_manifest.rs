@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use base64::Engine;
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{
     ActivityCapability, ActivityManifest, AppManifest, BotInstall, ChannelKind, ClientMessage, Id,
     Intent, Permission, ServerMessage,
 };
@@ -17,23 +17,23 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-apps-{}-{}",
+        "discordia-apps-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let config = dioxusfun_server::ServerConfig {
+    let config = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     };
     let preferred: SocketAddr = "127.0.0.1:19400".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, config)
+    let handle = discordia_server::spawn(preferred, 100, config)
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)
@@ -244,7 +244,7 @@ async fn only_a_bot_registers_a_manifest_and_only_its_own() {
 fn data_url(bytes: &[u8]) -> String {
     format!(
         "data:{};base64,{}",
-        dioxusfun_server::protocol::BUNDLE_MIME,
+        discordia_server::protocol::BUNDLE_MIME,
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
 }
@@ -315,7 +315,7 @@ async fn a_bundle_is_held_only_when_it_is_the_one_the_manifest_names() {
     assert_eq!(listed[0].sha256, sha);
     assert_eq!(listed[0].max_players, 2);
 
-    let blob = dioxusfun_server::protocol::bundle_blob(&sha);
+    let blob = discordia_server::protocol::bundle_blob(&sha);
     let got = blobs(&mut owner, &blob).await;
     assert_eq!(got, vec![data_url(&page)]);
 

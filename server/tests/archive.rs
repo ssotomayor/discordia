@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
-use dioxusfun_server::media::MediaStore;
-use dioxusfun_server::protocol::{Message, User};
-use dioxusfun_server::state::AppState;
-use dioxusfun_server::store::Store;
+use discordia_server::media::MediaStore;
+use discordia_server::protocol::{Message, User};
+use discordia_server::state::AppState;
+use discordia_server::store::Store;
 use uuid::Uuid;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
-        "dioxusfun-archive-{tag}-{}-{}",
+        "discordia-archive-{tag}-{}-{}",
         std::process::id(),
         Uuid::new_v4()
     ))
@@ -20,7 +20,7 @@ async fn fresh_state() -> AppState {
     let store = Store::open_in(&dir).await.expect("open store");
     let media = MediaStore::open(
         dir.join("media"),
-        dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        discordia_server::media::DEFAULT_MAX_BYTES,
     )
     .expect("open media");
     AppState::load_or_seed(store, media, HashSet::new())
@@ -75,7 +75,7 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
         .await
         .unwrap()
         .expect("guild exists");
-    assert_eq!(archive.version, dioxusfun_server::archive::ARCHIVE_VERSION);
+    assert_eq!(archive.version, discordia_server::archive::ARCHIVE_VERSION);
 
     let new_id = state.store.import_guild(&archive).await.unwrap();
     assert_ne!(new_id, guild.id, "imported guild gets a fresh id");
@@ -138,21 +138,21 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
 // here builds its own Store, so none of them saw the two open different files.
 #[tokio::test]
 async fn the_export_cli_opens_the_database_the_server_wrote() {
-    use dioxusfun_bot::{Bot, BotIdentity};
-    use dioxusfun_server::livekit::LiveKitConfig;
-    use dioxusfun_server::protocol::{ClientMessage, ServerMessage};
+    use discordia_bot::{Bot, BotIdentity};
+    use discordia_server::livekit::LiveKitConfig;
+    use discordia_server::protocol::{ClientMessage, ServerMessage};
     use std::time::Duration;
 
     let dir = temp_dir("cli");
     let guild_id = {
-        let cfg = dioxusfun_server::ServerConfig {
+        let cfg = discordia_server::ServerConfig {
             livekit: LiveKitConfig::from_env(&dir),
             operators: Default::default(),
             identities: Default::default(),
-            media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+            media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
             data_dir: dir.clone(),
         };
-        let handle = dioxusfun_server::spawn("127.0.0.1:0".parse().unwrap(), 100, cfg)
+        let handle = discordia_server::spawn("127.0.0.1:0".parse().unwrap(), 100, cfg)
             .await
             .expect("spawn");
         let identity = BotIdentity::generate();
@@ -251,8 +251,8 @@ fn hex_key(fill: char) -> String {
 /// so the import gets every filter the gateway applies to a live client.
 #[tokio::test]
 async fn a_hostile_archive_is_filtered_on_import() {
-    use dioxusfun_server::archive::{ARCHIVE_VERSION, GuildArchive};
-    use dioxusfun_server::protocol::{
+    use discordia_server::archive::{ARCHIVE_VERSION, GuildArchive};
+    use discordia_server::protocol::{
         AuditEntry, BotInstall, Channel, ChannelKind, Guild, GuildEmoji, GuildSound, Intent,
         Member, Permission, Role,
     };
@@ -471,7 +471,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
 /// the one moment every row passes through, so that is where they are cleaned.
 #[tokio::test]
 async fn rows_written_before_the_filters_are_cleaned_at_load() {
-    use dioxusfun_server::protocol::Guild;
+    use discordia_server::protocol::Guild;
 
     let dir = temp_dir("legacy");
     let store = Store::open_in(&dir).await.expect("open store");
@@ -498,7 +498,7 @@ async fn rows_written_before_the_filters_are_cleaned_at_load() {
 
     let media = MediaStore::open(
         dir.join("media"),
-        dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        discordia_server::media::DEFAULT_MAX_BYTES,
     )
     .expect("open media");
     let state = AppState::load_or_seed(store, media, HashSet::new())

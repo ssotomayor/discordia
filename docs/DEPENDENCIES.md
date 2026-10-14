@@ -31,12 +31,12 @@ Noise suppression, networking, media and the embedded server stay enabled.
 Reproduce counts:
 
 ```sh
-cargo tree -p dioxusfun --locked --target x86_64-pc-windows-msvc -e normal,build --prefix none --format '{p}'
-cargo tree -p dioxusfun --locked --target aarch64-apple-darwin -e normal,build --prefix none --format '{p}'
-cargo tree -p dioxusfun --locked --target x86_64-pc-windows-msvc -e features -i image
+cargo tree -p discordia --locked --target x86_64-pc-windows-msvc -e normal,build --prefix none --format '{p}'
+cargo tree -p discordia --locked --target aarch64-apple-darwin -e normal,build --prefix none --format '{p}'
+cargo tree -p discordia --locked --target x86_64-pc-windows-msvc -e features -i image
 ```
 
-Deduplicate package/version pairs and exclude `dioxusfun`. Feature checks must
+Deduplicate package/version pairs and exclude `discordia`. Feature checks must
 use default builds; `--all-features` deliberately enables developer tools.
 Use `cargo build --timings` for timing comparisons with the same toolchain,
 target, profile and cache state. Package reductions do not imply the same
@@ -129,6 +129,6 @@ The previous/current receiver decodes 1772/1780 frames before the final sample.
 Detailed SDK logging is disabled for both measurements. Reproduce with
 `DISCORDIA_TEST_REQUIRE_NVENC=1`, `DISCORDIA_TEST_NVENC_RATES=1`,
 `DISCORDIA_TEST_NVENC_1440P60=1`, `DISCORDIA_TEST_MEDIA_LOG=warn`, then run
-`cargo test -p dioxusfun native_screen_codecs_reach_a_real_decoder -- --ignored --nocapture`.
+`cargo test -p discordia native_screen_codecs_reach_a_real_decoder -- --ignored --nocapture`.
 The rate assertion checks that allocation reaches the budget during the run;
 congestion control may lower the final allocation even on loopback.

@@ -14,12 +14,12 @@ tell application "iTerm"
   set newWindow to (create window with default profile)
   tell current session of newWindow
     set name to "rendezvous"
-    write text "cd '$ROOT' && ${ENV_PREFIX}cargo run -p dioxusfun-rendezvous"
+    write text "cd '$ROOT' && ${ENV_PREFIX}cargo run -p discordia-rendezvous"
     set serverSession to (split vertically with default profile)
   end tell
   tell serverSession
     set name to "server"
-    write text "cd '$ROOT' && ${ENV_PREFIX}cargo run -p dioxusfun-server"
+    write text "cd '$ROOT' && ${ENV_PREFIX}cargo run -p discordia-server"
     set clientSession to (split vertically with default profile)
   end tell
   tell clientSession

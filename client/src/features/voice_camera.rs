@@ -152,13 +152,13 @@ mod tests {
             .with_env_filter("livekit=warn")
             .with_test_writer()
             .try_init();
-        use dioxusfun_server::livekit_bundle::{Credentials, ports, spawn_livekit};
+        use discordia_server::livekit_bundle::{Credentials, ports, spawn_livekit};
         use livekit_api::access_token::{AccessToken, VideoGrants};
         let dir =
             std::env::temp_dir().join(format!("discordia-camera-test-{}", uuid::Uuid::new_v4()));
         let credentials = Credentials::generate();
         let sfu = spawn_livekit(
-            dioxusfun_server::livekit_bundle::Advertise::Mapped("127.0.0.1".parse().unwrap()),
+            discordia_server::livekit_bundle::Advertise::Mapped("127.0.0.1".parse().unwrap()),
             &credentials,
             &dir,
         )

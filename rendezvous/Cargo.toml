@@ -1,5 +1,5 @@
 [package]
-name = "dioxusfun-rendezvous"
+name = "discordia-rendezvous"
 version = "0.1.0"
 edition = "2024"
 
@@ -11,7 +11,7 @@ sha2 = "0.10"
 hex = { workspace = true }
 bs58 = { workspace = true }
 
-dioxusfun-protocol = { workspace = true }
+discordia-protocol = { workspace = true }
 iroh-relay = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

@@ -15,13 +15,13 @@ async fn main() {
         _ => {}
     }
 
-    let addr: SocketAddr = std::env::var("DIOXUSFUN_ADDR")
+    let addr: SocketAddr = std::env::var("DISCORDIA_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:9000".into())
         .parse()
-        .expect("DIOXUSFUN_ADDR must be host:port");
+        .expect("DISCORDIA_ADDR must be host:port");
 
     let data_dir = cli_data_dir();
-    let _data_lease = match dioxusfun_server::livekit_bundle::HostLease::claim(&data_dir) {
+    let _data_lease = match discordia_server::livekit_bundle::HostLease::claim(&data_dir) {
         Ok(lease) => lease,
         Err(error) => {
             tracing::error!(%error, "host ownership refused");
@@ -30,21 +30,21 @@ async fn main() {
     };
     tracing::info!(data_dir = %data_dir.display(), "durable data directory");
 
-    let mut livekit_cfg = dioxusfun_server::livekit::LiveKitConfig::from_env(&data_dir);
+    let mut livekit_cfg = discordia_server::livekit::LiveKitConfig::from_env(&data_dir);
 
-    let want_autospawn = std::env::var("DIOXUSFUN_LIVEKIT_AUTOSPAWN")
+    let want_autospawn = std::env::var("DISCORDIA_LIVEKIT_AUTOSPAWN")
         .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
         .unwrap_or(true);
     let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
 
     let _livekit_handle = if want_autospawn && !livekit_present {
-        livekit_cfg.port = dioxusfun_server::livekit_bundle::ports().ws;
-        let creds = dioxusfun_server::livekit_bundle::Credentials {
+        livekit_cfg.port = discordia_server::livekit_bundle::ports().ws;
+        let creds = discordia_server::livekit_bundle::Credentials {
             key: livekit_cfg.api_key.clone(),
             secret: livekit_cfg.api_secret.clone(),
         };
-        match dioxusfun_server::livekit_bundle::spawn_livekit(
-            dioxusfun_server::livekit_bundle::Advertise::Local,
+        match discordia_server::livekit_bundle::spawn_livekit(
+            discordia_server::livekit_bundle::Advertise::Local,
             &creds,
             &data_dir,
         )
@@ -61,7 +61,7 @@ async fn main() {
         }
     } else {
         if !want_autospawn {
-            tracing::info!("DIOXUSFUN_LIVEKIT_AUTOSPAWN=0, not spawning bundled livekit");
+            tracing::info!("DISCORDIA_LIVEKIT_AUTOSPAWN=0, not spawning bundled livekit");
         } else {
             tracing::info!("LIVEKIT_URL set, assuming external livekit instance");
         }
@@ -74,7 +74,7 @@ async fn main() {
         "livekit configured (URLs handed to clients are derived per-connection unless explicit_url is set)"
     );
 
-    let operators: std::collections::HashSet<String> = std::env::var("DIOXUSFUN_OPERATORS")
+    let operators: std::collections::HashSet<String> = std::env::var("DISCORDIA_OPERATORS")
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_string())
@@ -87,20 +87,20 @@ async fn main() {
         );
     }
 
-    let identities = dioxusfun_server::declared_identities(
-        &std::env::var("DIOXUSFUN_PUBLIC_HOSTS").unwrap_or_default(),
+    let identities = discordia_server::declared_identities(
+        &std::env::var("DISCORDIA_PUBLIC_HOSTS").unwrap_or_default(),
         addr.port(),
     );
     if !identities.is_empty() {
         tracing::info!(?identities, "public names clients may dial");
     }
 
-    let media_max_bytes = std::env::var("DIOXUSFUN_MEDIA_MAX_BYTES")
+    let media_max_bytes = std::env::var("DISCORDIA_MEDIA_MAX_BYTES")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(dioxusfun_server::media::DEFAULT_MAX_BYTES);
+        .unwrap_or(discordia_server::media::DEFAULT_MAX_BYTES);
 
-    let mut cfg = dioxusfun_server::ServerConfig {
+    let mut cfg = discordia_server::ServerConfig {
         livekit: livekit_cfg,
         operators,
         data_dir: data_dir.clone(),
@@ -119,26 +119,26 @@ async fn main() {
     };
     let bound = listener.local_addr().unwrap_or(addr);
     cfg.identities
-        .extend(dioxusfun_server::local_identities(bound.port()));
+        .extend(discordia_server::local_identities(bound.port()));
 
-    let coordination = match std::env::var("DIOXUSFUN_RELAY_URL") {
+    let coordination = match std::env::var("DISCORDIA_RELAY_URL") {
         Ok(url) if !url.trim().is_empty() => {
-            dioxusfun_server::quic::Coordination::Relay(url.trim().to_string())
+            discordia_server::quic::Coordination::Relay(url.trim().to_string())
         }
-        _ => dioxusfun_server::quic::Coordination::None,
+        _ => discordia_server::quic::Coordination::None,
     };
-    let quic_secret = dioxusfun_server::quic::persistent_secret(&data_dir).unwrap_or_else(|e| {
+    let quic_secret = discordia_server::quic::persistent_secret(&data_dir).unwrap_or_else(|e| {
         tracing::error!(error = %e, "cannot persist the QUIC key; friends will have to re-add this server after a restart");
         iroh::SecretKey::generate()
     });
-    let quic_port: u16 = match std::env::var("DIOXUSFUN_QUIC_PORT") {
+    let quic_port: u16 = match std::env::var("DISCORDIA_QUIC_PORT") {
         Ok(v) if !v.trim().is_empty() => v
             .trim()
             .parse()
-            .expect("DIOXUSFUN_QUIC_PORT must be a UDP port number; 0 picks a random one"),
-        _ => dioxusfun_server::quic::DEFAULT_PORT,
+            .expect("DISCORDIA_QUIC_PORT must be a UDP port number; 0 picks a random one"),
+        _ => discordia_server::quic::DEFAULT_PORT,
     };
-    let quic_endpoint = match dioxusfun_server::quic::bind_quic(
+    let quic_endpoint = match discordia_server::quic::bind_quic(
         Some(quic_secret),
         &coordination,
         quic_port,
@@ -153,12 +153,12 @@ async fn main() {
     };
     if let Some(ep) = quic_endpoint.as_ref() {
         cfg.identities
-            .insert(dioxusfun_server::protocol::quic_origin(
+            .insert(discordia_server::protocol::quic_origin(
                 &ep.id().to_string(),
             ));
     }
 
-    let router = match dioxusfun_server::build_router(cfg).await {
+    let router = match discordia_server::build_router(cfg).await {
         Ok(router) => router,
         Err(e) => {
             tracing::error!(error = %e, "server failed to start");
@@ -168,19 +168,19 @@ async fn main() {
 
     let _quic = quic_endpoint.and_then(|ep| {
         let key = ep.id().to_string();
-        match dioxusfun_server::quic::serve_on_with(ep, router.clone(), coordination.clone()) {
+        match discordia_server::quic::serve_on_with(ep, router.clone(), coordination.clone()) {
             Ok(handle) => {
                 let port = handle.sockets.first().map(|s| s.port()).unwrap_or(0);
-                let mut addrs: Vec<String> = dioxusfun_server::local_identities(port)
+                let mut addrs: Vec<String> = discordia_server::local_identities(port)
                     .into_iter()
                     .filter(|a| !a.starts_with("localhost") && !a.starts_with("127.") && !a.starts_with("[::1]"))
                     .collect();
                 addrs.sort();
-                if let dioxusfun_server::quic::Coordination::Relay(url) = &coordination {
+                if let discordia_server::quic::Coordination::Relay(url) = &coordination {
                     addrs.push(url.clone());
                 }
                 tracing::info!(
-                    share = %dioxusfun_server::protocol::format_quic_share(&key, &addrs),
+                    share = %discordia_server::protocol::format_quic_share(&key, &addrs),
                     "friends connect with this address (replace a private IP with your public one if you forward the UDP port)"
                 );
                 Some(handle)
@@ -192,7 +192,7 @@ async fn main() {
         }
     });
 
-    let gateway = dioxusfun_server::serve_router(listener, router);
+    let gateway = discordia_server::serve_router(listener, router);
     tracing::info!(%bound, "plaintext gateway listening (loopback and TLS proxies only)");
 
     tokio::signal::ctrl_c().await.ok();
@@ -201,14 +201,14 @@ async fn main() {
 }
 
 fn cli_data_dir() -> std::path::PathBuf {
-    std::env::var("DIOXUSFUN_DATA_DIR")
+    std::env::var("DISCORDIA_DATA_DIR")
         .unwrap_or_else(|_| "./discordia-data".into())
         .into()
 }
 
-async fn open_store() -> dioxusfun_server::store::Store {
+async fn open_store() -> discordia_server::store::Store {
     let dir = cli_data_dir();
-    dioxusfun_server::store::Store::open_in(&dir)
+    discordia_server::store::Store::open_in(&dir)
         .await
         .unwrap_or_else(|e| {
             eprintln!("error: cannot open store at {}: {e}", dir.display());
@@ -297,7 +297,7 @@ async fn run_import(args: &[String]) {
         eprintln!("error: cannot read {path}: {e}");
         std::process::exit(1);
     });
-    let archive: dioxusfun_server::archive::GuildArchive = serde_json::from_str(&json)
+    let archive: discordia_server::archive::GuildArchive = serde_json::from_str(&json)
         .unwrap_or_else(|e| {
             eprintln!("error: {path} is not a valid guild archive: {e}");
             std::process::exit(1);

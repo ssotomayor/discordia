@@ -39,7 +39,7 @@ async fn log_request(req: Request<axum::body::Body>, next: Next) -> impl IntoRes
 }
 
 async fn root() -> &'static str {
-    "dioxusfun-server. Connect a WebSocket to /gateway."
+    "discordia-server. Connect a WebSocket to /gateway."
 }
 
 /// A browser always sends `Origin` and the native client never does, so the

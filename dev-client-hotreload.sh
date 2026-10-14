@@ -19,4 +19,4 @@ A wss:// SFU is unaffected. Full media: ./dev-client.sh
 EOF
 fi
 
-exec dx serve --package dioxusfun
+exec dx serve --package discordia

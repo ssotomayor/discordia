@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{
     ChannelKind, ClientMessage, Id, Permission, ServerMessage, VoiceState,
 };
 
@@ -14,23 +14,23 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-voice-move-{}-{}",
+        "discordia-voice-move-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     };
     let preferred: SocketAddr = "127.0.0.1:19290".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+    let handle = discordia_server::spawn(preferred, 100, cfg)
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)
@@ -411,18 +411,18 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-category-{}-{}",
+        "discordia-category-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let cfg = dioxusfun_server::ServerConfig {
+    let cfg = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.clone(),
     };
-    let handle = dioxusfun_server::spawn("127.0.0.1:19291".parse().unwrap(), 100, cfg)
+    let handle = discordia_server::spawn("127.0.0.1:19291".parse().unwrap(), 100, cfg)
         .await
         .expect("spawn server");
     let url = format!("ws://{}", handle.addr);
@@ -472,7 +472,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
     assert!(next_error(&mut owner).await.contains("can't post"));
 
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let store = dioxusfun_server::store::Store::open(&dir.join("discordia.db"))
+    let store = discordia_server::store::Store::open(&dir.join("discordia.db"))
         .await
         .expect("open the store");
     let loaded = store.load_all().await.expect("load");

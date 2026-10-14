@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dioxusfun_server::watchdog::{ArmWatch, op_of, watchdog};
+use discordia_server::watchdog::{ArmWatch, op_of, watchdog};
 
 use dioxus::prelude::*;
 use futures_util::{SinkExt, StreamExt};

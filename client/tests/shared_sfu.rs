@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry};
-use dioxusfun_server::protocol::rendezvous::VoiceEvictRequest;
+use discordia_rendezvous::{AppCtx, Config, registry::Registry};
+use discordia_server::protocol::rendezvous::VoiceEvictRequest;
 use livekit::prelude::*;
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
@@ -18,7 +18,7 @@ async fn rendezvous_removes_all_five_native_and_webview_seats() {
     let grant = registry.issue_voice_grant("test-host");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let coordinator = format!("http://{}", listener.local_addr().unwrap());
-    let app = dioxusfun_rendezvous::router(AppCtx {
+    let app = discordia_rendezvous::router(AppCtx {
         registry,
         config: Arc::new(Config {
             livekit_url: Some(url.clone()),

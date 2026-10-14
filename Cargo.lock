@@ -2459,7 +2459,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxusfun"
+name = "dirs"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
+dependencies = [
+ "dirs-sys 0.4.1",
+]
+
+[[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys 0.5.0",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users 0.4.6",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users 0.5.2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "discordia"
 version = "0.1.0"
 dependencies = [
  "arboard",
@@ -2477,10 +2519,10 @@ dependencies = [
  "dioxus",
  "dioxus-desktop",
  "dioxus-grid-layout",
- "dioxusfun-protocol",
- "dioxusfun-rendezvous",
- "dioxusfun-server",
  "dirs 5.0.1",
+ "discordia-protocol",
+ "discordia-rendezvous",
+ "discordia-server",
  "dispatch2",
  "futures-util",
  "hex",
@@ -2549,12 +2591,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxusfun-bot"
+name = "discordia-bot"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bs58",
- "dioxusfun-protocol",
+ "discordia-protocol",
  "futures-util",
  "hex",
  "iroh",
@@ -2568,7 +2610,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxusfun-protocol"
+name = "discordia-protocol"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -2580,13 +2622,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxusfun-rendezvous"
+name = "discordia-rendezvous"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "bs58",
  "dashmap",
- "dioxusfun-protocol",
+ "discordia-protocol",
  "futures-util",
  "hex",
  "iroh",
@@ -2609,7 +2651,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxusfun-server"
+name = "discordia-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2618,9 +2660,9 @@ dependencies = [
  "bs58",
  "chrono",
  "dashmap",
- "dioxusfun-bot",
- "dioxusfun-protocol",
- "dioxusfun-rendezvous",
+ "discordia-bot",
+ "discordia-protocol",
+ "discordia-rendezvous",
  "flate2",
  "futures-util",
  "hex",
@@ -2644,48 +2686,6 @@ dependencies = [
  "ureq",
  "uuid",
  "zip 8.6.0",
-]
-
-[[package]]
-name = "dirs"
-version = "5.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
-dependencies = [
- "dirs-sys 0.4.1",
-]
-
-[[package]]
-name = "dirs"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
-dependencies = [
- "dirs-sys 0.5.0",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
-dependencies = [
- "libc",
- "option-ext",
- "redox_users 0.4.6",
- "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
-dependencies = [
- "libc",
- "option-ext",
- "redox_users 0.5.2",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

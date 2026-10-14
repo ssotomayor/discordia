@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
-pub use dioxusfun_server::quic::Coordination;
-use dioxusfun_server::quic::GATEWAY_ALPN;
+pub use discordia_server::quic::Coordination;
+use discordia_server::quic::GATEWAY_ALPN;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 

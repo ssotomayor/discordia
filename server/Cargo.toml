@@ -1,5 +1,5 @@
 [package]
-name = "dioxusfun-server"
+name = "discordia-server"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
@@ -12,9 +12,9 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 
 [dev-dependencies]
-dioxusfun-bot = { path = "../bot-sdk" }
+discordia-bot = { path = "../bot-sdk" }
 tokio = { workspace = true, features = ["full", "test-util"] }
-dioxusfun-rendezvous = { path = "../rendezvous" }
+discordia-rendezvous = { path = "../rendezvous" }
 tokio-tungstenite = { workspace = true }
 serde_json = { workspace = true }
 
@@ -43,7 +43,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 anyhow = "1"
 
-dioxusfun-protocol = { workspace = true }
+discordia-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

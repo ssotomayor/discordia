@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 
 const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -14,26 +14,26 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
+fn test_config(operators: std::collections::HashSet<String>) -> discordia_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-test-{}-{}",
+        "discordia-test-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators,
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19260".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, test_config(Default::default()))
+    let handle = discordia_server::spawn(preferred, 100, test_config(Default::default()))
         .await
         .expect("spawn server");
     let url = format!("ws://{}", handle.addr);
@@ -73,7 +73,7 @@ async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     }
 }
 
-async fn next_emojis(session: &mut Bot) -> Vec<dioxusfun_server::protocol::GuildEmoji> {
+async fn next_emojis(session: &mut Bot) -> Vec<discordia_server::protocol::GuildEmoji> {
     loop {
         if let ServerMessage::GuildEmojis { emojis, .. } = next_timeout(session).await {
             return emojis;

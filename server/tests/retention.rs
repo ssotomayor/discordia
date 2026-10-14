@@ -4,14 +4,14 @@
 
 use std::path::PathBuf;
 
-use dioxusfun_server::protocol::{Channel, ChannelKind, Guild, GuildVisibility, Id, Message, User};
-use dioxusfun_server::store::Store;
+use discordia_server::protocol::{Channel, ChannelKind, Guild, GuildVisibility, Id, Message, User};
+use discordia_server::store::Store;
 
 fn temp_db() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-retention-{}-{}-{n}",
+        "discordia-retention-{}-{}-{n}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

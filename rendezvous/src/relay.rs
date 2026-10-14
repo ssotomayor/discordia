@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use dioxusfun_protocol::rendezvous::{
+use discordia_protocol::rendezvous::{
     HostToRendezvous, LIST_NAMES, MAX_NAME_CHARS, RendezvousToHost,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -169,7 +169,7 @@ pub async fn handle_host_control(
         .filter(|a| admits_transport_addr(a, peer, cfg.relay_url.as_deref()))
         .collect();
     let description = description
-        .map(|d| dioxusfun_protocol::sanitize_line(&d, MAX_DESCRIPTION_CHARS))
+        .map(|d| discordia_protocol::sanitize_line(&d, MAX_DESCRIPTION_CHARS))
         .filter(|d| !d.is_empty());
     let location = location.and_then(|p| p.coarse());
 
@@ -205,7 +205,7 @@ pub async fn handle_host_control(
                 send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                 return;
             }
-            let display = dioxusfun_protocol::sanitize_line(raw, MAX_NAME_CHARS);
+            let display = discordia_protocol::sanitize_line(raw, MAX_NAME_CHARS);
             (slug, Some(display))
         }
         None => match claim_anonymous_shortcode(&registry).await {
