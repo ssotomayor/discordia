@@ -1944,6 +1944,11 @@ impl ScreenVideoRoom {
                         "adaptive": publish_settings.adaptive_quality,
                         "bandwidth": outbound.outbound.quality_limitation_reason
                             == livekit::webrtc::stats::QualityLimitationReason::Bandwidth,
+                        "cpu": outbound.outbound.quality_limitation_reason
+                            == livekit::webrtc::stats::QualityLimitationReason::Cpu,
+                        "captureLimited": super::screen_stats::screen_device_limited(
+                            settings.fps as f64, capture_fps, outbound.outbound.frames_per_second,
+                            capture_processing_ms, encode_ms),
                     })
                     .to_string()
                     .into_bytes();
@@ -1978,6 +1983,13 @@ impl ScreenVideoRoom {
                 stats.capture_height = (captured.height > 0).then_some(captured.height);
                 stats.capture_processing_ms = capture_processing_ms;
                 stats.encode_ms = encode_ms;
+                stats.device_limited = super::screen_stats::screen_device_limited(
+                    settings.fps as f64,
+                    capture_fps,
+                    outbound.outbound.frames_per_second,
+                    capture_processing_ms,
+                    encode_ms,
+                );
                 tracing::debug!(
                     max_bitrate_bps = settings.max_bitrate,
                     capture_callbacks_fps,
@@ -2074,6 +2086,7 @@ fn native_screen_stats(
             }
             .into(),
         ),
+        device_limited: false,
         frames: Some(o.outbound.frames_encoded as u64),
         packets: Some(o.sent.packets_sent),
         packets_lost: None,
