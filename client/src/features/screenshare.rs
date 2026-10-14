@@ -1969,7 +1969,13 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                             select {
                                 id: "share-quality",
                                 class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                                onchange: move |e| quality.set(e.value()),
+                                onchange: move |e| {
+                                    let selected = e.value();
+                                    if selected == "4k" {
+                                        fps.set(30);
+                                    }
+                                    quality.set(selected);
+                                },
                                 for (id, label) in [("720", "720p"), ("balanced", "1080p"), ("ultra", "1440p"), ("4k", "4K")] {
                                     option { value: "{id}", selected: native_settings(&quality()).width == native_settings(id).width, "{label}" }
                                 }
@@ -2029,6 +2035,11 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                         }
                     }
                     p { class: "text-xs text-[var(--text-muted)]", role: "status", "{codec_status}" }
+                    if quality() == "4k" && fps() == 60 {
+                        p { class: "text-xs text-[var(--accent)]", role: "status",
+                            "4K at 60 FPS is demanding: it needs more processing power and stable, high-speed connections for you and your viewers. Video can use up to 50 Mbps. Choose 30 FPS if playback stutters."
+                        }
+                    }
                     if let Some(notice) = resolution_notice {
                         p { class: "text-xs text-[var(--accent)]", role: "status", "{notice}" }
                     }
