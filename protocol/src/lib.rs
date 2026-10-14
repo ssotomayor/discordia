@@ -83,7 +83,7 @@ pub fn quic_origin(endpoint_id: &str) -> String {
 
 pub const QUIC_SCHEME: &str = "quic://";
 
-pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
+pub const GATEWAY_ALPN: &[u8] = b"discordia/gateway/1";
 
 /// What a host hands a friend: the key the connection is authenticated by, and
 /// where to try it. An address may also be a relay URL for hole punching.

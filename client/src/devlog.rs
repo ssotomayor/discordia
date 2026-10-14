@@ -53,9 +53,9 @@ mod tests {
     #[test]
     fn writes_a_line_even_when_the_config_dir_is_missing() {
         let tmp =
-            std::env::temp_dir().join(format!("dioxusfun-devlog-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("discordia-devlog-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("DIOXUSFUN_CONFIG_DIR", &tmp) };
+        unsafe { std::env::set_var("DISCORDIA_CONFIG_DIR", &tmp) };
 
         assert!(!tmp.exists(), "precondition: config dir absent");
         super::write_line("hello from the test");
@@ -72,7 +72,7 @@ mod tests {
             "line starts with a millisecond timestamp: {body:?}"
         );
 
-        unsafe { std::env::remove_var("DIOXUSFUN_CONFIG_DIR") };
+        unsafe { std::env::remove_var("DISCORDIA_CONFIG_DIR") };
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

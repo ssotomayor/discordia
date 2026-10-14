@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{
     Activity, ActivityKind, ChannelKind, ClientMessage, DividerStyle, Id, Intent, LevelTier,
     Leveling, MemberSort, Permission, ServerMessage,
 };
@@ -15,26 +15,26 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
+fn test_config(operators: std::collections::HashSet<String>) -> discordia_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-test-{}-{}",
+        "discordia-test-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators,
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19200".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, test_config(Default::default()))
+    let handle = discordia_server::spawn(preferred, 100, test_config(Default::default()))
         .await
         .expect("spawn server");
     let url = format!("ws://{}", handle.addr);
@@ -45,7 +45,7 @@ async fn connect_user(
     url: &str,
     id: &BotIdentity,
     name: &str,
-) -> (Bot, Vec<dioxusfun_server::protocol::Guild>) {
+) -> (Bot, Vec<discordia_server::protocol::Guild>) {
     let mut session = Bot::connect_as_user(url, id, name).await.unwrap();
     let guilds = loop {
         if let ServerMessage::Ready { guilds, .. } = next_timeout(&mut session).await {
@@ -444,7 +444,7 @@ async fn private_guild_hidden_and_invite_flow() {
     owner
         .send(&ClientMessage::SetGuildVisibility {
             guild_id,
-            visibility: dioxusfun_server::protocol::GuildVisibility::Private,
+            visibility: discordia_server::protocol::GuildVisibility::Private,
         })
         .await
         .unwrap();
@@ -1446,10 +1446,10 @@ async fn guild_branding() {
     handle.abort();
 }
 
-async fn spawn_with_operator(operator: &str) -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_with_operator(operator: &str) -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19400".parse().unwrap();
     let ops = std::collections::HashSet::from([operator.to_string()]);
-    let handle = dioxusfun_server::spawn(preferred, 100, test_config(ops))
+    let handle = discordia_server::spawn(preferred, 100, test_config(ops))
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)
@@ -1579,7 +1579,7 @@ async fn message_xp_is_per_guild_and_not_a_message_count() {
     handle.abort();
 }
 
-use dioxusfun_server::protocol::JoinGate;
+use discordia_server::protocol::JoinGate;
 
 fn solve_pow(challenge: &str, bits: u32) -> String {
     use sha2::{Digest, Sha256};
@@ -2092,7 +2092,7 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
     let message = next_error(&mut owner).await;
     assert_eq!(
         message,
-        dioxusfun_server::gateway::RATE_LIMITED,
+        discordia_server::gateway::RATE_LIMITED,
         "a dropped update must name why it was dropped"
     );
 
@@ -2447,7 +2447,7 @@ async fn a_bot_cannot_rename_itself() {
         }
     }
 
-    let mut bot = dioxusfun_bot::Bot::connect(&url, &bot_id, "PingBot")
+    let mut bot = discordia_bot::Bot::connect(&url, &bot_id, "PingBot")
         .await
         .unwrap();
     loop {
@@ -2706,7 +2706,7 @@ async fn experience_is_earned_once_a_minute_by_people_only() {
     };
     assert_eq!(after_first.xp, 1);
     assert_eq!(
-        dioxusfun_server::protocol::level_progress(after_first.xp).0,
+        discordia_server::protocol::level_progress(after_first.xp).0,
         1,
         "still level 1"
     );

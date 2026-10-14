@@ -70,10 +70,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (server crates)
-        run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous --all-targets -- -D warnings
+        run: cargo clippy -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-rendezvous --all-targets -- -D warnings
 
       - name: Tests (protocol + server + bot SDK + rendezvous)
-        run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous
+        run: cargo test -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-rendezvous
 
   audit:
     name: dependency advisories
@@ -117,7 +117,7 @@ jobs:
       - name: WebRTC C++ toolchain
         run: sudo bash scripts/install-webrtc-toolchain.sh
       - name: Clippy (client + grid-layout)
-        run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
+        run: cargo clippy -p discordia -p dioxus-grid-layout --all-targets -- -D warnings
 
       # A RUSTFLAGS change rebuilds every dependency, so the second profile
       # costs a full compile; master pays it, a PR does not. Outside `target/`
@@ -127,10 +127,10 @@ jobs:
         env:
           RUSTFLAGS: "-C debug-assertions=off"
           CARGO_TARGET_DIR: ${{ runner.temp }}/ndebug-target
-        run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
+        run: cargo clippy -p discordia -p dioxus-grid-layout --all-targets -- -D warnings
 
       - name: Tests (client + grid-layout)
-        run: cargo test -p dioxusfun -p dioxus-grid-layout
+        run: cargo test -p discordia -p dioxus-grid-layout
 
       - name: Desktop edit channel recovery
         run: cargo test -p dioxus-desktop --lib edits::tests
@@ -140,9 +140,9 @@ jobs:
           DISCORDIA_LIVEKIT_PORT: "17880"
           LIVEKIT_URL: "ws://127.0.0.1:17880"
         run: |
-          cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
-          cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
-          cargo test -p dioxusfun --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+          cargo test -p discordia-server --lib livekit_bundle::tests -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
 
       - uses: actions/setup-node@v4
         with:
@@ -178,16 +178,16 @@ jobs:
           shared-key: windows
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Clippy (client, Windows-only code)
-        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+        run: cargo clippy -p discordia --all-targets -- -D warnings
 
       - name: Clippy (client, Windows-only code, debug-assertions off)
         if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C target-feature=+crt-static -C debug-assertions=off"
           CARGO_TARGET_DIR: ${{ runner.temp }}/ndebug-target
-        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+        run: cargo clippy -p discordia --all-targets -- -D warnings
       - name: Tests (client, Windows-only code)
-        run: cargo test -p dioxusfun
+        run: cargo test -p discordia
       - name: Desktop edit channel recovery
         run: cargo test -p dioxus-desktop --lib edits::tests
       - name: Bundled SFU startup and encrypted audio
@@ -195,11 +195,11 @@ jobs:
           DISCORDIA_LIVEKIT_PORT: "17880"
           LIVEKIT_URL: "ws://127.0.0.1:17880"
         run: |
-          cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
+          cargo test -p discordia-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p dioxusfun --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
       - name: Hardware encoder queue and timing regressions
         shell: pwsh
         run: ./scripts/test-mf-encoder.ps1
@@ -221,7 +221,7 @@ jobs:
           shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Clippy (client, macOS-only code)
-        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+        run: cargo clippy -p discordia --all-targets -- -D warnings
 
       # The other half of the platform: `devlog` and the console handling in
       # `main.rs` change shape with `debug_assertions`, so one profile lints a
@@ -233,10 +233,10 @@ jobs:
         env:
           RUSTFLAGS: "-C debug-assertions=off"
           CARGO_TARGET_DIR: ${{ runner.temp }}/ndebug-target
-        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+        run: cargo clippy -p discordia --all-targets -- -D warnings
 
       - name: Native codec capabilities
-        run: cargo test -p dioxusfun --bin Discordia native_codec_probe_reports_the_builtin_vp8_encoder
+        run: cargo test -p discordia --bin Discordia native_codec_probe_reports_the_builtin_vp8_encoder
 
       - name: Desktop edit channel recovery
         run: cargo test -p dioxus-desktop --lib edits::tests
@@ -246,9 +246,9 @@ jobs:
           DISCORDIA_LIVEKIT_PORT: "17880"
           LIVEKIT_URL: "ws://127.0.0.1:17880"
         run: |
-          cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
-          cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
-          cargo test -p dioxusfun --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+          cargo test -p discordia-server --lib livekit_bundle::tests -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
@@ -295,14 +295,14 @@ jobs:
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
-        run: cargo build --release -p dioxusfun-server
+        run: cargo build --release -p discordia-server
       - name: Verify livekit-server is embedded
         shell: pwsh
         run: |
-          $srv = Get-Item target/release/dioxusfun-server
-          if ($srv.Length -lt 40MB) { throw "dioxusfun-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
+          $srv = Get-Item target/release/discordia-server
+          if ($srv.Length -lt 40MB) { throw "discordia-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Strip server binary
-        run: strip target/release/dioxusfun-server
+        run: strip target/release/discordia-server
       - name: Bundle client (AppImage)
         working-directory: client
         run: dx bundle --release
@@ -316,7 +316,7 @@ jobs:
         with:
           name: prerelease-linux
           path: |
-            target/release/dioxusfun-server
+            target/release/discordia-server
             Discordia-linux-x86_64.AppImage
           retention-days: 7
 
@@ -355,12 +355,12 @@ jobs:
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
-        run: cargo build --release -p dioxusfun-server
+        run: cargo build --release -p discordia-server
       - name: Verify livekit-server is embedded
         shell: pwsh
         run: |
-          $srv = Get-Item target/release/dioxusfun-server.exe
-          if ($srv.Length -lt 40MB) { throw "dioxusfun-server.exe is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
+          $srv = Get-Item target/release/discordia-server.exe
+          if ($srv.Length -lt 40MB) { throw "discordia-server.exe is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Fetch WebView2 Evergreen bootstrapper
         shell: pwsh
         run: |
@@ -411,7 +411,7 @@ jobs:
         with:
           name: prerelease-windows
           path: |
-            target/release/dioxusfun-server.exe
+            target/release/discordia-server.exe
             Discordia-windows-portable.zip
             Discordia-windows-setup.exe
           retention-days: 7
@@ -454,12 +454,12 @@ jobs:
           lipo "$(command -v dx)" -verify_arch arm64
           dx --version
       - name: Build server (release)
-        run: cargo build --release -p dioxusfun-server
+        run: cargo build --release -p discordia-server
       - name: Verify livekit-server is embedded
         shell: pwsh
         run: |
-          $srv = Get-Item target/release/dioxusfun-server
-          if ($srv.Length -lt 40MB) { throw "dioxusfun-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
+          $srv = Get-Item target/release/discordia-server
+          if ($srv.Length -lt 40MB) { throw "discordia-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Bundle client
         run: ./bundle-macos.sh
       - name: Collect client artifacts
@@ -470,7 +470,7 @@ jobs:
         with:
           name: prerelease-macos
           path: |
-            target/release/dioxusfun-server
+            target/release/discordia-server
             Discordia-macos-arm64.dmg
           retention-days: 7
 
@@ -494,18 +494,18 @@ jobs:
       - name: Stage release artifacts
         run: |
           mkdir -p release
-          find artifacts/prerelease-linux -type f -name dioxusfun-server \
-            -exec cp {} release/dioxusfun-server-linux \;
+          find artifacts/prerelease-linux -type f -name discordia-server \
+            -exec cp {} release/discordia-server-linux \;
           find artifacts/prerelease-linux -type f -name '*.AppImage' \
             -exec cp {} release/ \;
-          find artifacts/prerelease-windows -type f -name dioxusfun-server.exe \
+          find artifacts/prerelease-windows -type f -name discordia-server.exe \
             -exec cp {} release/ \;
           find artifacts/prerelease-windows -type f -name 'Discordia-windows-portable.zip' \
             -exec cp {} release/ \;
           find artifacts/prerelease-windows -type f -name 'Discordia-windows-setup.exe' \
             -exec cp {} release/ \;
-          find artifacts/prerelease-macos -type f -name dioxusfun-server \
-            -exec cp {} release/dioxusfun-server-macos \;
+          find artifacts/prerelease-macos -type f -name discordia-server \
+            -exec cp {} release/discordia-server-macos \;
           find artifacts/prerelease-macos -type f -name 'Discordia-macos-arm64.dmg' \
             -exec cp {} release/ \;
           ls -l release/

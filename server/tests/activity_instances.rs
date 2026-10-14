@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{
     ActivityInstance, ActivityRole, ChannelKind, ClientMessage, Id, ServerMessage,
 };
 
@@ -14,23 +14,23 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-instances-{}-{}",
+        "discordia-instances-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let config = dioxusfun_server::ServerConfig {
+    let config = discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     };
     let preferred: SocketAddr = "127.0.0.1:19500".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, config)
+    let handle = discordia_server::spawn(preferred, 100, config)
         .await
         .expect("spawn server");
     (format!("ws://{}", handle.addr), handle)
@@ -45,7 +45,7 @@ async fn user(url: &str, name: &str) -> (Bot, String) {
 
 struct World {
     url: String,
-    handle: dioxusfun_server::ServerHandle,
+    handle: discordia_server::ServerHandle,
     alice: (Bot, String),
     bob: (Bot, String),
     carol: (Bot, String),
@@ -319,7 +319,7 @@ async fn the_host_moves_on_when_it_leaves_and_a_disconnect_cleans_up() {
 #[tokio::test]
 async fn an_apps_bot_is_the_backend_of_its_own_activity() {
     use base64::Engine;
-    use dioxusfun_server::protocol::{ActivityCapability, ActivityManifest, AppManifest, Intent};
+    use discordia_server::protocol::{ActivityCapability, ActivityManifest, AppManifest, Intent};
     use sha2::Digest;
 
     let mut w = world().await;
@@ -361,7 +361,7 @@ async fn an_apps_bot_is_the_backend_of_its_own_activity() {
             bot_pubkey: app.pubkey().to_string(),
             data_url: format!(
                 "data:{};base64,{}",
-                dioxusfun_server::protocol::BUNDLE_MIME,
+                discordia_server::protocol::BUNDLE_MIME,
                 base64::engine::general_purpose::STANDARD.encode(page)
             ),
         })

@@ -15,7 +15,7 @@
 .env.local
 
 # No crate is excluded even when only one is built: cargo resolves every
-# workspace member's Cargo.toml for `-p dioxusfun-server`.
+# workspace member's Cargo.toml for `-p discordia-server`.
 
 .git/
 node_modules/

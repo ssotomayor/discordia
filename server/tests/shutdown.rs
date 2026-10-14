@@ -8,47 +8,47 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::ServerMessage;
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::ServerMessage;
 use futures_util::StreamExt;
 
 /// Generous next to the close, which is immediate, and short enough that a
 /// socket left running fails the test rather than hanging the suite.
 const CLOSE_WITHIN: Duration = Duration::from_secs(3);
 
-fn test_config() -> dioxusfun_server::ServerConfig {
+fn test_config() -> discordia_server::ServerConfig {
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-shutdown-{}-{}",
+        "discordia-shutdown-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
 
 async fn spawn_gateway() -> (
     String,
-    dioxusfun_server::ServerHandle,
-    dioxusfun_server::GatewayShutdown,
+    discordia_server::ServerHandle,
+    discordia_server::GatewayShutdown,
 ) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = dioxusfun_server::bind_with_fallback(preferred, 100)
+    let listener = discordia_server::bind_with_fallback(preferred, 100)
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
     let mut cfg = test_config();
     cfg.identities
-        .extend(dioxusfun_server::local_identities(addr.port()));
-    let (router, shutdown) = dioxusfun_server::build_gateway(cfg)
+        .extend(discordia_server::local_identities(addr.port()));
+    let (router, shutdown) = discordia_server::build_gateway(cfg)
         .await
         .expect("build gateway");
-    let handle = dioxusfun_server::serve_router(listener, router);
+    let handle = discordia_server::serve_router(listener, router);
     (format!("ws://{addr}"), handle, shutdown)
 }
 
@@ -118,7 +118,7 @@ async fn the_close_frame_says_the_host_stopped_it() {
 
     assert_eq!(
         closed.as_deref(),
-        Some(dioxusfun_server::gateway::HOST_STOPPED)
+        Some(discordia_server::gateway::HOST_STOPPED)
     );
 }
 

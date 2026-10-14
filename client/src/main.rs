@@ -184,13 +184,14 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
     use tracing_subscriber::EnvFilter;
     EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "warn,{}=info,dioxusfun_server=info,dioxus_desktop=info",
+            "warn,{}=info,discordia_server=info,dioxus_desktop=info",
             log_crate_root()
         ))
     })
 }
 
 fn main() {
+    identity::migrate_legacy_config_dir();
     init_logging();
 
     #[cfg(target_os = "windows")]

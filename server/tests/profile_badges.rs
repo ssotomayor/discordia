@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ClientMessage, Profile, ServerMessage};
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::LiveKitConfig;
+use discordia_server::protocol::{ClientMessage, Profile, ServerMessage};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -12,19 +12,19 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
+fn test_config(operators: std::collections::HashSet<String>) -> discordia_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-test-badges-{}-{}",
+        "discordia-test-badges-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit: LiveKitConfig::from_env(&dir),
         operators,
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
@@ -64,7 +64,7 @@ async fn next_profile_of(session: &mut Bot, pubkey: &str) -> Profile {
 async fn the_operator_badge_is_the_servers_to_stamp_and_the_operators_to_hide() {
     let op = BotIdentity::generate();
     let preferred: SocketAddr = "127.0.0.1:19260".parse().unwrap();
-    let handle = dioxusfun_server::spawn(
+    let handle = discordia_server::spawn(
         preferred,
         100,
         test_config([op.pubkey().to_string()].into()),

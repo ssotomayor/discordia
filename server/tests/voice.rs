@@ -2,12 +2,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dioxusfun_bot::{Bot, BotIdentity};
-use dioxusfun_server::livekit::{
+use discordia_bot::{Bot, BotIdentity};
+use discordia_server::livekit::{
     BoxFuture, LiveKitConfig, MintRequest, VoiceTokenMinter, screen_audio_identity,
     screen_room_name, screen_video_identity, screen_viewer_identity,
 };
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
+use discordia_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 use livekit_api::access_token::TokenVerifier;
 
 const API_KEY: &str = "devkey";
@@ -21,7 +21,7 @@ fn local_with_fallback() -> LiveKitConfig {
             "203.0.113.5".parse().unwrap(),
             "2800:810::123".parse().unwrap(),
         ],
-        fallback: Some(Arc::new(dioxusfun_server::livekit::VoiceFallback::new(
+        fallback: Some(Arc::new(discordia_server::livekit::VoiceFallback::new(
             "wss://last-option".into(),
             Arc::new(ScriptedMinter {
                 fail_when: Box::new(|_| false),
@@ -31,20 +31,20 @@ fn local_with_fallback() -> LiveKitConfig {
     }
 }
 
-async fn remote_gateway(cfg: LiveKitConfig) -> (String, dioxusfun_server::ServerHandle) {
+async fn remote_gateway(cfg: LiveKitConfig) -> (String, discordia_server::ServerHandle) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = test_config(cfg);
     config
         .identities
-        .extend(dioxusfun_server::local_identities(addr.port()));
-    let (router, _shutdown) = dioxusfun_server::build_gateway(config).await.unwrap();
+        .extend(discordia_server::local_identities(addr.port()));
+    let (router, _shutdown) = discordia_server::build_gateway(config).await.unwrap();
     let router = router.layer(axum::Extension(axum::extract::ConnectInfo(
         "198.51.100.9:45000"
             .parse::<std::net::SocketAddr>()
             .unwrap(),
     )));
-    let handle = dioxusfun_server::serve_router(listener, router);
+    let handle = discordia_server::serve_router(listener, router);
     (format!("ws://{addr}"), handle)
 }
 
@@ -235,19 +235,19 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
+fn test_config(livekit: LiveKitConfig) -> discordia_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-voice-test-{}-{}",
+        "discordia-voice-test-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit,
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
@@ -376,9 +376,9 @@ fn delegated(fail_when: impl Fn(&MintRequest) -> bool + Send + Sync + 'static) -
     }
 }
 
-async fn spawn_gateway(livekit: LiveKitConfig) -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_gateway(livekit: LiveKitConfig) -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, test_config(livekit))
+    let handle = discordia_server::spawn(preferred, 100, test_config(livekit))
         .await
         .expect("spawn server");
     let url = format!("ws://{}", handle.addr);
@@ -481,13 +481,13 @@ fn has_voice_token(frames: &[ServerMessage]) -> bool {
 
 #[tokio::test]
 async fn ice_servers_ride_with_both_grants() {
-    let ice = vec![dioxusfun_server::protocol::IceServer {
+    let ice = vec![discordia_server::protocol::IceServer {
         urls: vec!["turn:relay.example:7702".into()],
         username: "1700000000".into(),
         credential: "hmac".into(),
     }];
     let cfg = LiveKitConfig {
-        ice_servers: dioxusfun_server::livekit::shared_ice_servers(ice.clone()),
+        ice_servers: discordia_server::livekit::shared_ice_servers(ice.clone()),
         ..local_signing()
     };
     let (url, _handle) = spawn_gateway(cfg).await;
@@ -527,7 +527,7 @@ async fn the_first_join_state_respects_preferences_and_legacy_moves_keep_them() 
         for deafened in [false, true] {
             user.send(&ClientMessage::JoinVoice {
                 channel_id: voice,
-                preferences: Some(dioxusfun_server::protocol::VoicePreferences { muted, deafened }),
+                preferences: Some(discordia_server::protocol::VoicePreferences { muted, deafened }),
             })
             .await
             .unwrap();
@@ -764,7 +764,7 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
 async fn join_guild(
     session: &mut Bot,
     guild_id: Id,
-) -> Vec<dioxusfun_server::protocol::VoiceState> {
+) -> Vec<discordia_server::protocol::VoiceState> {
     session
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -789,7 +789,7 @@ async fn join_guild(
 async fn next_voice_state(
     session: &mut Bot,
     pubkey: &str,
-) -> dioxusfun_server::protocol::VoiceState {
+) -> discordia_server::protocol::VoiceState {
     loop {
         if let ServerMessage::VoiceStateUpdate(vs) = next_timeout(session).await
             && vs.user_pubkey == pubkey
@@ -1346,8 +1346,8 @@ async fn heartbeat_closes_a_session_that_stops_reading_probes() {
     let mut idle = connect_user(&url, &identity, "idle").await;
     // Reading flushes automatic pongs, so wait past the server's next deadline check.
     tokio::time::sleep(
-        dioxusfun_server::protocol::GATEWAY_HEARTBEAT_TIMEOUT
-            + 2 * dioxusfun_server::protocol::GATEWAY_HEARTBEAT_INTERVAL,
+        discordia_server::protocol::GATEWAY_HEARTBEAT_TIMEOUT
+            + 2 * discordia_server::protocol::GATEWAY_HEARTBEAT_INTERVAL,
     )
     .await;
     tokio::time::timeout(Duration::from_secs(3), async {

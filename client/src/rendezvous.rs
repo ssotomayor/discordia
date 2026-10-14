@@ -64,12 +64,12 @@ impl RendezvousMinter {
     }
 }
 
-impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
+impl discordia_server::livekit::VoiceTokenMinter for RendezvousMinter {
     fn evict<'a>(
         &'a self,
         channel_id: crate::protocol::Id,
         pubkey: &'a str,
-    ) -> dioxusfun_server::livekit::BoxFuture<'a, Result<(), String>> {
+    ) -> discordia_server::livekit::BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let mut failure = String::new();
             for attempt in 0..2 {
@@ -107,8 +107,8 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
     }
     fn mint<'a>(
         &'a self,
-        req: dioxusfun_server::livekit::MintRequest,
-    ) -> dioxusfun_server::livekit::BoxFuture<'a, Result<String, String>> {
+        req: discordia_server::livekit::MintRequest,
+    ) -> discordia_server::livekit::BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             struct Resp {
@@ -169,7 +169,7 @@ fn grants_match(token: &str, can_publish: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::quic::Coordination {
+pub async fn coordination_offered(rendezvous_url: &str) -> discordia_server::quic::Coordination {
     #[derive(serde::Deserialize)]
     struct Offered {
         #[serde(default)]
@@ -196,11 +196,11 @@ pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::qui
     match relay {
         Some(url) => {
             eprintln!("[host] rendezvous offers a coordinator at {url}");
-            dioxusfun_server::quic::Coordination::Relay(url)
+            discordia_server::quic::Coordination::Relay(url)
         }
         None => {
             eprintln!("[host] rendezvous offers no coordinator — no hole punching");
-            dioxusfun_server::quic::Coordination::None
+            discordia_server::quic::Coordination::None
         }
     }
 }
@@ -428,7 +428,7 @@ pub struct Registration {
 
 /// Where renewed relay credentials go: the embedded gateway reads this on
 /// every voice join, so a swap here reaches the next friend who joins.
-pub type IceServersSink = dioxusfun_server::livekit::SharedIceServers;
+pub type IceServersSink = discordia_server::livekit::SharedIceServers;
 
 pub fn apply_turn(sink: &IceServersSink, creds: &TurnCredentials) {
     *sink.write().unwrap_or_else(|e| e.into_inner()) = creds.ice_servers();
@@ -573,7 +573,7 @@ mod backoff_tests {
 
     #[tokio::test]
     async fn eviction_retry_reads_the_renewed_registration_grant() {
-        use dioxusfun_server::livekit::VoiceTokenMinter;
+        use discordia_server::livekit::VoiceTokenMinter;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let minter = Arc::new(RendezvousMinter::new(
@@ -669,14 +669,14 @@ mod name_tests {
     use super::*;
 
     async fn rendezvous() -> String {
-        let ctx = dioxusfun_rendezvous::AppCtx {
-            registry: Arc::new(dioxusfun_rendezvous::registry::Registry::new()),
-            config: Arc::new(dioxusfun_rendezvous::Config::default()),
+        let ctx = discordia_rendezvous::AppCtx {
+            registry: Arc::new(discordia_rendezvous::registry::Registry::new()),
+            config: Arc::new(discordia_rendezvous::Config::default()),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, dioxusfun_rendezvous::router(ctx))
+            axum::serve(listener, discordia_rendezvous::router(ctx))
                 .await
                 .unwrap();
         });

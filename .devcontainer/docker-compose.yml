@@ -114,7 +114,7 @@ services:
       # "not bundled" if it did not. Unset both to build a server binary that
       # embeds the SFU — CI refuses to publish one under 40MB.
       LIVEKIT_BUNDLE_SKIP: "1"
-      DIOXUSFUN_LIVEKIT_AUTOSPAWN: "0"
+      DISCORDIA_LIVEKIT_AUTOSPAWN: "0"
 
       # Linking the client OOM-kills GNU ld in a stock Docker Desktop VM: 16
       # CPUs means cargo starts 16 jobs, several of them linking at once,

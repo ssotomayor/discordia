@@ -1,10 +1,10 @@
 use base64::Engine as _;
-use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
-use dioxusfun_server::protocol::{
+use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+use discordia_server::protocol::{
     ClientMessage, FilePolicy, Id, MessageSearch, ServerMessage, User,
 };
-use dioxusfun_server::state::AppState;
-use dioxusfun_server::store::Store;
+use discordia_server::state::AppState;
+use discordia_server::store::Store;
 
 async fn fixture() -> (AppState, User, Id, Id) {
     let dir = std::env::temp_dir().join(format!("discordia-chat-tools-{}", Id::new_v4()));
@@ -21,7 +21,7 @@ async fn fixture() -> (AppState, User, Id, Id) {
     let (guild, channels, _, _) = state.create_guild("test", None, &owner).await.unwrap();
     let channel = channels
         .iter()
-        .find(|c| c.kind == dioxusfun_server::protocol::ChannelKind::Text)
+        .find(|c| c.kind == discordia_server::protocol::ChannelKind::Text)
         .unwrap()
         .id;
     (state, owner, guild.id, channel)
@@ -105,8 +105,8 @@ async fn ordinary_members_can_upload_and_download_files_without_a_special_role()
     assert_eq!(error, "this channel is read-only");
     {
         let mut channel = state.channels.get_mut(&channel_id).unwrap();
-        channel.kind = dioxusfun_server::protocol::ChannelKind::Voice;
-        channel.access = Some(dioxusfun_server::protocol::ChannelAccess::default());
+        channel.kind = discordia_server::protocol::ChannelKind::Voice;
+        channel.access = Some(discordia_server::protocol::ChannelAccess::default());
     }
     assert!(
         !state
@@ -398,7 +398,7 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
             guild_id,
             "Sender",
             None,
-            vec![dioxusfun_server::protocol::Permission::SendMessages],
+            vec![discordia_server::protocol::Permission::SendMessages],
             &owner.pubkey,
         )
         .await

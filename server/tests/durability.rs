@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
-use dioxusfun_server::protocol::{ChannelKind, Guild, Permission, Profile, User};
-use dioxusfun_server::state::AppState;
-use dioxusfun_server::store::Store;
+use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+use discordia_server::protocol::{ChannelKind, Guild, Permission, Profile, User};
+use discordia_server::state::AppState;
+use discordia_server::store::Store;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 struct Fixture {

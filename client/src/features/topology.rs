@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(ellipsize("host:443", 30), "host:443");
     }
 
-    /// Not an assertion — a way to look at the thing. `cargo test -p dioxusfun
+    /// Not an assertion — a way to look at the thing. `cargo test -p discordia
     /// -- --ignored render_the_diagram --nocapture` writes it to the temp
     /// directory and prints the path, because the diagram is the one part of
     /// this file no assertion can judge.

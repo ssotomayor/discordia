@@ -11,7 +11,7 @@ use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use dioxusfun_server::livekit::LiveKitConfig;
+use discordia_server::livekit::LiveKitConfig;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -61,24 +61,24 @@ async fn fake_sfu() -> (u16, tokio::task::JoinHandle<()>) {
     (port, task)
 }
 
-fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
+fn test_config(livekit: LiveKitConfig) -> discordia_server::ServerConfig {
     let dir = std::env::temp_dir().join(format!(
-        "dioxusfun-sfu-proxy-{}-{}",
+        "discordia-sfu-proxy-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    dioxusfun_server::ServerConfig {
+    discordia_server::ServerConfig {
         livekit,
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
 
-async fn gateway(livekit: LiveKitConfig) -> (SocketAddr, dioxusfun_server::ServerHandle) {
+async fn gateway(livekit: LiveKitConfig) -> (SocketAddr, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19500".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 200, test_config(livekit))
+    let handle = discordia_server::spawn(preferred, 200, test_config(livekit))
         .await
         .expect("spawn server");
     (handle.addr, handle)
@@ -95,12 +95,12 @@ fn bundled(port: u16) -> LiveKitConfig {
 #[tokio::test]
 async fn sfu_signaling_roundtrips_over_an_authenticated_quic_stream() {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        use dioxusfun_server::quic;
+        use discordia_server::quic;
         use iroh::endpoint::presets;
         use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr};
 
         let (sfu_port, sfu) = fake_sfu().await;
-        let router = dioxusfun_server::build_router(test_config(bundled(sfu_port)))
+        let router = discordia_server::build_router(test_config(bundled(sfu_port)))
             .await
             .unwrap();
         let gateway = quic::serve_quic(router, None).await.unwrap();

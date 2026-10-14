@@ -19,7 +19,7 @@ pub enum IdentitySource {
     Nsec(String),
 }
 
-const MEDIA_KEY_DOMAIN: &[u8] = b"dioxusfun/media-key/v1";
+const MEDIA_KEY_DOMAIN: &[u8] = b"discordia/media-key/v1";
 
 #[derive(Clone)]
 pub struct Identity {
@@ -126,6 +126,7 @@ impl Identity {
     pub fn transport_seed(&self) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
+        // The project's old name, kept: a new domain moves every host's QUIC key.
         h.update(b"dioxusfun/quic-transport/v1");
         h.update(self.secret.secret_bytes());
         h.finalize().into()
@@ -576,7 +577,7 @@ fn to_bech32(hrp: &str, data: &[u8]) -> String {
     bech32::encode::<Bech32>(hrp, data).expect("bech32 encode")
 }
 
-// Thread-local and not the env var, because `DIOXUSFUN_CONFIG_DIR` is
+// Thread-local and not the env var, because `DISCORDIA_CONFIG_DIR` is
 // process-global and another test in this binary sets and clears it.
 #[cfg(test)]
 thread_local! {
@@ -589,12 +590,33 @@ pub fn config_dir() -> PathBuf {
     if let Some(dir) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
         return dir;
     }
-    if let Some(dir) = std::env::var_os("DIOXUSFUN_CONFIG_DIR") {
+    if let Some(dir) = std::env::var_os("DISCORDIA_CONFIG_DIR") {
         return PathBuf::from(dir);
     }
     dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("dioxusfun")
+        .join("discordia")
+}
+
+/// Before the rename the folder was `dioxusfun`; it holds the keys, so it moves
+/// rather than starting a new account. Runs before anything opens the folder.
+pub fn migrate_legacy_config_dir() {
+    if std::env::var_os("DISCORDIA_CONFIG_DIR").is_some() {
+        return;
+    }
+    let Some(base) = dirs::config_dir() else {
+        return;
+    };
+    let (old, new) = (base.join("dioxusfun"), base.join("discordia"));
+    if old.is_dir() && !new.exists() {
+        if let Err(e) = std::fs::rename(&old, &new) {
+            eprintln!(
+                "[discordia] could not move {} to {}: {e}",
+                old.display(),
+                new.display()
+            );
+        }
+    }
 }
 
 fn active_path() -> PathBuf {
@@ -828,7 +850,7 @@ mod store_tests {
     /// scan sees only what the test put there.
     fn sandbox(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("dioxusfun-identity-{}-{name}", std::process::id()));
+            std::env::temp_dir().join(format!("discordia-identity-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("sandbox");
         TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
@@ -1194,7 +1216,7 @@ mod tests {
     #[test]
     fn signing_round_trips() {
         let id = Identity::create("alice").unwrap();
-        let msg = b"hello dioxusfun";
+        let msg = b"hello discordia";
         let sig_hex = id.sign_hex(msg);
 
         let secp = Secp256k1::new();

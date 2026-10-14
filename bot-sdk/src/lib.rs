@@ -6,7 +6,7 @@ use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 
-pub use dioxusfun_protocol as protocol;
+pub use discordia_protocol as protocol;
 use protocol::{AppManifest, BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
 
 mod quic;
@@ -87,7 +87,7 @@ impl BotIdentity {
     pub fn sign_identify(&self, nonce: &str, origin: &str, username: &str) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &self.secret);
-        let msg = dioxusfun_protocol::identify_payload(nonce, origin, &self.pubkey_hex, username);
+        let msg = discordia_protocol::identify_payload(nonce, origin, &self.pubkey_hex, username);
         let digest: [u8; 32] = Sha256::digest(&msg).into();
         let m = Message::from_digest(digest);
         hex::encode(secp.sign_schnorr_no_aux_rand(&m, &keypair).serialize())
@@ -99,10 +99,10 @@ impl BotIdentity {
         let content = serde_json::to_string(manifest).expect("manifest serializes");
         let tags = vec![vec![
             "d".to_string(),
-            dioxusfun_protocol::APP_MANIFEST_D.to_string(),
+            discordia_protocol::APP_MANIFEST_D.to_string(),
         ]];
         self.sign_event(
-            dioxusfun_protocol::APP_MANIFEST_KIND,
+            discordia_protocol::APP_MANIFEST_KIND,
             tags,
             &content,
             now_secs(),
@@ -113,14 +113,14 @@ impl BotIdentity {
     pub fn sign_blocklist(&self, app_keys: &[&str], created_at: i64) -> String {
         let mut tags = vec![vec![
             "d".to_string(),
-            dioxusfun_protocol::APP_BLOCKLIST_D.to_string(),
+            discordia_protocol::APP_BLOCKLIST_D.to_string(),
         ]];
         tags.extend(
             app_keys
                 .iter()
                 .map(|k| vec!["p".to_string(), k.to_string()]),
         );
-        self.sign_event(dioxusfun_protocol::APP_BLOCKLIST_KIND, tags, "", created_at)
+        self.sign_event(discordia_protocol::APP_BLOCKLIST_KIND, tags, "", created_at)
     }
 
     /// Any NIP-01 event signed by this key, as JSON.
@@ -237,7 +237,7 @@ impl Bot {
 
         // The server canonicalizes before verifying, so signing the raw
         // string fails for names over 32 chars.
-        let username = dioxusfun_protocol::canonical_username(username);
+        let username = discordia_protocol::canonical_username(username);
         let signature = identity.sign_identify(&nonce, &origin, &username);
         let identify = ClientMessage::Identify {
             username: username.clone(),

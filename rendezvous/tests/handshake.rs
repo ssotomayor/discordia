@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dioxusfun_protocol::rendezvous::{DiscoverEntry, LIST_NAMES};
-use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
+use discordia_protocol::rendezvous::{DiscoverEntry, LIST_NAMES};
+use discordia_rendezvous::{AppCtx, Config, registry::Registry, router};
 use futures_util::{SinkExt, StreamExt};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
@@ -683,7 +683,7 @@ async fn resolve_is_throttled_per_address() {
 
 #[tokio::test]
 async fn a_relay_hands_every_registration_turn_credentials_and_renews_them_on_request() {
-    let issuer = dioxusfun_rendezvous::turn_relay::Issuer::new(
+    let issuer = discordia_rendezvous::turn_relay::Issuer::new(
         vec!["turn:relay.example:7702".into()],
         "shared-secret".into(),
     );

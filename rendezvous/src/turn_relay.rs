@@ -8,7 +8,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dioxusfun_protocol::rendezvous::TurnCredentials;
+use discordia_protocol::rendezvous::TurnCredentials;
 use turn::auth::{LongTermAuthHandler, generate_long_term_credentials};
 use turn::relay::relay_range::RelayAddressGeneratorRanges;
 use turn::server::Server;

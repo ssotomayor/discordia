@@ -4159,7 +4159,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "starts a bundled SFU; needs local media ports and a native encoder"]
     async fn native_screen_codecs_reach_a_real_decoder() {
-        use dioxusfun_server::livekit_bundle::{Credentials, ports, spawn_livekit};
+        use discordia_server::livekit_bundle::{Credentials, ports, spawn_livekit};
         use livekit::webrtc::video_frame::I420Buffer;
         use livekit::webrtc::video_stream::native::NativeVideoStream;
         use livekit_api::access_token::{AccessToken, VideoGrants};
@@ -4202,7 +4202,7 @@ mod tests {
             std::env::temp_dir().join(format!("discordia-video-test-{}", uuid::Uuid::new_v4()));
         let credentials = Credentials::generate();
         let _sfu = spawn_livekit(
-            dioxusfun_server::livekit_bundle::Advertise::Mapped(
+            discordia_server::livekit_bundle::Advertise::Mapped(
                 "127.0.0.1".parse().expect("loopback"),
             ),
             &credentials,

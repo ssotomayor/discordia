@@ -12,7 +12,7 @@ pub mod state;
 pub mod store;
 pub mod watchdog;
 
-pub use dioxusfun_protocol as protocol;
+pub use discordia_protocol as protocol;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -57,7 +57,7 @@ pub struct ServerConfig {
     /// Names beyond the loopback and interface addresses, which `spawn_on`
     /// and `serve` add for the port they bind.
     pub identities: HashSet<String>,
-    /// Ceiling on the blob directory; `DIOXUSFUN_MEDIA_MAX_BYTES` sets it.
+    /// Ceiling on the blob directory; `DISCORDIA_MEDIA_MAX_BYTES` sets it.
     pub media_max_bytes: u64,
 }
 
@@ -79,7 +79,7 @@ pub fn local_identities(port: u16) -> HashSet<String> {
     out
 }
 
-/// `DIOXUSFUN_PUBLIC_HOSTS`: comma-separated `host`, `host:port` or URLs a
+/// `DISCORDIA_PUBLIC_HOSTS`: comma-separated `host`, `host:port` or URLs a
 /// reverse proxy or DNS name presents this gateway as.
 pub fn declared_identities(list: &str, default_port: u16) -> HashSet<String> {
     list.split(',')
@@ -195,7 +195,7 @@ pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> 
     let addr = listener
         .local_addr()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    tracing::info!(%addr, "dioxusfun-server listening");
+    tracing::info!(%addr, "discordia-server listening");
 
     let task = tokio::spawn(async move {
         let service = router.into_make_service_with_connect_info::<SocketAddr>();

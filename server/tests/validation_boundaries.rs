@@ -1,7 +1,7 @@
-use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
-use dioxusfun_server::protocol::{GuildVisibility, Id, MAX_EMOJIS_PER_GUILD, User};
-use dioxusfun_server::state::AppState;
-use dioxusfun_server::store::Store;
+use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+use discordia_server::protocol::{GuildVisibility, Id, MAX_EMOJIS_PER_GUILD, User};
+use discordia_server::state::AppState;
+use discordia_server::store::Store;
 
 async fn fixture() -> (AppState, User, Id) {
     let dir = std::env::temp_dir().join(format!("discordia-boundaries-{}", Id::new_v4()));

@@ -9,8 +9,8 @@ livekit = { path = "vendor/livekit" }
 dioxus-desktop = { path = "vendor/dioxus-desktop" }
 
 [workspace.dependencies]
-dioxusfun-server = { path = "server" }
-dioxusfun-protocol = { path = "protocol" }
+discordia-server = { path = "server" }
+discordia-protocol = { path = "protocol" }
 
 dioxus = { version = "0.7", default-features = false, features = ["launch", "lib"] }
 livekit-api = { version = "0.5", default-features = false, features = ["access-token"] }
