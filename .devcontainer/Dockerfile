@@ -14,19 +14,20 @@
 # source instead would cost ~15 minutes on every image rebuild.
 FROM mcr.microsoft.com/devcontainers/rust:1-trixie
 
-# Three groups, in order: init-firewall.sh; the wry/GTK/ALSA set CI installs
-# for the client (.github/workflows/ci.yml — keep the two lists together);
-# clang and cmake for the bindgen and C++ build scripts under livekit
-# (webrtc-sys) and sqlx's bundled SQLite. lld is the linker, see the compose
-# file for why. sqlite3 is for reading a data dir by hand.
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get install -y --no-install-recommends \
         iptables ipset iproute2 dnsutils jq ca-certificates \
         libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
         libasound2-dev libssl-dev pkg-config \
-        clang libclang-dev cmake lld \
+        cmake lld \
         sqlite3 pinentry-tty openssh-client unzip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# WebRTC's hermetic libc++ needs the same C++ ABI in the bridge and its library.
+COPY scripts/install-webrtc-toolchain.sh /tmp/install-webrtc-toolchain.sh
+RUN bash /tmp/install-webrtc-toolchain.sh \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+ENV CC=clang-21 CXX=clang++-21 LIBCLANG_PATH=/usr/lib/llvm-21/lib
 
 # Source paths are relative to the build context, which is the repo root — not
 # to this file.

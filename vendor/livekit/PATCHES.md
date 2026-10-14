@@ -1,6 +1,6 @@
-# livekit 0.7.53
+# livekit 0.9.5
 
-Source: crates.io `livekit` 0.7.53, upstream commit `da3ee007c044e31422ce3412346c3d6c93fea0b4` in [LiveKit Rust SDK](https://github.com/livekit/rust-sdks). Apache-2.0; original source notices retained.
+Source: crates.io `livekit` 0.9.5, upstream commit `49b3ebe9ab1c574114b164868ad226cc26a9b1be` in [LiveKit Rust SDK](https://github.com/livekit/rust-sdks). Apache-2.0; original source notices retained.
 
 | File | Local change |
 |---|---|
@@ -8,6 +8,7 @@ Source: crates.io `livekit` 0.7.53, upstream commit `da3ee007c044e31422ce3412346
 | `src/room/options.rs` | Optional `video_start_bitrate` in bps, unset by default; assign the highest RID to the principal layer for one/two/three encodings. |
 | `src/rtc_engine/rtc_session.rs` | Forward the publishing track's startup hint alongside its encoding budget; publish audio RED (offer opus+RED when `red` is on) so E2EE keeps redundancy. |
 | `src/room/participant/local_participant.rs` | Stop forcing `disable_red` under encryption now that the publisher sends RED itself; `red: false` still opts out. |
-| `src/rtc_engine/peer_transport.rs`, `start_bitrate.rs`, `mod.rs` | Apply the hint to video SDP offers; clamp to the encoding budget. Unconfigured tracks retain the 1 Mbps ceiling. No minimum bitrate is imposed. |
+| `src/rtc_engine/peer_transport.rs`, `start_bitrate.rs`, `mod.rs` | Preserve explicit startup hints clamped to the encoding budget; apply once per peer connection using upstream negotiation handling. Unconfigured tracks use upstream startup policy. No minimum bitrate is imposed. |
+| `src/room/mod.rs`, `src/rtc_engine/mod.rs`, `src/rtc_engine/rtc_session.rs` | Preserve `signal_connect_timeout` across the new signaling crate, bounding initial validation/join while ICE retains its own deadline. |
 
-The client applies a hint only to screen shares: fixed per-resolution/FPS startup values independent of adaptive caps (see `docs/MAP.md`). Hints never exceed the cap. The pure startup policy is included in the client's test build so CI exercises the vendored implementation.
+The client applies a hint only to screen shares: fixed per-resolution/FPS startup values independent of adaptive caps (see `docs/MAP.md`). Hints never exceed the cap. The pure startup policy is included in the client's test build so CI exercises the vendored implementation. Upstream replaces our older connection recovery/statistics fixes; they are not reapplied over its new lifecycle handling.

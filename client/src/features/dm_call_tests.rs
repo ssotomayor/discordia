@@ -383,10 +383,8 @@ fn repeated_terminal_signals_do_not_grow_memory_without_bound() {
 #[tokio::test(flavor = "multi_thread")]
 async fn native_peer_connections_deliver_encoded_audio_without_a_voice_server() {
     let factory = PeerConnectionFactory::default();
-    let config = RtcConfiguration {
-        continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
-        ..Default::default()
-    };
+    let mut config = RtcConfiguration::default();
+    config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
     let alice = TestPeer(factory.create_peer_connection(config.clone()).unwrap());
     let bob = TestPeer(factory.create_peer_connection(config).unwrap());
     let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 100);

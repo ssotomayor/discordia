@@ -656,18 +656,18 @@ struct ActiveVoice {
 /// relay its rendezvous runs; with nothing listed, libwebrtc gathers host
 /// candidates only, as before.
 pub fn rtc_config(servers: &[IceServer]) -> RtcConfiguration {
-    RtcConfiguration {
-        ice_servers: servers
-            .iter()
-            .map(|s| RtcIceServer {
-                urls: s.urls.clone(),
-                username: s.username.clone(),
-                password: s.credential.clone(),
-            })
-            .collect(),
-        continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
-        ice_transport_type: IceTransportsType::All,
-    }
+    let mut config = RtcConfiguration::default();
+    config.ice_servers = servers
+        .iter()
+        .map(|s| RtcIceServer {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            password: s.credential.clone(),
+        })
+        .collect();
+    config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+    config.ice_transport_type = IceTransportsType::All;
+    config
 }
 
 impl ActiveVoice {
