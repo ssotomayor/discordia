@@ -2,7 +2,7 @@
   "name": "discordia",
   "dockerComposeFile": ["docker-compose.yml"],
   "service": "dev",
-  "workspaceFolder": "/Users/tehsoto/Projects/dioxusfun-monorepo",
+  "workspaceFolder": "/Users/tehsoto/Projects/discordia",
   "remoteUser": "vscode",
 
   "features": {

@@ -3,7 +3,7 @@
 # anything here still has open egress.
 set -euo pipefail
 
-REPO=/Users/tehsoto/Projects/dioxusfun-monorepo
+REPO=/Users/tehsoto/Projects/discordia
 cd "$REPO"
 
 sudo /usr/local/bin/prepare-mounts.sh
