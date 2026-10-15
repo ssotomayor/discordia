@@ -146,15 +146,15 @@ impl FramePacer {
 
     fn accept(&mut self, now: Instant) -> bool {
         let Some(next) = self.next else {
-            self.next = Some(now + self.interval);
+            self.next = Some(now + self.interval / 2);
             return true;
         };
-        // Capture callbacks jitter around the display cadence; resetting to now drops alternate frames.
-        if now + Duration::from_millis(1) < next {
+        if now < next {
             return false;
         }
+        // A half-frame phase margin preserves near-target sources despite callback jitter.
         self.next = Some(if now.saturating_duration_since(next) >= self.interval {
-            now + self.interval
+            now + self.interval / 2
         } else {
             next + self.interval
         });
@@ -218,6 +218,8 @@ impl GraphicsCaptureApiHandler for Handler {
 impl Handler {
     fn deliver(&mut self, frame: &mut CapturedFrame<'_>) -> Result<(), String> {
         let started = Instant::now();
+        // WebRTC aligns this monotonic capture clock; conversion delays must not retime the image.
+        let timestamp_us = frame.timestamp().map_err(|e| e.to_string())?.Duration / 10;
         let width = frame.width();
         let height = frame.height();
         if width == 0 || height == 0 {
@@ -237,7 +239,10 @@ impl Handler {
         // WebRTC must not retain the mapped staging texture while accepting the converted frame.
         drop(mapped);
         let (out_width, out_height) = super::fit_resolution(width, height, self.flags.settings);
-        (self.flags.sink)(Frame { buffer });
+        (self.flags.sink)(Frame {
+            buffer,
+            timestamp_us,
+        });
         if self.flags.count_frames {
             self.flags.metrics.record_windows(
                 out_width,
@@ -536,9 +541,43 @@ mod tests {
         let accepted = (0..120)
             .filter(|i| pacer.accept(start + Duration::from_micros(i * 16_667)))
             .count();
-        assert_eq!(accepted, 60);
+        assert!((60..=61).contains(&accepted));
         assert!(pacer.accept(start + Duration::from_secs(10)));
         assert!(!pacer.accept(start + Duration::from_secs(10) + Duration::from_millis(2)));
+    }
+
+    #[test]
+    fn frame_pacer_keeps_fractional_source_frames_with_callback_delays() {
+        for seed in [42_u64, 7, 123456] {
+            let start = Instant::now();
+            let mut pacer = FramePacer::new(60);
+            let mut random = seed;
+            for i in 0..7193_u64 {
+                random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let source_us = (i as f64 * 1_000_000.0 / 59.94).round() as u64;
+                let delay_us = (random >> 32) % 4001;
+                assert!(pacer.accept(start + Duration::from_micros(source_us + delay_us)));
+            }
+        }
+    }
+
+    #[test]
+    fn frame_pacer_rejects_bursts_and_recovers_after_source_stalls() {
+        let start = Instant::now();
+        let mut pacer = FramePacer::new(60);
+        assert!(pacer.accept(start));
+        for ms in 0..8 {
+            assert!(!pacer.accept(start + Duration::from_millis(ms)));
+        }
+        let resumed = start + Duration::from_secs(1);
+        assert!(pacer.accept(resumed));
+        assert!(!pacer.accept(resumed));
+        assert!(!pacer.accept(resumed + Duration::from_millis(2)));
+        assert!(pacer.accept(resumed + Duration::from_micros(16_683)));
+        let mut short_stall = FramePacer::new(60);
+        assert!(short_stall.accept(start));
+        assert!(short_stall.accept(start + Duration::from_millis(25)));
+        assert!(!short_stall.accept(start + Duration::from_micros(25_100)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -575,9 +614,10 @@ mod tests {
                 },
                 Box::new(move |frame| {
                     assert!(frame.buffer.width() <= 640 && frame.buffer.height() <= 360);
+                    assert!(frame.timestamp_us > 0);
                     source.capture_frame(&VideoFrame {
                         rotation: VideoRotation::VideoRotation0,
-                        timestamp_us: 0,
+                        timestamp_us: frame.timestamp_us,
                         frame_metadata: None,
                         buffer: frame.buffer,
                     });

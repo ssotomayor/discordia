@@ -1391,6 +1391,15 @@ fn ScreenShareStatsRow(
         .capture_processing_ms
         .map(|v| format!("capture processing {v:.1} ms/frame"));
     let encoding = stats.encode_ms.map(|v| format!("encode {v:.1} ms/frame"));
+    let callbacks = stats
+        .capture_callbacks_fps
+        .map(|v| format!("source callbacks {v:.1} fps"));
+    let paced_out = stats
+        .capture_paced_out
+        .map(|v| format!("capture pacing skipped {v} total"));
+    let adapter_dropped = stats
+        .adapter_dropped_frames
+        .map(|v| format!("WebRTC adapter dropped {v} total"));
 
     rsx! {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] font-mono",
@@ -1399,6 +1408,11 @@ fn ScreenShareStatsRow(
                 if stats.outbound { span { "{capture_label}" } }
                 if let Some(processing) = processing { span { "{processing}" } }
                 if let Some(encoding) = encoding { span { "{encoding}" } }
+                if let Some(callbacks) = callbacks { span { "{callbacks}" } }
+                if let Some(paced_out) = paced_out {
+                    span { title: "Includes intentional skips to match the selected FPS", "{paced_out}" }
+                }
+                if let Some(adapter_dropped) = adapter_dropped { span { "{adapter_dropped}" } }
                 span { "{encoded_label}" }
                 span { "{codec}" }
                 span { "{bitrate}" }

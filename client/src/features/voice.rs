@@ -1803,22 +1803,30 @@ impl ScreenVideoRoom {
             })
         };
 
+        let adapter_dropped = Arc::new(AtomicU64::new(0));
+        let sink_adapter_dropped = adapter_dropped.clone();
         let sink: crate::sysvideo::FrameSink = Box::new(move |frame: crate::sysvideo::Frame| {
+            #[cfg(target_os = "windows")]
+            let timestamp_us = frame.timestamp_us;
+            #[cfg(target_os = "macos")]
+            let timestamp_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros() as i64)
+                .unwrap_or(0);
             #[cfg(target_os = "macos")]
             // SAFETY: LiveKit takes ownership of the retained CVPixelBuffer reference.
             let buffer =
                 unsafe { NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer()) };
             #[cfg(target_os = "windows")]
             let buffer = frame.buffer;
-            source.capture_frame(&VideoFrame {
+            if !source.capture_frame(&VideoFrame {
                 rotation: VideoRotation::VideoRotation0,
-                timestamp_us: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_micros() as i64)
-                    .unwrap_or(0),
+                timestamp_us,
                 frame_metadata: None,
                 buffer,
-            });
+            }) {
+                sink_adapter_dropped.fetch_add(1, Ordering::Relaxed);
+            }
         });
         #[cfg(target_os = "macos")]
         let capture = crate::sysvideo::start(target, settings, sink, fatal_tx);
@@ -1982,6 +1990,10 @@ impl ScreenVideoRoom {
                 stats.packets = Some(packets);
                 stats.capture_height = (captured.height > 0).then_some(captured.height);
                 stats.capture_processing_ms = capture_processing_ms;
+                stats.capture_callbacks_fps =
+                    (captured.callbacks > 0).then_some(capture_callbacks_fps);
+                stats.capture_paced_out = (captured.callbacks > 0).then_some(captured.paced_out);
+                stats.adapter_dropped_frames = Some(adapter_dropped.load(Ordering::Relaxed));
                 stats.encode_ms = encode_ms;
                 stats.device_limited = super::screen_stats::screen_device_limited(
                     settings.fps as f64,
@@ -2067,6 +2079,9 @@ fn native_screen_stats(
         capture_height: None,
         capture_fps: Some(capture_fps),
         capture_processing_ms: None,
+        capture_callbacks_fps: None,
+        capture_paced_out: None,
+        adapter_dropped_frames: None,
         encode_ms: None,
         encoded_width: (o.outbound.frame_width > 0).then_some(o.outbound.frame_width),
         encoded_height: (o.outbound.frame_height > 0).then_some(o.outbound.frame_height),

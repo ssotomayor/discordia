@@ -8,6 +8,7 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub struct Frame {
     pub buffer: livekit::webrtc::video_frame::I420Buffer,
+    pub timestamp_us: i64,
 }
 
 #[cfg(target_os = "macos")]
@@ -333,7 +334,11 @@ mod preview_tests {
         let (y, u, v) = buffer.data_mut();
         let red = [0, 0, 255, 255].repeat(4);
         livekit::webrtc::native::yuv_helper::argb_to_i420(&red, 8, y, sy, u, su, v, sv, 2, 2);
-        let data = super::frame_png(super::Frame { buffer }).expect("encode preview");
+        let data = super::frame_png(super::Frame {
+            buffer,
+            timestamp_us: 0,
+        })
+        .expect("encode preview");
         let png = base64::engine::general_purpose::STANDARD
             .decode(data.split(',').nth(1).expect("data URL"))
             .expect("base64");
