@@ -709,10 +709,10 @@ pub fn CallButton(peer: String) -> Element {
             class: "transition-colors hover:brightness-125",
             style: "display: inline-flex; align-items: center; gap: 7px; margin-left: auto; padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px; background-color: var(--bg2); color: var(--text-muted); font-size: 12px; opacity: {opacity};",
             disabled: unavailable,
-            title: if unavailable { "End your current voice session to start a call" } else { "Start a private voice call" },
+            title: if unavailable { crate::i18n::text("End your current voice session to start a call", &[]) } else { crate::i18n::text("Start a private voice call", &[]) },
             onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::Start(peer.clone()))),
             span { style: "display: flex;", aria_hidden: "true", dangerous_inner_html: super::icons::PHONE }
-            "Call"
+            {crate::i18n::text("Call", &[])}
         } }
     }
 }
@@ -805,7 +805,7 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
             section {
                 class: "dxf-pop-in",
                 style: "{placement} border-width: 1px; border-style: solid; border-color: var(--border-strong); background-color: var(--panel-solid, var(--bg2)); color: var(--text);",
-                role: "region", aria_label: "Private voice call",
+                role: "region", aria_label: crate::i18n::text("Private voice call", &[]),
                 div { style: "height: 3px; background-color: {status_color};" }
                 div { style: "padding: 16px;",
                     div { style: "display: flex; align-items: center; gap: 12px;",
@@ -813,38 +813,38 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                         div { style: "flex: 1; min-width: 0;",
                             div { style: "display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 10px; letter-spacing: 0.06em; color: var(--text-dim);",
                                 span { style: "display: flex;", aria_hidden: "true", dangerous_inner_html: super::icons::SHIELD }
-                                "PRIVATE VOICE CALL"
+                                {crate::i18n::text("PRIVATE VOICE CALL", &[])}
                             }
                             div { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 650;", title: "{name}", "{name}" }
                         }
                     }
                     div { style: "display: flex; align-items: center; gap: 7px; margin-top: 15px; font-size: 12px; color: {status_color};", role: "status", aria_live: "polite",
                         span { style: "width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background-color: {status_color};" }
-                        "{call.phase.label()}"
+                        {crate::i18n::label(call.phase.label())}
                     }
-                    p { style: "margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-dim);", "{hint}" }
+                    p { style: "margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-dim);", {crate::i18n::label(hint)} }
                     if let Some(error) = &call.microphone_error {
                         p { role: "status", style: "margin: 6px 0 0; font-size: 11px; color: var(--warn);",
-                            "Microphone unavailable — retrying. {error}"
+                            {crate::i18n::text("Microphone unavailable — retrying. {0}", std::slice::from_ref(error))}
                         }
                     }
                 }
                 div { style: "display: flex; gap: 8px; padding: 0 16px 16px;",
                     if call.phase == Phase::Incoming {
-                        CallControl { icon: super::icons::PHONE, label: "Accept", tone: "accept",
+                        CallControl { icon: super::icons::PHONE, label: crate::i18n::text("Accept", &[]), tone: "accept",
                             on_press: move |_| accept.send(crate::nostr::service::NostrCmd::Call(Action::Accept)) }
-                        CallControl { icon: super::icons::PHONE_HANGUP, label: "Decline", tone: "danger",
+                        CallControl { icon: super::icons::PHONE_HANGUP, label: crate::i18n::text("Decline", &[]), tone: "danger",
                             on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
                     } else {
                         CallControl {
                             icon: if muted || deafened { super::icons::MIC_OFF } else { super::icons::MIC },
-                            label: if muted { "Unmute mic" } else { "Mute mic" },
+                            label: if muted { crate::i18n::text("Unmute mic", &[]) } else { crate::i18n::text("Mute mic", &[]) },
                             active: muted || deafened, toggle: true, disabled: deafened,
                             on_press: move |_| { let value = !state.peek().voice.muted; state.write().voice.muted = value; }
                         }
                         CallControl {
                             icon: if deafened { super::icons::HEADPHONES_OFF } else { super::icons::HEADPHONES },
-                            label: if deafened { "Undeafen" } else { "Deafen" },
+                            label: if deafened { crate::i18n::text("Undeafen", &[]) } else { crate::i18n::text("Deafen", &[]) },
                             active: deafened, toggle: true,
                             on_press: move |_| {
                                 let mut s = state.write();
@@ -853,19 +853,19 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                             }
                         }
                         CallControl { icon: super::icons::PHONE_HANGUP,
-                            label: if call.phase == Phase::Ringing { "Cancel" } else { "End call" }, tone: "danger",
+                            label: if call.phase == Phase::Ringing { crate::i18n::text("Cancel", &[]) } else { crate::i18n::text("End call", &[]) }, tone: "danger",
                             on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
                     }
                 }
                 if call.phase != Phase::Incoming {
                     div { style: "padding: 12px 16px; border-top-width: 1px; border-top-style: solid; border-top-color: var(--border); background-color: var(--bg2);",
                         div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px;",
-                            label { r#for: "dm-microphone-volume", style: "color: var(--text-muted);", "Microphone volume" }
+                            label { r#for: "dm-microphone-volume", style: "color: var(--text-muted);", {crate::i18n::text("Microphone volume", &[])} }
                             span { style: "font-variant-numeric: tabular-nums; color: var(--text-dim);", "{mic_volume}%" }
                         }
                         input { id: "dm-microphone-volume", r#type: "range", min: "0", max: "200", step: "5", value: "{mic_volume}",
                             style: "width: 100%; min-width: 0; accent-color: var(--accent); cursor: pointer;",
-                            aria_label: "Microphone volume", aria_valuetext: "{mic_volume} percent",
+                            aria_label: crate::i18n::text("Microphone volume", &[]), aria_valuetext: "{mic_volume} percent",
                             oninput: move |event| {
                                 if let Ok(value) = event.value().parse::<u16>() {
                                     let volume = value.min(200);
@@ -876,18 +876,18 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                             onchange: move |_| crate::settings::save(&settings.peek()),
                         }
                         p { style: "margin: 6px 0 0; font-size: 10px; color: var(--text-dim);",
-                            "Changes how loud your contact hears you."
+                            {crate::i18n::text("Changes how loud your contact hears you.", &[])}
                         }
                     }
                     div { style: "padding: 12px 16px; border-top-width: 1px; border-top-style: solid; border-top-color: var(--border); background-color: var(--bg2);",
                         div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px;",
-                            label { r#for: "dm-call-volume", style: "color: var(--text-muted);", "Call volume" }
-                            span { style: "font-variant-numeric: tabular-nums; color: var(--text-dim);", if locally_muted || deafened { "Muted" } else { "{volume}%" } }
+                            label { r#for: "dm-call-volume", style: "color: var(--text-muted);", {crate::i18n::text("Call volume", &[])} }
+                            span { style: "font-variant-numeric: tabular-nums; color: var(--text-dim);", if locally_muted || deafened { {crate::i18n::text("Muted", &[])} } else { "{volume}%" } }
                         }
                         div { style: "display: flex; align-items: center; gap: 10px;",
                             button {
-                                class: "hover:brightness-125", title: if locally_muted { "Unmute contact" } else { "Mute contact" },
-                                aria_label: if locally_muted { "Unmute contact" } else { "Mute contact" }, aria_pressed: locally_muted.to_string(),
+                                class: "hover:brightness-125", title: if locally_muted { crate::i18n::text("Unmute contact", &[]) } else { crate::i18n::text("Mute contact", &[]) },
+                                aria_label: if locally_muted { crate::i18n::text("Unmute contact", &[]) } else { crate::i18n::text("Mute contact", &[]) }, aria_pressed: locally_muted.to_string(),
                                 style: "display: flex; padding: 5px; border-radius: 5px; color: var(--text-muted);",
                                 onclick: move |_| {
                                     let mut s = state.write();
@@ -897,7 +897,7 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                             }
                             input { id: "dm-call-volume", r#type: "range", min: "0", max: "200", step: "5", value: "{volume}",
                                 style: "width: 100%; min-width: 0; accent-color: var(--accent); cursor: pointer;", disabled: deafened,
-                                aria_label: "Call volume", aria_valuetext: "{volume} percent",
+                                aria_label: crate::i18n::text("Call volume", &[]), aria_valuetext: "{volume} percent",
                                 oninput: move |event| {
                                     if let Ok(value) = event.value().parse::<u32>() {
                                         let mut s = state.write();
@@ -944,7 +944,7 @@ fn CallControl(
         button {
             class: "transition-colors hover:brightness-125",
             style: "display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 7px; min-height: 58px; padding: 9px 5px; border-width: 1px; border-style: solid; border-color: {border}; border-radius: 9px; background-color: {background}; color: {color}; font-size: 11px; font-weight: 550; opacity: {opacity};",
-            disabled, title: if disabled { "Undeafen before enabling your microphone" } else { label.as_str() },
+            disabled, title: if disabled { crate::i18n::text("Undeafen before enabling your microphone", &[]) } else { crate::i18n::message(&label) },
             aria_label: label.clone(), aria_pressed: if toggle { Some(active.to_string()) } else { None },
             onclick: move |_| on_press.call(()),
             span { style: "display: flex;", aria_hidden: "true", dangerous_inner_html: icon }

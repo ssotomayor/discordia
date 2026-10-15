@@ -31,15 +31,20 @@ function harness() {
   return {
     window, document, timers,
     mount(start = 1_000) {
+      let suffix = 'elapsed';
       const clock = {
         nodeType: 1,
         firstChild: { nodeType: 3, nodeValue: '' },
         get textContent() { return this.firstChild.nodeValue; },
         set textContent(value) { this.firstChild = { nodeType: 3, nodeValue: value }; },
-        getAttribute: () => String(start), matches: () => true,
+        getAttribute: name => name === 'data-activity-suffix' ? suffix : String(start), matches: () => true,
       };
       clock.setStart = value => {
         start = value;
+        observer([{ type: 'attributes' }]);
+      };
+      clock.setSuffix = value => {
+        suffix = value;
         observer([{ type: 'attributes' }]);
       };
       clocks = [clock];
@@ -69,6 +74,17 @@ test('mounting a clock starts one timer and updates only its text', () => {
   h.advance(1_000);
   assert.equal(clock.textContent, '01:05 elapsed');
   h.runAgain();
+  assert.equal(h.timers.size, 1);
+});
+
+test('changing language updates the elapsed label without creating a second timer', () => {
+  const h = harness();
+  const clock = h.mount();
+  clock.setSuffix('transcurridos');
+  assert.equal(clock.textContent, '01:04 transcurridos');
+  clock.setSuffix('decorridos');
+  h.advance(1_000);
+  assert.equal(clock.textContent, '01:05 decorridos');
   assert.equal(h.timers.size, 1);
 });
 

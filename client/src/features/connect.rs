@@ -52,7 +52,7 @@ pub(crate) fn ConnectionErrorPanel(message: String) -> Element {
             p { style: "overflow-wrap: anywhere; user-select: text;", "{explanation}" }
             if !details.is_empty() {
                 details { class: "mt-2 text-[var(--text-muted)]",
-                    summary { "Diagnostic details" }
+                    summary { {crate::i18n::text("Diagnostic details", &[])} }
                     div { style: "white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; max-height: 20rem; overflow-y: auto;", "{details}" }
                 }
             }
@@ -63,10 +63,10 @@ pub(crate) fn ConnectionErrorPanel(message: String) -> Element {
                     let ok = crate::clipboard::copy_text(&to_copy);
                     copy_result.set(Some((to_copy.clone(), ok)));
                 },
-                if result == Some(true) { "Copied" } else { "Copy diagnostics" }
+                if result == Some(true) { {crate::i18n::text("Copied", &[])} } else { {crate::i18n::text("Copy diagnostics", &[])} }
             }
             if result == Some(false) {
-                p { class: "mt-2 text-xs", "Couldn't copy. Select the text above and copy it manually." }
+                p { class: "mt-2 text-xs", {crate::i18n::text("Couldn't copy. Select the text above and copy it manually.", &[])} }
             }
         }
     }
@@ -230,7 +230,7 @@ pub fn ConnectForm(
                                         // Without this the label's min-content
                                         // width holds the row open and the
                                         // Reconnect pill lands on the name.
-                                        div { class: "{LABEL} truncate", "Last session" }
+                                        div { class: "{LABEL} truncate", {crate::i18n::text("Last session", &[])} }
                                         div { class: "mt-0.5 text-[15px] font-semibold text-[var(--text)] truncate",
                                             "{session::label(&saved)}"
                                         }
@@ -239,7 +239,7 @@ pub fn ConnectForm(
                                 span {
                                     class: "shrink-0 px-4 py-2.5 rounded-[9px] border text-[13px] font-semibold text-[var(--accent-strong)] group-hover:text-[var(--text)] transition-colors",
                                     style: "background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 35%, transparent);",
-                                    "Reconnect →"
+                                    {crate::i18n::text("Reconnect →", &[])}
                                 }
                             }
                         }
@@ -252,13 +252,13 @@ pub fn ConnectForm(
                 div { class: "space-y-2",
                     RendezvousList {}
                     div { class: "text-xs text-[var(--text-dim)] leading-relaxed text-pretty",
-                        "The public list gathers every one of these, and a code is looked up in all of them. A server of your own is published on one."
+                        {crate::i18n::text("The public list gathers every one of these, and a code is looked up in all of them. A server of your own is published on one.", &[])}
                     }
                 }
 
                 div { class: "flex gap-1 p-1 rounded-[11px] bg-[var(--panel2)] border border-[var(--edge)]",
-                    TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
-                    TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
+                    TabButton { active: mode() == Mode::Join, label: crate::i18n::text("Join a server", &[]), onclick: move |_| mode.set(Mode::Join) }
+                    TabButton { active: mode() == Mode::Create, label: crate::i18n::text("Create a server", &[]), onclick: move |_| mode.set(Mode::Create) }
                 }
 
                 if let Some(err) = lookup_error().or(error) {
@@ -271,11 +271,11 @@ pub fn ConnectForm(
                     Mode::Join => rsx! {
                         div { class: "space-y-4",
                             div { class: "space-y-2",
-                                label { class: LABEL, "Code" }
+                                label { class: LABEL, {crate::i18n::text("Code", &[])} }
                                 input {
                                     class: INPUT,
                                     r#type: "text",
-                                    placeholder: "purple-fox-42 or a server name",
+                                    placeholder: crate::i18n::text("purple-fox-42 or a server name", &[]),
                                     value: "{code}",
                                     oninput: move |e| code.set(e.value()),
                                 }
@@ -300,19 +300,19 @@ pub fn ConnectForm(
                             // closed one silently dictates connections.
                             details { class: "dxf-fold",
                                 summary { class: "inline-flex items-center cursor-pointer text-xs uppercase tracking-[0.06em] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
-                                    "Other ways to connect"
+                                    {crate::i18n::text("Other ways to connect", &[])}
                                 }
                                 div { class: "space-y-2 mt-2.5 px-4 py-3.5 rounded-[11px] bg-[var(--panel)] border border-[var(--edge)]",
-                                    label { class: LABEL, "Server address" }
+                                    label { class: LABEL, {crate::i18n::text("Server address", &[])} }
                                     input {
                                         class: INPUT_SM,
                                         r#type: "text",
-                                        placeholder: "quic://… from the host, or wss://…",
+                                        placeholder: crate::i18n::text("quic://… from the host, or wss://…", &[]),
                                         value: "{server_url}",
                                         oninput: move |e| server_url.set(e.value()),
                                     }
                                     div { class: "text-xs text-[var(--text-dim)] leading-relaxed text-pretty",
-                                        "Connects straight to a gateway, ignoring the code and the directory. A quic:// address is what a host copies from their banner; wss:// is a server behind a TLS proxy. Plain ws:// works only on this machine."
+                                        {crate::i18n::text("Connects straight to a gateway, ignoring the code and the directory. A quic:// address is what a host copies from their banner; wss:// is a server behind a TLS proxy. Plain ws:// works only on this machine.", &[])}
                                     }
                                 }
                             }
@@ -321,7 +321,7 @@ pub fn ConnectForm(
                     Mode::Create => rsx! {
                         div { class: "rounded-[11px] bg-[var(--panel)] border border-[var(--edge)] px-4 py-3.5 text-[12.5px] space-y-3.5",
                             p { class: "text-[var(--text-muted)]",
-                                "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous it is published on supplies its own."
+                                {crate::i18n::text("Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous it is published on supplies its own.", &[])}
                             }
                             label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                 input {
@@ -329,7 +329,7 @@ pub fn ConnectForm(
                                     checked: publish_to_rendezvous(),
                                     oninput: move |e| publish_to_rendezvous.set(e.value() == "true"),
                                 }
-                                "Give it a join code friends can use"
+                                {crate::i18n::text("Give it a join code friends can use", &[])}
                             }
                             div { class: "flex items-center gap-1.5",
                                 label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
@@ -338,38 +338,38 @@ pub fn ConnectForm(
                                         checked: allow_lan(),
                                         oninput: move |e| allow_lan.set(e.value() == "true"),
                                     }
-                                    "Accept direct connections"
+                                    {crate::i18n::text("Accept direct connections", &[])}
                                 }
                                 span {
                                     class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
-                                    title: "Offers IPv4 and IPv6 addresses and asks your router (UPnP / NAT-PMP / PCP) to let friends in. Your home IP becomes visible to anyone who joins directly.",
+                                    title: crate::i18n::text("Offers IPv4 and IPv6 addresses and asks your router (UPnP / NAT-PMP / PCP) to let friends in. Your home IP becomes visible to anyone who joins directly.", &[]),
                                     "?"
                                 }
                             }
                             if allow_lan() {
                                 details { class: "space-y-2 text-[12px] text-[var(--text-dim)]",
-                                    summary { class: "cursor-pointer", "I already forwarded the ports" }
-                                    label { class: LABEL, "Public IPv4 address (optional)" }
+                                    summary { class: "cursor-pointer", {crate::i18n::text("I already forwarded the ports", &[])} }
+                                    label { class: LABEL, {crate::i18n::text("Public IPv4 address (optional)", &[])} }
                                     input {
                                         class: INPUT_SM,
-                                        placeholder: "Your router's public IPv4 address",
+                                        placeholder: crate::i18n::text("Your router's public IPv4 address", &[]),
                                         value: "{manual_ip}",
                                         oninput: move |e| manual_ip.set(e.value()),
                                     }
                                     if bad_ip {
                                         div { class: "text-[var(--warn)]",
-                                            "Enter a public IPv4 address, or leave this empty to try automatic detection."
+                                            {crate::i18n::text("Enter a public IPv4 address, or leave this empty to try automatic detection.", &[])}
                                         }
                                     }
                                     div { class: "text-[11px] leading-relaxed",
-                                        "Forward UDP 9001 for joining, TCP {media_ws} for voice connections, TCP {media_tcp} and UDP {media_udp} for media to this PC. IPv6 is tried automatically."
+                                        {crate::i18n::text("Forward UDP 9001 for joining, TCP {0} for voice connections, TCP {1} and UDP {2} for media to this PC. IPv6 is tried automatically.", &[(media_ws).to_string(), (media_tcp).to_string(), (media_udp).to_string()])}
                                     }
                                 }
                             }
                             if publish_to_rendezvous() {
                                 div { class: "pl-3 border-l border-[var(--border)] space-y-2",
                                     div { class: "space-y-1",
-                                        label { class: LABEL, "Publish on" }
+                                        label { class: LABEL, {crate::i18n::text("Publish on", &[])} }
                                         div { class: "relative",
                                             select {
                                                 // The native arrow is the one part of a select that no
@@ -398,28 +398,28 @@ pub fn ConnectForm(
                                         }
                                     }
                                     div { class: "space-y-1",
-                                        label { class: LABEL, "Server name" }
+                                        label { class: LABEL, {crate::i18n::text("Server name", &[])} }
                                         input {
                                             class: INPUT_SM,
                                             r#type: "text",
-                                            placeholder: "Friday Game Night",
+                                            placeholder: crate::i18n::text("Friday Game Night", &[]),
                                             maxlength: crate::protocol::rendezvous::MAX_NAME_CHARS as i64,
                                             value: "{publish_name}",
                                             oninput: move |e| publish_name.set(e.value()),
                                         }
                                         if bad_name {
                                             div { class: "text-[10px] text-[var(--warn)]",
-                                                "The join code is made from the letters a–z and digits in the name, and this one has none."
+                                                {crate::i18n::text("The join code is made from the letters a–z and digits in the name, and this one has none.", &[])}
                                             }
                                         } else if let Some(c) = publish_code.clone() {
                                             div { class: "text-[10px] text-[var(--text-dim)]",
-                                                "Friends join with the code "
+                                                {crate::i18n::text("Friends join with the code ", &[])}
                                                 span { class: "font-mono text-[var(--text-muted)]", "{c}" }
-                                                ", reserved to your key."
+                                                {crate::i18n::text(", reserved to your key.", &[])}
                                             }
                                         } else {
                                             div { class: "text-[10px] text-[var(--text-dim)]",
-                                                "Shown in the server list and reserved to your key. Leave it empty for a random code."
+                                                {crate::i18n::text("Shown in the server list and reserved to your key. Leave it empty for a random code.", &[])}
                                             }
                                         }
                                     }
@@ -429,11 +429,11 @@ pub fn ConnectForm(
                                         on_pick: move |code: String| publish_name.set(code),
                                     }
                                     div { class: "space-y-1",
-                                        label { class: LABEL, "Description (optional)" }
+                                        label { class: LABEL, {crate::i18n::text("Description (optional)", &[])} }
                                         input {
                                             class: INPUT_SM,
                                             r#type: "text",
-                                            placeholder: "Friends-only chat",
+                                            placeholder: crate::i18n::text("Friends-only chat", &[]),
                                             value: "{description}",
                                             oninput: move |e| description.set(e.value()),
                                         }
@@ -444,11 +444,11 @@ pub fn ConnectForm(
                                             checked: publish_public(),
                                             oninput: move |e| publish_public.set(e.value() == "true"),
                                         }
-                                        "List it publicly, so strangers can find it by name"
+                                        {crate::i18n::text("List it publicly, so strangers can find it by name", &[])}
                                     }
                                     if publish_public() {
                                         div { class: "space-y-1",
-                                            label { class: LABEL, "Put it on the globe (optional)" }
+                                            label { class: LABEL, {crate::i18n::text("Put it on the globe (optional)", &[])} }
                                             div { class: "rounded-[10px] bg-[var(--panel2)] border border-[var(--edge-strong)] overflow-hidden",
                                                 Globe {
                                                     pins: Vec::<GlobePin>::new(),
@@ -465,20 +465,20 @@ pub fn ConnectForm(
                                                     Some(p) => rsx! {
                                                         span { class: "flex-1",
                                                             if Some(p) == guessed {
-                                                                "Guessed from this machine's timezone: {describe(p)}. Click the globe to move it. Everyone browsing sees this spot."
+                                                                {crate::i18n::text("Guessed from this machine's timezone: {0}. Click the globe to move it. Everyone browsing sees this spot.", &[(describe (p)).to_string()])}
                                                             } else {
-                                                                "Pinned at {describe(p)}. Everyone browsing sees this spot."
+                                                                {crate::i18n::text("Pinned at {0}. Everyone browsing sees this spot.", &[(describe (p)).to_string()])}
                                                             }
                                                         }
                                                         button {
                                                             r#type: "button",
                                                             class: "shrink-0 text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                                                             onclick: move |_| location.set(None),
-                                                            "Remove"
+                                                            {crate::i18n::text("Remove", &[])}
                                                         }
                                                     },
                                                     None => rsx! {
-                                                        span { class: "flex-1", "Click roughly where it lives. Kept to about a town, and shown to anyone browsing." }
+                                                        span { class: "flex-1", {crate::i18n::text("Click roughly where it lives. Kept to about a town, and shown to anyone browsing.", &[])} }
                                                     },
                                                 }
                                             }
@@ -498,13 +498,13 @@ pub fn ConnectForm(
                         r#type: "submit",
                         disabled,
                         {match mode() {
-                            Mode::Join if looking_up() => "Looking up the code\u{2026}",
-                            Mode::Join => "Connect  →",
-                            Mode::Create => "Launch  →",
+                            Mode::Join if looking_up() => crate::i18n::text("Looking up the code…", &[]),
+                            Mode::Join => crate::i18n::text("Connect →", &[]),
+                            Mode::Create => crate::i18n::text("Launch →", &[]),
                         }}
                     }
                     if disabled && !looking_up() && mode() == Mode::Join {
-                        div { class: "mt-2 text-center text-xs text-[var(--text-dim)]", "{hint}" }
+                        div { class: "mt-2 text-center text-xs text-[var(--text-dim)]", {crate::i18n::message(&hint)} }
                     }
                 }
                     }
@@ -558,12 +558,12 @@ fn RendezvousList() -> Element {
     rsx! {
         div { class: "space-y-2",
             div { class: "flex items-baseline gap-2",
-                span { class: "{LABEL} flex-1", "Rendezvous servers" }
+                span { class: "{LABEL} flex-1", {crate::i18n::text("Rendezvous servers", &[])} }
                 button {
                     r#type: "button",
                     class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                     onclick: move |_| adding.set(!adding()),
-                    if adding() { "Cancel" } else { "+ Add" }
+                    if adding() { {crate::i18n::text("Cancel", &[])} } else { {crate::i18n::text("+ Add", &[])} }
                 }
             }
             div { class: "space-y-1.5",
@@ -577,7 +577,7 @@ fn RendezvousList() -> Element {
                             button {
                                 r#type: "button",
                                 class: "w-7 h-7 shrink-0 rounded-md flex items-center justify-center text-xs text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                title: "Forget this rendezvous",
+                                title: crate::i18n::text("Forget this rendezvous", &[]),
                                 onclick: move |_| {
                                     let mut next = settings.read().clone();
                                     next.remove_rendezvous(&forget);
@@ -593,11 +593,11 @@ fn RendezvousList() -> Element {
                 div { class: "space-y-2 px-4 py-3.5 rounded-[11px] bg-[var(--panel)] border border-[var(--edge)]",
                     div { class: "flex gap-1.5",
                         div { class: "flex-1 min-w-0 space-y-1",
-                            label { class: LABEL, "Address" }
+                            label { class: LABEL, {crate::i18n::text("Address", &[])} }
                             input {
                                 class: "{INPUT_SM} font-mono",
                                 r#type: "text",
-                                placeholder: "rendezvous.example.com",
+                                placeholder: crate::i18n::text("rendezvous.example.com", &[]),
                                 value: "{host}",
                                 autofocus: true,
                                 oninput: move |e| host.set(e.value()),
@@ -620,7 +620,7 @@ fn RendezvousList() -> Element {
                             }
                         }
                         div { class: "shrink-0 space-y-1", style: "width: 5.5rem;",
-                            label { class: LABEL, "Port" }
+                            label { class: LABEL, {crate::i18n::text("Port", &[])} }
                             input {
                                 class: "{INPUT_SM} font-mono",
                                 r#type: "text",
@@ -641,7 +641,7 @@ fn RendezvousList() -> Element {
                     div { class: "flex items-center gap-2",
                         label {
                             class: "flex-1 flex items-center gap-2 cursor-pointer text-[12px] text-[var(--text)]",
-                            title: "Only for a rendezvous behind a TLS proxy. Most are not, so leave this off unless its owner says otherwise.",
+                            title: crate::i18n::text("Only for a rendezvous behind a TLS proxy. Most are not, so leave this off unless its owner says otherwise.", &[]),
                             input {
                                 r#type: "checkbox",
                                 checked: secure(),
@@ -654,22 +654,22 @@ fn RendezvousList() -> Element {
                                     secure.set(on);
                                 },
                             }
-                            "Secure connection (wss://)"
+                            {crate::i18n::text("Secure connection (wss://)", &[])}
                         }
                         button {
                             r#type: "button",
                             class: "px-3 py-1.5 rounded-[10px] text-[12.5px] font-medium text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
                             disabled: addable.is_none(),
                             onclick: move |_| commit(),
-                            "Add"
+                            {crate::i18n::text("Add", &[])}
                         }
                     }
                     div { class: "text-[11px] text-[var(--text-dim)] font-mono truncate",
                         match (candidate, known) {
-                            (Some(url), true) => rsx! { "{url} is already in the list" },
-                            (Some(url), false) => rsx! { "Adds {url}" },
-                            (None, _) if host().trim().is_empty() => rsx! { "Just the name or IP is enough; the port is filled in." },
-                            (None, _) => rsx! { "That isn't an address" },
+                            (Some(url), true) => rsx! { {crate::i18n::text("{0} is already in the list", std::slice::from_ref(&(url)))} },
+                            (Some(url), false) => rsx! { {crate::i18n::text("Adds {0}", std::slice::from_ref(&(url)))} },
+                            (None, _) if host().trim().is_empty() => rsx! { {crate::i18n::text("Just the name or IP is enough; the port is filled in.", &[])} },
+                            (None, _) => rsx! { {crate::i18n::text("That isn't an address", &[])} },
                         }
                     }
                 }
@@ -692,7 +692,7 @@ fn compose_rendezvous(host: &str, secure: bool, port: &str) -> Option<String> {
 }
 
 #[component]
-fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> Element {
+fn TabButton(active: bool, #[props(into)] label: String, onclick: EventHandler<()>) -> Element {
     let cls = if active {
         "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
     } else {
@@ -746,7 +746,7 @@ pub(crate) fn BlobServerField() -> Element {
         details { class: "text-[10px] text-[var(--text-dim)]",
             summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors", "{summary}" }
             div { class: "mt-1 text-[var(--text-muted)]",
-                "Your saved emoji's pictures upload here so a DM can link them. Off: only small pictures fit inside the message; large ones go as text."
+                {crate::i18n::text("Your saved emoji's pictures upload here so a DM can link them. Off: only small pictures fit inside the message; large ones go as text.", &[])}
             }
             div { class: "flex items-center gap-1 mt-1.5",
                 div { class: "flex-1 min-w-0 relative",
@@ -773,7 +773,7 @@ pub(crate) fn BlobServerField() -> Element {
                             value: BLOB_OFF,
                             selected: current.is_none(),
                             style: "color: var(--text); background: var(--panel-solid);",
-                            "Off — inside the message"
+                            {crate::i18n::text("Off — inside the message", &[])}
                         }
                     }
                     span {
@@ -786,27 +786,27 @@ pub(crate) fn BlobServerField() -> Element {
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] border border-[var(--border)] rounded px-2 py-1 hover:text-[var(--danger)] transition-colors",
-                        title: "Remove this server from the list",
+                        title: crate::i18n::text("Remove this server from the list", &[]),
                         onclick: move |_| {
                             let mut next = settings.read().clone();
                             next.remove_blob_server(&url);
                             store(next);
                         },
-                        "Remove"
+                        {crate::i18n::text("Remove", &[])}
                     }
                 }
                 button {
                     r#type: "button",
                     class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 py-1 hover:border-[var(--accent)] transition-colors",
                     onclick: move |_| { adding.toggle(); note.set(None); },
-                    if adding() { "Cancel" } else { "+ Add" }
+                    if adding() { {crate::i18n::text("Cancel", &[])} } else { {crate::i18n::text("+ Add", &[])} }
                 }
             }
             if adding() {
                 div { class: "flex gap-1 mt-1",
                     input {
                         class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-[11px] text-[var(--text)] font-mono focus:outline-none focus:border-[var(--accent)]",
-                        placeholder: "https://blossom.example",
+                        placeholder: crate::i18n::text("https://blossom.example", &[]),
                         value: "{draft}",
                         autofocus: true,
                         oninput: move |e| draft.set(e.value()),
@@ -822,7 +822,7 @@ pub(crate) fn BlobServerField() -> Element {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 hover:border-[var(--accent)] transition-colors",
                         onclick: move |_| add(),
-                        "Save"
+                        {crate::i18n::text("Save", &[])}
                     }
                 }
             }
@@ -860,7 +860,7 @@ fn ReservedNames(
         Some(Ok(list)) => list.clone(),
         Some(Err(e)) => {
             return rsx! {
-                div { class: "text-[10px] text-[var(--text-dim)]", "Couldn't list your names here: {e}" }
+                div { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Couldn't list your names here: {0}", std::slice::from_ref(e))} }
             };
         }
         None => return rsx! {},
@@ -870,7 +870,7 @@ fn ReservedNames(
     }
     rsx! {
         div { class: "space-y-1",
-            label { class: LABEL, "Your names here" }
+            label { class: LABEL, {crate::i18n::text("Your names here", &[])} }
             for name in listed {
                 {
                     let pending = releasing.read().contains(&name.code);
@@ -890,16 +890,16 @@ fn ReservedNames(
                             button {
                                 r#type: "button",
                                 class: "font-mono text-[var(--text)] hover:text-[var(--accent)] truncate transition-colors",
-                                title: "Launch under this name again",
+                                title: crate::i18n::text("Launch under this name again", &[]),
                                 onclick: move |_| on_pick.call(code.clone()),
                                 "{name.code}"
                             }
-                            span { class: "flex-1 text-[var(--text-dim)] whitespace-nowrap", "{status}" }
+                            span { class: "flex-1 text-[var(--text-dim)] whitespace-nowrap", {crate::i18n::message(&(status).to_string())} }
                             if name.expires_in_secs.is_some() {
                                 button {
                                     r#type: "button",
                                     class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                    title: "Free this name now, for anyone to take",
+                                    title: crate::i18n::text("Free this name now, for anyone to take", &[]),
                                     disabled: pending,
                                     onclick: move |_| {
                                         let code = freed.clone();
@@ -917,7 +917,7 @@ fn ReservedNames(
                                             refresh += 1;
                                         });
                                     },
-                                    if pending { "Releasing…" } else { "Release" }
+                                    if pending { {crate::i18n::text("Releasing…", &[])} } else { {crate::i18n::text("Release", &[])} }
                                 }
                             }
                         }
@@ -1016,7 +1016,7 @@ pub fn IdentityCard(
                             }
                             editing.set(false);
                         },
-                        "save"
+                        {crate::i18n::text("save", &[])}
                     }
                 } else {
                     button {
@@ -1026,16 +1026,16 @@ pub fn IdentityCard(
                             draft.set(identity.display_name.clone());
                             editing.set(true);
                         },
-                        title: "Rename — your pubkey stays the same",
-                        "edit"
+                        title: crate::i18n::text("Rename — your pubkey stays the same", &[]),
+                        {crate::i18n::text("edit", &[])}
                     }
                 }
                 button {
                     r#type: "button",
                     class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider border border-[var(--edge)] rounded-md px-2.5 py-1 transition-colors",
                     onclick: move |_| on_sign_out.call(()),
-                    title: "Sign out. The key stays on this machine — the setup screen lists it again.",
-                    "sign out"
+                    title: crate::i18n::text("Sign out. The key stays on this machine — the setup screen lists it again.", &[]),
+                    {crate::i18n::text("sign out", &[])}
                 }
             }
             div { class: "flex gap-1",
@@ -1044,13 +1044,13 @@ pub fn IdentityCard(
                 }
             }
             div { class: "text-[11px] text-[var(--text-dim)]",
-                "This color signature is derived from your public key. Nobody else has it."
+                {crate::i18n::text("This color signature is derived from your public key. Nobody else has it.", &[])}
             }
             RecoveryPhrase { phrase }
             BlobServerField {}
             details { class: "text-[10px] text-[var(--text-dim)]",
                 summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
-                    "Identity file location"
+                    {crate::i18n::text("Identity file location", &[])}
                 }
                 code { class: "block mt-1 text-[var(--text-muted)] font-mono break-all select-all",
                     "{file_path}"
@@ -1079,7 +1079,7 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
     let Some(phrase) = phrase else {
         return rsx! {
             div { class: "text-[10px] text-[var(--text-dim)]",
-                "Imported from a private key, so there is no recovery phrase. Keep the key string itself."
+                {crate::i18n::text("Imported from a private key, so there is no recovery phrase. Keep the key string itself.", &[])}
             }
         };
     };
@@ -1099,7 +1099,7 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
         div { class: "space-y-1.5",
             div { class: "flex items-center gap-2",
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]",
-                    "Recovery phrase"
+                    {crate::i18n::text("Recovery phrase", &[])}
                 }
                 span { class: "flex-1" }
                 match reveal() {
@@ -1108,7 +1108,7 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
                             r#type: "button",
                             class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider",
                             onclick: move |_| reveal.set(Reveal::Confirming),
-                            "Reveal"
+                            {crate::i18n::text("Reveal", &[])}
                         }
                     },
                     Reveal::Confirming => rsx! {
@@ -1116,7 +1116,7 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
                             r#type: "button",
                             class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--text)] uppercase tracking-wider",
                             onclick: move |_| reveal.set(Reveal::Hidden),
-                            "Cancel"
+                            {crate::i18n::text("Cancel", &[])}
                         }
                     },
                     Reveal::Shown => rsx! {
@@ -1127,7 +1127,7 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
                                 generation.set(generation() + 1);
                                 reveal.set(Reveal::Hidden);
                             },
-                            "Hide"
+                            {crate::i18n::text("Hide", &[])}
                         }
                     },
                 }
@@ -1135,18 +1135,18 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
             match reveal() {
                 Reveal::Hidden => rsx! {
                     div { class: "text-[10px] text-[var(--text-dim)]",
-                        "Twelve words that restore this identity on any device."
+                        {crate::i18n::text("Twelve words that restore this identity on any device.", &[])}
                     }
                 },
                 Reveal::Confirming => rsx! {
                     p { class: "text-[10px] text-[var(--warn)]",
-                        "Anyone who sees these words owns this identity, and any wallet that shares the phrase. Make sure nobody is looking or recording."
+                        {crate::i18n::text("Anyone who sees these words owns this identity, and any wallet that shares the phrase. Make sure nobody is looking or recording.", &[])}
                     }
                     button {
                         r#type: "button",
                         class: "w-full text-[10px] text-[var(--warn)] hover:text-[var(--text)] uppercase tracking-wider border border-[var(--warn)] rounded-md px-2.5 py-1 transition-colors",
                         onclick: move |_| show(),
-                        "Show the phrase"
+                        {crate::i18n::text("Show the phrase", &[])}
                     }
                 },
                 Reveal::Shown => rsx! {
@@ -1155,7 +1155,7 @@ fn RecoveryPhrase(phrase: Option<String>) -> Element {
                         "{phrase}"
                     }
                     div { class: "text-[10px] text-[var(--text-dim)]",
-                        "Hides by itself after a minute."
+                        {crate::i18n::text("Hides by itself after a minute.", &[])}
                     }
                 },
             }
@@ -1288,23 +1288,23 @@ fn BrowseTab(
 
     let status = match &*answers.read_unchecked() {
         None => Some(rsx! {
-            div { class: "text-[12.5px] text-[var(--text-dim)] px-6 py-5 text-center border border-[var(--edge-strong)] rounded-xl", "Loading\u{2026}" }
+            div { class: "text-[12.5px] text-[var(--text-dim)] px-6 py-5 text-center border border-[var(--edge-strong)] rounded-xl", {crate::i18n::text("Loading…", &[])} }
         }),
         Some((l, f)) if l.is_empty() && !f.is_empty() && f.len() == rendezvous().len() => {
             Some(rsx! {
                 div { class: "text-[12.5px] px-6 py-5 space-y-1.5 border border-[var(--edge-strong)] rounded-xl",
-                    div { class: "font-semibold text-[var(--danger)]", "Couldn't reach any server directory." }
+                    div { class: "font-semibold text-[var(--danger)]", {crate::i18n::text("Couldn't reach any server directory.", &[])} }
                     div { class: "text-[var(--text-dim)] leading-relaxed text-pretty",
-                        "A code from a friend still works, or create your own server."
+                        {crate::i18n::text("A code from a friend still works, or create your own server.", &[])}
                     }
                 }
             })
         }
         Some((l, _)) if l.is_empty() => Some(rsx! {
             div { class: "px-6 py-5 text-center bg-[var(--panel)] border border-dashed border-[var(--edge-strong)] rounded-xl",
-                div { class: "text-sm font-semibold text-[var(--text-muted)]", "Nothing listed yet" }
+                div { class: "text-sm font-semibold text-[var(--text-muted)]", {crate::i18n::text("Nothing listed yet", &[])} }
                 div { class: "mt-1.5 mx-auto max-w-[380px] text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
-                    "A code from a friend works without one \u{2014} or make your own from the Create tab."
+                    {crate::i18n::text("A code from a friend works without one — or make your own from the Create tab.", &[])}
                 }
             }
         }),
@@ -1314,12 +1314,12 @@ fn BrowseTab(
     rsx! {
         div { class: "space-y-2",
             div { class: "flex items-center gap-2",
-                span { class: "{LABEL} flex-1", "Public servers" }
+                span { class: "{LABEL} flex-1", {crate::i18n::text("Public servers", &[])} }
                 button {
                     r#type: "button",
                     class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                     onclick: move |_| refresh_tick.set(refresh_tick() + 1),
-                    "\u{21bb} Refresh"
+                    {crate::i18n::text("↻ Refresh", &[])}
                 }
             }
             if let Some(st) = status {
@@ -1343,8 +1343,8 @@ fn BrowseTab(
                 div {
                     key: "{url}",
                     class: "text-[11px] text-[var(--text-dim)] truncate",
-                    title: "{e}",
-                    span { class: "text-[var(--danger)]", "Unreachable: " }
+                    title: crate::i18n::message(&(e).to_string()),
+                    span { class: "text-[var(--danger)]", {crate::i18n::text("Unreachable: ", &[])} }
                     span { class: "font-mono", "{rendezvous_label(&url)}" }
                 }
             }
@@ -1365,7 +1365,7 @@ fn BrowseTab(
                 }
             }
             div { class: "text-[11px] text-[var(--text-dim)] text-center",
-                "Drag to spin. Click a pin to pick that server."
+                {crate::i18n::text("Drag to spin. Click a pin to pick that server.", &[])}
             }
         }
     }
@@ -1438,17 +1438,17 @@ fn HostRow(
                         if named {
                             span {
                                 class: "shrink-0 text-[9px] text-[var(--text-dim)]",
-                                title: "A reserved name, proved with the host's key",
+                                title: crate::i18n::text("A reserved name, proved with the host's key", &[]),
                                 "\u{1f511}"
                             }
                         }
                     }
                     span {
                         class: "block truncate text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
-                        title: "Listed by {host.rendezvous}",
-                        if direct { "{fresh_label} \u{b7} direct" } else { "{fresh_label} \u{b7} relayed" }
+                        title: crate::i18n::text("Listed by {0}", &[(host . rendezvous).to_string()]),
+                        if direct { {crate::i18n::text("{0} · direct", std::slice::from_ref(&(fresh_label)))} } else { {crate::i18n::text("{0} · relayed", std::slice::from_ref(&(fresh_label)))} }
                         if let Some(w) = where_ { " \u{b7} {w}" }
-                        span { style: "text-transform: none; letter-spacing: normal;", " \u{b7} via {via}" }
+                        span { style: "text-transform: none; letter-spacing: normal;", {crate::i18n::text(" · via {0}", &[(via).to_string()])} }
                     }
                     if let Some(d) = entry.description.clone() {
                         span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{d}" }
@@ -1460,7 +1460,7 @@ fn HostRow(
                 class: "shrink-0 px-3 py-1 rounded-md border border-[var(--border)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
                 style: if fresh_ok { "" } else { "opacity: .6;" },
                 onclick: move |_| on_enter.call(for_enter.clone()),
-                "Enter"
+                {crate::i18n::text("Enter", &[])}
             }
         }
     }

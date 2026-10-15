@@ -14,6 +14,7 @@ use crate::state::{VoicePhase, use_app_state};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
+    General,
     Audio,
     Mic,
     Video,
@@ -24,6 +25,12 @@ pub enum SettingsTab {
 /// The empty group label means "same group as the row above" — the heading is
 /// drawn by the first tab that opens one.
 const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
+    (
+        "",
+        SettingsTab::General,
+        "Language",
+        crate::features::icons::PALETTE,
+    ),
     (
         "Voice",
         SettingsTab::Audio,
@@ -150,7 +157,7 @@ pub fn SettingsDialog() -> Element {
                 onclick: move |e: MouseEvent| e.stop_propagation(),
 
                 div { class: "h-8 px-2 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
-                    span { class: "text-[11px] font-medium text-[var(--text)] flex-1", "Settings" }
+                    span { class: "text-[11px] font-medium text-[var(--text)] flex-1", {crate::i18n::text("Settings", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-base leading-none",
                         onclick: move |_| state.write().audio_settings = false,
@@ -162,6 +169,8 @@ pub fn SettingsDialog() -> Element {
                         div { class: "w-48 shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
                             for (group, t, label, icon) in SETTINGS_TABS.iter().copied() {
                                 {
+                                    let group = crate::i18n::label(group);
+                                    let label = crate::i18n::label(label);
                                     let selected = settings_tab() == t;
                                     let cls = if selected {
                                         "relative w-full h-9 px-2.5 flex items-center gap-2 rounded-lg text-left text-[13px] font-medium bg-[var(--panel-solid)] text-[var(--text)]"
@@ -193,13 +202,17 @@ pub fn SettingsDialog() -> Element {
                             }
                         }
                         div { class: "flex-1 min-w-0 overflow-y-auto p-4",
+                        if settings_tab() == SettingsTab::General {
+                            h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
+                            div { class: "mt-4", crate::i18n::LanguageSelector {} }
+                        }
                         if settings_tab() == SettingsTab::Audio {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Audio" }
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Audio", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "Choose your output device and adjust app sounds and soundboard volume independently."
+                            {crate::i18n::text("Choose your output device and adjust app sounds and soundboard volume independently.", &[])}
                         }
                         div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
+                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Output", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
                                 style: "color: var(--text); background: var(--panel-solid);",
@@ -217,15 +230,15 @@ pub fn SettingsDialog() -> Element {
                                     let v = v_for_output_change.clone();
                                     v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
                                 },
-                                option { value: "", "System default" }
+                                option { value: "", {crate::i18n::text("System default", &[])} }
                                 for dev in available_output_devices.iter() {
                                     option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
                                 }
                             }
                         }
                         div { class: "mt-4 mb-3 rounded-lg border border-[var(--border)] p-3",
-                            span { class: "text-[12px] font-semibold text-[var(--text)]", "App sounds" }
-                            p { class: "mt-1 text-[11px] text-[var(--text-dim)]", "Messages, incoming and outgoing calls, and interface notifications." }
+                            span { class: "text-[12px] font-semibold text-[var(--text)]", {crate::i18n::text("App sounds", &[])} }
+                            p { class: "mt-1 text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Messages, incoming and outgoing calls, and interface notifications.", &[])} }
                             div { class: "flex items-center gap-2 mt-1",
                                 input {
                                     r#type: "range",
@@ -233,8 +246,8 @@ pub fn SettingsDialog() -> Element {
                                     max: "100",
                                     value: "{settings.read().sfx_volume}",
                                     class: "flex-1 accent-[var(--accent)]",
-                                    title: "App sounds volume",
-                                    aria_label: "App sounds volume",
+                                    title: crate::i18n::text("App sounds volume", &[]),
+                                    aria_label: crate::i18n::text("App sounds volume", &[]),
                                     oninput: move |e| {
                                         let val: u8 = e.value().parse().unwrap_or(70).min(100);
                                         let mut next = settings.read().clone();
@@ -252,24 +265,24 @@ pub fn SettingsDialog() -> Element {
                                     crate::native_sounds::configure(saved.sfx_volume, saved.selected_output_device.clone());
                                     crate::native_sounds::play("call-connected");
                                 },
-                                "Test app sound"
+                                {crate::i18n::text("Test app sound", &[])}
                             }
                         }
                         div { class: "mb-3 rounded-lg border border-[var(--border)] p-3",
-                            span { class: "text-[12px] font-semibold text-[var(--text)]", "Soundboard volume" }
+                            span { class: "text-[12px] font-semibold text-[var(--text)]", {crate::i18n::text("Soundboard volume", &[])} }
                             div { class: "mt-1", crate::features::soundboard::SoundboardVolume {} }
                             div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
-                                "Soundboard playback only. App notifications and call sounds use the separate control above. Muting someone also mutes their soundboard."
+                                {crate::i18n::text("Soundboard playback only. App notifications and call sounds use the separate control above. Muting someone also mutes their soundboard.", &[])}
                             }
                         }
                         }
                         if settings_tab() == SettingsTab::Mic {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Microphone" }
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Microphone", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "What others hear, when the gate opens, and what is processed before it leaves."
+                            {crate::i18n::text("What others hear, when the gate opens, and what is processed before it leaves.", &[])}
                         }
                         div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Input" }
+                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Input", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
                                 style: "color: var(--text); background: var(--panel-solid);",
@@ -287,7 +300,7 @@ pub fn SettingsDialog() -> Element {
                                     let v = v_for_input_change.clone();
                                     v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
                                 },
-                                option { value: "", "System default" }
+                                option { value: "", {crate::i18n::text("System default", &[])} }
                                 for dev in available_input_devices.iter() {
                                     option { selected: selected_input_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
                                 }
@@ -295,15 +308,15 @@ pub fn SettingsDialog() -> Element {
                         }
                         div { class: "mb-2",
                             div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Level" }
+                                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Level", &[])} }
                                 if microphone_unavailable {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", "microphone unavailable — retrying" }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("microphone unavailable — retrying", &[])} }
                                 } else if reconnecting {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", "reconnecting" }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("reconnecting", &[])} }
                                 } else if microphone_active {
                                     span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_display}" }
                                 } else {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", "join voice" }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("join voice", &[])} }
                                 }
                             }
                             if microphone_active && !reconnecting {
@@ -339,7 +352,7 @@ pub fn SettingsDialog() -> Element {
                         }
                         div { class: "mb-2",
                             div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Microphone Volume" }
+                                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Microphone Volume", &[])} }
                                 span { class: "text-[10px] text-[var(--text-dim)]", "{mic_volume}%" }
                             }
                             input {
@@ -361,13 +374,13 @@ pub fn SettingsDialog() -> Element {
                             }
                             if auto_gain_control {
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    "Volume adjusts the level after automatic gain. Peaks are limited to prevent clipping."
+                                    {crate::i18n::text("Volume adjusts the level after automatic gain. Peaks are limited to prevent clipping.", &[])}
                                 }
                             }
                         }
                         div { class: "mb-2",
                             div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", title: "Measured before automatic gain and microphone volume", "Sensitivity" }
+                                span { class: "text-[11px] text-[var(--text-muted)]", title: crate::i18n::text("Measured before automatic gain and microphone volume", &[]), {crate::i18n::text("Sensitivity", &[])} }
                                 span { class: "text-[10px] text-[var(--text-dim)]", "{sensitivity_display}" }
                             }
                             input {
@@ -390,11 +403,11 @@ pub fn SettingsDialog() -> Element {
                             }
                             if microphone_active && !reconnecting {
                                 if muted {
-                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Muted" }
+                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", {crate::i18n::text("Muted", &[])} }
                                 } else if gate_open {
-                                    span { class: "text-[10px] mt-0.5 block", style: "color: var(--up);", "Transmitting" }
+                                    span { class: "text-[10px] mt-0.5 block", style: "color: var(--up);", {crate::i18n::text("Transmitting", &[])} }
                                 } else {
-                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Below threshold — not transmitting" }
+                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", {crate::i18n::text("Below threshold — not transmitting", &[])} }
                                 }
                             }
                         }
@@ -415,14 +428,14 @@ pub fn SettingsDialog() -> Element {
                                             v_for_bypass.send(crate::features::voice::VoiceCmd::SetBypassSystemProcessing { enabled: on });
                                         },
                                     }
-                                    span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Bypass system audio processing" }
+                                    span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Bypass system audio processing", &[])} }
                                 }
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    "Skips the suppression and gain your audio driver applies before we hear anything, so only this app's processing touches your voice. Reopens the microphone."
+                                    {crate::i18n::text("Skips the suppression and gain your audio driver applies before we hear anything, so only this app's processing touches your voice. Reopens the microphone.", &[])}
                                 }
                                 if let Some(err) = bypass_error {
                                     span { class: "text-[10px] mt-0.5 block", style: "color: var(--danger);",
-                                        "Couldn't bypass it: {err}. The microphone is open the usual way."
+                                        {crate::i18n::text("Couldn't bypass it: {0}. The microphone is open the usual way.", std::slice::from_ref(&(err)))}
                                     }
                                 }
                             }
@@ -444,7 +457,7 @@ pub fn SettingsDialog() -> Element {
                                         v.send(crate::features::voice::VoiceCmd::SetAutoGainControl { enabled: on });
                                     },
                                 }
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Automatic gain control" }
+                                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Automatic gain control", &[])} }
                             }
                         }
                         div { class: "mb-2",
@@ -463,17 +476,17 @@ pub fn SettingsDialog() -> Element {
                                         v_for_denoise.send(crate::features::voice::VoiceCmd::SetNoiseCancellation { enabled: on });
                                     },
                                 }
-                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Noise cancellation" }
+                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Noise cancellation", &[])} }
                             }
                             span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                "Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU)."
+                                {crate::i18n::text("Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU).", &[])}
                             }
                         }
                         if noise_cancellation {
                             div { class: "mb-2",
                                 div { class: "flex items-center justify-between",
-                                    span { class: "text-[11px] text-[var(--text-muted)]", "Suppression strength" }
-                                    span { class: "text-[10px] text-[var(--text-dim)]", "{atten_lim_db} dB max" }
+                                    span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Suppression strength", &[])} }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("{0} dB max", &[(atten_lim_db).to_string()])} }
                                 }
                                 input {
                                     r#type: "range",
@@ -496,23 +509,23 @@ pub fn SettingsDialog() -> Element {
                                     onchange: persist_settings,
                                 }
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    "Lower keeps more of your voice, and more of the room with it."
+                                    {crate::i18n::text("Lower keeps more of your voice, and more of the room with it.", &[])}
                                 }
                             }
                         }
                         div { class: "h-px bg-[var(--border)] my-4" }
                         p { class: "mb-3 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
-                            "Transmission"
+                            {crate::i18n::text("Transmission", &[])}
                         }
                         if reconnecting {
                             div { class: "mb-3 flex items-center gap-2 px-2.5 py-2 rounded-lg border text-[12px] text-[var(--warn)]",
                                 style: "background: color-mix(in srgb, var(--warn) 8%, transparent); border-color: color-mix(in srgb, var(--warn) 35%, transparent);",
                                 span { class: "dx-spinner" }
-                                span { "Reconnecting audio…" }
+                                span { {crate::i18n::text("Reconnecting audio…", &[])} }
                             }
                         }
                         div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Voice quality" }
+                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Voice quality", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 value: "{voice_bitrate_kbps}",
@@ -527,26 +540,26 @@ pub fn SettingsDialog() -> Element {
                                     state.write().voice_bitrate_kbps = kbps;
                                     v_for_bitrate.send(crate::features::voice::VoiceCmd::SetVoiceBitrate { kbps });
                                 },
-                                option { value: "24", "Standard — 24 kbit/s" }
-                                option { value: "48", "High — 48 kbit/s" }
-                                option { value: "64", "Maximum — 64 kbit/s" }
+                                option { value: "24", {crate::i18n::text("Standard — 24 kbit/s", &[])} }
+                                option { value: "48", {crate::i18n::text("High — 48 kbit/s", &[])} }
+                                option { value: "64", {crate::i18n::text("Maximum — 64 kbit/s", &[])} }
                             }
                             span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                 if voice_phase == VoicePhase::Connected {
-                                    "Applies the next time you join a voice channel."
+                                    {crate::i18n::text("Applies the next time you join a voice channel.", &[])}
                                 } else {
-                                    "Higher sounds better on low voices and background music, and costs more upload."
+                                    {crate::i18n::text("Higher sounds better on low voices and background music, and costs more upload.", &[])}
                                 }
                             }
                         }
                         }
                         if settings_tab() == SettingsTab::Video {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Video and screen" }
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Video and screen", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "Your camera, and the shape of what you share."
+                            {crate::i18n::text("Your camera, and the shape of what you share.", &[])}
                         }
                         div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Camera" }
+                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Camera", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 style: "color: var(--text); background: var(--panel-solid);",
@@ -568,24 +581,24 @@ pub fn SettingsDialog() -> Element {
                                         crate::features::camera::toggle_camera(state, settings, &gw_camera, true);
                                     }
                                 },
-                                option { value: "", "System default" }
+                                option { value: "", {crate::i18n::text("System default", &[])} }
                                 for (i, cam) in available_cameras.iter().enumerate() {
                                     option {
                                         selected: selected_camera_id.as_ref().map(|id| id == &cam.id).unwrap_or(false),
                                         value: "{cam.id}",
-                                        if cam.label.is_empty() { "Camera {i + 1}" } else { "{cam.label}" }
+                                        if cam.label.is_empty() { {crate::i18n::text("Camera {0}", &[(i + 1).to_string()])} } else { "{cam.label}" }
                                     }
                                 }
                             }
                             if !available_cameras.is_empty() && available_cameras.iter().all(|c| c.label.is_empty()) {
                                 div {
                                     class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                    "Turn your camera on once to see device names."
+                                    {crate::i18n::text("Turn your camera on once to see device names.", &[])}
                                 }
                             }
                         }
                         div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Screen share" }
+                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Screen share", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 style: "color: var(--text); background: var(--panel-solid);",
@@ -600,7 +613,7 @@ pub fn SettingsDialog() -> Element {
                                     option {
                                         selected: screenshare_quality == *id,
                                         value: "{id}",
-                                        "{label}"
+                                        {crate::i18n::label(label)}
                                     }
                                 }
                             }
@@ -619,7 +632,7 @@ pub fn SettingsDialog() -> Element {
                                         crate::settings::save(&next);
                                     },
                                 }
-                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Share computer sound" }
+                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Share computer sound", &[])} }
                             }
                         }
                         }
@@ -634,16 +647,16 @@ pub fn SettingsDialog() -> Element {
                                         crate::settings::save(&next);
                                     },
                                 }
-                                span { class: "text-[12px] text-[var(--text)]", "Adaptive quality for viewers" }
+                                span { class: "text-[12px] text-[var(--text)]", {crate::i18n::text("Adaptive quality for viewers", &[])} }
                             }
                             p { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                "Send an additional quality for slower connections. Uses more upload bandwidth and encoding resources. Applies to the next screen share."
+                                {crate::i18n::text("Send an additional quality for slower connections. Uses more upload bandwidth and encoding resources. Applies to the next screen share.", &[])}
                             }
                         }
                         if settings_tab() == SettingsTab::Activity {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Level" }
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Level", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "Each server counts what you earned on it. Only this app can add those up across servers, so publishing the total is the only way anyone else sees one."
+                            {crate::i18n::text("Each server counts what you earned on it. Only this app can add those up across servers, so publishing the total is the only way anyone else sees one.", &[])}
                         }
                         div { class: "mb-4",
                             label { class: "flex items-center gap-2 cursor-pointer select-none",
@@ -658,15 +671,15 @@ pub fn SettingsDialog() -> Element {
                                         crate::settings::save(&next);
                                     },
                                 }
-                                span { class: "text-[13px] text-[var(--text)] flex-1", "Publish my overall level to Nostr" }
+                                span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Publish my overall level to Nostr", &[])} }
                             }
                             p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
-                                "A number and a count of servers — never which ones. Anyone reading it sees a claim your key signed, marked as self-reported, and it gates nothing anywhere."
+                                {crate::i18n::text("A number and a count of servers — never which ones. Anyone reading it sees a claim your key signed, marked as self-reported, and it gates nothing anywhere.", &[])}
                             }
                         }
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Game activity" }
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Game activity", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "Shows the people you share a guild with what you are playing. Enabled by default. Turn off sharing to stop publishing your game activity."
+                            {crate::i18n::text("Shows the people you share a guild with what you are playing. Enabled by default. Turn off sharing to stop publishing your game activity.", &[])}
                         }
                         div { class: "mb-3",
                             label { class: "flex items-center gap-2 cursor-pointer select-none",
@@ -681,10 +694,10 @@ pub fn SettingsDialog() -> Element {
                                         crate::settings::save(&next);
                                     },
                                 }
-                                span { class: "text-[13px] text-[var(--text)] flex-1", "Share what I am playing" }
+                                span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Share what I am playing", &[])} }
                             }
                             p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
-                                "The master switch. Turning it off clears what your guilds can see straight away."
+                                {crate::i18n::text("The master switch. Turning it off clears what your guilds can see straight away.", &[])}
                             }
                         }
                         if settings.read().share_activity {
@@ -701,13 +714,13 @@ pub fn SettingsDialog() -> Element {
                                             crate::settings::save(&next);
                                         },
                                     }
-                                    span { class: "text-[13px] text-[var(--text)] flex-1", "Detect running games" }
+                                    span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Detect running games", &[])} }
                                 }
                                 p { class: "mt-1 ml-5 mb-3 text-[11px] text-[var(--text-dim)]",
                                     if cfg!(windows) {
-                                        "Detects running games every 15 seconds using local Steam, Epic and Ubisoft installations and a built-in list. Only the detected game's name is shared."
+                                        {crate::i18n::text("Detects running games every 15 seconds using local Steam, Epic and Ubisoft installations and a built-in list. Only the detected game's name is shared.", &[])}
                                     } else {
-                                        "Detects running games every 15 seconds using local Steam installations and a built-in list. Only the detected game's name is shared."
+                                        {crate::i18n::text("Detects running games every 15 seconds using local Steam installations and a built-in list. Only the detected game's name is shared.", &[])}
                                     }
                                 }
                                 if settings.read().detect_games {
@@ -733,13 +746,13 @@ pub fn SettingsDialog() -> Element {
                                             crate::settings::save(&next);
                                         },
                                     }
-                                    span { class: "text-[13px] text-[var(--text)] flex-1", "Accept Discord Rich Presence" }
+                                    span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Accept Discord Rich Presence", &[])} }
                                 }
                                 p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
                                     if crate::presence::ipc::discord_compatible_supported() {
-                                        "Listens on the sockets a game already looks for. Whichever app starts first takes the socket. Restart the app after changing this."
+                                        {crate::i18n::text("Listens on the sockets a game already looks for. Whichever app starts first takes the socket. Restart the app after changing this.", &[])}
                                     } else {
-                                        "Unavailable on Windows: this integration can crash Call of Duty's Discord SDK. Running-game detection remains available."
+                                        {crate::i18n::text("Unavailable on Windows: this integration can crash Call of Duty's Discord SDK. Running-game detection remains available.", &[])}
                                     }
                                 }
                                 GameDetectionOverrides {}
@@ -747,9 +760,9 @@ pub fn SettingsDialog() -> Element {
                         }
                         }
                         if settings_tab() == SettingsTab::Diagnostics {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Diagnostics" }
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Diagnostics", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "The only thing here that configures nothing: it measures."
+                            {crate::i18n::text("The only thing here that configures nothing: it measures.", &[])}
                         }
                         div { class: "mb-1",
                             label { class: "flex items-center gap-2 cursor-pointer select-none",
@@ -759,7 +772,7 @@ pub fn SettingsDialog() -> Element {
                                     checked: show_stats(),
                                     onchange: move |e| show_stats.set(e.checked()),
                                 }
-                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Connection stats" }
+                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Connection stats", &[])} }
                             }
                             if show_stats() {
                                 crate::features::channels::ConnectionStats {}
@@ -782,19 +795,19 @@ fn GameDetectionOverrides() -> Element {
     let games = settings.read().detect_extra.clone();
     rsx! {
         div { class: "mt-4",
-            h4 { class: "text-[13px] text-[var(--text)]", "Additional games" }
+            h4 { class: "text-[13px] text-[var(--text)]", {crate::i18n::text("Additional games", &[])} }
             p { class: "mt-1 mb-2 text-[11px] text-[var(--text-dim)]",
-                "For games the automatic detector misses, add the executable name shown in Task Manager → Details and the name to display."
+                {crate::i18n::text("For games the automatic detector misses, add the executable name shown in Task Manager → Details and the name to display.", &[])}
             }
             div { class: "flex flex-wrap gap-2",
                 input {
                     class: "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs",
-                    placeholder: "Executable, e.g. game.exe", value: "{executable}", maxlength: 240,
+                    placeholder: crate::i18n::text("Executable, e.g. game.exe", &[]), value: "{executable}", maxlength: 240,
                     oninput: move |e| executable.set(e.value()),
                 }
                 input {
                     class: "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs",
-                    placeholder: "Game name", value: "{title}", maxlength: 80,
+                    placeholder: crate::i18n::text("Game name", &[]), value: "{title}", maxlength: 80,
                     oninput: move |e| title.set(e.value()),
                 }
                 button {
@@ -814,11 +827,11 @@ fn GameDetectionOverrides() -> Element {
                             Err(message) => error.set(Some(message.into())),
                         }
                     },
-                    "Add game"
+                    {crate::i18n::text("Add game", &[])}
                 }
             }
             if let Some(message) = error() {
-                p { class: "mt-1 text-xs text-[var(--danger)]", "{message}" }
+                p { class: "mt-1 text-xs text-[var(--danger)]", {crate::i18n::message(&(message).to_string())} }
             }
             for (exe, name) in games {
                 div { key: "{exe}", class: "mt-2 flex items-center gap-2 text-xs",
@@ -831,7 +844,7 @@ fn GameDetectionOverrides() -> Element {
                             crate::settings::save(&next);
                             settings.set(next);
                         },
-                        "Remove"
+                        {crate::i18n::text("Remove", &[])}
                     }
                 }
             }

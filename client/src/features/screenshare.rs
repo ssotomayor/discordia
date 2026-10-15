@@ -39,10 +39,10 @@ pub(crate) fn StreamQualityNotice(
     };
     rsx! {
         if !message.is_empty() {
-            span { class: "block text-[10px] text-[var(--accent)]", role: "status", "{message}" }
+            span { class: "block text-[10px] text-[var(--accent)]", role: "status", {crate::i18n::label(message)} }
         }
         if !health.is_empty() {
-            span { class: "block text-[10px] text-[var(--warn)]", role: "status", "{health}" }
+            span { class: "block text-[10px] text-[var(--warn)]", role: "status", {crate::i18n::label(health)} }
         }
     }
 }
@@ -2068,10 +2068,10 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                 style: "width: min(52rem, calc(100vw - 2rem));",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Share your screen" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Share your screen", &[])} }
                     button { class: "text-xs text-[var(--text-dim)] hover:text-[var(--text)] mr-2",
                         onclick: move |_| preview_revision += 1,
-                        "Refresh previews"
+                        {crate::i18n::text("Refresh previews", &[])}
                     }
                     button { class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                         onclick: close, "✕"
@@ -2079,14 +2079,14 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                 }
                 div { class: "flex-1 overflow-y-auto p-3 space-y-3",
                     if let Err(error) = &result {
-                        div { class: "text-xs text-[var(--danger)]", "{error}" }
+                        div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} }
                         if cfg!(target_os = "macos") {
                             p { class: "text-xs text-[var(--text-muted)]",
-                                "Allow Screen Recording in System Settings › Privacy & Security, then reopen Discordia."
+                                {crate::i18n::text("Allow Screen Recording in System Settings › Privacy & Security, then reopen Discordia.", &[])}
                             }
                         }
                     } else if sources.is_empty() {
-                        div { class: "text-xs text-[var(--text-muted)]", "No screens or windows available yet." }
+                        div { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("No screens or windows available yet.", &[])} }
                     }
                     for (heading, windows) in [("Screens & apps", false), ("Windows", true)] {
                         if sources.iter().any(|source| source.app.is_some() == windows) {
@@ -2115,7 +2115,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                 div { class: "px-4 py-3 border-b border-[var(--border)] space-y-3",
                     div { style: "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;",
                         div { class: "min-w-0 space-y-1",
-                            label { r#for: "share-quality", class: "text-xs text-[var(--text-muted)]", "Resolution" }
+                            label { r#for: "share-quality", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Resolution", &[])} }
                             select {
                                 id: "share-quality",
                                 class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
@@ -2127,23 +2127,23 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                     quality.set(selected);
                                 },
                                 for (id, label) in [("720", "720p"), ("balanced", "1080p"), ("ultra", "1440p"), ("4k", "4K")] {
-                                    option { value: "{id}", selected: native_settings(&quality()).width == native_settings(id).width, "{label}" }
+                                    option { value: "{id}", selected: native_settings(&quality()).width == native_settings(id).width, {crate::i18n::label(label)} }
                                 }
                             }
                         }
                         div { class: "min-w-0 space-y-1",
-                            label { r#for: "share-fps", class: "text-xs text-[var(--text-muted)]", "Frames per second" }
+                            label { r#for: "share-fps", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Frames per second", &[])} }
                             select {
                                 id: "share-fps",
                                 class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 onchange: move |e| { if let Ok(value @ (15 | 30 | 60)) = e.value().parse::<u32>() { fps.set(value); } },
                                 for value in [15, 30, 60] {
-                                    option { value: "{value}", selected: fps() == value, "{value} FPS" }
+                                    option { value: "{value}", selected: fps() == value, {crate::i18n::text("{0} FPS", &[(value).to_string()])} }
                                 }
                             }
                         }
                         div { class: "min-w-0 space-y-1",
-                            label { r#for: "share-codec", class: "text-xs text-[var(--text-muted)]", "Video codec" }
+                            label { r#for: "share-codec", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Video codec", &[])} }
                             select {
                                 id: "share-codec",
                                 class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
@@ -2153,17 +2153,17 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                     "h264" => crate::sysvideo::Codec::H264,
                                     _ => crate::sysvideo::Codec::Auto,
                                 }),
-                                option { value: "auto", selected: codec() == crate::sysvideo::Codec::Auto, "Automatic" }
+                                option { value: "auto", selected: codec() == crate::sysvideo::Codec::Auto, {crate::i18n::text("Automatic", &[])} }
                                 option { value: "h264", selected: codec() == crate::sysvideo::Codec::H264, disabled: !h264_supported,
-                                    if h264_supported { "H.264" } else { "H.264 — Not compatible" }
+                                    if h264_supported { {crate::i18n::text("H.264", &[])} } else { {crate::i18n::text("H.264 — Not compatible", &[])} }
                                 }
                                 option { value: "vp8", selected: codec() == crate::sysvideo::Codec::Vp8, disabled: !vp8_supported,
-                                    if vp8_supported { "VP8 — compatibility" } else { "VP8 — Not compatible" }
+                                    if vp8_supported { {crate::i18n::text("VP8 — compatibility", &[])} } else { {crate::i18n::text("VP8 — Not compatible", &[])} }
                                 }
                             }
                         }
                         div { class: "min-w-0 space-y-1",
-                            label { r#for: "share-encoder", class: "text-xs text-[var(--text-muted)]", "Video encoding" }
+                            label { r#for: "share-encoder", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Video encoding", &[])} }
                             select {
                                 id: "share-encoder",
                                 class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
@@ -2175,56 +2175,56 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                     };
                                     encoder.set(selected);
                                 },
-                                option { value: "auto", selected: encoder() == crate::sysvideo::Encoder::Auto, "Automatic — prefer {crate::sysvideo::hardware_encoder_label()}" }
+                                option { value: "auto", selected: encoder() == crate::sysvideo::Encoder::Auto, {crate::i18n::text("Automatic — prefer {0}", &[(crate :: sysvideo :: hardware_encoder_label ()).to_string()])} }
                                 option { value: "gpu", selected: encoder() == crate::sysvideo::Encoder::Gpu, disabled: !gpu_supported,
-                                    if !gpu_supported { "Hardware — Not compatible" }
-                                    else if cfg!(target_os = "macos") { "Hardware" } else { "GPU — hardware" }
+                                    if !gpu_supported { {crate::i18n::text("Hardware — Not compatible", &[])} }
+                                    else if cfg!(target_os = "macos") { {crate::i18n::text("Hardware", &[])} } else { {crate::i18n::text("GPU — hardware", &[])} }
                                 }
-                                option { value: "cpu", selected: encoder() == crate::sysvideo::Encoder::Cpu, "CPU — software" }
+                                option { value: "cpu", selected: encoder() == crate::sysvideo::Encoder::Cpu, {crate::i18n::text("CPU — software", &[])} }
                             }
                         }
                     }
                     p { class: "text-xs text-[var(--text-muted)]", role: "status", "{codec_status}" }
                     if quality() == "4k" && fps() == 60 {
                         p { class: "text-xs text-[var(--accent)]", role: "status",
-                            "4K at 60 FPS is demanding: it needs more processing power and stable, high-speed connections for you and your viewers. Video can use up to 50 Mbps. Choose 30 FPS if playback stutters."
+                            {crate::i18n::text("4K at 60 FPS is demanding: it needs more processing power and stable, high-speed connections for you and your viewers. Video can use up to 50 Mbps. Choose 30 FPS if playback stutters.", &[])}
                         }
                     }
                     if let Some(notice) = resolution_notice {
-                        p { class: "text-xs text-[var(--accent)]", role: "status", "{notice}" }
+                        p { class: "text-xs text-[var(--accent)]", role: "status", {crate::i18n::message(&(notice).to_string())} }
                     }
                     label { class: "flex items-center gap-2 cursor-pointer select-none",
                         input { r#type: "checkbox", checked: audio() && crate::sysaudio::supported_for(target()), disabled: !crate::sysaudio::supported_for(target()),
                             onchange: move |e| audio.set(e.checked()),
                         }
                         span { class: "text-xs text-[var(--text-muted)]",
-                            if crate::sysaudio::captures_application(target()) { "Share application audio" }
-                            else { "Share computer audio" }
+                            if crate::sysaudio::captures_application(target()) { {crate::i18n::text("Share application audio", &[])} }
+                            else { {crate::i18n::text("Share computer audio", &[])} }
                         }
                     }
                     if crate::sysaudio::supported() && !crate::sysaudio::supported_for(target()) {
                         p { class: "text-[10px] text-[var(--text-dim)]",
-                            "This window is shared without audio to prevent Discordia call echoes."
+                            {crate::i18n::text("This window is shared without audio to prevent Discordia call echoes.", &[])}
                         }
                     } else if audio() {
                         p { class: "text-[10px] text-[var(--text-dim)]",
                             if crate::sysaudio::captures_application(target()) {
-                                "Shares audio from the selected application. Other windows or tabs of that application may be included. Discordia audio is excluded."
+                                {crate::i18n::text("Shares audio from the selected application. Other windows or tabs of that application may be included. Discordia audio is excluded.", &[])}
                             } else {
-                                "Shares computer audio from other applications. Discordia audio is excluded."
+                                {crate::i18n::text("Shares computer audio from other applications. Discordia audio is excluded.", &[])}
                             }
                         }
                     }
                     p { class: "text-[10px] text-[var(--text-dim)]",
-                        "Higher resolution and FPS require more upload bandwidth."
+                        {crate::i18n::text("Higher resolution and FPS require more upload bandwidth.", &[])}
                     }
                 }
                 div { class: "px-4 py-3 flex items-center gap-2",
                     span { class: "text-xs text-[var(--text-muted)] flex-1 truncate",
-                        if let Some(source) = selected_source { "{source.title}" } else { "Select a screen or window" }
+                        if let Some(source) = selected_source { "{source.title}" } else { {crate::i18n::text("Select a screen or window", &[])} }
                     }
                     button { class: "px-3 py-2 rounded border border-[var(--border)] text-[var(--text-muted)] text-sm",
-                        onclick: close, "Cancel"
+                        onclick: close, {crate::i18n::text("Cancel", &[])}
                     }
                     button {
                         class: "px-3 py-2 rounded border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] text-sm disabled:opacity-40",
@@ -2242,7 +2242,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                 choose_source(state, gateway.clone(), settings, chosen);
                             }
                         },
-                        "Share"
+                        {crate::i18n::text("Share", &[])}
                     }
                 }
             }
@@ -2269,11 +2269,11 @@ fn ScreenSourceTile(
             div {
                 style: "aspect-ratio: 16 / 9; background-color: #000; display: flex; align-items: center; justify-content: center;",
                 match image {
-                    Some(Ok(data)) => rsx! { img { src: data, alt: "Preview of {source.title}",
+                    Some(Ok(data)) => rsx! { img { src: data, alt: crate::i18n::text("Preview of {0}", &[(source . title).to_string()]),
                         style: "width: 100%; height: 100%; object-fit: contain;",
                     } },
-                    Some(Err(_)) => rsx! { span { class: "text-xs text-[var(--text-dim)]", "Preview unavailable" } },
-                    None => rsx! { span { class: "text-xs text-[var(--text-dim)]", "Loading preview…" } },
+                    Some(Err(_)) => rsx! { span { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Preview unavailable", &[])} } },
+                    None => rsx! { span { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Loading preview…", &[])} } },
                 }
             }
             div { class: "px-2 py-1.5",
@@ -2336,7 +2336,7 @@ fn screen_encoder_label(implementation: Option<&str>) -> String {
         .map(str::trim)
         .filter(|name| !name.is_empty())
     else {
-        return "Encoder: unknown".into();
+        return crate::i18n::text("Encoder: unknown", &[]);
     };
     let normalized = name.to_ascii_lowercase();
     if normalized.contains("openh264") || normalized.contains("libvpx") {
@@ -2349,7 +2349,7 @@ fn screen_encoder_label(implementation: Option<&str>) -> String {
     {
         format!("{} · {name}", crate::sysvideo::hardware_encoder_label())
     } else {
-        format!("Encoder: {name}")
+        crate::i18n::text("Encoder: {0}", &[name.to_string()])
     }
 }
 
@@ -2552,7 +2552,7 @@ pub fn ScreenSelfPreview() -> Element {
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
                 },
                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "text-[11px] text-[var(--text)] truncate flex-1", "{requested_label}" }
+                span { class: "text-[11px] text-[var(--text)] truncate flex-1", {crate::i18n::message(&requested_label)} }
                 StreamViewers { names: state.read().self_user.as_ref().map(|user| state.read().screen_viewer_names(&user.pubkey)).unwrap_or_default() }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
@@ -2572,7 +2572,7 @@ pub fn ScreenSelfPreview() -> Element {
                             gateway.send(ClientMessage::SetScreenShare { channel_id: c, sharing: false });
                         }
                     },
-                    "Stop"
+                    {crate::i18n::text("Stop", &[])}
                 }
             }
             div {
@@ -2581,12 +2581,12 @@ pub fn ScreenSelfPreview() -> Element {
                     id: "screenshare-self",
                     style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
                     class: "text-[var(--text-dim)] text-[10px]",
-                    "Starting…"
+                    {crate::i18n::text("Starting…", &[])}
                 }
                 if !preview_active() {
                     div {
                         class: "absolute inset-0 flex items-center justify-center bg-black text-[var(--text-dim)] text-[10px]",
-                        "Preview paused while the app is in the background"
+                        {crate::i18n::text("Preview paused while the app is in the background", &[])}
                     }
                 }
                 if !health_reason().is_empty() {
@@ -2598,9 +2598,9 @@ pub fn ScreenSelfPreview() -> Element {
                     div {
                         class: "absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/70 text-[9px] pointer-events-none",
                         if frames() > 0 {
-                            span { class: "text-[var(--up)]", "{actual_label}" }
+                            span { class: "text-[var(--up)]", {crate::i18n::message(&actual_label)} }
                         } else {
-                            span { class: "text-[var(--warn)]", "{share_label} · waiting for first frame…" }
+                            span { class: "text-[var(--warn)]", {crate::i18n::text("{0} · waiting for first frame…", &[(share_label).to_string()])} }
                         }
                     }
                 }
@@ -2853,11 +2853,11 @@ pub fn ScreenWatchWindow() -> Element {
             min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
             div { class: "panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
                 div { class: "h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
-                    span { class: "text-sm font-semibold text-[var(--text)]", "Streams" }
-                    span { class: "text-xs text-[var(--text-muted)]", "{count} live" }
+                    span { class: "text-sm font-semibold text-[var(--text)]", {crate::i18n::text("Streams", &[])} }
+                    span { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("{0} live", &[(count).to_string()])} }
                     if count > 1 && selected.is_some() {
                         button { class: "ml-auto text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]",
-                            onclick: move |_| { focused.set(None); fullscreen.set(None); }, "Mosaic" }
+                            onclick: move |_| { focused.set(None); fullscreen.set(None); }, {crate::i18n::text("Mosaic", &[])} }
                     }
                 }
                 div { class: "flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
@@ -3001,14 +3001,14 @@ fn ScreenWatchTile(
             div {
                 class: "min-h-9 px-3 flex flex-wrap items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
+                span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", {crate::i18n::text("{0}'s screen", std::slice::from_ref(&(name)))} }
                 StreamViewers { names: state.read().screen_viewer_names(&pk) }
-                span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", "Live" }
+                span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", {crate::i18n::text("Live", &[])} }
                 button {
                     r#type: "button",
                     class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
-                    title: "Open in separate window",
-                    aria_label: "Open in separate window",
+                    title: crate::i18n::text("Open in separate window", &[]),
+                    aria_label: crate::i18n::text("Open in separate window", &[]),
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| { focused.set(None); fullscreen.set(None); on_popout.call(pk_popout.clone()); },
                     dangerous_inner_html: crate::features::icons::WINDOW_POP_OUT,
@@ -3016,8 +3016,8 @@ fn ScreenWatchTile(
                 button {
                     r#type: "button",
                     class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
-                    title: if is_fullscreen { "Exit full screen (Esc)" } else { "Full screen" },
-                    aria_label: if is_fullscreen { "Exit full screen" } else { "Full screen" },
+                    title: if is_fullscreen { crate::i18n::text("Exit full screen (Esc)", &[]) } else { crate::i18n::text("Full screen", &[]) },
+                    aria_label: if is_fullscreen { crate::i18n::text("Exit full screen", &[]) } else { crate::i18n::text("Full screen", &[]) },
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| {
                         focused.set(None);
@@ -3028,8 +3028,8 @@ fn ScreenWatchTile(
                 button {
                     class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                     onmousedown: move |e| e.stop_propagation(),
-                    title: "Stop watching",
-                    aria_label: "Stop watching",
+                    title: crate::i18n::text("Stop watching", &[]),
+                    aria_label: crate::i18n::text("Stop watching", &[]),
                     onclick: move |_| { state.write().screen_viewing.remove(&pk); },
                     "✕"
                 }
@@ -3057,12 +3057,12 @@ fn ScreenWatchTile(
                         focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
                     }
                 },
-                "Connecting to stream…"
+                {crate::i18n::text("Connecting to stream…", &[])}
             }
             div {
                 class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
                 div {
-                    span { class: "text-[10px] text-[var(--text-dim)]", "{received_label}" }
+                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::message(&received_label.read())} }
                     StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
                 }
                 div {
@@ -3071,8 +3071,8 @@ fn ScreenWatchTile(
                     if !has_audio {
                         span {
                             class: "text-[10px] text-[var(--text-dim)] italic",
-                            title: "No stream audio track has been detected yet.",
-                            "no stream audio"
+                            title: crate::i18n::text("No stream audio track has been detected yet.", &[]),
+                            {crate::i18n::text("no stream audio", &[])}
                         }
                     }
                     button {
@@ -3082,7 +3082,7 @@ fn ScreenWatchTile(
                             "w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] disabled:opacity-40"
                         },
                         disabled: !has_audio,
-                        title: if stream_muted { "Unmute stream audio" } else { "Mute stream audio" },
+                        title: if stream_muted { crate::i18n::text("Unmute stream audio", &[]) } else { crate::i18n::text("Mute stream audio", &[]) },
                         onclick: move |_| {
                             let now = !stream_muted;
                             {
@@ -3103,7 +3103,7 @@ fn ScreenWatchTile(
                         value: "{stream_volume}",
                         disabled: stream_muted || !has_audio,
                         class: "w-24 accent-[var(--accent)] disabled:opacity-40",
-                        title: "Stream volume (yours only)",
+                        title: crate::i18n::text("Stream volume (yours only)", &[]),
                         oninput: move |e| {
                             let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
                             state.write().stream_volumes.insert(pk_vol.clone(), val);

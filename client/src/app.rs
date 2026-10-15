@@ -40,6 +40,8 @@ pub fn init_tray_quit_bridge() {
         return;
     }
 
+    crate::single_instance::init_restore_bridge(restore_sender.clone());
+
     dioxus::desktop::trayicon::menu::MenuEvent::set_event_handler(Some(
         move |event: dioxus::desktop::trayicon::menu::MenuEvent| {
             if event.id.0.as_str() == "discordia-quit" {
@@ -566,6 +568,27 @@ fn font_face_css() -> String {
     )
 }
 
+pub(crate) fn desktop_config(language: crate::i18n::Language) -> dioxus::desktop::Config {
+    // Document styles are queued after DOM mutations; bootstrap CSS must precede the first frame.
+    dioxus::desktop::Config::new()
+        .with_background_color((18, 17, 16, 255))
+        .with_custom_head(format!(
+            "<style>{TAILWIND_CSS}</style><style>{}</style><style>{BASE_CSS}</style>",
+            font_face_css()
+        ))
+        .with_custom_index(desktop_index(language))
+}
+
+fn desktop_index(language: crate::i18n::Language) -> String {
+    include_str!("../assets/desktop.html")
+        .replace("__LANGUAGE__", language.tag())
+        .replace(
+            "Loading Discordia…",
+            &crate::i18n::translate(language, "Loading Discordia…", &[]),
+        )
+        .replace("/* STARTUP_SCRIPT */", include_str!("../assets/startup.js"))
+}
+
 /// The root keeps an opaque `--bg`; the shell above it does not.
 ///
 /// The two layers exist for one reason: the pattern is painted on a fixed layer
@@ -621,6 +644,12 @@ pub fn App() -> Element {
     let mut quitting = use_signal(|| false);
     use_context_provider(|| QuitRequest(quitting));
     let mut session = use_signal(|| None::<SessionParams>);
+    let settings = use_signal(crate::settings::load_or_default);
+    use_context_provider(|| settings);
+    let locale =
+        use_hook(move || Signal::new_in_scope(settings.peek().language.resolve(), ScopeId::ROOT));
+    use_drop(move || locale.manually_drop());
+    use_context_provider(|| crate::i18n::Locale(locale));
     let quit_window = dioxus::desktop::use_window();
     let close_to_tray = use_signal(|| false);
     let close_window = quit_window.clone();
@@ -683,14 +712,20 @@ pub fn App() -> Element {
                     while let Some(()) = receiver.recv().await {
                         tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
                         tray_window.set_visible(true);
+                        tray_window.window.set_minimized(false);
+                        tray_window.window.set_focus();
                     }
                 }
             }
         });
 
-        let tray_icon = use_hook(|| {
+        let tray_exit = use_hook(|| {
+            MenuItem::with_id("discordia-quit", crate::i18n::label("Exit"), true, None)
+        });
+        let exit = tray_exit.clone();
+        use_effect(move || tray_exit.set_text(crate::i18n::label("Exit")));
+        let tray_icon = use_hook(move || {
             let menu = Menu::new();
-            let exit = MenuItem::with_id("discordia-quit", "Exit", true, None);
             if let Err(error) = menu.append(&exit) {
                 tracing::warn!("Could not create tray menu: {error}");
                 return None;
@@ -746,8 +781,6 @@ pub fn App() -> Element {
         }
     });
 
-    let settings = use_signal(crate::settings::load_or_default);
-    use_context_provider(|| settings);
     let appearance = settings.read();
     let theme = appearance.theme.clone();
     let size_css = crate::ui_size::text_css(appearance.text_size_percent);
@@ -878,7 +911,7 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
 /// props of Style/Script is not supported".
 pub(crate) fn AppHead() -> Element {
     rsx! {
-        document::Style { {TAILWIND_CSS} }
+        crate::i18n::LanguageDocument {}
         document::Script { {LIVEKIT_JS} }
         document::Script { {include_str!("../assets/gif-playback.js")} }
         document::Script { {include_str!("../assets/activity-clock.js")} }
@@ -890,14 +923,27 @@ pub(crate) fn AppHead() -> Element {
             )}
         }
         document::Script { {crate::features::screenshare::SCREEN_JS} }
-        document::Style { {font_face_css()} }
-        document::Style { {BASE_CSS} }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::openable;
+
+    #[test]
+    fn startup_document_uses_the_selected_language_before_mounting() {
+        use crate::i18n::Language;
+        for (language, tag, loading) in [
+            (Language::English, "en", "Loading Discordia…"),
+            (Language::Spanish, "es", "Cargando Discordia…"),
+            (Language::Portuguese, "pt-BR", "Carregando Discordia…"),
+        ] {
+            let html = super::desktop_index(language);
+            assert!(html.contains(&format!("<html lang=\"{tag}\">")));
+            assert!(html.contains(&format!("<span>{loading}</span>")));
+            assert!(!html.contains("/* STARTUP_SCRIPT */"));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     use super::window_close_behavior;

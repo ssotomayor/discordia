@@ -564,17 +564,17 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
             Phase::Offered if !has_download => rsx! {
                 button {
                     class: "text-[10px] text-[var(--accent)] underline",
-                    title: "Opens the release page in your browser",
+                    title: crate::i18n::text("Opens the release page in your browser", &[]),
                     onclick: move |_| crate::app::open_external(&offer_page),
-                    "{tag} available"
+                    {crate::i18n::text("{0} available", std::slice::from_ref(&(tag)))}
                 }
             },
             Phase::Offered => rsx! {
                 button {
                     class: "text-[10px] text-[var(--accent)] underline",
-                    title: "Downloads {tag}, checks its signature, and installs it",
+                    title: crate::i18n::text("Downloads {0}, checks its signature, and installs it", std::slice::from_ref(&(tag))),
                     onclick: start,
-                    "update to {tag}"
+                    {crate::i18n::text("update to {0}", std::slice::from_ref(&(tag)))}
                 }
             },
             Phase::Failed(e) => rsx! {
@@ -583,20 +583,20 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                         class: "dxf-modal-in w-[22rem] bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                         div {
                             class: "px-4 py-3 border-b border-[var(--border)] text-sm font-medium text-[var(--danger)]",
-                            "Update failed"
+                            {crate::i18n::text("Update failed", &[])}
                         }
                         div { class: "p-4",
-                            div { class: "text-xs leading-relaxed text-[var(--text-muted)]", "{e}" }
+                            div { class: "text-xs leading-relaxed text-[var(--text-muted)]", {crate::i18n::message(&(e).to_string())} }
                             div { class: "mt-4 flex items-center justify-end gap-2",
                                 button {
                                     class: "text-xs px-3 py-1.5 rounded-md border border-[var(--border-strong)] text-[var(--text)]",
                                     onclick: move |_| crate::app::open_external(&failed_page),
-                                    "Open release page"
+                                    {crate::i18n::text("Open release page", &[])}
                                 }
                                 button {
                                     class: "text-xs px-3 py-1.5 rounded-md border border-[var(--accent)] text-[var(--accent)]",
                                     onclick: move |_| phase.set(Phase::Offered),
-                                    "Close"
+                                    {crate::i18n::text("Close", &[])}
                                 }
                             }
                         }
@@ -611,7 +611,7 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                         class: "dxf-modal-in w-[22rem] bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                         div {
                             class: "px-4 py-3 border-b border-[var(--border)] text-sm font-medium text-[var(--accent)]",
-                            "Updating to {tag}"
+                            {crate::i18n::text("Updating to {0}", std::slice::from_ref(&(tag)))}
                         }
                         div { class: "p-4",
                             div { class: "text-xs text-[var(--text)]", "{step}" }
@@ -629,7 +629,7 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                                 div {
                                     class: "mt-3 rounded-md px-2.5 py-2 text-[10px] leading-relaxed text-[var(--warn)]",
                                     style: "background: var(--accent-soft);",
-                                    "Do not close Discordia. It will restart itself when the update is done."
+                                    {crate::i18n::text("Do not close Discordia. It will restart itself when the update is done.", &[])}
                                 }
                             }
                         }

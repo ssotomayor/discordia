@@ -30,7 +30,7 @@ pub fn RequestList() -> Element {
     rsx! {
         if rows.is_empty() {
             div { class: "px-2.5 py-3 text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
-                "No requests. Messages from people you share no server with, and have not added, wait here."
+                {crate::i18n::text("No requests. Messages from people you share no server with, and have not added, wait here.", &[])}
             }
         }
         for (dm, name, preview) in rows {
@@ -75,21 +75,21 @@ pub fn RequestList() -> Element {
                         div { class: "mt-2 flex gap-1.5",
                             button {
                                 class: "{ACTION} border-[var(--accent)] text-[var(--accent)]",
-                                title: "Move this conversation to your messages.",
+                                title: crate::i18n::text("Move this conversation to your messages.", &[]),
                                 onclick: move |_| state.write().accept_dm(&accept),
-                                "Accept"
+                                {crate::i18n::text("Accept", &[])}
                             }
                             button {
                                 class: "{ACTION} border-[var(--border-strong)] text-[var(--text-muted)] hover:text-[var(--text)]",
-                                title: "Hide this request on this machine.",
+                                title: crate::i18n::text("Hide this request on this machine.", &[]),
                                 onclick: move |_| state.write().ignore_dm(&ignore),
-                                "Ignore"
+                                {crate::i18n::text("Ignore", &[])}
                             }
                             button {
                                 class: "{ACTION} border-[var(--danger)] text-[var(--danger)]",
-                                title: "Mute this key in your public Nostr mute list. Its messages are dropped.",
+                                title: crate::i18n::text("Mute this key in your public Nostr mute list. Its messages are dropped.", &[]),
                                 onclick: move |_| nostr.send(NostrCmd::SetMute { peer: block.clone(), mute: true }),
-                                "Block"
+                                {crate::i18n::text("Block", &[])}
                             }
                         }
                     }

@@ -190,7 +190,7 @@ fn status_of(rail: &ServerRail, server: &KnownServer, current: Option<Connection
         color,
         hollow: false,
         pulse: false,
-        text: text.to_string(),
+        text: crate::i18n::message(text),
     };
     if let Some(status) = current {
         return match status {
@@ -261,8 +261,8 @@ pub fn ServerHeader(server: KnownServer, current: Option<ConnectionStatus>) -> E
                 button {
                     r#type: "button",
                     class: "{action} hover:text-[var(--accent)]",
-                    title: "Check whether it is up",
-                    aria_label: "Check whether {label} is up",
+                    title: crate::i18n::text("Check whether it is up", &[]),
+                    aria_label: crate::i18n::text("Check whether {0} is up", std::slice::from_ref(&(label))),
                     onclick: move |_| rail.check(to_check.clone()),
                     "\u{21bb}"
                 }
@@ -277,8 +277,8 @@ pub fn ServerHeader(server: KnownServer, current: Option<ConnectionStatus>) -> E
                 button {
                     r#type: "button",
                     class: "{action} hover:text-[var(--danger)]",
-                    title: "Remove from this list",
-                    aria_label: "Remove {label} from this list",
+                    title: crate::i18n::text("Remove from this list", &[]),
+                    aria_label: crate::i18n::text("Remove {0} from this list", std::slice::from_ref(&(label))),
                     onclick: move |_| rail.remove(&key),
                     "\u{2715}"
                 }
@@ -351,7 +351,7 @@ fn OtherGuildTile(
             span {
                 class: "dxf-tip",
                 style: "left: {tip_at().0}px; top: {tip_at().1}px;",
-                if pending { "Checking it is up…" } else { "{tip}" }
+                if pending { {crate::i18n::text("Checking it is up…", &[])} } else { "{tip}" }
             }
             button {
                 r#type: "button",
@@ -377,18 +377,18 @@ pub fn AddServerButton() -> Element {
             span {
                 class: "dxf-tip",
                 style: "left: {tip_at().0}px; top: {tip_at().1}px;",
-                "Add another server to this list"
+                {crate::i18n::text("Add another server to this list", &[])}
             }
             button {
                 r#type: "button",
                 class: "px-1.5 h-6 rounded-lg border border-dashed border-[var(--border)] text-[9px] whitespace-nowrap text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                aria_label: "Add a server",
+                aria_label: crate::i18n::text("Add a server", &[]),
                 onmouseenter: move |e: MouseEvent| {
                     let c = e.client_coordinates();
                     tip_at.set((c.x + 18.0, c.y));
                 },
                 onclick: move |_| rail.adding.set(true),
-                "+ server"
+                {crate::i18n::text("+ server", &[])}
             }
         }
     }
@@ -482,36 +482,36 @@ pub fn SwitchHost(on_go: EventHandler<Switch>) -> Element {
                 class: "dxf-modal-in w-[26rem] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)]",
-                    h3 { class: "text-sm font-medium text-[var(--warn)]", "Switch to {label}?" }
+                    h3 { class: "text-sm font-medium text-[var(--warn)]", {crate::i18n::text("Switch to {0}?", std::slice::from_ref(&(label)))} }
                 }
                 div { class: "px-4 py-3 flex flex-col gap-2 text-sm text-[var(--text-muted)]",
                     if let Some(channel) = cost.call {
-                        p { "You'll leave the voice call in {channel}, along with any screen share or camera." }
+                        p { {crate::i18n::text("You'll leave the voice call in {0}, along with any screen share or camera.", std::slice::from_ref(&(channel)))} }
                     }
                     if let Some(others) = cost.hosting {
                         p {
-                            "This machine is the server you're on. Switching shuts it down"
+                            {crate::i18n::text("This machine is the server you're on. Switching shuts it down", &[])}
                             match others {
-                                0 => rsx! { "; nobody else is connected right now." },
-                                1 => rsx! { ", and the one other person connected is dropped." },
-                                n => rsx! { ", and the {n} other people connected are dropped." },
+                                0 => rsx! { {crate::i18n::text("; nobody else is connected right now.", &[])} },
+                                1 => rsx! { {crate::i18n::text(", and the one other person connected is dropped.", &[])} },
+                                n => rsx! { {crate::i18n::text(", and the {0} other people connected are dropped.", &[(n).to_string()])} },
                             }
                         }
                     }
                     p { class: "text-[var(--text-dim)]",
-                        "If {label} doesn't let you in, you come back here. Calls in DMs carry on either way."
+                        {crate::i18n::text("If {0} doesn't let you in, you come back here. Calls in DMs carry on either way.", std::slice::from_ref(&(label)))}
                     }
                 }
                 div { class: "px-4 py-3 border-t border-[var(--border)] flex items-center justify-end gap-2",
                     button {
                         class: "px-3 py-1 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                         onclick: cancel,
-                        "Stay"
+                        {crate::i18n::text("Stay", &[])}
                     }
                     button {
                         class: "px-3 py-1 rounded text-[11px] uppercase tracking-wider text-[var(--warn)] border border-[var(--border)] hover:border-[var(--danger)] transition-colors",
                         onclick: go,
-                        "Switch"
+                        {crate::i18n::text("Switch", &[])}
                     }
                 }
             }
@@ -582,13 +582,13 @@ pub fn AddServerDialog() -> Element {
                 class: "dxf-modal-in w-[22rem] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)]",
-                    h3 { class: "text-sm font-medium text-[var(--text)]", "Add a server" }
+                    h3 { class: "text-sm font-medium text-[var(--text)]", {crate::i18n::text("Add a server", &[])} }
                 }
                 div { class: "px-4 py-3 flex flex-col gap-2",
                     input {
                         class: "w-full bg-[var(--panel2)] border border-[var(--edge-strong)] rounded-[10px] px-3 py-2 text-[12.5px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors",
                         r#type: "text",
-                        placeholder: "purple-fox-42, a server name, or quic://…",
+                        placeholder: crate::i18n::text("purple-fox-42, a server name, or quic://…", &[]),
                         value: "{draft}",
                         autofocus: true,
                         disabled: busy(),
@@ -605,7 +605,7 @@ pub fn AddServerDialog() -> Element {
                         if let Some(n) = note() {
                             span { class: "text-[var(--warn)]", "{n}" }
                         } else {
-                            "It joins the list beside your guilds; click it there to go. A code is looked up on every rendezvous you have."
+                            {crate::i18n::text("It joins the list beside your guilds; click it there to go. A code is looked up on every rendezvous you have.", &[])}
                         }
                     }
                 }
@@ -613,13 +613,13 @@ pub fn AddServerDialog() -> Element {
                     button {
                         class: "px-3 py-1 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                         onclick: move |_| close(),
-                        "Cancel"
+                        {crate::i18n::text("Cancel", &[])}
                     }
                     button {
                         class: "px-3 py-1 rounded text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
                         disabled: busy() || draft().trim().is_empty(),
                         onclick: move |_| submit(),
-                        if busy() { "Looking up…" } else { "Add" }
+                        if busy() { {crate::i18n::text("Looking up…", &[])} } else { {crate::i18n::text("Add", &[])} }
                     }
                 }
             }

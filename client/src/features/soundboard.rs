@@ -93,11 +93,11 @@ fn SoundboardPopover(guild_id: Id) -> Element {
             },
             div { class: "h-8 pl-3 pr-1 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "text-xs font-semibold text-[var(--text)] flex-1 truncate",
-                    if adjusting { "Soundboard volume" } else { "Soundboard" }
+                    if adjusting { {crate::i18n::text("Soundboard volume", &[])} } else { {crate::i18n::text("Soundboard", &[])} }
                 }
                 button {
                     class: "[&>svg]:pointer-events-none w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
-                    title: if adjusting { "Back to the sounds" } else { "Volume — or right-click anywhere here" },
+                    title: if adjusting { crate::i18n::text("Back to the sounds", &[]) } else { crate::i18n::text("Volume — or right-click anywhere here", &[]) },
                     onclick: move |_| {
                         let now = !state.read().soundboard_adjusting;
                         state.write().soundboard_adjusting = now;
@@ -113,15 +113,15 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                 if adjusting {
                     SoundboardVolume {}
                     div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
-                        "How loud other people's sounds are for you, and yours to yourself."
+                        {crate::i18n::text("How loud other people's sounds are for you, and yours to yourself.", &[])}
                     }
                 } else {
                     if sounds().is_empty() {
                         div { class: "px-1 py-0.5 text-[11px] text-[var(--text-dim)]",
                             if can_manage {
-                                "No sounds yet — add them in guild settings, under Soundboard."
+                                {crate::i18n::text("No sounds yet — add them in guild settings, under Soundboard.", &[])}
                             } else {
-                                "This guild has no sounds yet."
+                                {crate::i18n::text("This guild has no sounds yet.", &[])}
                             }
                         }
                     }
@@ -207,8 +207,8 @@ pub fn SoundboardVolume() -> Element {
                 max: "100",
                 value: "{pct}",
                 class: "flex-1 accent-[var(--accent)]",
-                title: "Soundboard volume — only changes what you hear",
-                aria_label: "Soundboard playback volume",
+                title: crate::i18n::text("Soundboard volume — only changes what you hear", &[]),
+                aria_label: crate::i18n::text("Soundboard playback volume", &[]),
                 oninput: move |e| {
                     let v: u32 = e.value().parse().unwrap_or(pct).min(100);
                     state.write().soundboard_volume = v;
@@ -248,7 +248,7 @@ pub fn SoundChip(pubkey: String) -> Element {
         Some((name, _)) => rsx! {
             span {
                 class: "text-[9px] text-[var(--accent)] truncate shrink-0 max-w-[40%]",
-                title: "played {name}",
+                title: crate::i18n::text("played {0}", std::slice::from_ref(&(name))),
                 "♪ {name}"
             }
         },
@@ -397,23 +397,23 @@ pub fn SoundSettings(guild_id: Id) -> Element {
         div { class: "border-t border-[var(--border)] pt-3",
             div { class: "flex items-center gap-2 mb-1.5",
                 div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",
-                    "Soundboard"
+                    {crate::i18n::text("Soundboard", &[])}
                 }
                 div { class: "text-[10px] text-[var(--text-dim)]", "{count}/{MAX_SOUNDS_PER_GUILD}" }
             }
             div { class: "text-[10px] text-[var(--text-dim)] mb-2",
-                "Anyone in a voice channel here can play these to everyone in it. MP3, OGG or WAV, up to {max_kb} KB and {MAX_SOUND_SECS} seconds each. Stored on this server."
+                {crate::i18n::text("Anyone in a voice channel here can play these to everyone in it. MP3, OGG or WAV, up to {0} KB and {1} seconds each. Stored on this server.", &[(max_kb).to_string(), (MAX_SOUND_SECS).to_string()])}
             }
 
             if !full {
                 div { class: "flex items-center gap-2 mb-2",
                     label {
                         class: "shrink-0 h-8 px-3 rounded border border-dashed border-[var(--border)] flex items-center justify-center cursor-pointer text-[10px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors",
-                        title: "Choose one or more MP3, OGG or WAV files",
+                        title: crate::i18n::text("Choose one or more MP3, OGG or WAV files", &[]),
                         if checking() > 0 {
-                            "Checking {checking()}…"
+                            {crate::i18n::text("Checking {0}…", &[(checking ()).to_string()])}
                         } else {
-                            "Choose files"
+                            {crate::i18n::text("Choose files", &[])}
                         }
                         input {
                             r#type: "file",
@@ -468,15 +468,15 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                     }
                     div { class: "text-[10px] text-[var(--text-dim)] flex-1 min-w-0 truncate",
                         if queued == 0 {
-                            "Pick several at once; each gets a name and a preview before it is added."
+                            {crate::i18n::text("Pick several at once; each gets a name and a preview before it is added.", &[])}
                         } else {
-                            "{queued} ready to add"
+                            {crate::i18n::text("{0} ready to add", &[(queued).to_string()])}
                         }
                     }
                 }
             } else {
                 div { class: "text-[10px] text-[var(--warn)] mb-2",
-                    "This guild has reached the sound limit. Remove one to add another."
+                    {crate::i18n::text("This guild has reached the sound limit. Remove one to add another.", &[])}
                 }
             }
 
@@ -491,7 +491,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                 div { key: "{key}", class: "flex items-center gap-2 py-1",
                                     button {
                                         class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--accent)] hover:bg-white/[0.06] transition-colors [&>svg]:w-3.5 [&>svg]:h-3.5",
-                                        title: "Preview — only you hear it",
+                                        title: crate::i18n::text("Preview — only you hear it", &[]),
                                         onclick: move |_| preview(&state.peek(), pcm.clone()),
                                         dangerous_inner_html: crate::features::icons::PLAY,
                                     }
@@ -501,7 +501,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                         } else {
                                             "flex-1 min-w-0 bg-transparent border border-[var(--danger)] rounded px-2 py-0.5 text-xs text-[var(--text)] focus:outline-none"
                                         },
-                                        placeholder: "name",
+                                        placeholder: crate::i18n::text("name", &[]),
                                         maxlength: MAX_SOUND_NAME_LEN as i64,
                                         value: "{p.name}",
                                         oninput: move |e| {
@@ -510,10 +510,10 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                             }
                                         },
                                     }
-                                    span { class: "text-[10px] text-[var(--text-dim)] shrink-0 w-10 text-right", "{p.secs:.1} s" }
+                                    span { class: "text-[10px] text-[var(--text-dim)] shrink-0 w-10 text-right", {crate::i18n::text("{0} s", &[format!("{0:.1}" , p . secs)])} }
                                     button {
                                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors shrink-0",
-                                        title: "Don't add this one",
+                                        title: crate::i18n::text("Don't add this one", &[]),
                                         onclick: move |_| pending.write().retain(|q| q.key != key),
                                         "✕"
                                     }
@@ -527,28 +527,28 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                             disabled: adding() || !names_ok || queued > room,
                             onclick: submit_all,
                             if adding() {
-                                "Adding…"
+                                {crate::i18n::text("Adding…", &[])}
                             } else if queued == 1 {
-                                "Add 1 sound"
+                                {crate::i18n::text("Add 1 sound", &[])}
                             } else {
-                                "Add {queued} sounds"
+                                {crate::i18n::plural("Add {0} sound", "Add {0} sounds", queued)}
                             }
                         }
                         button {
                             class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors disabled:opacity-40",
                             disabled: adding(),
                             onclick: move |_| pending.set(Vec::new()),
-                            "Clear"
+                            {crate::i18n::text("Clear", &[])}
                         }
                     }
                 }
             }
             if let Some(e) = error() {
-                div { class: "text-[10px] text-[var(--danger)] mb-2", "{e}" }
+                div { class: "text-[10px] text-[var(--danger)] mb-2", {crate::i18n::message(&(e).to_string())} }
             }
 
             if sounds().is_empty() {
-                div { class: "text-xs text-[var(--text-dim)]", "No sounds yet." }
+                div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("No sounds yet.", &[])} }
             }
             for sound in sounds().iter().cloned() {
                 {
@@ -569,7 +569,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                         div { key: "{sound.id}", class: "flex items-center gap-2 py-1",
                             button {
                                 class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--accent)] hover:bg-white/[0.06] transition-colors disabled:opacity-40 [&>svg]:w-3.5 [&>svg]:h-3.5",
-                                title: if ready { "Preview — only you hear it" } else { "Loading…" },
+                                title: if ready { crate::i18n::text("Preview — only you hear it", &[]) } else { crate::i18n::text("Loading…", &[]) },
                                 disabled: !ready,
                                 onclick: move |_| preview_sound(state, to_preview.clone()),
                                 dangerous_inner_html: crate::features::icons::PLAY,
@@ -593,7 +593,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                             renaming.set(None);
                                         }
                                     },
-                                    "Save"
+                                    {crate::i18n::text("Save", &[])}
                                 }
                             } else {
                                 div { class: "flex-1 min-w-0",
@@ -612,7 +612,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                         rename_draft.set(current.clone());
                                         renaming.set(Some(id));
                                     },
-                                    "Rename"
+                                    {crate::i18n::text("Rename", &[])}
                                 }
                             }
                             button {
@@ -621,7 +621,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                     guild_id,
                                     sound_id: id,
                                 }),
-                                "Remove"
+                                {crate::i18n::text("Remove", &[])}
                             }
                         }
                     }

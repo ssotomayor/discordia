@@ -96,16 +96,16 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                             drop_target.set(None);
                         },
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                            "Defined roles"
+                            {crate::i18n::text("Defined roles", &[])}
                         }
                         if roles.len() > 1 {
                             div { class: "text-[10px] text-[var(--text-dim)] -mt-1",
-                                "Drag to reorder. The top role is listed first when members are ordered by role."
+                                {crate::i18n::text("Drag to reorder. The top role is listed first when members are ordered by role.", &[])}
                             }
                         }
                         if roles.is_empty() {
                             div { class: "text-xs text-[var(--text-dim)] py-2",
-                                "No roles yet. Create one below, then assign it from the member list (right-click a member)."
+                                {crate::i18n::text("No roles yet. Create one below, then assign it from the member list (right-click a member).", &[])}
                             }
                         }
                         for role in roles.iter().cloned() {
@@ -162,13 +162,13 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                                     e.stop_propagation();
                                                     gw_del.send(ClientMessage::DeleteRole { guild_id, role_id: rid });
                                                 },
-                                                "Delete"
+                                                {crate::i18n::text("Delete", &[])}
                                             }
                                         }
                                         div { class: "flex flex-wrap gap-1",
                                             for p in role.permissions.iter().copied() {
                                                 span { class: "text-[9px] px-1.5 py-px rounded bg-white/[0.04] text-[var(--text-muted)]",
-                                                    "{p.label()}"
+                                                    {crate::i18n::label(p.label())}
                                                 }
                                             }
                                         }
@@ -181,13 +181,13 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                     div { class: "border border-[var(--border)] rounded-md p-3",
                         div { class: "flex items-center mb-1.5",
                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",
-                                if editing().is_some() { "Edit role" } else { "New role" }
+                                if editing().is_some() { {crate::i18n::text("Edit role", &[])} } else { {crate::i18n::text("New role", &[])} }
                             }
                             if editing().is_some() {
                                 button {
                                     class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)]",
                                     onclick: move |_| reset_form(),
-                                    "+ new instead"
+                                    {crate::i18n::text("+ new instead", &[])}
                                 }
                             }
                         }
@@ -195,7 +195,7 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                             div { class: "flex items-center gap-2",
                                 input {
                                     class: "flex-1 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                                    placeholder: "Role name (e.g. Moderator)",
+                                    placeholder: crate::i18n::text("Role name (e.g. Moderator)", &[]),
                                     value: "{name}",
                                     maxlength: 32,
                                     oninput: move |e| name.set(e.value()),
@@ -207,7 +207,7 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                     oninput: move |e| color.set(Some(e.value())),
                                 }
                             }
-                            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", "Permissions" }
+                            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", {crate::i18n::text("Permissions", &[])} }
                             for p in Permission::ALL.iter().copied() {
                                 {
                                     let owner_only = matches!(p, Permission::ManageRoles | Permission::ManageGuild);
@@ -229,10 +229,10 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                                     else { v.push(p); }
                                                 },
                                             }
-                                            span { "{p.label()}" }
+                                            span { {crate::i18n::label(p.label())} }
                                             if owner_only {
                                                 span { class: "text-[8px] px-1 py-px rounded bg-[var(--warn)]/15 text-[var(--warn)] uppercase tracking-wider font-semibold",
-                                                    "Owner-only"
+                                                    {crate::i18n::text("Owner-only", &[])}
                                                 }
                                             }
                                         }
@@ -242,7 +242,7 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                             button {
                                 class: "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| submit(),
-                                if editing().is_some() { "Save role" } else { "Create role" }
+                                if editing().is_some() { {crate::i18n::text("Save role", &[])} } else { {crate::i18n::text("Create role", &[])} }
                             }
                         }
                     }

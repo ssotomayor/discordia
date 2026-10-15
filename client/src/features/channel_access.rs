@@ -80,7 +80,7 @@ fn ChannelAccessDialog(channel: Channel) -> Element {
                 class: "dxf-modal-in w-[480px] max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e: MouseEvent| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center shrink-0",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1 truncate", "Who can see {channel.name}" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1 truncate", {crate::i18n::text("Who can see {0}", &[(channel . name).to_string()])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                         onclick: close,
@@ -94,7 +94,7 @@ fn ChannelAccessDialog(channel: Channel) -> Element {
                             checked: !restricted(),
                             onchange: move |_| restricted.set(false),
                         }
-                        "Everyone in the guild"
+                        {crate::i18n::text("Everyone in the guild", &[])}
                     }
                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                         input {
@@ -102,17 +102,17 @@ fn ChannelAccessDialog(channel: Channel) -> Element {
                             checked: restricted(),
                             onchange: move |_| restricted.set(true),
                         }
-                        "Only the roles and people below"
+                        {crate::i18n::text("Only the roles and people below", &[])}
                     }
                     if restricted() {
                         div { class: "text-[10px] text-[var(--text-dim)]",
-                            "Everyone else never sees the channel or who is in it. Anyone who can manage channels always sees it"
-                            if managers_note { ", you included." } else { "." }
+                            {crate::i18n::text("Everyone else never sees the channel or who is in it. Anyone who can manage channels always sees it", &[])}
+                            if managers_note { {crate::i18n::text(", you included.", &[])} } else { "." }
                         }
                         div {
-                            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1", "Roles" }
+                            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1", {crate::i18n::text("Roles", &[])} }
                             if guild_roles.is_empty() {
-                                div { class: "text-xs text-[var(--text-dim)]", "This guild has no roles yet." }
+                                div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("This guild has no roles yet.", &[])} }
                             }
                             for role in guild_roles.iter().cloned() {
                                 {
@@ -138,12 +138,12 @@ fn ChannelAccessDialog(channel: Channel) -> Element {
                         }
                         div {
                             div { class: "flex items-center gap-2 mb-1",
-                                div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1", "People" }
-                                div { class: "text-[10px] text-[var(--text-dim)]", "{chosen} chosen" }
+                                div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1", {crate::i18n::text("People", &[])} }
+                                div { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("{0} chosen", &[(chosen).to_string()])} }
                             }
                             input {
                                 class: "w-full mb-1.5 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none",
-                                placeholder: "Find a member by name or key…",
+                                placeholder: crate::i18n::text("Find a member by name or key…", &[]),
                                 value: "{filter}",
                                 oninput: move |e| filter.set(e.value()),
                             }
@@ -178,12 +178,12 @@ fn ChannelAccessDialog(channel: Channel) -> Element {
                     button {
                         class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--border-strong)] transition-colors",
                         onclick: close,
-                        "Cancel"
+                        {crate::i18n::text("Cancel", &[])}
                     }
                     button {
                         class: "dxf-cta rounded px-4 py-1.5 text-[11px] uppercase tracking-wider",
                         onclick: save,
-                        "Save"
+                        {crate::i18n::text("Save", &[])}
                     }
                 }
             }

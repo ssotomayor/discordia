@@ -100,7 +100,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                     "{menu.name}"
                 }
                 div { class: "px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-[var(--text-dim)]",
-                    "Volume for you"
+                    {crate::i18n::text("Volume for you", &[])}
                 }
                 div { class: "flex items-center gap-2 px-3 pb-1.5",
                     input {
@@ -110,7 +110,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         value: "{volume}",
                         disabled: locally_muted,
                         class: "flex-1 accent-[var(--accent)] disabled:opacity-40",
-                        aria_label: "Volume for you",
+                        aria_label: crate::i18n::text("Volume for you", &[]),
                         oninput: move |e| {
                             let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
                             state.write().user_volumes.insert(pk_slider.clone(), val);
@@ -125,7 +125,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                     } else {
                         "w-full text-left px-3 py-1.5 rounded text-xs text-[var(--text)] hover:bg-white/[0.04] transition-colors"
                     },
-                    title: "Only changes what you hear",
+                    title: crate::i18n::text("Only changes what you hear", &[]),
                     onclick: move |_| {
                         let now = !locally_muted;
                         {
@@ -134,7 +134,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         }
                         apply();
                     },
-                    if locally_muted { "Unmute for you" } else { "Mute for you" }
+                    if locally_muted { {crate::i18n::text("Unmute for you", &[])} } else { {crate::i18n::text("Mute for you", &[])} }
                 }
                 button {
                     class: "w-full text-left px-3 py-1.5 rounded text-xs text-[var(--text)] hover:bg-white/[0.04] transition-colors",
@@ -142,13 +142,13 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         state.write().profile_card = Some(pk_profile.clone());
                         close();
                     },
-                    "View profile"
+                    {crate::i18n::text("View profile", &[])}
                 }
                 if let Some(gid) = disconnect_in {
                     div { class: "border-t border-[var(--border)] my-1" }
                     button {
                         class: "w-full text-left px-3 py-1.5 rounded text-xs text-[var(--warn)] hover:bg-[var(--warn)]/10 transition-colors",
-                        title: "Drops their voice, screen share and camera for everyone. They can join again.",
+                        title: crate::i18n::text("Drops their voice, screen share and camera for everyone. They can join again.", &[]),
                         onclick: move |_| {
                             gateway.send(ClientMessage::DisconnectVoice {
                                 guild_id: gid,
@@ -156,7 +156,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                             });
                             close();
                         },
-                        "Disconnect from voice"
+                        {crate::i18n::text("Disconnect from voice", &[])}
                     }
                 }
             }

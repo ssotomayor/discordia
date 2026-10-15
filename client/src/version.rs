@@ -135,9 +135,9 @@ pub fn VersionLabel() -> Element {
         span {
             class: "text-[10px] text-[var(--text-dim)]",
             title: if is_release() {
-                "This build's release tag on GitHub"
+                crate::i18n::text("This build's release tag on GitHub", &[])
             } else {
-                "A local build — no release was published for it"
+                crate::i18n::text("A local build — no release was published for it", &[])
             },
             "{VERSION}"
         }

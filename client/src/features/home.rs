@@ -44,10 +44,10 @@ pub fn HomeView(
                     div { class: "w-full max-w-[588px] mx-auto flex-1 min-h-0 flex flex-col",
                         div { class: "px-7 pt-5 shrink-0",
                             h2 { class: "dxf-display text-xl font-semibold tracking-tight text-[var(--text)]",
-                                "Go to a server"
+                                {crate::i18n::text("Go to a server", &[])}
                             }
                             p { class: "mt-1.5 text-[13px] text-[var(--text-muted)] text-pretty",
-                                "Reconnect to your last one, or join with a code from a friend."
+                                {crate::i18n::text("Reconnect to your last one, or join with a code from a friend.", &[])}
                             }
                         }
                         crate::features::connect::ConnectForm {
@@ -99,23 +99,25 @@ fn TopBar(
             .map(|r| {
                 let host = r.trim_start_matches("wss://").trim_start_matches("ws://");
                 if up.contains(r) {
-                    format!("· {host} — connected")
+                    crate::i18n::text("· {0} — connected", &[host.to_string()])
                 } else {
-                    format!("· {host} — not connected")
+                    crate::i18n::text("· {0} — not connected", &[host.to_string()])
                 }
             })
             .collect();
         lines.insert(
             0,
-            "Direct messages travel over these Nostr relays. One is enough to send and receive."
-                .to_string(),
+            crate::i18n::text("Direct messages travel over these Nostr relays. One is enough to send and receive.", &[]),
         );
         lines.join("\n")
     };
     let relay_label = if relays == 0 {
-        "No relays connected".to_string()
+        crate::i18n::text("No relays connected", &[])
     } else {
-        format!("{relays} of {total} relays connected")
+        crate::i18n::text(
+            "{0} of {1} relays connected",
+            &[relays.to_string(), total.to_string()],
+        )
     };
     // Two labels rather than one that truncates: "3 of 4 relays conn…" says
     // less than "3/4" and takes more room to say it.
@@ -146,7 +148,7 @@ fn TopBar(
                 div { class: "flex items-center gap-2.5 shrink-0",
                     crate::app::DiscordiaLogo { class: "w-6 h-6 shrink-0" }
                     span { class: "dxf-display dxf-wordmark text-[17px] font-semibold tracking-tight hidden min-[900px]:inline",
-                        "Discordia"
+                        {crate::i18n::text("Discordia", &[])}
                     }
                 }
                 span {
@@ -178,15 +180,15 @@ fn TopBar(
                             class: "shrink-0 flex items-center",
                             dangerous_inner_html: crate::features::icons::USERS,
                         }
-                        "Social"
+                        {crate::i18n::text("Social", &[])}
                         if unread > 0 {
                             span { class: "text-[var(--accent)] font-semibold", "{unread}" }
                         }
                     }
                     button {
                         class: "flex items-center gap-2.5 px-2 py-1.5 rounded-lg border border-transparent text-left hover:bg-[var(--panel2)] hover:border-[var(--border-strong)] transition-colors",
-                        title: "Account",
-                        aria_label: "Account",
+                        title: crate::i18n::text("Account", &[]),
+                        aria_label: crate::i18n::text("Account", &[]),
                         aria_expanded: "{open()}",
                         onclick: move |e| {
                             e.stop_propagation();
@@ -256,12 +258,12 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                 name: snapshot.display_name(&dm.other_pubkey),
                 preview: last.map(|m| {
                     let body = if m.content.trim().is_empty() && m.image.is_some() {
-                        "📎 image".to_string()
+                        crate::i18n::text("📎 image", &[])
                     } else {
                         m.content.clone()
                     };
                     if m.author.pubkey == self_pk {
-                        format!("You: {body}")
+                        crate::i18n::text("You: {0}", &[body])
                     } else {
                         body
                     }
@@ -296,11 +298,11 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
         div { class: "px-[18px] pt-5 pb-3.5 shrink-0",
             div { class: "flex items-center gap-2",
                 h2 { class: "dxf-display flex-1 text-[17px] font-semibold tracking-tight text-[var(--text)]",
-                    "Social"
+                    {crate::i18n::text("Social", &[])}
                 }
                 button {
                     class: "w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-[13px] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg2)] transition-colors",
-                    title: "Close",
+                    title: crate::i18n::text("Close", &[]),
                     onclick: move |_| on_close.call(()),
                     "✕"
                 }
@@ -312,7 +314,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                 input {
                     class: "w-full bg-[var(--panel2)] border border-[var(--border)] focus:border-[var(--border-strong)] rounded-[10px] pl-[30px] pr-3 py-2.5 text-[13px] text-[var(--text)] outline-none transition-colors",
                     r#type: "text",
-                    placeholder: "Search, or paste an npub…",
+                    placeholder: crate::i18n::text("Search, or paste an npub…", &[]),
                     value: "{filter}",
                     oninput: move |e| {
                         confirming.set(None);
@@ -365,7 +367,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
             } else if tab() == Tab::Friends {
                 if contacts.is_empty() {
                     div { class: "px-2.5 py-3 text-[12.5px] text-[var(--text-dim)] leading-relaxed",
-                        "No contacts yet."
+                        {crate::i18n::text("No contacts yet.", &[])}
                     }
                 }
                 for (pk, name) in contacts.iter().cloned() {
@@ -393,7 +395,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
             } else {
                 if shown.is_empty() {
                     div { class: "px-2.5 py-3 text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
-                        "No conversations yet. Paste someone's npub above — no server needed."
+                        {crate::i18n::text("No conversations yet. Paste someone's npub above — no server needed.", &[])}
                     }
                 }
                 for row in shown.iter().cloned() {
@@ -440,7 +442,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                             if row.muted {
                                                 span {
                                                     class: "shrink-0 text-[10px] text-[var(--text-dim)]",
-                                                    title: "Muted",
+                                                    title: crate::i18n::text("Muted", &[]),
                                                     "🔕"
                                                 }
                                             }
@@ -462,7 +464,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                 if !asking {
                                     button {
                                         class: "shrink-0 w-5 h-5 rounded-full hidden group-hover:flex items-center justify-center text-[11px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
-                                        title: if row.muted { "Unmute this conversation" } else { "Mute this conversation" },
+                                        title: if row.muted { crate::i18n::text("Unmute this conversation", &[]) } else { crate::i18n::text("Mute this conversation", &[]) },
                                         onclick: move |_| {
                                             crate::state::set_dm_muted(state, settings, cid, !row.muted);
                                         },
@@ -471,7 +473,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                 }
                                 button {
                                     class: "shrink-0 items-center justify-center transition-colors {del_cls}",
-                                    title: "Delete this conversation on this machine. The relays keep their copy, and a new message reopens it.",
+                                    title: crate::i18n::text("Delete this conversation on this machine. The relays keep their copy, and a new message reopens it.", &[]),
                                     onclick: move |_| {
                                         if !asking {
                                             confirming.set(Some(cid));
@@ -480,7 +482,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                         crate::state::forget_dm(state, settings, &peer);
                                         confirming.set(None);
                                     },
-                                    if asking { "Delete?" } else { "✕" }
+                                    if asking { {crate::i18n::text("Delete?", &[])} } else { "✕" }
                                 }
                             }
                         }
@@ -512,20 +514,17 @@ pub(super) fn TalkPane() -> Element {
                     }
                     if any_dms {
                         div { class: "mt-5 dxf-display text-xl font-semibold tracking-tight text-[var(--text)]",
-                            "Pick a conversation"
+                            {crate::i18n::text("Pick a conversation", &[])}
                         }
                         div { class: "mt-2 max-w-[400px] text-center text-[13.5px] text-[var(--text-muted)] leading-relaxed text-pretty",
-                            "Yours are on the left. They travel with your key, so they will still be
-                             here whichever server you go to next."
+                            {crate::i18n::text("Yours are on the left. They travel with your key, so they will still be here whichever server you go to next.", &[])}
                         }
                     } else {
                         div { class: "mt-5 dxf-display text-xl font-semibold tracking-tight text-[var(--text)]",
-                            "Your messages, before any server"
+                            {crate::i18n::text("Your messages, before any server", &[])}
                         }
                         div { class: "mt-2 max-w-[400px] text-center text-[13.5px] text-[var(--text-muted)] leading-relaxed text-pretty",
-                            "They are signed by your key and carried by relays, so they belong to you
-                             rather than to whoever you are connected to. Paste someone's npub on the
-                             left to start one."
+                            {crate::i18n::text("They are signed by your key and carried by relays, so they belong to you rather than to whoever you are connected to. Paste someone's npub on the left to start one.", &[])}
                         }
                     }
                 }

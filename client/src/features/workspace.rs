@@ -210,7 +210,7 @@ fn LayoutButton(
                 } else {
                     "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                 },
-                title: "Panel layout",
+                title: crate::i18n::text("Panel layout", &[]),
                 onclick: move |_| open.toggle(),
                 span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::LAYOUT }
             }
@@ -223,7 +223,7 @@ fn LayoutButton(
                     class: "dxf-pop-in absolute right-0 top-10 z-50 w-60 rounded-lg border border-[var(--border)] bg-[var(--panel-solid)] shadow-xl p-2",
                     onclick: move |e: MouseEvent| e.stop_propagation(),
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] px-1 mb-1.5",
-                        "Arrangements"
+                        {crate::i18n::text("Arrangements", &[])}
                     }
                     for (name, make, hint) in LAYOUT_TEMPLATES.iter().copied() {
                         button {
@@ -234,7 +234,7 @@ fn LayoutButton(
                                 open.set(false);
                             },
                             div { class: "text-xs text-[var(--text)]", "{name}" }
-                            div { class: "text-[10px] text-[var(--text-dim)] leading-snug", "{hint}" }
+                            div { class: "text-[10px] text-[var(--text-dim)] leading-snug", {crate::i18n::label(hint)} }
                         }
                     }
                     div { class: "border-t border-[var(--border)] mt-2 pt-2",
@@ -245,10 +245,10 @@ fn LayoutButton(
                                 edit_mode.set(now);
                                 open.set(false);
                             },
-                            if edit_mode() { "Stop rearranging" } else { "Rearrange by hand…" }
+                            if edit_mode() { {crate::i18n::text("Stop rearranging", &[])} } else { {crate::i18n::text("Rearrange by hand…", &[])} }
                         }
                         div { class: "text-[10px] text-[var(--text-dim)] px-2 pb-1 leading-snug",
-                            "Drag a panel by its top edge, resize from the corner."
+                            {crate::i18n::text("Drag a panel by its top edge, resize from the corner.", &[])}
                         }
                     }
                 }
@@ -287,7 +287,7 @@ fn ConnectingOverlay(target: String) -> Element {
             }
             div { class: "flex flex-col items-center gap-1.5 z-10",
                 div { class: "dxf-display text-lg font-bold tracking-tight text-[var(--text)]",
-                    "Connecting to {target}"
+                    {crate::i18n::text("Connecting to {0}", &[(target).to_string()])}
                 }
                 div { class: "dxf-ellipsis flex items-center gap-1 text-[var(--accent)] text-xl leading-none",
                     span { "\u{00b7}" }
@@ -558,8 +558,8 @@ pub fn WorkspaceView(
                         class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                         div { class: "text-sm text-[var(--text-muted)]",
                             match switch_to() {
-                                Some(target) => rsx! { "Switching to {target.server.label()}…" },
-                                None => rsx! { "Disconnecting…" },
+                                Some(target) => rsx! { {crate::i18n::text("Switching to {0}…", &[(target . server . label ()).to_string()])} },
+                                None => rsx! { {crate::i18n::text("Disconnecting…", &[])} },
                             }
                         }
                     }
@@ -610,7 +610,7 @@ pub fn WorkspaceView(
                 onmousedown: move |_| crate::app::start_window_drag(),
                 div { class: "shrink-0 flex items-center gap-2 px-1",
                     crate::app::DiscordiaLogo { class: "w-6 h-6" }
-                    span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", "Discordia" }
+                    span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
                 }
                 HostBanner {}
                 // One chip: what the connection is, and the button that ends it.
@@ -621,15 +621,15 @@ pub fn WorkspaceView(
                     TransportBadge {}
                     VoiceRouteBadge {}
                     if status == ConnectionStatus::Reconnecting {
-                        span { class: "px-2 text-[10px] text-[var(--warn)]", "Reconnecting…" }
+                        span { class: "px-2 text-[10px] text-[var(--warn)]", {crate::i18n::text("Reconnecting…", &[])} }
                     }
                     EncryptionBadge {}
                     button {
                         class: "h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
-                        title: "Disconnect from this server",
+                        title: crate::i18n::text("Disconnect from this server", &[]),
                         onclick: move |_| leave(String::new()),
                         span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
-                        "Disconnect"
+                        {crate::i18n::text("Disconnect", &[])}
                     }
                 }
                 // Settings and appearance sit in the corner of the window, not
@@ -640,7 +640,7 @@ pub fn WorkspaceView(
                     crate::features::appearance::AppearanceButton {}
                     button {
                         class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                        title: "Settings",
+                        title: crate::i18n::text("Settings", &[]),
                         onclick: move |_| {
                             let open = !state.read().audio_settings;
                             state.clone().write().audio_settings = open;
@@ -683,7 +683,7 @@ pub fn WorkspaceView(
                     button {
                         class: "dxf-cta rounded-lg px-3 py-1.5 text-[10px] uppercase tracking-wider",
                         onclick: move |_| edit_mode.set(false),
-                        "Done rearranging"
+                        {crate::i18n::text("Done rearranging", &[])}
                     }
                 }
             }
@@ -714,7 +714,7 @@ pub(crate) fn ErrorToast() -> Element {
     rsx! {
         div { class: "dxf-pop-in fixed bottom-12 left-1/2 -translate-x-1/2 z-50 max-w-md flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--danger)]/50 bg-[var(--panel-solid)] shadow-xl",
             span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
-            span { class: "text-xs text-[var(--text)] flex-1", "{msg}" }
+            span { class: "text-xs text-[var(--text)] flex-1", {crate::i18n::message(&msg)} }
             button {
                 class: "text-[var(--text-dim)] hover:text-[var(--text)] text-sm leading-none",
                 onclick: move |_| state.write().error_toast = None,
@@ -920,10 +920,17 @@ fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
         (s.guilds.len(), others_connected(&s))
     };
     let guilds_label = if guilds == 1 { "guild" } else { "guilds" };
+    let guilds_label = crate::i18n::label(guilds_label);
     let people = match others {
-        0 => "Nobody else is connected right now.".to_string(),
-        1 => "One other person is connected right now, and will be dropped.".to_string(),
-        n => format!("{n} other people are connected right now, and will be dropped."),
+        0 => crate::i18n::text("Nobody else is connected right now.", &[]),
+        1 => crate::i18n::text(
+            "One other person is connected right now, and will be dropped.",
+            &[],
+        ),
+        n => crate::i18n::text(
+            "{0} other people are connected right now, and will be dropped.",
+            &[n.to_string()],
+        ),
     };
 
     let cancel = move |_| leaving.set(None);
@@ -937,29 +944,29 @@ fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
                 class: "dxf-modal-in w-[26rem] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)]",
-                    h3 { class: "text-sm font-medium text-[var(--warn)]", "This machine is the server" }
+                    h3 { class: "text-sm font-medium text-[var(--warn)]", {crate::i18n::text("This machine is the server", &[])} }
                 }
                 div { class: "px-4 py-3 flex flex-col gap-2 text-sm text-[var(--text-muted)]",
                     p {
-                        "Disconnecting shuts the server down. Its {guilds} {guilds_label}, "
-                        "their channels and any voice or screen share go with it, and nobody "
-                        "can reach them until you host again from here."
+                        {crate::i18n::text("Disconnecting shuts the server down. Its {0} {1}, ", &[(guilds).to_string(), (guilds_label).to_string()])}
+                        {crate::i18n::text("their channels and any voice or screen share go with it, and nobody ", &[])}
+                        {crate::i18n::text("can reach them until you host again from here.", &[])}
                     }
                     p { "{people}" }
                     p { class: "text-[var(--text-dim)]",
-                        "Nothing is deleted — messages and settings stay on this machine."
+                        {crate::i18n::text("Nothing is deleted — messages and settings stay on this machine.", &[])}
                     }
                 }
                 div { class: "px-4 py-3 border-t border-[var(--border)] flex items-center justify-end gap-2",
                     button {
                         class: "px-3 py-1 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                         onclick: cancel,
-                        "Keep hosting"
+                        {crate::i18n::text("Keep hosting", &[])}
                     }
                     button {
                         class: "px-3 py-1 rounded text-[11px] uppercase tracking-wider text-[var(--danger)] border border-[var(--border)] hover:border-[var(--danger)] transition-colors",
                         onclick: confirm,
-                        "Stop the server"
+                        {crate::i18n::text("Stop the server", &[])}
                     }
                 }
             }
@@ -1014,13 +1021,13 @@ fn HostBanner() -> Element {
             span {
                 class: "w-2 h-2 rounded-full shrink-0",
                 style: "background: var(--success);",
-                title: "Hosting from this machine",
+                title: crate::i18n::text("Hosting from this machine", &[]),
             }
             button {
                 class: "text-[11.5px] text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors",
-                title: "Where your data goes",
+                title: crate::i18n::text("Where your data goes", &[]),
                 onclick: move |_| state.write().topology_open = true,
-                "self-hosted"
+                {crate::i18n::text("self-hosted", &[])}
             }
             // The code is what you hand a friend, so it is the one thing here
             // sized to be read and copied rather than skimmed.
@@ -1028,7 +1035,7 @@ fn HostBanner() -> Element {
                 code { class: "font-mono text-[12px] text-[var(--text)] select-all", "{code}" }
                 button {
                     class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors",
-                    title: if copied() { "Copied" } else { "Copy the invite code" },
+                    title: if copied() { crate::i18n::text("Copied", &[]) } else { crate::i18n::text("Copy the invite code", &[]) },
                     onclick: move |_| {
                         copied.set(crate::clipboard::copy_text(&code));
                     },
@@ -1042,30 +1049,30 @@ fn HostBanner() -> Element {
             if let Some(share) = share {
                 button {
                     class: "pl-2 inline-flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors border-l border-[var(--border)]",
-                    title: "Copy the quic:// address friends type to reach this machine directly. It carries the key their connection is checked against, so nothing on the way can read or pose as you.",
+                    title: crate::i18n::text("Copy the quic:// address friends type to reach this machine directly. It carries the key their connection is checked against, so nothing on the way can read or pose as you.", &[]),
                     onclick: move |_| {
                         copied_share.set(crate::clipboard::copy_text(&share));
                     },
                     span { class: "block w-3.5 h-3.5", dangerous_inner_html: crate::features::icons::COPY }
-                    if copied_share() { "address copied" } else { "copy address" }
+                    if copied_share() { {crate::i18n::text("address copied", &[])} } else { {crate::i18n::text("copy address", &[])} }
                 }
             }
             if let Some(err) = publish_error {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--danger)]",
-                    title: "{err}",
-                    "⚠ not published — {err}"
+                    title: crate::i18n::message(&(err).to_string()),
+                    {crate::i18n::text("⚠ not published — {0}", std::slice::from_ref(&(err)))}
                 }
             } else if has_shortcode && !listed_public {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--text-muted)]",
-                    title: "Reachable by code, but not shown in the public list. Turn on public listing when you create the server to appear there.",
-                    "unlisted"
+                    title: crate::i18n::text("Reachable by code, but not shown in the public list. Turn on public listing when you create the server to appear there.", &[]),
+                    {crate::i18n::text("unlisted", &[])}
                 }
             }
             span { class: "flex-1" }
             Reachability { reachability }
-            span { class: "{voice_color}", title: "{voice_title}", "● {voice_label}" }
+            span { class: "{voice_color}", title: crate::i18n::message(&voice_title), {format!("● {}", crate::i18n::label(voice_label))} }
         }
     }
 }
@@ -1099,24 +1106,24 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
             rsx! {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--success)]", title: "{title}",
-                    if method == "IPv6" { "● IPv6 available" }
-                    else if method == "manual forwarding" { "● manual address (voice unverified)" }
-                    else if media { "● voice candidates available" } else { "● chat port mapped" }
+                    if method == "IPv6" { {crate::i18n::text("● IPv6 available", &[])} }
+                    else if method == "manual forwarding" { {crate::i18n::text("● manual address (voice unverified)", &[])} }
+                    else if media { {crate::i18n::text("● voice candidates available", &[])} } else { {crate::i18n::text("● chat port mapped", &[])} }
                 }
             }
         }
         R::LanOnly { reason } => rsx! {
             span { class: "text-[var(--text-dim)]", "·" }
             span { class: "text-[var(--warn)]",
-                title: "{reason} Friends elsewhere can still join by code — the rendezvous relays them.",
-                "● this network only"
+                title: crate::i18n::text("{0} Friends elsewhere can still join by code — the rendezvous relays them.", std::slice::from_ref(&(reason))),
+                {crate::i18n::text("● this network only", &[])}
             }
         },
         R::LoopbackOnly => rsx! {
             span { class: "text-[var(--text-dim)]", "·" }
             span { class: "text-[var(--text-muted)]",
-                title: "Direct connections weren't enabled, so the gateway only listens on this machine. Friends can still join by code through the rendezvous.",
-                "● local only"
+                title: crate::i18n::text("Direct connections weren't enabled, so the gateway only listens on this machine. Friends can still join by code through the rendezvous.", &[]),
+                {crate::i18n::text("● local only", &[])}
             }
         },
     }
@@ -1158,7 +1165,7 @@ fn EncryptionBadge() -> Element {
     rsx! {
         button {
             class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
-            title: "{title} — click for the whole picture",
+            title: crate::i18n::text("{0} — click for the whole picture", &[(title).to_string()]),
             onclick: move |_| state.write().topology_open = true,
             "{label}"
         }
@@ -1204,9 +1211,9 @@ fn TransportBadge() -> Element {
     rsx! {
         button {
             class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
-            title: "{title} — click for the whole picture",
+            title: crate::i18n::text("{0} — click for the whole picture", &[(title).to_string()]),
             onclick: move |_| state.write().topology_open = true,
-            "Server: {route_label}"
+            {crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label)))}
         }
     }
 }
@@ -1274,29 +1281,29 @@ fn VoiceRouteBadge() -> Element {
     rsx! {
         button { class: "shrink-0 px-2 py-1 text-[10px] text-[var(--text-muted)] border-l border-[var(--border)]", title: "{title}",
             onclick: move |_| open.toggle(),
-            "Voice: {location} · {phase}"
+            {crate::i18n::text("Voice: {0} · {1}", &[(location).to_string(), (phase).to_string()])}
         }
         if open() {
             div { class: "dxf-no-drag rounded-md border border-[var(--border)] bg-[var(--panel2)] p-4 text-[12px]",
                 style: "position: fixed; top: 60px; right: 16px; z-index: 1000; max-width: min(520px, 90vw); max-height: 75vh; overflow: auto; white-space: normal;",
                 div { class: "flex items-center justify-between gap-2",
-                    strong { "Connection routes" }
-                    button { onclick: move |_| open.set(false), "Close" }
+                    strong { {crate::i18n::text("Connection routes", &[])} }
+                    button { onclick: move |_| open.set(false), {crate::i18n::text("Close", &[])} }
                 }
-                p { "Your voice server: {location}" }
-                p { "Audio send: {send}" }
-                p { "Audio receive: {receive}" }
-                p { style: "overflow-wrap: anywhere;", "Voice signaling: {signaling}" }
-                p { "Participants in this call — reported by their clients, refreshed every 5 seconds. No IP addresses are shared." }
+                p { {crate::i18n::text("Your voice server: {0}", &[(location).to_string()])} }
+                p { {crate::i18n::text("Audio send: {0}", std::slice::from_ref(&(send)))} }
+                p { {crate::i18n::text("Audio receive: {0}", std::slice::from_ref(&(receive)))} }
+                p { style: "overflow-wrap: anywhere;", {crate::i18n::text("Voice signaling: {0}", &[(signaling).to_string()])} }
+                p { {crate::i18n::text("Participants in this call — reported by their clients, refreshed every 5 seconds. No IP addresses are shared.", &[])} }
                 for (name, report) in peers {
                     div { class: "border-t border-[var(--border)] py-2",
                         strong { "{name}" }
                         if let Some(report) = report {
-                            p { "Server: {report.gateway}" }
-                            p { "Audio send: {report.sent.as_deref().unwrap_or(\"unknown\")}" }
-                            p { "Audio receive: {report.received.as_deref().unwrap_or(\"unknown\")}" }
+                            p { {crate::i18n::text("Server: {0}", std::slice::from_ref(&(report . gateway)))} }
+                            p { {crate::i18n::text("Audio send: {0}", &[(report . sent . as_deref () . unwrap_or ("unknown")).to_string()])} }
+                            p { {crate::i18n::text("Audio receive: {0}", &[(report . received . as_deref () . unwrap_or ("unknown")).to_string()])} }
                         } else {
-                            p { "Waiting for route report…" }
+                            p { {crate::i18n::text("Waiting for route report…", &[])} }
                         }
                     }
                 }

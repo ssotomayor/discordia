@@ -732,7 +732,7 @@ pub fn ActivityHost() -> Element {
                     }
                     picker_open.set(!picker_open());
                 },
-                "Activities"
+                {crate::i18n::text("Activities", &[])}
             }
         }
 
@@ -744,7 +744,7 @@ pub fn ActivityHost() -> Element {
                     class: "dxf-modal-in w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                     onclick: move |e| e.stop_propagation(),
                     div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                        h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Activities" }
+                        h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Activities", &[])} }
                         button {
                             class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                             onclick: move |_| { picker_open.set(false); consenting.set(None); },
@@ -753,10 +753,10 @@ pub fn ActivityHost() -> Element {
                     }
                     div { class: "p-2",
                         if let Some(err) = problem() {
-                            div { class: "px-2 pb-2 text-[11px] text-[var(--danger)]", "{err}" }
+                            div { class: "px-2 pb-2 text-[11px] text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
                         }
                         if pending().is_some() {
-                            div { class: "px-2 pb-2 text-[11px] text-[var(--text-dim)]", "Opening the activity…" }
+                            div { class: "px-2 pb-2 text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Opening the activity…", &[])} }
                         }
                         if let Some(p) = consenting() {
                             ConsentPanel {
@@ -822,23 +822,23 @@ fn InstanceCard(
         div { class: "dxf-pop-in flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] px-2.5 py-1.5 shadow-lg max-w-xs",
             span { class: "text-base", "{activity.icon}" }
             div { class: "min-w-0 flex-1",
-                div { class: "text-[11px] text-[var(--text)] truncate", "{host} is playing {activity.name}" }
+                div { class: "text-[11px] text-[var(--text)] truncate", {crate::i18n::text("{0} is playing {1}", &[(host).to_string(), (activity . name).to_string()])} }
                 div { class: "text-[10px] text-[var(--text-dim)]",
-                    "{players}/{instance.max_players} playing"
-                    if watching > 0 { " · {watching} watching" }
+                    {crate::i18n::text("{0}/{1} playing", &[(players).to_string(), (instance . max_players).to_string()])}
+                    if watching > 0 { {crate::i18n::text(" · {0} watching", &[(watching).to_string()])} }
                 }
             }
             if !full {
                 button {
                     class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                     onclick: move |_| on_join.call((play.clone(), id, ActivityRole::Player)),
-                    "Join"
+                    {crate::i18n::text("Join", &[])}
                 }
             }
             button {
                 class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                 onclick: move |_| on_join.call((watch.clone(), id, ActivityRole::Spectator)),
-                "Watch"
+                {crate::i18n::text("Watch", &[])}
             }
         }
     }
@@ -858,9 +858,9 @@ fn ActivityRow(activity: Activity, on_pick: EventHandler<Activity>) -> Element {
             div { class: "flex-1 min-w-0",
                 div { class: "text-sm text-[var(--text)] truncate", "{activity.name}" }
                 div { class: "text-[10px] text-[var(--text-dim)]",
-                    if third_party { "Installed app · " } else { "Built in · " }
-                    if activity.max_players > 1 { "up to {activity.max_players} players · " }
-                    "{activity.caps.len()} permission(s)"
+                    if third_party { {crate::i18n::text("Installed app · ", &[])} } else { {crate::i18n::text("Built in · ", &[])} }
+                    if activity.max_players > 1 { {crate::i18n::text("up to {0} players · ", &[(activity . max_players).to_string()])} }
+                    {crate::i18n::plural("{0} permission", "{0} permission(s)", activity . caps . len ())}
                 }
             }
         }
@@ -885,35 +885,35 @@ fn ConsentPanel(
                 div { class: "min-w-0",
                     div { class: "text-sm text-[var(--text)] font-medium truncate", "{activity.name}" }
                     if let Some(author) = &author {
-                        div { class: "font-mono text-[10px] text-[var(--text-dim)]", "Third-party · {author}" }
+                        div { class: "font-mono text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Third-party · {0}", std::slice::from_ref(author))} }
                     }
                 }
             }
-            div { class: "text-xs text-[var(--text-muted)] mb-1.5", "This activity will be able to:" }
+            div { class: "text-xs text-[var(--text-muted)] mb-1.5", {crate::i18n::text("This activity will be able to:", &[])} }
             ul { class: "space-y-1 mb-3",
                 for cap in activity.caps.iter().copied() {
                     li { class: "flex items-start gap-2 text-xs text-[var(--text)]",
                         span { class: "text-[var(--accent)]", "•" }
-                        span { "{cap.label()}" }
+                        span { {crate::i18n::label(cap.label())} }
                     }
                 }
                 if activity.caps.is_empty() {
-                    li { class: "text-xs text-[var(--text-dim)]", "Nothing beyond drawing in its window" }
+                    li { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Nothing beyond drawing in its window", &[])} }
                 }
             }
             div { class: "text-[10px] text-[var(--text-dim)] mb-2",
-                "Opens in its own window with no internet access. It can't read your other channels, files, or keys, and it never needs your recovery phrase."
+                {crate::i18n::text("Opens in its own window with no internet access. It can't read your other channels, files, or keys, and it never needs your recovery phrase.", &[])}
             }
             div { class: "flex gap-2",
                 button {
                     class: "flex-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                     onclick: move |_| on_approve.call(()),
-                    if joining { "Join" } else { "Launch" }
+                    if joining { {crate::i18n::text("Join", &[])} } else { {crate::i18n::text("Launch", &[])} }
                 }
                 button {
                     class: "rounded px-3 py-1.5 text-[11px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                     onclick: move |_| on_cancel.call(()),
-                    "Cancel"
+                    {crate::i18n::text("Cancel", &[])}
                 }
             }
         }

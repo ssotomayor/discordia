@@ -802,22 +802,22 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
     rsx! {
         div { class: "space-y-4",
                     if let Some(e) = error() {
-                        div { class: "text-xs text-[var(--danger)] border border-[var(--danger)]/40 rounded px-3 py-2", "{e}" }
+                        div { class: "text-xs text-[var(--danger)] border border-[var(--danger)]/40 rounded px-3 py-2", {crate::i18n::message(&(e).to_string())} }
                     }
                     match step() {
                         Step::Token => rsx! {
                             div { class: "space-y-2 text-xs text-[var(--text-muted)] leading-relaxed",
-                                p { "The shape of the server comes over: name, picture, banner, channels in order, roles, emojis. Members are invited, not moved; messages stay where they are." }
+                                p { {crate::i18n::text("The shape of the server comes over: name, picture, banner, channels in order, roles, emojis. Members are invited, not moved; messages stay where they are.", &[])} }
                                 ol { class: "list-decimal pl-4 space-y-1",
-                                    li { "Create a bot at discord.com/developers → New Application → Bot, and copy its token." }
-                                    li { "Invite it to the server: OAuth2 → URL Generator, scope \"bot\", no permissions needed." }
-                                    li { "Paste the token below. It stays on this computer and is forgotten when this closes." }
+                                    li { {crate::i18n::text("Create a bot at discord.com/developers → New Application → Bot, and copy its token.", &[])} }
+                                    li { {crate::i18n::text("Invite it to the server: OAuth2 → URL Generator, scope \"bot\", no permissions needed.", &[])} }
+                                    li { {crate::i18n::text("Paste the token below. It stays on this computer and is forgotten when this closes.", &[])} }
                                 }
                             }
                             form {
                                 class: "space-y-2",
                                 onsubmit: move |_| find_servers(),
-                                label { class: LABEL, "Bot token" }
+                                label { class: LABEL, {crate::i18n::text("Bot token", &[])} }
                                 input {
                                     class: INPUT,
                                     r#type: "password",
@@ -827,18 +827,18 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                     oninput: move |e| token.set(e.value()),
                                 }
                                 div { class: "flex justify-end gap-2",
-                                    button { r#type: "button", class: QUIET, onclick: move |_| on_close.call(()), "Cancel" }
+                                    button { r#type: "button", class: QUIET, onclick: move |_| on_close.call(()), {crate::i18n::text("Cancel", &[])} }
                                     button {
                                         r#type: "submit",
                                         class: BUTTON,
                                         disabled: busy() || token().trim().is_empty(),
-                                        if busy() { "Asking Discord…" } else { "Find servers" }
+                                        if busy() { {crate::i18n::text("Asking Discord…", &[])} } else { {crate::i18n::text("Find servers", &[])} }
                                     }
                                 }
                             }
                         },
                         Step::Pick(servers) => rsx! {
-                            div { class: LABEL, "Servers the bot is in" }
+                            div { class: LABEL, {crate::i18n::text("Servers the bot is in", &[])} }
                             div { class: "space-y-1.5",
                                 for s in servers.iter().cloned() {
                                     button {
@@ -850,12 +850,12 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                 }
                             }
                             div { class: "flex justify-start",
-                                button { class: QUIET, onclick: move |_| step.set(Step::Token), "← Back" }
+                                button { class: QUIET, onclick: move |_| step.set(Step::Token), {crate::i18n::text("← Back", &[])} }
                             }
                         },
                         Step::Reading(name) => rsx! {
                             div { class: "text-xs text-[var(--text-muted)] py-6 text-center",
-                                "Reading “{name}” and fetching its pictures…"
+                                {crate::i18n::text("Reading “{0}” and fetching its pictures…", std::slice::from_ref(&(name)))}
                             }
                         },
                         Step::Preview(plan) => {
@@ -877,7 +877,7 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                     img { class: "w-full h-20 rounded-lg object-cover border border-[var(--border)]", src: "{banner}", alt: "" }
                                 }
                                 div { class: "space-y-1",
-                                    div { class: LABEL, "{plan.channels.len()} channels, in this order" }
+                                    div { class: LABEL, {crate::i18n::text("{0} channels, in this order", &[(plan . channels . len ()).to_string()])} }
                                     div { class: "max-h-36 overflow-y-auto text-xs text-[var(--text-muted)] font-mono space-y-0.5 pr-1",
                                         for (i, c) in plan.channels.iter().enumerate() {
                                             div { key: "{i}", class: "flex gap-2",
@@ -885,14 +885,14 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                                     if c.kind == ChannelKind::Voice { "🔊" } else { "#" }
                                                 }
                                                 span { class: "truncate", "{c.name}" }
-                                                if c.read_only { span { class: "text-[var(--text-dim)]", "read-only" } }
-                                                if c.slowmode_secs > 0 { span { class: "text-[var(--text-dim)]", "slow {c.slowmode_secs}s" } }
+                                                if c.read_only { span { class: "text-[var(--text-dim)]", {crate::i18n::text("read-only", &[])} } }
+                                                if c.slowmode_secs > 0 { span { class: "text-[var(--text-dim)]", {crate::i18n::text("slow {0}s", &[(c . slowmode_secs).to_string()])} } }
                                             }
                                         }
                                     }
                                 }
                                 div { class: "space-y-1",
-                                    div { class: LABEL, "{plan.roles.len()} roles" }
+                                    div { class: LABEL, {crate::i18n::plural("{0} role", "{0} roles", plan . roles . len ())} }
                                     div { class: "flex flex-wrap gap-1",
                                         for (i, r) in plan.roles.iter().enumerate() {
                                             span {
@@ -905,7 +905,7 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                     }
                                 }
                                 div { class: "space-y-1",
-                                    div { class: LABEL, "{plan.emojis.len()} emojis" }
+                                    div { class: LABEL, {crate::i18n::plural("{0} emoji", "{0} emojis", plan . emojis . len ())} }
                                     div { class: "flex flex-wrap gap-1",
                                         for e in plan.emojis.iter().take(24) {
                                             img { key: "{e.shortcode}", class: "w-6 h-6 object-contain", src: "{e.image}", title: ":{e.shortcode}:", alt: "" }
@@ -917,7 +917,7 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                 }
                                 if !plan.skipped.is_empty() {
                                     div { class: "space-y-1",
-                                        div { class: LABEL, "Not imported" }
+                                        div { class: LABEL, {crate::i18n::text("Not imported", &[])} }
                                         ul { class: "list-disc pl-4 text-xs text-[var(--text-muted)] space-y-0.5",
                                             for (i, s) in plan.skipped.iter().enumerate() {
                                                 li { key: "{i}", "{s}" }
@@ -926,11 +926,11 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                     }
                                 }
                                 p { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
-                                    "About {plan.writes()} changes, sent one at a time so the server does not throttle them."
+                                    {crate::i18n::text("About {0} changes, sent one at a time so the server does not throttle them.", &[(plan . writes ()).to_string()])}
                                 }
                                 div { class: "flex justify-between",
-                                    button { class: QUIET, onclick: move |_| step.set(Step::Token), "← Back" }
-                                    button { class: BUTTON, onclick: move |_| start(plan_for_start.clone()), "Import" }
+                                    button { class: QUIET, onclick: move |_| step.set(Step::Token), {crate::i18n::text("← Back", &[])} }
+                                    button { class: BUTTON, onclick: move |_| start(plan_for_start.clone()), {crate::i18n::text("Import", &[])} }
                                 }
                             }
                         },
@@ -943,19 +943,19 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                         div { class: "h-1.5 w-full rounded-full bg-[var(--bg2)] overflow-hidden",
                                             div { class: "h-full bg-[var(--accent)] transition-all", style: "width: {pct}%;" }
                                         }
-                                        div { class: "text-[10px] text-[var(--text-dim)]", "{done} of {total}" }
+                                        div { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("{0} of {1}", &[(done).to_string(), (total).to_string()])} }
                                     }
                                 }
                             }
                             Progress::Done { guild_id, summary } => rsx! {
                                 div { class: "space-y-3 py-2",
-                                    div { class: "text-sm text-[var(--text)]", "Imported." }
+                                    div { class: "text-sm text-[var(--text)]", {crate::i18n::text("Imported.", &[])} }
                                     div { class: "text-xs text-[var(--text-muted)]", "{summary}" }
                                     p { class: "text-[11px] text-[var(--text-dim)]",
-                                        "Anything the server refused showed as a toast while it ran. Share an invite to bring people over."
+                                        {crate::i18n::text("Anything the server refused showed as a toast while it ran. Share an invite to bring people over.", &[])}
                                     }
                                     div { class: "flex justify-end gap-2",
-                                        button { class: QUIET, onclick: move |_| on_close.call(()), "Close" }
+                                        button { class: QUIET, onclick: move |_| on_close.call(()), {crate::i18n::text("Close", &[])} }
                                         button {
                                             class: BUTTON,
                                             onclick: move |_| {
@@ -963,21 +963,21 @@ pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) 
                                                 state.write().dm_mode = false;
                                                 on_close.call(());
                                             },
-                                            "Open guild"
+                                            {crate::i18n::text("Open guild", &[])}
                                         }
                                     }
                                 }
                             },
                             Progress::Failed(e) => rsx! {
                                 div { class: "space-y-3 py-2",
-                                    div { class: "text-xs text-[var(--danger)]", "{e}" }
+                                    div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
                                     div { class: "flex justify-end",
-                                        button { class: QUIET, onclick: move |_| on_close.call(()), "Close" }
+                                        button { class: QUIET, onclick: move |_| on_close.call(()), {crate::i18n::text("Close", &[])} }
                                     }
                                 }
                             },
                             Progress::Idle => rsx! {
-                                div { class: "text-xs text-[var(--text-muted)] py-6 text-center", "Starting…" }
+                                div { class: "text-xs text-[var(--text-muted)] py-6 text-center", {crate::i18n::text("Starting…", &[])} }
                             },
                         },
                     }

@@ -269,7 +269,7 @@ pub fn MembersPanel() -> Element {
                 ),
                 None => (
                     "online".into(),
-                    format!("Online — {}", run.len()),
+                    crate::i18n::text("Online — {0}", &[run.len().to_string()]),
                     None,
                     run,
                 ),
@@ -284,7 +284,7 @@ pub fn MembersPanel() -> Element {
             Some((id, name)) => (id.to_string(), format!("{name} — {}", run.len()), None, run),
             None => (
                 "online".into(),
-                format!("Online — {}", run.len()),
+                crate::i18n::text("Online — {0}", &[run.len().to_string()]),
                 None,
                 run,
             ),
@@ -295,7 +295,7 @@ pub fn MembersPanel() -> Element {
     } else {
         vec![(
             "online".into(),
-            format!("Online — {}", online_members.len()),
+            crate::i18n::text("Online — {0}", &[online_members.len().to_string()]),
             None,
             online_members.clone(),
         )]
@@ -323,7 +323,7 @@ pub fn MembersPanel() -> Element {
     rsx! {
         aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
             div { class: "h-12 px-3.5 flex items-center border-b border-[var(--border)]",
-                h2 { class: "dxf-display text-[15px] font-bold tracking-tight text-[var(--text)] truncate", "Members" }
+                h2 { class: "dxf-display text-[15px] font-bold tracking-tight text-[var(--text)] truncate", {crate::i18n::text("Members", &[])} }
                 span { class: "ml-auto font-mono text-[11px] text-[var(--text-dim)]",
                     "{online_count}"
                 }
@@ -348,7 +348,7 @@ pub fn MembersPanel() -> Element {
                         }
                     }
                     if members.is_empty() {
-                        div { class: "px-4 text-xs text-[var(--text-dim)]", "No members" }
+                        div { class: "px-4 text-xs text-[var(--text-dim)]", {crate::i18n::text("No members", &[])} }
                     }
                 }
             }
@@ -420,7 +420,7 @@ fn MemberMenuPopover(
                 match menu.confirming {
                     None => rsx! {
                         if can_roles && !guild_roles.is_empty() {
-                            div { class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "Roles" }
+                            div { class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("Roles", &[])} }
                             for role in guild_roles.iter().cloned() {
                                 {
                                     let has = target_roles.contains(&role.id);
@@ -455,7 +455,7 @@ fn MemberMenuPopover(
                         if can_disconnect && in_a_call_here {
                             button {
                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--warn)] hover:bg-[var(--warn)]/10 transition-colors",
-                                title: "Drops their voice, screen share and camera. They can join again.",
+                                title: crate::i18n::text("Drops their voice, screen share and camera. They can join again.", &[]),
                                 onclick: move |_| {
                                     gw_disconnect.send(ClientMessage::DisconnectVoice {
                                         guild_id: gid,
@@ -463,21 +463,21 @@ fn MemberMenuPopover(
                                     });
                                     on_close.call(());
                                 },
-                                "Disconnect from voice"
+                                {crate::i18n::text("Disconnect from voice", &[])}
                             }
                         }
                         if can_kick {
                             button {
                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
                                 onclick: move |_| on_confirm.call(ModAction::Kick),
-                                "Kick"
+                                {crate::i18n::text("Kick", &[])}
                             }
                         }
                         if can_ban {
                             button {
                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
                                 onclick: move |_| on_confirm.call(ModAction::Ban),
-                                "Ban"
+                                {crate::i18n::text("Ban", &[])}
                             }
                         }
                     },
@@ -508,7 +508,7 @@ fn MemberMenuPopover(
                                 button {
                                     class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                                     onclick: move |_| on_close.call(()),
-                                    "Cancel"
+                                    {crate::i18n::text("Cancel", &[])}
                                 }
                             }
                         }
@@ -662,7 +662,7 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
     rsx! {
         div {
             class: "flex items-center gap-2.5 h-9 px-2.5 mx-1 rounded-lg hover:bg-[var(--panel2)] cursor-pointer",
-            title: if is_self { "Click to view your profile" } else { "Click to view profile" },
+            title: if is_self { crate::i18n::text("Click to view your profile", &[]) } else { crate::i18n::text("Click to view profile", &[]) },
             onclick: move |_| state.write().profile_card = Some(card_pubkey.clone()),
             oncontextmenu: move |e: MouseEvent| {
                 e.prevent_default();
@@ -689,7 +689,7 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                         span {
                             class: "block w-3 h-3 shrink-0",
                             style: "color:var(--amber);",
-                            title: "Guild owner",
+                            title: crate::i18n::text("Guild owner", &[]),
                             dangerous_inner_html: crate::features::icons::CROWN,
                         }
                     }
@@ -697,15 +697,15 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                         span {
                             class: "block w-3 h-3 shrink-0",
                             style: "color:#5b9cff;",
-                            title: "Runs this server",
+                            title: crate::i18n::text("Runs this server", &[]),
                             dangerous_inner_html: crate::features::icons::SCREEN,
                         }
                     }
                     if member.bot {
                         span {
                             class: "dxf-pop px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider",
-                            title: "Installed bot",
-                            "Bot"
+                            title: crate::i18n::text("Installed bot", &[]),
+                            {crate::i18n::text("Bot", &[])}
                         }
                     }
                 }
@@ -744,13 +744,13 @@ fn VoiceBadges(place: String, muted: bool, deafened: bool) -> Element {
             if deafened {
                 span {
                     class: "block w-3 h-3",
-                    title: "Deafened",
+                    title: crate::i18n::text("Deafened", &[]),
                     dangerous_inner_html: crate::features::icons::HEADPHONES_OFF,
                 }
             } else if muted {
                 span {
                     class: "block w-3 h-3",
-                    title: "Muted",
+                    title: crate::i18n::text("Muted", &[]),
                     dangerous_inner_html: crate::features::icons::MIC_OFF,
                 }
             }

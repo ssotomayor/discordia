@@ -343,7 +343,7 @@ pub fn ChatView() -> Element {
                 div {
                     class: "dxf-fade pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--accent-soft)]",
                     style: "margin: 0.5rem;",
-                    span { class: "text-sm font-medium text-[var(--accent)]", "Drop an image to attach it" }
+                    span { class: "text-sm font-medium text-[var(--accent)]", {crate::i18n::text("Drop an image to attach it", &[])} }
                 }
             }
 
@@ -358,8 +358,8 @@ pub fn ChatView() -> Element {
                     }
                     span {
                         class: "shrink-0 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
-                        title: "End-to-end encrypted and sent over Nostr relays, not through this server. The relays cannot read it and cannot see who sent it. Your conversation follows your key to any server.",
-                        "🔒 private · relays"
+                        title: crate::i18n::text("End-to-end encrypted and sent over Nostr relays, not through this server. The relays cannot read it and cannot see who sent it. Your conversation follows your key to any server.", &[]),
+                        {crate::i18n::text("🔒 private · relays", &[])}
                     }
                 }
                 if let Some(topic) = channel_topic {
@@ -380,7 +380,7 @@ pub fn ChatView() -> Element {
                 style: "overflow-anchor: none;", onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
-                            if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }
+                            if is_dm { {crate::i18n::text("No messages yet. Say hi 👋", &[])} } else { {crate::i18n::text("No messages yet.", &[])} }
                         }
                     } else {
                         if messages.len() >= PAGE_SIZE {
@@ -401,7 +401,7 @@ pub fn ChatView() -> Element {
                                                         before_ms: Some(before_ms),
                                                     });
                                                 },
-                                                "Load earlier messages"
+                                                {crate::i18n::text("Load earlier messages", &[])}
                                             }
                                         }
                                     }
@@ -527,11 +527,15 @@ fn day_of(m: &Message) -> chrono::NaiveDate {
 fn day_label(day: chrono::NaiveDate) -> String {
     let today = chrono::Local::now().date_naive();
     if day == today {
-        "Today".to_string()
+        crate::i18n::text("Today", &[])
     } else if Some(day) == today.pred_opt() {
-        "Yesterday".to_string()
+        crate::i18n::text("Yesterday", &[])
     } else {
-        day.format("%a, %b %-d, %Y").to_string()
+        if crate::i18n::current() == crate::i18n::Language::English {
+            day.format("%a, %b %-d, %Y").to_string()
+        } else {
+            day.format("%d/%m/%Y").to_string()
+        }
     }
 }
 
@@ -548,9 +552,12 @@ fn mentions_user(content: &str, username: &str) -> bool {
 fn typing_label(typers: &[String]) -> Option<String> {
     match typers.len() {
         0 => None,
-        1 => Some(format!("{} is typing…", typers[0])),
-        2 => Some(format!("{} and {} are typing…", typers[0], typers[1])),
-        _ => Some("several people are typing…".to_string()),
+        1 => Some(crate::i18n::text("{0} is typing…", &[typers[0].clone()])),
+        2 => Some(crate::i18n::text(
+            "{0} and {1} are typing…",
+            &[typers[0].clone(), typers[1].clone()],
+        )),
+        _ => Some(crate::i18n::text("several people are typing…", &[])),
     }
 }
 
@@ -637,19 +644,19 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         let icon = "inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]";
         match delivery {
             Delivery::Pending => rsx! {
-                span { class: icon, title: "Sending…", dangerous_inner_html: crate::features::icons::CLOCK }
+                span { class: icon, title: crate::i18n::text("Sending…", &[]), dangerous_inner_html: crate::features::icons::CLOCK }
             },
             Delivery::Accepted => rsx! {
                 span {
                     class: icon,
-                    title: "Accepted by relay. Not a delivery or read receipt.",
+                    title: crate::i18n::text("Accepted by relay. Not a delivery or read receipt.", &[]),
                     dangerous_inner_html: crate::features::icons::CHECK,
                 }
             },
             Delivery::Failed => rsx! {
                 span { class: "text-[10px] text-[var(--danger)]",
-                    "Not accepted · "
-                    button { class: "underline", onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Retry { message_id }), "Retry" }
+                    {crate::i18n::text("Not accepted · ", &[])}
+                    button { class: "underline", onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Retry { message_id }), {crate::i18n::text("Retry", &[])} }
                 }
             },
         }
@@ -710,8 +717,8 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         if message.author_bot {
                             span {
                                 class: "self-center px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider",
-                                title: "Installed bot",
-                                "Bot"
+                                title: crate::i18n::text("Installed bot", &[]),
+                                {crate::i18n::text("Bot", &[])}
                             }
                         }
                         if let Some(rank) = rank.clone() {
@@ -734,7 +741,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 } else if let Some(mark) = delivery_mark.clone() {
                     div { class: "mt-0.5", {mark} }
                 }
-                if pinned { div { class: "text-xs text-[var(--text-dim)]", "📌 Pinned" } }
+                if pinned { div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("📌 Pinned", &[])} } }
                 if let Some(attachment) = message.attachment.clone() {
                     super::chat_tools::FileAttachment { attachment }
                 }
@@ -749,8 +756,8 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                         class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
                                         style: "cursor: zoom-in;",
                                         src: "{src}",
-                                        alt: "attachment",
-                                        title: "Click to view full size",
+                                        alt: crate::i18n::text("attachment", &[]),
+                                        title: crate::i18n::text("Click to view full size", &[]),
                                         onclick: move |_| state.write().image_viewer = Some(full.clone()),
                                     }
                                 }
@@ -758,7 +765,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             None => rsx! {
                                 div {
                                     class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] w-48 h-24 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                                    "Loading image…"
+                                    {crate::i18n::text("Loading image…", &[])}
                                 }
                             },
                         }
@@ -772,7 +779,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             span { "{name}" }
                         }
                         if let (Some(width), Some(height)) = (metadata.width, metadata.height) {
-                            span { " · {width} × {height} px" }
+                            span { {crate::i18n::text(" · {0} × {1} px", &[(width).to_string(), (height).to_string()])} }
                         }
                     }
                 }
@@ -817,7 +824,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
-                        title: "Reply",
+                        title: crate::i18n::text("Reply", &[]),
                         onclick: {
                             let author = author_name.clone();
                             let body = content_for_reply.clone();
@@ -834,13 +841,13 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
-                        title: "Add reaction",
+                        title: crate::i18n::text("Add reaction", &[]),
                         onclick: move |_| show_react.set(!show_react()),
                         "☺"
                     }
                     if can_pin {
                         button {
-                            title: if pinned { "Unpin message" } else { "Pin message" },
+                            title: if pinned { crate::i18n::text("Unpin message", &[]) } else { crate::i18n::text("Pin message", &[]) },
                             onclick: { let g = gateway.clone(); move |_| g.send(ClientMessage::PinMessage { channel_id, message_id, pinned: !pinned }) },
                             "📌"
                         }
@@ -848,14 +855,14 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     if can_delete {
                         button {
                             class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] text-sm leading-none transition-colors",
-                            title: "Delete message",
+                            title: crate::i18n::text("Delete message", &[]),
                             onclick: move |_| confirm_delete.set(!confirm_delete()),
                             "🗑"
                         }
                     }
                     if confirm_delete() {
                         div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
-                            span { class: "text-[10px] text-[var(--text-muted)] px-1", "Delete?" }
+                            span { class: "text-[10px] text-[var(--text-muted)] px-1", {crate::i18n::text("Delete?", &[])} }
                             button {
                                 class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
                                 onclick: {
@@ -865,12 +872,12 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                         confirm_delete.set(false);
                                     }
                                 },
-                                "Yes"
+                                {crate::i18n::text("Yes", &[])}
                             }
                             button {
                                 class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                                 onclick: move |_| confirm_delete.set(false),
-                                "No"
+                                {crate::i18n::text("No", &[])}
                             }
                         }
                     }
@@ -947,7 +954,7 @@ fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
                             button {
                                 key: "{code}",
                                 class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                title: "{emoji} — right-click to save or remove",
+                                title: crate::i18n::text("{0} — right-click to save or remove", std::slice::from_ref(&(emoji))),
                                 onclick: move |_| on_pick.call(emoji.clone()),
                                 oncontextmenu: move |ev: MouseEvent| {
                                     ev.prevent_default();
@@ -1045,7 +1052,7 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
             }
             if let Some(s) = saved {
                 div { class: "text-[10px] text-[var(--text-dim)] mb-1.5",
-                    "Saved as :{s.shortcode}: — yours to use in DMs."
+                    {crate::i18n::text("Saved as :{0}: — yours to use in DMs.", std::slice::from_ref(&(s . shortcode)))}
                 }
                 div { class: "flex gap-2",
                     button {
@@ -1055,18 +1062,18 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
                             state.write().remove_saved_emoji(&image_rm);
                             on_done.call(());
                         },
-                        "Remove from my emoji"
+                        {crate::i18n::text("Remove from my emoji", &[])}
                     }
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
                         onclick: move |_| on_done.call(()),
-                        "Back"
+                        {crate::i18n::text("Back", &[])}
                     }
                 }
             } else {
                 div { class: "text-[10px] text-[var(--text-dim)] mb-1.5",
-                    "Save it to use in DMs, under a name of your own:"
+                    {crate::i18n::text("Save it to use in DMs, under a name of your own:", &[])}
                 }
                 div { class: "flex items-center gap-0.5 font-mono text-xs",
                     span { class: "text-[var(--text-dim)]", ":" }
@@ -1079,7 +1086,7 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
                     span { class: "text-[var(--text-dim)]", ":" }
                 }
                 if let Some(e) = error() {
-                    div { class: "text-[10px] text-[var(--danger)] mt-1", "{e}" }
+                    div { class: "text-[10px] text-[var(--danger)] mt-1", {crate::i18n::message(&(e).to_string())} }
                 }
                 div { class: "flex gap-2 mt-1.5",
                     button {
@@ -1091,13 +1098,13 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
                                 Err(e) => error.set(Some(e)),
                             }
                         },
-                        "Save to my emoji"
+                        {crate::i18n::text("Save to my emoji", &[])}
                     }
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
                         onclick: move |_| on_done.call(()),
-                        "Back"
+                        {crate::i18n::text("Back", &[])}
                     }
                 }
             }
@@ -1121,13 +1128,13 @@ pub fn ImageViewer() -> Element {
                 class: "dxf-modal-in object-contain rounded-lg shadow-2xl",
                 style: "max-width: 100%; max-height: 100%;",
                 src: "{src}",
-                alt: "attachment",
+                alt: crate::i18n::text("attachment", &[]),
                 onclick: move |e| e.stop_propagation(),
             }
             button {
                 class: "absolute w-9 h-9 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors",
                 style: "top: 1rem; right: 1.25rem;",
-                title: "Close",
+                title: crate::i18n::text("Close", &[]),
                 onclick: move |_| state.write().image_viewer = None,
                 "✕"
             }
@@ -1834,7 +1841,7 @@ fn Composer(
             div { class: "px-3 pb-3 shrink-0",
                 div { class: "flex items-center gap-2 border border-[var(--border)] rounded-lg px-3 py-2 text-xs text-[var(--text-dim)]",
                     span { "🔒" }
-                    span { "This channel is read-only." }
+                    span { {crate::i18n::text("This channel is read-only.", &[])} }
                 }
             }
         };
@@ -2122,12 +2129,12 @@ fn Composer(
             if let Some(r) = replying_to() {
                 div { class: "flex items-center gap-2 mb-1 px-2 py-1 rounded-t-md bg-[var(--panel-solid)] border border-b-0 border-[var(--border)] text-[11px]",
                     span { class: "shrink-0 text-[var(--text-dim)] opacity-60", "↩" }
-                    span { class: "shrink-0 text-[var(--text-muted)]", "Replying to" }
+                    span { class: "shrink-0 text-[var(--text-muted)]", {crate::i18n::text("Replying to", &[])} }
                     span { class: "shrink-0 font-medium text-[var(--accent)]", "{r.author_username}" }
                     span { class: "truncate text-[var(--text-dim)]", "{r.excerpt}" }
                     button {
                         class: "ml-auto shrink-0 w-5 h-5 rounded text-[var(--text-dim)] hover:text-[var(--danger)] leading-none transition-colors",
-                        title: "Cancel reply",
+                        title: crate::i18n::text("Cancel reply", &[]),
                         onclick: move |_| state.write().replying_to = None,
                         "✕"
                     }
@@ -2142,7 +2149,7 @@ fn Composer(
                     } else {
                     if !guild_emojis.is_empty() {
                         div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
-                            if is_dm { "Your emoji" } else { "This guild" }
+                            if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
                         }
                         div { class: "grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
                             for e in guild_emojis.iter().cloned() {
@@ -2156,7 +2163,7 @@ fn Composer(
                                             key: "{e.shortcode}",
                                             r#type: "button",
                                             class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                            title: ":{code}: — right-click to save or remove",
+                                            title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
                                             onclick: move |_| {
                                                 insert_pick(&id, &EmojiPick::Custom { code: code.clone(), url: url.clone() }, false, false);
                                                 show_emoji.set(false);
@@ -2203,7 +2210,7 @@ fn Composer(
                 div {
                     class: "dxf-pop-in absolute bottom-full left-3 right-3 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
                     div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-2 pb-1",
-                        "Emoji — ↑↓ to choose, Enter or Tab to insert"
+                        {crate::i18n::text("Emoji — ↑↓ to choose, Enter or Tab to insert", &[])}
                     }
                     for (i, s) in suggestions.iter().cloned().enumerate() {
                         {
@@ -2242,26 +2249,26 @@ fn Composer(
                 div { class: "mb-2 flex items-center gap-2",
                     button {
                         r#type: "button",
-                        title: "Enlarge image preview",
-                        aria_label: "Enlarge image preview",
+                        title: crate::i18n::text("Enlarge image preview", &[]),
+                        aria_label: crate::i18n::text("Enlarge image preview", &[]),
                         style: "cursor:zoom-in;",
                         onclick: { let full = img.url.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
                         img {
                             class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
                             src: "{img.url}",
-                            alt: "pending attachment",
+                            alt: crate::i18n::text("pending attachment", &[]),
                         }
                     }
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                         onclick: move |_| { generation.with_mut(|n| *n = n.wrapping_add(1)); pending_image.set(None); },
-                        "Remove"
+                        {crate::i18n::text("Remove", &[])}
                     }
                 }
             }
             if let Some(err) = attach_err() {
-                div { class: "mb-2 text-[10px] text-[var(--danger)]", "{err}" }
+                div { class: "mb-2 text-[10px] text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
             }
 
             if let Some((name, data_url)) = pending_file() {
@@ -2269,14 +2276,14 @@ fn Composer(
                     div { class: "h-10 max-w-xs min-w-0 flex items-center gap-2 px-3 rounded border border-[var(--border-strong)] bg-[var(--panel2)] text-xs text-[var(--text)]",
                         span { class: "block w-4 h-4 shrink-0 text-[var(--text-dim)]", dangerous_inner_html: super::icons::FILE }
                         span { class: "truncate", "{name}" }
-                        span { class: "shrink-0 text-[var(--text-dim)]", "{file_kb(&data_url)} KB" }
+                        span { class: "shrink-0 text-[var(--text-dim)]", {crate::i18n::text("{0} KB", &[(file_kb (& data_url)).to_string()])} }
                     }
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                         disabled: file_request().is_some(),
                         onclick: move |_| pending_file.set(None),
-                        "Remove"
+                        {crate::i18n::text("Remove", &[])}
                     }
                 }
             }
@@ -2293,7 +2300,7 @@ fn Composer(
                             } else {
                                 "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                             },
-                            title: "Attach",
+                            title: crate::i18n::text("Attach", &[]),
                             aria_expanded: show_attach(),
                             onclick: move |_| { show_stickers.set(false); show_attach.toggle(); },
                             span { class: "block w-4 h-4", dangerous_inner_html: super::icons::PLUS }
@@ -2303,7 +2310,7 @@ fn Composer(
                             div { style: "width: 9rem;", class: "dxf-pop-in absolute bottom-full left-0 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30 text-xs",
                                 label { class: "w-full flex items-center gap-2 px-2 h-8 rounded text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)] cursor-pointer",
                                     span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::IMAGE }
-                                    "Image"
+                                    {crate::i18n::text("Image", &[])}
                                     input {
                                         r#type: "file",
                                         accept: "image/*",
@@ -2325,7 +2332,7 @@ fn Composer(
                                             pick_file(pending_file, pending_image, attach_err, generation);
                                         },
                                         span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::PAPERCLIP }
-                                        "File"
+                                        {crate::i18n::text("File", &[])}
                                     }
                                 }
                             }
@@ -2340,10 +2347,10 @@ fn Composer(
                         id: "{composer_id}",
                         class: "dxf-composer flex-1 min-w-0 py-2 text-[14px] text-[var(--text)]",
                         contenteditable: "true",
-                        "data-placeholder": "Message {composer_label}",
+                        "data-placeholder": crate::i18n::text("Message {0}", &[composer_label.clone()]),
                         role: "textbox",
                         aria_multiline: "true",
-                        aria_label: "Message {composer_label}",
+                        aria_label: crate::i18n::text("Message {0}", &[(composer_label).to_string()]),
                     }
 
                     button {
@@ -2353,7 +2360,7 @@ fn Composer(
                         } else {
                             "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                         },
-                        title: "Emoji",
+                        title: crate::i18n::text("Emoji", &[]),
                         onclick: move |_| { show_stickers.set(false); show_emoji.toggle(); },
                         span { class: "block w-4 h-4", dangerous_inner_html: super::icons::SMILE }
                     }
@@ -2375,16 +2382,16 @@ fn Composer(
                         button {
                             class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg transition-all",
                             r#type: "submit",
-                            "Send"
+                            {crate::i18n::text("Send", &[])}
                         }
                     }
                 }
                 div { class: "flex gap-3.5 pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
-                    span { "Enter send" }
-                    span { "Shift+Enter new line" }
-                    span { ":name for emoji" }
+                    span { {crate::i18n::text("Enter send", &[])} }
+                    span { {crate::i18n::text("Shift+Enter new line", &[])} }
+                    span { {crate::i18n::text(":name for emoji", &[])} }
                     if file_request().is_some() {
-                        span { class: "text-[var(--accent)]", "Uploading file…" }
+                        span { class: "text-[var(--accent)]", {crate::i18n::text("Uploading file…", &[])} }
                     }
                 }
             }

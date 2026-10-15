@@ -152,15 +152,15 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     };
     rsx! {
         div { class: "relative z-30 ml-auto flex items-center gap-1.5 shrink-0",
-            ToolButton { icon: super::icons::SEARCH, title: "Search messages", active: panel() == "search",
+            ToolButton { icon: super::icons::SEARCH, title: crate::i18n::text("Search messages", &[]), active: panel() == "search",
                 on_click: move |_| toggle("search") }
-            ToolButton { icon: super::icons::PIN, title: "Pinned messages", active: panel() == "pins",
+            ToolButton { icon: super::icons::PIN, title: crate::i18n::text("Pinned messages", &[]), active: panel() == "pins",
                 on_click: { let mut search = search.clone(); move |_| {
                     toggle("pins");
                     if panel() == "pins" { search(0, true); }
                 } } }
             if manage_guild {
-                ToolButton { icon: super::icons::SLIDERS, title: "File limits", active: panel() == "files",
+                ToolButton { icon: super::icons::SLIDERS, title: crate::i18n::text("File limits", &[]), active: panel() == "files",
                     on_click: move |_| toggle("files") }
             }
         }
@@ -176,37 +176,37 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                     button {
                         r#type: "button",
                         class: "w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                        title: "Close",
+                        title: crate::i18n::text("Close", &[]),
                         onclick: move |_| panel.set(""),
                         span { class: "block w-4 h-4", dangerous_inner_html: super::icons::CLOSE }
                     }
                 }
                 div { class: "flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3",
-                    if let Some(error) = error() { p { class: "text-[var(--danger)]", "{error}" } }
+                    if let Some(error) = error() { p { class: "text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} } }
                     if panel() == "files" && manage_guild { FileLimits { guild_id, policy: file_policy } }
                     if panel() == "search" {
                         form { class: "flex flex-col gap-2",
                             onsubmit: { let mut search = search.clone(); move |e: FormEvent| { e.prevent_default(); search(0, false); } },
-                            input { class: INPUT, placeholder: "Search messages", maxlength: 200, autofocus: true,
+                            input { class: INPUT, placeholder: crate::i18n::text("Search messages", &[]), maxlength: 200, autofocus: true,
                                 value: text(), oninput: move |e| text.set(e.value()) }
                             select { class: INPUT, value: author(), onchange: move |e| author.set(e.value()),
-                                option { value: "", "Any author" }
+                                option { value: "", {crate::i18n::text("Any author", &[])} }
                                 for member in members { option { value: member.user.pubkey.clone(), "{member.user.username}" } }
                             }
                             div { class: "flex gap-2",
-                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "From (UTC)",
+                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("From (UTC)", &[])},
                                     input { class: INPUT, r#type: "date", value: after(), oninput: move |e| after.set(e.value()) } }
-                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Through (UTC)",
+                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Through (UTC)", &[])},
                                     input { class: INPUT, r#type: "date", value: before(), oninput: move |e| before.set(e.value()) } }
                             }
                             div { class: "flex items-center gap-4 text-[var(--text-muted)]",
                                 label { class: "flex items-center gap-1.5 cursor-pointer",
                                     input { r#type: "checkbox", style: "accent-color: var(--accent);", checked: files(), onchange: move |e| files.set(e.checked()) }
-                                    "Has attachment" }
+                                    {crate::i18n::text("Has attachment", &[])} }
                                 label { class: "flex items-center gap-1.5 cursor-pointer",
                                     input { r#type: "checkbox", style: "accent-color: var(--accent);", checked: pins(), onchange: move |e| pins.set(e.checked()) }
-                                    "Pinned" }
-                                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", "Search" }
+                                    {crate::i18n::text("Pinned", &[])} }
+                                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", {crate::i18n::text("Search", &[])} }
                             }
                         }
                     }
@@ -214,7 +214,7 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                         if let Some(results) = results {
                             if results.is_empty() {
                                 p { class: "py-4 text-center text-[var(--text-dim)]",
-                                    if panel() == "pins" { "Nothing is pinned here." } else { "No matching messages." }
+                                    if panel() == "pins" { {crate::i18n::text("Nothing is pinned here.", &[])} } else { {crate::i18n::text("No matching messages.", &[])} }
                                 }
                             }
                             div { class: "flex flex-col border-t border-[var(--border)] pt-2",
@@ -222,12 +222,12 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                             }
                             if offset() > 0 || results.len() == 100 {
                                 div { class: "flex justify-center gap-2",
-                                    if offset() > 0 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset().saturating_sub(100), panel() == "pins") }, "Newer" } }
-                                    if results.len() == 100 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset() + 100, panel() == "pins") }, "Older" } }
+                                    if offset() > 0 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset().saturating_sub(100), panel() == "pins") }, {crate::i18n::text("Newer", &[])} } }
+                                    if results.len() == 100 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset() + 100, panel() == "pins") }, {crate::i18n::text("Older", &[])} } }
                                 }
                             }
                         } else if request().is_some() {
-                            p { class: "py-4 text-center text-[var(--text-dim)]", "Searching…" }
+                            p { class: "py-4 text-center text-[var(--text-dim)]", {crate::i18n::text("Searching…", &[])} }
                         }
                     }
                 }
@@ -261,7 +261,7 @@ pub(super) fn StickerPicker(
         .cloned()
         .unwrap_or_default();
     rsx! {
-        ToolButton { icon: super::icons::STICKER, title: "Stickers", active: open(),
+        ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(),
             on_click: move |_| {
                 open.toggle();
                 if open() { on_open.call(()); }
@@ -273,19 +273,19 @@ pub(super) fn StickerPicker(
                 class: "dxf-pop-in absolute bottom-full right-3 mb-2 z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
                 style: "width: min(30rem, calc(100% - 1.5rem)); max-height: 70vh;",
                 div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",
-                    span { class: "text-[11px] uppercase tracking-wider text-[var(--text-dim)]", "Stickers" }
+                    span { class: "text-[11px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("Stickers", &[])} }
                     button {
                         r#type: "button",
                         class: "w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                        title: "Close",
+                        title: crate::i18n::text("Close", &[]),
                         onclick: move |_| open.set(false),
                         span { class: "block w-4 h-4", dangerous_inner_html: super::icons::CLOSE }
                     }
                 }
                 div { class: "flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3",
-                    if let Some(error) = error() { p { class: "text-[var(--danger)]", "{error}" } }
+                    if let Some(error) = error() { p { class: "text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} } }
                     if stickers.is_empty() {
-                        p { class: "py-4 text-center text-[var(--text-dim)]", "No stickers yet." }
+                        p { class: "py-4 text-center text-[var(--text-dim)]", {crate::i18n::text("No stickers yet.", &[])} }
                     }
                     div { class: "grid gap-2", style: "grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));",
                         for sticker in stickers {
@@ -308,7 +308,7 @@ pub(super) fn StickerPicker(
                                         r#type: "button",
                                         style: "top: 0.25rem; right: 0.25rem;",
                                         class: "absolute w-5 h-5 flex items-center justify-center rounded bg-[var(--panel-solid)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                        title: "Delete sticker",
+                                        title: crate::i18n::text("Delete sticker", &[]),
                                         onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) },
                                         span { class: "block w-3 h-3", dangerous_inner_html: super::icons::CLOSE }
                                     }
@@ -321,19 +321,19 @@ pub(super) fn StickerPicker(
                             if let Some(src) = sticker_image() {
                                 img { src, class: "w-8 h-8 shrink-0 rounded", style: "object-fit: contain;" }
                             }
-                            input { class: INPUT, placeholder: "New sticker name", maxlength: 32, value: sticker_name(),
+                            input { class: INPUT, placeholder: crate::i18n::text("New sticker name", &[]), maxlength: 32, value: sticker_name(),
                             oninput: move |e| sticker_name.set(e.value()),
                             onkeydown: move |e: KeyboardEvent| { if e.key() == Key::Enter { e.prevent_default(); } },
                         }
                             button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
-                                if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
+                                if let Some(file) = rfd::AsyncFileDialog::new().add_filter(crate::i18n::label("Image"), &["png", "gif", "webp", "jpg"]).pick_file().await {
                                     let path = file.path().to_owned();
                                     match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
                                         Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
                                         Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
                                     }
                                 }
-                            }); }, "Image…" }
+                            }); }, {crate::i18n::text("Image…", &[])} }
                             button { r#type: "button", class: "dxf-cta shrink-0 rounded-lg px-3 py-1 text-xs disabled:opacity-50",
                                 disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
                                 onclick: { let g = gateway.clone(); move |_| {
@@ -342,7 +342,7 @@ pub(super) fn StickerPicker(
                                         sticker_image.set(None);
                                         sticker_name.set(String::new());
                                     }
-                                } }, "Add" }
+                                } }, {crate::i18n::text("Add", &[])} }
                         }
                     }
                 }
@@ -357,7 +357,7 @@ const SECONDARY: &str = "shrink-0 rounded-lg px-3 py-1 text-xs text-[var(--text-
 #[component]
 fn ToolButton(
     icon: &'static str,
-    title: &'static str,
+    #[props(into)] title: String,
     active: bool,
     on_click: EventHandler<()>,
 ) -> Element {
@@ -394,14 +394,14 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
                 }
             },
             div { class: "flex gap-2",
-                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Largest file (KB)",
+                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Largest file (KB)", &[])},
                     input { class: INPUT, r#type: "number", min: 1, max: 2000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
-                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Keep for (days)",
+                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Keep for (days)", &[])},
                     input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
             }
             div { class: "flex items-center gap-2",
-                if let Some(error) = error() { span { class: "text-[var(--danger)]", "{error}" } }
-                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", "Save" }
+                if let Some(error) = error() { span { class: "text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} } }
+                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", {crate::i18n::text("Save", &[])} }
             }
         }
     }
@@ -452,7 +452,7 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
             class: "dxf-file-card",
             "data-expired": expired,
             role: "group",
-            aria_label: "File attachment: {attachment.name}",
+            aria_label: crate::i18n::text("File attachment: {0}", &[(attachment . name).to_string()]),
             div { class: "dxf-file-type", aria_hidden: "true",
                 span { dangerous_inner_html: super::icons::FILE }
                 span { "{file_type}" }
@@ -461,7 +461,7 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                 div { class: "dxf-file-name", title: "{attachment.name}", "{attachment.name}" }
                 div { class: "dxf-file-meta",
                     span { "{size}" }
-                    if expired { span { class: "dxf-file-expired", "File expired" } }
+                    if expired { span { class: "dxf-file-expired", {crate::i18n::text("File expired", &[])} } }
                     else if let Some(expiry) = expiry { span { "{expiry}" } }
                 }
             }
@@ -469,9 +469,9 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                 class: "dxf-file-download",
                 r#type: "button",
                 disabled: busy() || expired,
-                aria_label: "Download {attachment.name}",
+                aria_label: crate::i18n::text("Download {0}", &[(attachment . name).to_string()]),
                 aria_busy: busy(),
-                title: if expired { "This file has expired" } else { "Save a copy to your computer" },
+                title: if expired { crate::i18n::text("This file has expired", &[]) } else { crate::i18n::text("Save a copy to your computer", &[]) },
                 onclick: move |_| {
                 if busy() || expired { return; }
                 busy.set(true);
@@ -506,10 +506,10 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                 });
             },
                 span { aria_hidden: "true", dangerous_inner_html: super::icons::DOWNLOAD }
-                if busy() { "Downloading…" } else { "Download" }
+                if busy() { {crate::i18n::text("Downloading…", &[])} } else { {crate::i18n::text("Download", &[])} }
             }
             if let Some(error) = download_error() {
-                p { class: "dxf-file-error", role: "alert", "{error}" }
+                p { class: "dxf-file-error", role: "alert", {crate::i18n::message(&(error).to_string())} }
             }
         }
     }

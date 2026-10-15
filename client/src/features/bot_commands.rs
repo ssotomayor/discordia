@@ -135,11 +135,11 @@ pub fn BotCommandsSection(bot_pubkey: String) -> Element {
     rsx! {
         div { class: "mt-3",
             div { class: "flex items-center justify-between mb-1.5",
-                span { class: HEADING, "Commands" }
+                span { class: HEADING, {crate::i18n::text("Commands", &[])} }
                 match (&channel, online) {
-                    (_, false) => rsx! { span { class: "text-[10px] text-[var(--text-dim)]", "offline" } },
-                    (None, true) => rsx! { span { class: "text-[10px] text-[var(--text-dim)]", "open a text channel to use them" } },
-                    (Some((_, name)), true) => rsx! { span { class: "text-[10px] text-[var(--text-dim)]", "runs in #{name}" } },
+                    (_, false) => rsx! { span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("offline", &[])} } },
+                    (None, true) => rsx! { span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("open a text channel to use them", &[])} } },
+                    (Some((_, name)), true) => rsx! { span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("runs in #{0}", std::slice::from_ref(name))} } },
                 }
             }
             div { class: "flex flex-wrap gap-1.5",
@@ -236,7 +236,7 @@ pub fn BotCommandsSection(bot_pubkey: String) -> Element {
                                             rsx! {
                                                 input {
                                                     class: FIELD,
-                                                    placeholder: "Search members",
+                                                    placeholder: crate::i18n::text("Search members", &[]),
                                                     value: "{filter}",
                                                     oninput: move |e| filter.set(e.value()),
                                                 }
@@ -285,13 +285,13 @@ pub fn BotCommandsSection(bot_pubkey: String) -> Element {
                                 }
                             }
                             if let Some(err) = form_error() {
-                                div { class: "text-xs text-[var(--danger)]", "{err}" }
+                                div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
                             }
                             div { class: "flex gap-2 justify-end",
                                 button {
                                     class: "px-3 py-1 rounded-lg text-xs text-[var(--text-muted)] hover:text-[var(--text)]",
                                     onclick: move |_| open.set(None),
-                                    "Cancel"
+                                    {crate::i18n::text("Cancel", &[])}
                                 }
                                 button {
                                     class: "dxf-cta px-3 py-1 rounded-lg text-xs",
@@ -304,7 +304,7 @@ pub fn BotCommandsSection(bot_pubkey: String) -> Element {
                                             Err(e) => form_error.set(Some(e)),
                                         }
                                     },
-                                    "Run"
+                                    {crate::i18n::text("Run", &[])}
                                 }
                             }
                         }
@@ -341,11 +341,11 @@ pub fn CommandNotes(channel_id: Id) -> Element {
                 class: "dxf-fade mt-2 rounded-lg border border-dashed border-[var(--border)] px-3 py-2",
                 div { class: "flex items-center gap-2",
                     span { class: "font-semibold text-[var(--accent)] text-xs", "{bot}" }
-                    span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "only you can see this" }
+                    span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("only you can see this", &[])} }
                     button {
                         class: "ml-auto text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)]",
                         onclick: move |_| state.write().command_notes.retain(|n| n.invocation_id != id),
-                        "Dismiss"
+                        {crate::i18n::text("Dismiss", &[])}
                     }
                 }
                 div { class: "mt-1 text-sm text-[var(--text)] whitespace-pre-wrap break-words", "{content}" }
