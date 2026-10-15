@@ -174,7 +174,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
         )
         .with_root_context(locale);
         let dom = dom.with_root_context(crate::i18n::WindowTitle("Discordia — Streams"));
-        let cfg = dioxus::desktop::Config::new()
+        let cfg = crate::app::desktop_config(crate::i18n::current())
             .with_window(
                 dioxus::desktop::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Streams")

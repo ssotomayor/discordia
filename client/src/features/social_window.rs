@@ -78,7 +78,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
         .with_root_context(nostr.clone())
         .with_root_context(identity.clone())
         .with_root_context(gateway.clone());
-        let config = dioxus::desktop::Config::new()
+        let config = crate::app::desktop_config(crate::i18n::current())
             .with_window(
                 dioxus::desktop::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Social")

@@ -155,6 +155,7 @@ jobs:
           node --test scripts/test-stream-quality.mjs
           node --test scripts/test-stream-audio.mjs
           node --test scripts/test-gif-playback.mjs
+          node --test scripts/test-startup.mjs
           node --test scripts/test-activity-clock.mjs
           node --test scripts/test-translations.mjs
           node client/tests/chat_attachment_bridge.cjs

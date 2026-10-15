@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="__LANGUAGE__">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discordia</title>
+    <style>
+      html, body { height: 100%; margin: 0; background-color: #121110; color: #f2ece3; }
+      #main { visibility: hidden; }
+      #main[data-ready] { visibility: visible; }
+      #startup {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 20px;
+        background-color: #121110; font: 14px system-ui, sans-serif; color: #9a9287;
+      }
+      .startup-spinner {
+        width: 32px; height: 32px; box-sizing: border-box; border-radius: 50%;
+        border: 3px solid #322c24; border-top-color: #e8933a;
+        animation: startup-spin 1s linear infinite;
+      }
+      @keyframes startup-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .startup-spinner { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <div id="main" inert aria-hidden="true"></div>
+    <div id="startup" role="status" aria-live="polite">
+      <div class="startup-spinner" aria-hidden="true"></div>
+      <span>Loading Discordia…</span>
+    </div>
+    <script>/* STARTUP_SCRIPT */</script>
+  </body>
+</html>

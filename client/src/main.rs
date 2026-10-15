@@ -108,7 +108,7 @@ fn redirect_std_handles() {}
 
 const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
-/// The main window's title, and how the second launch finds it to focus.
+/// The second launch uses this title to grant the primary foreground permission.
 pub(crate) const MAIN_WINDOW_TITLE: &str = "Discordia";
 
 /// Set on the process the updater spawns to replace a running one: the
@@ -234,7 +234,7 @@ fn main() {
     let window = mac_window(window);
     LaunchBuilder::new()
         .with_cfg(apply_menu(
-            Config::new()
+            app::desktop_config(settings::load_or_default().language.resolve())
                 .with_window(window)
                 .with_custom_event_handler(activity_window::on_event),
         ))
