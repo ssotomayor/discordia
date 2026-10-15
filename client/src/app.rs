@@ -566,6 +566,20 @@ fn font_face_css() -> String {
     )
 }
 
+pub(crate) fn desktop_config() -> dioxus::desktop::Config {
+    // Document styles are queued after DOM mutations; bootstrap CSS must precede the first frame.
+    dioxus::desktop::Config::new()
+        .with_background_color((18, 17, 16, 255))
+        .with_custom_head(format!(
+            "<style>{TAILWIND_CSS}</style><style>{}</style><style>{BASE_CSS}</style>",
+            font_face_css()
+        ))
+        .with_custom_index(
+            include_str!("../assets/desktop.html")
+                .replace("/* STARTUP_SCRIPT */", include_str!("../assets/startup.js")),
+        )
+}
+
 /// The root keeps an opaque `--bg`; the shell above it does not.
 ///
 /// The two layers exist for one reason: the pattern is painted on a fixed layer
@@ -878,7 +892,6 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
 /// props of Style/Script is not supported".
 pub(crate) fn AppHead() -> Element {
     rsx! {
-        document::Style { {TAILWIND_CSS} }
         document::Script { {LIVEKIT_JS} }
         document::Script { {include_str!("../assets/gif-playback.js")} }
         document::Script { {include_str!("../assets/activity-clock.js")} }
@@ -890,8 +903,6 @@ pub(crate) fn AppHead() -> Element {
             )}
         }
         document::Script { {crate::features::screenshare::SCREEN_JS} }
-        document::Style { {font_face_css()} }
-        document::Style { {BASE_CSS} }
     }
 }
 

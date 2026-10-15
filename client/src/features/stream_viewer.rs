@@ -171,7 +171,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 generation: id,
             },
         );
-        let cfg = dioxus::desktop::Config::new()
+        let cfg = crate::app::desktop_config()
             .with_window(
                 dioxus::desktop::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Streams")

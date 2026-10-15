@@ -233,7 +233,7 @@ fn main() {
     let window = mac_window(window);
     LaunchBuilder::new()
         .with_cfg(apply_menu(
-            Config::new()
+            app::desktop_config()
                 .with_window(window)
                 .with_custom_event_handler(activity_window::on_event),
         ))
