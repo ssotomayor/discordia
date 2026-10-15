@@ -19,6 +19,7 @@ mod devlog;
 mod emoji;
 mod features;
 mod host;
+mod i18n;
 mod identity;
 mod image_edit;
 mod keyvault;

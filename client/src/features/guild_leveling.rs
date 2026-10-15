@@ -40,7 +40,7 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
 
     rsx! {
         div { class: "border-t border-[var(--border)] pt-3",
-            div { class: HEADING, "Levels" }
+            div { class: HEADING, {crate::i18n::text("Levels", &[])} }
 
             label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                 input {
@@ -48,29 +48,29 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
                     checked: enabled,
                     onchange: move |e| draft.write().enabled = e.checked(),
                 }
-                span { "Members earn experience here" }
+                span { {crate::i18n::text("Members earn experience here", &[])} }
             }
 
             if enabled {
                 div { class: "mt-3",
-                    div { class: HEADING, "Earned by" }
+                    div { class: HEADING, {crate::i18n::text("Earned by", &[])} }
                     AmountRow {
-                        label: "Sending a message",
+                        label: crate::i18n::text("Sending a message", &[]),
                         value: draft.read().per_message,
                         onset: move |v| draft.write().per_message = v,
                     }
                     AmountRow {
-                        label: "Adding a reaction",
+                        label: crate::i18n::text("Adding a reaction", &[]),
                         value: draft.read().per_reaction,
                         onset: move |v| draft.write().per_reaction = v,
                     }
                     AmountRow {
-                        label: "Each minute in voice",
+                        label: crate::i18n::text("Each minute in voice", &[]),
                         value: draft.read().per_voice_minute,
                         onset: move |v| draft.write().per_voice_minute = v,
                     }
                     div { class: "flex items-center gap-2 mt-1.5",
-                        span { class: "text-xs text-[var(--text-muted)] flex-1", "Cooldown between awards" }
+                        span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("Cooldown between awards", &[])} }
                         input {
                             class: FIELD,
                             r#type: "number",
@@ -82,17 +82,17 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
                                 draft.write().cooldown_secs = v.min(crate::protocol::MAX_XP_COOLDOWN);
                             },
                         }
-                        span { class: "text-xs text-[var(--text-muted)] w-16", "seconds" }
+                        span { class: "text-xs text-[var(--text-muted)] w-16", {crate::i18n::text("seconds", &[])} }
                     }
                     div { class: HINT,
-                        "Zero pays out every time. Voice ignores this — a minute is already the gap."
+                        {crate::i18n::text("Zero pays out every time. Voice ignores this — a minute is already the gap.", &[])}
                     }
                 }
 
                 div { class: "mt-3",
-                    div { class: HEADING, "Earned in" }
+                    div { class: HEADING, {crate::i18n::text("Earned in", &[])} }
                     if channels.is_empty() {
-                        div { class: "text-xs text-[var(--text-dim)]", "No channels yet." }
+                        div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("No channels yet.", &[])} }
                     }
                     div { class: "max-h-32 overflow-y-auto",
                         for c in channels.iter().cloned() {
@@ -125,9 +125,9 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
                     }
                     div { class: HINT,
                         if draft.read().channels.is_empty() {
-                            "Nothing ticked means every channel earns."
+                            {crate::i18n::text("Nothing ticked means every channel earns.", &[])}
                         } else {
-                            "Only the ticked channels earn."
+                            {crate::i18n::text("Only the ticked channels earn.", &[])}
                         }
                     }
                 }
@@ -140,7 +140,7 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
 }
 
 #[component]
-fn AmountRow(label: &'static str, value: u32, onset: EventHandler<u32>) -> Element {
+fn AmountRow(#[props(into)] label: String, value: u32, onset: EventHandler<u32>) -> Element {
     rsx! {
         div { class: "flex items-center gap-2 mt-1.5",
             span { class: "text-xs text-[var(--text-muted)] flex-1", "{label}" }
@@ -155,7 +155,7 @@ fn AmountRow(label: &'static str, value: u32, onset: EventHandler<u32>) -> Eleme
                     onset.call(v.min(crate::protocol::MAX_XP_PER_ACTION));
                 },
             }
-            span { class: "text-xs text-[var(--text-muted)] w-16", "xp" }
+            span { class: "text-xs text-[var(--text-muted)] w-16", {crate::i18n::text("xp", &[])} }
         }
     }
 }
@@ -171,7 +171,7 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
         div { class: "mt-3",
             div { class: "flex items-center gap-2 mb-1.5",
                 div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",
-                    "Rank names"
+                    {crate::i18n::text("Rank names", &[])}
                 }
                 div { class: "text-[10px] text-[var(--text-dim)]",
                     "{tiers.len()}/{crate::protocol::MAX_TIERS}"
@@ -179,7 +179,7 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
             }
             if tiers.is_empty() {
                 div { class: "text-xs text-[var(--text-dim)] mb-1.5",
-                    "No names yet — members show as Lv1, Lv2 and so on."
+                    {crate::i18n::text("No names yet — members show as Lv1, Lv2 and so on.", &[])}
                 }
             }
             for (i, t) in tiers.iter().cloned().enumerate() {
@@ -196,10 +196,10 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
                             }
                         },
                     }
-                    span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "xp" }
+                    span { class: "text-[10px] text-[var(--text-dim)] shrink-0", {crate::i18n::text("xp", &[])} }
                     input {
                         class: "flex-1 min-w-0 bg-transparent border border-[var(--edge)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                        placeholder: "Rank name",
+                        placeholder: crate::i18n::text("Rank name", &[]),
                         maxlength: crate::protocol::MAX_TIER_NAME as i64,
                         value: "{t.name}",
                         oninput: move |e| {
@@ -213,7 +213,7 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
                         crate::features::channels::TopicEmojiPicker {
                             guild_id,
                             current: Some(t.emoji.clone()),
-                            title: "Emoji shown beside this rank's members",
+                            title: crate::i18n::text("Emoji shown beside this rank's members", &[]),
                             on_pick: move |emoji: String| {
                                 if let Some(row) = draft.write().tiers.get_mut(i) {
                                     row.emoji = emoji;
@@ -240,7 +240,7 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
                                 d.tiers.remove(i);
                             }
                         },
-                        "Remove"
+                        {crate::i18n::text("Remove", &[])}
                     }
                 }
             }
@@ -263,11 +263,11 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
                             color: None,
                         });
                     },
-                    "+ Rank"
+                    {crate::i18n::text("+ Rank", &[])}
                 }
             }
             div { class: HINT,
-                "A member wears the highest rank they have reached. Rows are sorted by threshold when you save, and one without a name is dropped."
+                {crate::i18n::text("A member wears the highest rank they have reached. Rows are sorted by threshold when you save, and one without a name is dropped.", &[])}
             }
         }
     }

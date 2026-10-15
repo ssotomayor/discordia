@@ -157,7 +157,7 @@ pub fn GuildsSidebar() -> Element {
                         rsx! {
                             div {
                                 key: "{gid}",
-                                title: "Drag to reorder guilds",
+                                title: crate::i18n::text("Drag to reorder guilds", &[]),
                                 style: if drop_target() == Some(gid) { "outline:2px solid var(--accent);border-radius:16px;" } else { "outline:none;" },
                                 onpointerdown: move |e: PointerEvent| {
                                     if e.held_buttons()
@@ -216,8 +216,8 @@ pub fn GuildsSidebar() -> Element {
 
                 button {
                     class: "w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
-                    title: "Add a guild on this server",
-                    aria_label: "Add a guild on this server",
+                    title: crate::i18n::text("Add a guild on this server", &[]),
+                    aria_label: crate::i18n::text("Add a guild on this server", &[]),
                     onclick: move |_| state.write().guild_dialog = Some(crate::state::GuildDialog::AddGuild),
                     "+"
                 }
@@ -269,7 +269,7 @@ pub fn GuildsSidebar() -> Element {
                                     None => rsx! {
                                         if can_manage {
                                             div { class: "flex items-center gap-2 px-3 py-1.5",
-                                                span { class: "text-xs text-[var(--text-muted)] flex-1", "Guild accent" }
+                                                span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("Guild accent", &[])} }
                                                 input {
                                                     r#type: "color",
                                                     class: "w-7 h-7 rounded border border-[var(--border)] bg-transparent cursor-pointer",
@@ -282,7 +282,7 @@ pub fn GuildsSidebar() -> Element {
                                                     button {
                                                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)]",
                                                         onclick: move |_| gw_clear.send(ClientMessage::SetGuildAccent { guild_id: gid, accent: None }),
-                                                        "clear"
+                                                        {crate::i18n::text("clear", &[])}
                                                     }
                                                 }
                                             }
@@ -293,7 +293,7 @@ pub fn GuildsSidebar() -> Element {
                                                         Some(crate::state::GuildDialog::Settings(gid));
                                                     menu.set(None);
                                                 },
-                                                "Guild settings"
+                                                {crate::i18n::text("Guild settings", &[])}
                                             }
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
@@ -302,7 +302,7 @@ pub fn GuildsSidebar() -> Element {
                                                         Some(crate::state::GuildDialog::Integrations(gid));
                                                     menu.set(None);
                                                 },
-                                                "Integrations"
+                                                {crate::i18n::text("Integrations", &[])}
                                             }
                                         }
                                         {
@@ -319,7 +319,7 @@ pub fn GuildsSidebar() -> Element {
                                                         crate::settings::save(&next);
                                                         menu.set(None);
                                                     },
-                                                    if muted { "Unmute server" } else { "Mute server" }
+                                                    if muted { {crate::i18n::text("Unmute server", &[])} } else { {crate::i18n::text("Mute server", &[])} }
                                                 }
                                             }
                                         }
@@ -331,7 +331,7 @@ pub fn GuildsSidebar() -> Element {
                                                         Some(crate::state::GuildDialog::Roles(gid));
                                                     menu.set(None);
                                                 },
-                                                "Roles"
+                                                {crate::i18n::text("Roles", &[])}
                                             }
                                         }
                                         if !is_system {
@@ -343,7 +343,7 @@ pub fn GuildsSidebar() -> Element {
                                                             cur.confirming = Some(ConfirmAction::Transfer);
                                                         }
                                                     },
-                                                    "Transfer ownership"
+                                                    {crate::i18n::text("Transfer ownership", &[])}
                                                 }
                                                 button {
                                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
@@ -352,7 +352,7 @@ pub fn GuildsSidebar() -> Element {
                                                             cur.confirming = Some(ConfirmAction::Delete);
                                                         }
                                                     },
-                                                    "Delete guild"
+                                                    {crate::i18n::text("Delete guild", &[])}
                                                 }
                                             } else {
                                                 button {
@@ -362,14 +362,14 @@ pub fn GuildsSidebar() -> Element {
                                                             cur.confirming = Some(ConfirmAction::Leave);
                                                         }
                                                     },
-                                                    "Leave guild"
+                                                    {crate::i18n::text("Leave guild", &[])}
                                                 }
                                             }
                                         }
                                     },
                                     Some(ConfirmAction::Delete) => rsx! {
                                         div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-                                            "Delete \"{m.name}\"? This can't be undone."
+                                            {crate::i18n::text("Delete \"{0}\"? This can't be undone.", std::slice::from_ref(&(m . name)))}
                                         }
                                         div { class: "flex gap-1 px-1 pb-0.5",
                                             button {
@@ -381,18 +381,18 @@ pub fn GuildsSidebar() -> Element {
                                                         menu.set(None);
                                                     }
                                                 },
-                                                "Delete"
+                                                {crate::i18n::text("Delete", &[])}
                                             }
                                             button {
                                                 class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                                                 onclick: move |_| menu.set(None),
-                                                "Cancel"
+                                                {crate::i18n::text("Cancel", &[])}
                                             }
                                         }
                                     },
                                     Some(ConfirmAction::Leave) => rsx! {
                                         div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-                                            "Leave \"{m.name}\"? You can rejoin later if it's public (or with an invite)."
+                                            {crate::i18n::text("Leave \"{0}\"? You can rejoin later if it's public (or with an invite).", std::slice::from_ref(&(m . name)))}
                                         }
                                         div { class: "flex gap-1 px-1 pb-0.5",
                                             button {
@@ -404,12 +404,12 @@ pub fn GuildsSidebar() -> Element {
                                                         menu.set(None);
                                                     }
                                                 },
-                                                "Leave"
+                                                {crate::i18n::text("Leave", &[])}
                                             }
                                             button {
                                                 class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                                                 onclick: move |_| menu.set(None),
-                                                "Cancel"
+                                                {crate::i18n::text("Cancel", &[])}
                                             }
                                         }
                                     },
@@ -441,9 +441,9 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
     rsx! {
         button {
             class: "relative w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-semibold tracking-wide transition-colors {cls}",
-            title: "Direct messages",
+            title: crate::i18n::text("Direct messages", &[]),
             onclick: move |_| onclick.call(()),
-            "DM"
+            {crate::i18n::text("DM", &[])}
             if count > 0 {
                 span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
                     "{count}"
@@ -493,8 +493,8 @@ fn GuildIcon(
         div { class: "relative group dxf-tip-host",
             if unread {
                 span {
-                    title: "Unread messages",
-                    aria_label: "Unread messages",
+                    title: crate::i18n::text("Unread messages", &[]),
+                    aria_label: crate::i18n::text("Unread messages", &[]),
                     style: "position:absolute;right:-2px;top:-2px;width:8px;height:8px;border-radius:50%;background:var(--accent);border:2px solid var(--panel-solid);pointer-events:none;z-index:1;",
                 }
             }
@@ -533,7 +533,7 @@ fn GuildIcon(
             if is_mine {
                 button {
                     class: "absolute -right-1 -bottom-1 w-4 h-4 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] opacity-70 group-hover:opacity-100 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-all",
-                    title: "Guild settings",
+                    title: crate::i18n::text("Guild settings", &[]),
                     onclick: move |e: MouseEvent| {
                         e.stop_propagation();
                         let c = e.client_coordinates();
@@ -571,10 +571,10 @@ fn TransferPicker(guild_id: Id, on_done: EventHandler<()>) -> Element {
 
     rsx! {
         div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-            "Hand this guild to… (you keep membership, they get the crown)"
+            {crate::i18n::text("Hand this guild to… (you keep membership, they get the crown)", &[])}
         }
         if candidates.is_empty() {
-            div { class: "px-3 pb-1.5 text-xs text-[var(--text-dim)]", "No other members yet." }
+            div { class: "px-3 pb-1.5 text-xs text-[var(--text-dim)]", {crate::i18n::text("No other members yet.", &[])} }
         }
         div { class: "max-h-40 overflow-y-auto",
             for (pk, name) in candidates {
@@ -608,12 +608,12 @@ fn TransferPicker(guild_id: Id, on_done: EventHandler<()>) -> Element {
                             on_done.call(());
                         }
                     },
-                    "Transfer to {name}"
+                    {crate::i18n::text("Transfer to {0}", std::slice::from_ref(&(name)))}
                 }
                 button {
                     class: "px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                     onclick: move |_| on_done.call(()),
-                    "Cancel"
+                    {crate::i18n::text("Cancel", &[])}
                 }
             }
         }
@@ -673,7 +673,7 @@ pub fn RulesPromptDialog() -> Element {
                         }
                     } else {
                         div { class: "text-sm text-[var(--text-dim)] italic",
-                            "This server asks you to accept its rules, but the owner has not written any."
+                            {crate::i18n::text("This server asks you to accept its rules, but the owner has not written any.", &[])}
                         }
                     }
                 }
@@ -681,12 +681,12 @@ pub fn RulesPromptDialog() -> Element {
                     button {
                         class: "px-3 py-1 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                         onclick: decline,
-                        "Cancel"
+                        {crate::i18n::text("Cancel", &[])}
                     }
                     button {
                         class: "px-3 py-1 rounded text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                         onclick: accept,
-                        "Accept and join"
+                        {crate::i18n::text("Accept and join", &[])}
                     }
                 }
             }

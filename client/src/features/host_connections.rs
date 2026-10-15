@@ -35,32 +35,32 @@ pub(super) fn HostConnections(info: crate::host::HostInfo) -> Element {
     rsx! {
         button {
             class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--success)] hover:underline",
-            title: "View how clients connect to your server",
+            title: crate::i18n::text("View how clients connect to your server", &[]),
             aria_expanded: "{open}",
             onclick: move |_| open.toggle(),
-            "Server: local · Clients: {total}"
+            {crate::i18n::text("Server: local · Clients: {0}", &[(total).to_string()])}
         }
         if open() {
             div {
                 role: "dialog",
-                aria_label: "Host connections",
+                aria_label: crate::i18n::text("Host connections", &[]),
                 class: "dxf-no-drag rounded-md border border-[var(--border)] bg-[var(--panel2)] p-4 text-[12px]",
                 style: "position:fixed;top:60px;right:16px;z-index:1000;max-width:min(520px,90vw);max-height:75vh;overflow:auto;white-space:normal;",
                 div { class: "flex items-center justify-between gap-4",
-                    strong { "Host connections" }
-                    button { onclick: move |_| open.set(false), "Close" }
+                    strong { {crate::i18n::text("Host connections", &[])} }
+                    button { onclick: move |_| open.set(false), {crate::i18n::text("Close", &[])} }
                 }
-                p { class: "mt-2", "Advertised routes: {offered}" }
-                p { class: "text-[var(--text-muted)]", "Advertising a route does not confirm that someone outside can reach it." }
-                p { class: "mt-2", "Active: IPv4 {ipv4} · IPv6 {ipv6} · Relay {relay} · Other {other}" }
-                p { class: "text-[var(--text-muted)]", "Observed by this server. Updates every 5 seconds. Your local host session is excluded. Voice and streams use separate routes." }
+                p { class: "mt-2", {crate::i18n::text("Advertised routes: {0}", std::slice::from_ref(&(offered)))} }
+                p { class: "text-[var(--text-muted)]", {crate::i18n::text("Advertising a route does not confirm that someone outside can reach it.", &[])} }
+                p { class: "mt-2", {crate::i18n::text("Active: IPv4 {0} · IPv6 {1} · Relay {2} · Other {3}", &[(ipv4).to_string(), (ipv6).to_string(), (relay).to_string(), (other).to_string()])} }
+                p { class: "text-[var(--text-muted)]", {crate::i18n::text("Observed by this server. Updates every 5 seconds. Your local host session is excluded. Voice and streams use separate routes.", &[])} }
                 if total == 0 {
-                    p { class: "mt-3", "No other clients connected." }
+                    p { class: "mt-3", {crate::i18n::text("No other clients connected.", &[])} }
                 }
                 for connection in &info.connections {
                     div { key: "{connection.id}", class: "flex justify-between gap-4 border-t border-[var(--border)] py-2",
                         span { class: "truncate", "{connection.name}" }
-                        span { "{connection.route.label()}" }
+                        span { {crate::i18n::label(connection.route.label())} }
                     }
                 }
             }

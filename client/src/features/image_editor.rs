@@ -82,7 +82,7 @@ pub fn ImageEditor(
     let Some(result) = loaded() else {
         return rsx! {
             div { class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60",
-                div { class: "text-xs text-[var(--text-dim)]", "Loading image…" }
+                div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Loading image…", &[])} }
             }
         };
     };
@@ -92,8 +92,8 @@ pub fn ImageEditor(
             return rsx! {
                 div { class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60",
                     div { class: "bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg p-4",
-                        p { class: "text-xs text-[var(--text-dim)]", "{message}" }
-                        button { class: "mt-3 text-xs text-[var(--accent)]", onclick: move |_| on_cancel.call(()), "Cancel" }
+                        p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::message(&(message).to_string())} }
+                        button { class: "mt-3 text-xs text-[var(--accent)]", onclick: move |_| on_cancel.call(()), {crate::i18n::text("Cancel", &[])} }
                     }
                 }
             };
@@ -161,7 +161,7 @@ pub fn ImageEditor(
                 onclick: move |e| e.stop_propagation(),
 
                 div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2",
-                    "Position your image"
+                    {crate::i18n::text("Position your image", &[])}
                 }
 
                 div {
@@ -197,7 +197,7 @@ pub fn ImageEditor(
                 }
 
                 div { class: "flex items-center gap-2 mt-3",
-                    span { class: "text-[10px] text-[var(--text-dim)]", "Zoom" }
+                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Zoom", &[])} }
                     input {
                         r#type: "range",
                         min: "0",
@@ -211,28 +211,28 @@ pub fn ImageEditor(
                     }
                 }
                 div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                    "Drag the image to reposition it."
+                    {crate::i18n::text("Drag the image to reposition it.", &[])}
                 }
                 if animated {
                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                        "GIFs keep their animation; resolution adjusts to fit the 2 MiB limit."
+                        {crate::i18n::text("GIFs keep their animation; resolution adjusts to fit the 2 MiB limit.", &[])}
                     }
                 }
                 if let Some(message) = error() {
-                    p { class: "text-xs text-[var(--text-dim)] mt-1", "{message}" }
+                    p { class: "text-xs text-[var(--text-dim)] mt-1", {crate::i18n::message(&(message).to_string())} }
                 }
 
                 div { class: "flex gap-2 justify-end mt-3",
                     button {
                         class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:text-[var(--text)] transition-colors",
                         onclick: move |_| on_cancel.call(()),
-                        "Cancel"
+                        {crate::i18n::text("Cancel", &[])}
                     }
                     button {
                         class: "dxf-cta rounded px-3 py-1 text-[10px] uppercase tracking-wider disabled:opacity-50",
                         disabled: working(),
                         onclick: apply,
-                        if working() { "Working…" } else { "Use image" }
+                        if working() { {crate::i18n::text("Working…", &[])} } else { {crate::i18n::text("Use image", &[])} }
                     }
                 }
             }

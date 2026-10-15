@@ -5,19 +5,20 @@
   let clocks = [];
   let timer = null;
 
-  function elapsed(start, now) {
+  function elapsed(start, now, suffix = 'elapsed') {
     if (!Number.isFinite(start) || start <= 0 || now < start) return '';
     const total = Math.floor((now - start) / 1000);
     const h = Math.floor(total / 3600);
     const m = Math.floor(total / 60) % 60;
     const sec = String(total % 60).padStart(2, '0');
-    return `${h ? `${h}:${String(m).padStart(2, '0')}` : String(m).padStart(2, '0')}:${sec} elapsed`;
+    return `${h ? `${h}:${String(m).padStart(2, '0')}` : String(m).padStart(2, '0')}:${sec} ${suffix}`;
   }
 
   function tick() {
     const now = Date.now();
     for (const clock of clocks) {
-      const text = elapsed(Number(clock.getAttribute('data-activity-start')), now);
+      const text = elapsed(Number(clock.getAttribute('data-activity-start')), now,
+        clock.getAttribute('data-activity-suffix') || 'elapsed');
       if (clock.textContent !== text) {
         // Dioxus retains the text-node reference for later activity updates.
         if (clock.firstChild?.nodeType === 3) clock.firstChild.nodeValue = text;
@@ -52,7 +53,7 @@
         (n.matches('[data-activity-clock]') || n.querySelector('[data-activity-clock]'))) ||
       [...r.removedNodes].some(n => n.nodeType === 1 && clocks.some(c => n === c || n.contains(c))))) scan();
   }).observe(document.documentElement, {
-    childList: true, subtree: true, attributes: true, attributeFilter: ['data-activity-start']
+    childList: true, subtree: true, attributes: true, attributeFilter: ['data-activity-start', 'data-activity-suffix']
   });
   scan();
 })();

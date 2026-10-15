@@ -326,6 +326,8 @@ pub fn GuildSettingsDialog(
         first_tab
     };
     let (tab_title, tab_blurb) = current.heading();
+    let tab_title = crate::i18n::label(tab_title);
+    let tab_blurb = crate::i18n::label(tab_blurb);
     let (sort_value, sort_label) = match g.leveling.member_sort {
         MemberSort::Name => ("name", "By name"),
         MemberSort::Level => ("level", "By level"),
@@ -349,7 +351,7 @@ pub fn GuildSettingsDialog(
                 class: "dxf-modal-in w-[820px] h-[600px] max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center shrink-0",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1 truncate", "Guild settings — {g.name}" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1 truncate", {crate::i18n::text("Guild settings — {0}", std::slice::from_ref(&(g . name)))} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                         onclick: move |_| on_close.call(()),
@@ -378,11 +380,11 @@ pub fn GuildSettingsDialog(
                                             }
                                         }
                                         span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: icon }
-                                        span { class: "flex-1 truncate", "{label}" }
+                                        span { class: "flex-1 truncate", {crate::i18n::label(label)} }
                                         if unsaved {
                                             span {
                                                 class: "w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--warn)]",
-                                                title: "Unsaved changes here",
+                                                title: crate::i18n::text("Unsaved changes here", &[]),
                                             }
                                         }
                                     }
@@ -397,23 +399,23 @@ pub fn GuildSettingsDialog(
                             if current == GuildTab::Overview {
                                 div {
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                        "Identity"
+                                        {crate::i18n::text("Identity", &[])}
                                     }
                                     input {
                                         class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                                        placeholder: "Guild name",
+                                        placeholder: crate::i18n::text("Guild name", &[]),
                                         maxlength: 64,
                                         value: "{name}",
                                         oninput: move |e| { saved.set(false); name.set(e.value()); },
                                     }
                                     if name_empty {
-                                        div { class: "text-[10px] text-[var(--danger)] mt-1", "A guild needs a name." }
+                                        div { class: "text-[10px] text-[var(--danger)] mt-1", {crate::i18n::text("A guild needs a name.", &[])} }
                                     }
                                     textarea {
                                         class: "w-full mt-2 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
                                         rows: 2,
                                         maxlength: 280,
-                                        placeholder: "Describe this guild…",
+                                        placeholder: crate::i18n::text("Describe this guild…", &[]),
                                         value: "{description}",
                                         oninput: move |e| { saved.set(false); description.set(e.value()); },
                                     }
@@ -422,35 +424,35 @@ pub fn GuildSettingsDialog(
                                             if let Some(src) = icon_preview {
                                                 img {
                                                     class: "w-10 h-10 rounded-md object-cover border border-[var(--border)]",
-                                                    src: "{src}", alt: "guild icon",
+                                                    src: "{src}", alt: crate::i18n::text("guild icon", &[]),
                                                     "data-gif-hover": "true",
                                                 }
                                             } else {
                                                 div { class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                                                    "none"
+                                                    {crate::i18n::text("none", &[])}
                                                 }
                                             }
-                                            div { class: "text-[9px] text-[var(--text-dim)] mt-0.5", "Icon" }
+                                            div { class: "text-[9px] text-[var(--text-dim)] mt-0.5", {crate::i18n::text("Icon", &[])} }
                                         }
                                         div { class: "flex-1 min-w-0 text-center",
                                             if let Some(src) = banner_preview {
                                                 img {
                                                     class: "w-full h-10 rounded-md object-cover border border-[var(--border)]",
-                                                    src: "{src}", alt: "guild banner",
+                                                    src: "{src}", alt: crate::i18n::text("guild banner", &[]),
                                                 }
                                             } else {
                                                 div { class: "w-full h-10 rounded-md border border-dashed border-[var(--border)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                                                    "no banner"
+                                                    {crate::i18n::text("no banner", &[])}
                                                 }
                                             }
                                             div { class: "text-[9px] text-[var(--text-dim)] mt-0.5",
-                                                "Banner — shown above the channel list"
+                                                {crate::i18n::text("Banner — shown above the channel list", &[])}
                                             }
                                         }
                                     }
                                     div { class: "flex flex-wrap gap-2 mt-2",
                                         ImagePickButton {
-                                            label: "Icon…",
+                                            label: crate::i18n::text("Icon…", &[]),
                                             shape: crate::features::image_editor::CropShape::Square,
                                             onpicked: move |(url, note): (Option<String>, Option<String>)| {
                                                 upload_note.set(note);
@@ -464,11 +466,11 @@ pub fn GuildSettingsDialog(
                                             button {
                                                 class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                                                 onclick: move |_| { saved.set(false); icon.set(None); },
-                                                "Clear icon"
+                                                {crate::i18n::text("Clear icon", &[])}
                                             }
                                         }
                                         ImagePickButton {
-                                            label: "Banner…",
+                                            label: crate::i18n::text("Banner…", &[]),
                                             shape: crate::features::image_editor::CropShape::Banner,
                                             onpicked: move |(url, note): (Option<String>, Option<String>)| {
                                                 upload_note.set(note);
@@ -482,12 +484,12 @@ pub fn GuildSettingsDialog(
                                             button {
                                                 class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                                                 onclick: move |_| { saved.set(false); banner.set(None); },
-                                                "Clear banner"
+                                                {crate::i18n::text("Clear banner", &[])}
                                             }
                                         }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        "Icon: square works best. Banner: wide (about 4:1). "
+                                        {crate::i18n::text("Icon: square works best. Banner: wide (about 4:1). ", &[])}
                                         {crate::features::profiles::IMAGE_HELP}
                                     }
                                     if let Some(note) = upload_note() {
@@ -498,7 +500,7 @@ pub fn GuildSettingsDialog(
                             if current == GuildTab::Access {
                                 div { class: "border-t border-[var(--border)] pt-3",
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                        "Visibility"
+                                        {crate::i18n::text("Visibility", &[])}
                                     }
                                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                                         input {
@@ -506,15 +508,15 @@ pub fn GuildSettingsDialog(
                                             checked: private(),
                                             onchange: move |_| { saved.set(false); private.toggle(); },
                                         }
-                                        span { "Private (invite-only)" }
+                                        span { {crate::i18n::text("Private (invite-only)", &[])} }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        "Private guilds are hidden from the browse directory; people join with the invite code below."
+                                        {crate::i18n::text("Private guilds are hidden from the browse directory; people join with the invite code below.", &[])}
                                     }
                                 }
                                 div { class: "border-t border-[var(--border)] pt-3",
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                        "Invite code"
+                                        {crate::i18n::text("Invite code", &[])}
                                     }
                                     div { class: "flex items-center gap-2",
                                         code { class: "flex-1 px-2 py-1 rounded border border-[var(--border)] text-xs text-[var(--text)] select-all truncate",
@@ -527,11 +529,11 @@ pub fn GuildSettingsDialog(
                                                     copied.set(crate::clipboard::copy_text(&code));
                                                 }
                                             },
-                                            if copied() { "Copied!" } else { "Copy" }
+                                            if copied() { {crate::i18n::text("Copied!", &[])} } else { {crate::i18n::text("Copy", &[])} }
                                         }
                                         button {
                                             class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/40 hover:bg-[var(--warn)]/10 transition-colors",
-                                            title: "Invalidate the current code and mint a new one",
+                                            title: crate::i18n::text("Invalidate the current code and mint a new one", &[]),
                                             onclick: {
                                                 let gateway = gateway.clone();
                                                 move |_| {
@@ -544,19 +546,19 @@ pub fn GuildSettingsDialog(
                                             });
                                                 }
                                             },
-                                            "Rotate"
+                                            {crate::i18n::text("Rotate", &[])}
                                         }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        "Rotating takes effect at once — it is not held for the Save button."
+                                        {crate::i18n::text("Rotating takes effect at once — it is not held for the Save button.", &[])}
                                     }
                                 }
                                 div { class: "border-t border-[var(--border)] pt-3",
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                        "Community safety"
+                                        {crate::i18n::text("Community safety", &[])}
                                     }
                                     div { class: "flex items-center gap-2",
-                                        span { class: "text-xs text-[var(--text-muted)] flex-1", "New members must…" }
+                                        span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("New members must…", &[])} }
                                         select {
                                             class: "bg-[var(--panel-solid)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none",
                                             value: "{gate_value}",
@@ -568,9 +570,9 @@ pub fn GuildSettingsDialog(
                                                     _ => JoinGate::Open,
                                                 });
                                             },
-                                            option { value: "open", "join freely" }
-                                            option { value: "rules", "accept rules" }
-                                            option { value: "pow", "solve a challenge" }
+                                            option { value: "open", {crate::i18n::text("join freely", &[])} }
+                                            option { value: "rules", {crate::i18n::text("accept rules", &[])} }
+                                            option { value: "pow", {crate::i18n::text("solve a challenge", &[])} }
                                         }
                                     }
                                     if matches!(gate(), JoinGate::Rules) {
@@ -578,16 +580,16 @@ pub fn GuildSettingsDialog(
                                             class: "w-full mt-2 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
                                             rows: 3,
                                             maxlength: 1000,
-                                            placeholder: "Rules new members must accept…",
+                                            placeholder: crate::i18n::text("Rules new members must accept…", &[]),
                                             value: "{rules}",
                                             oninput: move |e| { saved.set(false); rules.set(e.value()); },
                                         }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-2",
                                         match gate() {
-                                            JoinGate::Open => "Anyone can join instantly.",
-                                            JoinGate::Rules => "Members see the rules and must accept before joining.",
-                                            JoinGate::Pow => "Members' devices solve a proof-of-work — slows automated raids.",
+                                            JoinGate::Open => crate::i18n::text("Anyone can join instantly.", &[]),
+                                            JoinGate::Rules => crate::i18n::text("Members see the rules and must accept before joining.", &[]),
+                                            JoinGate::Pow => crate::i18n::text("Members' devices solve a proof-of-work — slows automated raids.", &[]),
                                         }
                                     }
                                     label { class: "flex items-center gap-2 mt-3 text-xs cursor-pointer select-none",
@@ -598,7 +600,7 @@ pub fn GuildSettingsDialog(
                                         }
                                         span {
                                             class: if panic_mode() { "text-[var(--warn)] font-medium" } else { "text-[var(--text)]" },
-                                            "🚨 Lockdown — reject all new joins"
+                                            {crate::i18n::text("🚨 Lockdown — reject all new joins", &[])}
                                         }
                                     }
                                 }
@@ -606,7 +608,7 @@ pub fn GuildSettingsDialog(
                             if current == GuildTab::Moderation {
                                 div { class: "border-t border-[var(--edge)] pt-3",
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                        "Message retention"
+                                        {crate::i18n::text("Message retention", &[])}
                                     }
                                     div { class: "flex items-center gap-2",
                                         input {
@@ -614,23 +616,23 @@ pub fn GuildSettingsDialog(
                                             r#type: "number",
                                             min: "1",
                                             max: "3650",
-                                            placeholder: "forever",
+                                            placeholder: crate::i18n::text("forever", &[]),
                                             value: "{retention}",
                                             oninput: move |e| { saved.set(false); retention.set(e.value()); },
                                         }
-                                        span { class: "text-xs text-[var(--text-muted)] flex-1", "days" }
+                                        span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("days", &[])} }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        "Messages older than this are deleted (hourly sweep). Blank keeps everything forever."
+                                        {crate::i18n::text("Messages older than this are deleted (hourly sweep). Blank keeps everything forever.", &[])}
                                     }
                                 }
                                 if can_ban {
                                     div { class: "border-t border-[var(--border)] pt-3",
                                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                            "Bans"
+                                            {crate::i18n::text("Bans", &[])}
                                         }
                                         if bans().is_empty() {
-                                            div { class: "text-xs text-[var(--text-dim)]", "Nobody is banned." }
+                                            div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Nobody is banned.", &[])} }
                                         }
                                         for banned in bans().iter().cloned() {
                                             {
@@ -653,7 +655,7 @@ pub fn GuildSettingsDialog(
                                                                 guild_id,
                                                                 user_pubkey: pk.clone(),
                                                             }),
-                                                            "Unban"
+                                                            {crate::i18n::text("Unban", &[])}
                                                         }
                                                     }
                                                 }
@@ -671,7 +673,7 @@ pub fn GuildSettingsDialog(
                             if current == GuildTab::Roles && can_roles {
                                 div {
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                        "Member list order"
+                                        {crate::i18n::text("Member list order", &[])}
                                     }
                                     if can_manage {
                                         select {
@@ -695,16 +697,16 @@ pub fn GuildSettingsDialog(
                                                     });
                                                 }
                                             },
-                                            option { value: "name", "By name" }
-                                            option { value: "level", "By level — most experienced first" }
-                                            option { value: "role", "By role — in the order below" }
-                                            option { value: "rank", "By rank — highest first" }
+                                            option { value: "name", {crate::i18n::text("By name", &[])} }
+                                            option { value: "level", {crate::i18n::text("By level — most experienced first", &[])} }
+                                            option { value: "role", {crate::i18n::text("By role — in the order below", &[])} }
+                                            option { value: "rank", {crate::i18n::text("By rank — highest first", &[])} }
                                         }
                                     } else {
-                                        div { class: "text-xs text-[var(--text)]", "{sort_label}" }
+                                        div { class: "text-xs text-[var(--text)]", {crate::i18n::label(sort_label)} }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        "Applies at once. Whoever is online or in voice still comes first; by role or by rank, each online member is listed under their highest role or their rank."
+                                        {crate::i18n::text("Applies at once. Whoever is online or in voice still comes first; by role or by rank, each online member is listed under their highest role or their rank.", &[])}
                                     }
                                 }
                                 div { class: "border-t border-[var(--border)] pt-3",
@@ -723,21 +725,21 @@ pub fn GuildSettingsDialog(
                 div { class: "px-3 py-2.5 border-t border-[var(--border)] flex items-center gap-2 shrink-0",
                     span { class: "text-[10px] text-[var(--text-dim)] flex-1",
                         if dirty {
-                            "Unsaved changes."
+                            {crate::i18n::text("Unsaved changes.", &[])}
                         } else if saved() {
-                            "Saved."
+                            {crate::i18n::text("Saved.", &[])}
                         }
                     }
                     button {
                         class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--border-strong)] transition-colors",
                         onclick: move |_| on_close.call(()),
-                        if dirty { "Discard" } else { "Close" }
+                        if dirty { {crate::i18n::text("Discard", &[])} } else { {crate::i18n::text("Close", &[])} }
                     }
                     button {
                         class: "dxf-cta rounded px-4 py-1.5 text-[11px] uppercase tracking-wider",
                         disabled: !dirty || name_empty,
                         onclick: save_all,
-                        "Save changes"
+                        {crate::i18n::text("Save changes", &[])}
                     }
                 }
             }
@@ -802,10 +804,10 @@ fn AuditLog(guild_id: Id) -> Element {
     rsx! {
         div {
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1",
-                "Audit log"
+                {crate::i18n::text("Audit log", &[])}
             }
             if entries().is_empty() {
-                div { class: "text-[10px] text-[var(--text-dim)]", "No moderation actions yet." }
+                div { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("No moderation actions yet.", &[])} }
             }
             div { class: "max-h-72 overflow-y-auto space-y-0.5",
                 for e in entries().iter().rev().take(50).cloned() {
@@ -820,7 +822,7 @@ fn AuditLog(guild_id: Id) -> Element {
                                     title: "{e.actor_pubkey}",
                                     "{actor}"
                                 }
-                                span { class: "text-[var(--accent)]", "{e.action}" }
+                                span { class: "text-[var(--accent)]", {crate::i18n::label(&e.action)} }
                                 span { class: "truncate", "{truncate_pubkey(&e.target)}" }
                                 if !e.detail.is_empty() {
                                     span { class: "truncate text-[var(--text-muted)]", "{e.detail}" }
@@ -836,7 +838,7 @@ fn AuditLog(guild_id: Id) -> Element {
 
 #[component]
 fn ImagePickButton(
-    label: &'static str,
+    #[props(into)] label: String,
     shape: crate::features::image_editor::CropShape,
     onpicked: EventHandler<(Option<String>, Option<String>)>,
 ) -> Element {
@@ -949,21 +951,21 @@ fn EmojiSettings(guild_id: Id) -> Element {
         div { class: "border-t border-[var(--border)] pt-3",
             div { class: "flex items-center gap-2 mb-1.5",
                 div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",
-                    "Custom emoji"
+                    {crate::i18n::text("Custom emoji", &[])}
                 }
                 div { class: "text-[10px] text-[var(--text-dim)]",
                     "{count}/{crate::protocol::MAX_EMOJIS_PER_GUILD}"
                 }
             }
             div { class: "text-[10px] text-[var(--text-dim)] mb-2",
-                "Members of this guild type :name: to use them. PNG, JPEG, GIF or WebP, up to 256 KB."
+                {crate::i18n::text("Members of this guild type :name: to use them. PNG, JPEG, GIF or WebP, up to 256 KB.", &[])}
             }
 
             if !full {
                 div { class: "flex items-center gap-2 mb-2",
                     label {
                         class: "shrink-0 w-8 h-8 rounded border border-dashed border-[var(--border)] flex items-center justify-center cursor-pointer text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors",
-                        title: "Choose an image",
+                        title: crate::i18n::text("Choose an image", &[]),
                         if let Some(img) = pending() {
                             img { src: "{img}", style: "max-height:100%;max-width:100%;" }
                         } else {
@@ -1000,7 +1002,7 @@ fn EmojiSettings(guild_id: Id) -> Element {
                     }
                     input {
                         class: "flex-1 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
-                        placeholder: "name",
+                        placeholder: crate::i18n::text("name", &[]),
                         maxlength: crate::protocol::MAX_SHORTCODE_LEN as i64,
                         value: "{shortcode}",
                         oninput: move |e| shortcode.set(e.value()),
@@ -1009,20 +1011,20 @@ fn EmojiSettings(guild_id: Id) -> Element {
                         class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-40",
                         disabled: pending().is_none() || shortcode().trim().is_empty(),
                         onclick: submit,
-                        "Add"
+                        {crate::i18n::text("Add", &[])}
                     }
                 }
             } else {
                 div { class: "text-[10px] text-[var(--warn)] mb-2",
-                    "This guild has reached the emoji limit. Remove one to add another."
+                    {crate::i18n::text("This guild has reached the emoji limit. Remove one to add another.", &[])}
                 }
             }
             if let Some(e) = error() {
-                div { class: "text-[10px] text-[var(--danger)] mb-2", "{e}" }
+                div { class: "text-[10px] text-[var(--danger)] mb-2", {crate::i18n::message(&(e).to_string())} }
             }
 
             if emojis().is_empty() {
-                div { class: "text-xs text-[var(--text-dim)]", "No custom emoji yet." }
+                div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("No custom emoji yet.", &[])} }
             }
             for e in emojis().iter().cloned() {
                 {
@@ -1061,7 +1063,7 @@ fn EmojiSettings(guild_id: Id) -> Element {
                                             renaming.set(None);
                                         }
                                     },
-                                    "Save"
+                                    {crate::i18n::text("Save", &[])}
                                 }
                             } else {
                                 div { class: "flex-1 min-w-0",
@@ -1080,7 +1082,7 @@ fn EmojiSettings(guild_id: Id) -> Element {
                                         rename_draft.set(code.clone());
                                         renaming.set(Some(id));
                                     },
-                                    "Rename"
+                                    {crate::i18n::text("Rename", &[])}
                                 }
                             }
                             button {
@@ -1089,7 +1091,7 @@ fn EmojiSettings(guild_id: Id) -> Element {
                                     guild_id,
                                     emoji_id: id,
                                 }),
-                                "Remove"
+                                {crate::i18n::text("Remove", &[])}
                             }
                         }
                     }

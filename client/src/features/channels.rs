@@ -217,7 +217,7 @@ pub fn ChannelsColumn() -> Element {
         aside { class: PANEL,
             if let Some(src) = banner {
                 div { class: "relative h-28 shrink-0 overflow-hidden border-b border-[var(--border)]",
-                    img { class: "w-full h-full object-cover block", src: "{src}", alt: "guild banner" }
+                    img { class: "w-full h-full object-cover block", src: "{src}", alt: crate::i18n::text("guild banner", &[]) }
                     div {
                         class: "absolute inset-0",
                         style: "background: linear-gradient(180deg, transparent 40%, var(--panel-solid));",
@@ -227,7 +227,7 @@ pub fn ChannelsColumn() -> Element {
             div { class: HEADER,
                 h2 { class: "dxf-display text-[16px] font-bold tracking-tight text-[var(--text)] truncate flex-1",
                     if dm_mode {
-                        "Direct Messages"
+                        {crate::i18n::text("Direct Messages", &[])}
                     } else {
                         {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No guild".into())}
                     }
@@ -235,7 +235,7 @@ pub fn ChannelsColumn() -> Element {
                 if !dm_mode && can_manage_channels {
                     button {
                         class: "w-6 h-6 flex items-center justify-center rounded border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
-                        title: "Create a channel",
+                        title: crate::i18n::text("Create a channel", &[]),
                         onclick: move |_| show_create.set(!show_create()),
                         "+"
                     }
@@ -259,7 +259,7 @@ pub fn ChannelsColumn() -> Element {
                         button {
                             class: "w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03] transition-colors",
                             onclick: move |_| show_requests.toggle(),
-                            span { class: "flex-1 text-left", "Requests" }
+                            span { class: "flex-1 text-left", {crate::i18n::text("Requests", &[])} }
                             span { class: "text-[var(--text-dim)] font-mono text-[10px]", "{requests}" }
                         }
                     }
@@ -268,7 +268,7 @@ pub fn ChannelsColumn() -> Element {
                     }
                     if dms.is_empty() {
                         div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
-                            "No conversations yet. Paste someone's npub above, or click a member."
+                            {crate::i18n::text("No conversations yet. Paste someone's npub above, or click a member.", &[])}
                         }
                     }
                     for dm in dms.iter().cloned() {
@@ -321,21 +321,21 @@ pub fn ChannelsColumn() -> Element {
                                     if muted && !asking {
                                         span {
                                             class: "shrink-0 text-[9px] text-[var(--text-dim)] group-hover:hidden",
-                                            title: "Muted",
+                                            title: crate::i18n::text("Muted", &[]),
                                             "🔕"
                                         }
                                     }
                                     if !asking {
                                         button {
                                             class: "shrink-0 w-4 h-4 rounded-full hidden group-hover:flex items-center justify-center text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
-                                            title: if muted { "Unmute this conversation" } else { "Mute this conversation" },
+                                            title: if muted { crate::i18n::text("Unmute this conversation", &[]) } else { crate::i18n::text("Mute this conversation", &[]) },
                                             onclick: move |_| crate::state::set_dm_muted(state, settings, cid, !muted),
                                             if muted { "🔔" } else { "🔕" }
                                         }
                                     }
                                     button {
                                         class: "shrink-0 justify-center transition-colors {del_cls}",
-                                        title: "Delete this conversation on this machine. The relays keep their copy, and a new message reopens it.",
+                                        title: crate::i18n::text("Delete this conversation on this machine. The relays keep their copy, and a new message reopens it.", &[]),
                                         onclick: move |_| {
                                             if !asking {
                                                 dm_confirming.set(Some(cid));
@@ -344,7 +344,7 @@ pub fn ChannelsColumn() -> Element {
                                             crate::state::forget_dm(state, settings, &peer);
                                             dm_confirming.set(None);
                                         },
-                                        if asking { "Del?" } else { "✕" }
+                                        if asking { {crate::i18n::text("Del?", &[])} } else { "✕" }
                                     }
                                 }
                             }
@@ -379,7 +379,7 @@ pub fn ChannelsColumn() -> Element {
                 },
                 if !text_channels.is_empty() {
                     div {
-                        div { class: SECTION_LABEL, "Text" }
+                        div { class: SECTION_LABEL, {crate::i18n::text("Text", &[])} }
                         for channel in text_channels.iter() {
                             {
                                 let ch = (*channel).clone();
@@ -483,16 +483,16 @@ pub fn ChannelsColumn() -> Element {
                                         span { class: "truncate flex-1", draggable: false, "{ch.name}" }
                                         if channel_unread.contains(&cid) {
                                             span {
-                                                title: "Unread messages",
-                                                aria_label: "Unread messages",
+                                                title: crate::i18n::text("Unread messages", &[]),
+                                                aria_label: crate::i18n::text("Unread messages", &[]),
                                                 style: "width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0;",
                                             }
                                         }
                                         if muted_channels.contains(&ch.id) {
-                                            span { class: "text-[10px] text-[var(--text-dim)]", title: "Muted", "🔕" }
+                                            span { class: "text-[10px] text-[var(--text-dim)]", title: crate::i18n::text("Muted", &[]), "🔕" }
                                         }
                                         if ch.read_only {
-                                            span { class: "text-[10px] text-[var(--text-dim)]", title: "Read-only", "🔒" }
+                                            span { class: "text-[10px] text-[var(--text-dim)]", title: crate::i18n::text("Read-only", &[]), "🔒" }
                                         }
                                     }
                                 }
@@ -504,7 +504,7 @@ pub fn ChannelsColumn() -> Element {
 
                 if !voice_channels.is_empty() {
                     div {
-                        div { class: SECTION_LABEL, "Voice" }
+                        div { class: SECTION_LABEL, {crate::i18n::text("Voice", &[])} }
                         for channel in voice_channels.iter() {
                             {
                                 let ch = (*channel).clone();
@@ -687,7 +687,7 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
             onsubmit: move |_| submit(),
             input {
                 class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                placeholder: if dividing { "Divider text or emoji…" } else { "Channel name…" },
+                placeholder: if dividing { crate::i18n::text("Divider text or emoji…", &[]) } else { crate::i18n::text("Channel name…", &[]) },
                 value: "{name}",
                 autofocus: true,
                 maxlength: 64,
@@ -699,18 +699,18 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
                     (ChannelKind::Voice, "♪ Voice"),
                     (ChannelKind::Divider, "— Divider"),
                 ] {
-                    ToggleChip { on: kind() == k, onclick: move |_| kind.set(k), "{label}" }
+                    ToggleChip { on: kind() == k, onclick: move |_| kind.set(k), {crate::i18n::label(label)} }
                 }
                 button {
                     r#type: "submit",
                     class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                    "Add"
+                    {crate::i18n::text("Add", &[])}
                 }
             }
             if dividing {
                 div { class: "flex gap-1",
-                    ToggleChip { on: !in_voice(), onclick: move |_| in_voice.set(false), "Text list" }
-                    ToggleChip { on: in_voice(), onclick: move |_| in_voice.set(true), "Voice list" }
+                    ToggleChip { on: !in_voice(), onclick: move |_| in_voice.set(false), {crate::i18n::text("Text list", &[])} }
+                    ToggleChip { on: in_voice(), onclick: move |_| in_voice.set(true), {crate::i18n::text("Voice list", &[])} }
                 }
                 DividerStylePicker { style }
             }
@@ -738,8 +738,8 @@ fn ToggleChip(on: bool, onclick: EventHandler<MouseEvent>, children: Element) ->
 fn DividerStylePicker(style: Signal<DividerStyle>) -> Element {
     rsx! {
         div { class: "flex gap-1",
-            ToggleChip { on: style() == DividerStyle::Title, onclick: move |_| style.set(DividerStyle::Title), "Title ——" }
-            ToggleChip { on: style() == DividerStyle::Centered, onclick: move |_| style.set(DividerStyle::Centered), "—— Line ——" }
+            ToggleChip { on: style() == DividerStyle::Title, onclick: move |_| style.set(DividerStyle::Title), {crate::i18n::text("Title ——", &[])} }
+            ToggleChip { on: style() == DividerStyle::Centered, onclick: move |_| style.set(DividerStyle::Centered), {crate::i18n::text("—— Line ——", &[])} }
         }
     }
 }
@@ -821,7 +821,7 @@ fn ChannelMenuPopover(
                                             crate::settings::save(&next);
                                             on_close.call(());
                                         },
-                                        if muted { "Unmute channel" } else { "Mute channel" }
+                                        if muted { {crate::i18n::text("Unmute channel", &[])} } else { {crate::i18n::text("Mute channel", &[])} }
                                     }
                                 }
                                 }
@@ -836,7 +836,7 @@ fn ChannelMenuPopover(
                                                 state.write().channel_access_open = Some(cid);
                                                 on_close.call(());
                                             },
-                                            "Who can see this…"
+                                            {crate::i18n::text("Who can see this…", &[])}
                                         }
                                     }
                                 }
@@ -845,7 +845,7 @@ fn ChannelMenuPopover(
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                     onclick: move |_| on_mode.call(ChanMenuMode::Edit),
-                                    if ch.kind.is_divider() { "Edit divider" } else { "Edit name & topic" }
+                                    if ch.kind.is_divider() { {crate::i18n::text("Edit divider", &[])} } else { {crate::i18n::text("Edit name & topic", &[])} }
                                 }
                                 if let Some(above) = move_up {
                                     {
@@ -859,7 +859,7 @@ fn ChannelMenuPopover(
                                                     send_reorder(&gw, &order, id, above);
                                                     on_close.call(());
                                                 },
-                                                "Move up"
+                                                {crate::i18n::text("Move up", &[])}
                                             }
                                         }
                                     }
@@ -876,7 +876,7 @@ fn ChannelMenuPopover(
                                                     send_reorder(&gw, &order, id, below);
                                                     on_close.call(());
                                                 },
-                                                "Move down"
+                                                {crate::i18n::text("Move down", &[])}
                                             }
                                         }
                                     }
@@ -896,13 +896,13 @@ fn ChannelMenuPopover(
                                             });
                                             on_close.call(());
                                         },
-                                        if ch.read_only { "🔓 Make writable" } else { "🔒 Make read-only" }
+                                        if ch.read_only { {crate::i18n::text("🔓 Make writable", &[])} } else { {crate::i18n::text("🔒 Make read-only", &[])} }
                                     }
                                 }
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
                                     onclick: move |_| on_mode.call(ChanMenuMode::ConfirmDelete),
-                                    if ch.kind.is_divider() { "Delete divider" } else { "Delete channel" }
+                                    if ch.kind.is_divider() { {crate::i18n::text("Delete divider", &[])} } else { {crate::i18n::text("Delete channel", &[])} }
                                 }
                             }
                         }
@@ -942,7 +942,7 @@ fn ChannelMenuPopover(
                                     div { class: "relative flex items-center gap-1",
                                         input {
                                             class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                                            placeholder: "Topic (optional)",
+                                            placeholder: crate::i18n::text("Topic (optional)", &[]),
                                             value: "{topic}",
                                             maxlength: TOPIC_MAX_CHARS,
                                             oninput: move |e| topic.set(e.value()),
@@ -962,7 +962,7 @@ fn ChannelMenuPopover(
                                 button {
                                     r#type: "submit",
                                     class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                                    "Save"
+                                    {crate::i18n::text("Save", &[])}
                                 }
                             }
                         }
@@ -973,9 +973,9 @@ fn ChannelMenuPopover(
                         rsx! {
                             div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
                                 if ch.kind.is_divider() {
-                                    "Delete this divider?"
+                                    {crate::i18n::text("Delete this divider?", &[])}
                                 } else {
-                                    "Delete #{ch.name}? Its messages are gone for good."
+                                    {crate::i18n::text("Delete #{0}? Its messages are gone for good.", std::slice::from_ref(&(ch . name)))}
                                 }
                             }
                             div { class: "flex gap-1 px-1 pb-0.5",
@@ -985,12 +985,12 @@ fn ChannelMenuPopover(
                                         gw.send(ClientMessage::DeleteChannel { channel_id: cid });
                                         on_close.call(());
                                     },
-                                    "Delete"
+                                    {crate::i18n::text("Delete", &[])}
                                 }
                                 button {
                                     class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                                     onclick: move |_| on_close.call(()),
-                                    "Cancel"
+                                    {crate::i18n::text("Cancel", &[])}
                                 }
                             }
                         }
@@ -1054,7 +1054,7 @@ pub(crate) fn TopicEmojiPicker(
                     "right: 0; width: 18rem; max-height: 18rem;"
                 },
                 if !guild_emojis.is_empty() {
-                    div { class: PICKER_HEADING, "This server" }
+                    div { class: PICKER_HEADING, {crate::i18n::text("This server", &[])} }
                     div { class: "grid grid-cols-8 gap-1",
                         for (code, url) in guild_emojis.into_iter() {
                             {
@@ -1077,7 +1077,7 @@ pub(crate) fn TopicEmojiPicker(
                         }
                     }
                 }
-                div { class: PICKER_HEADING, "Standard" }
+                div { class: PICKER_HEADING, {crate::i18n::text("Standard", &[])} }
                 div { class: "grid grid-cols-8 gap-1",
                     for (emoji, name) in crate::features::chat::EMOJIS.iter().copied() {
                         button {
@@ -1154,7 +1154,7 @@ fn VoiceChannelRow(
                 if channel.access.is_some() {
                     span {
                         class: "text-[10px] text-[var(--text-dim)]",
-                        title: "Hidden from everyone but the roles and people allowed",
+                        title: crate::i18n::text("Hidden from everyone but the roles and people allowed", &[]),
                         "🔒"
                     }
                 }
@@ -1236,7 +1236,7 @@ pub(crate) fn ConnectionStats() -> Element {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5",
             if rows.is_empty() {
                 span { class: "text-[10px] text-[var(--text-dim)] block",
-                    "Waiting for the first reading — join a voice channel."
+                    {crate::i18n::text("Waiting for the first reading — join a voice channel.", &[])}
                 }
             }
             for (name, st) in rows.iter() {
@@ -1246,30 +1246,30 @@ pub(crate) fn ConnectionStats() -> Element {
                         crate::state::TrackStats::Inbound { loss_pct, jitter_ms, buffer_ms, concealment_events } => rsx! {
                             span {
                                 class: if *loss_pct >= 1.0 { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
-                                title: "Packets that never arrived",
-                                "{loss_pct:.1}% loss"
+                                title: crate::i18n::text("Packets that never arrived", &[]),
+                                {crate::i18n::text("{0}% loss", &[format!("{0:.1}" , loss_pct)])}
                             }
-                            span { class: "text-[var(--text-dim)]", title: "Network jitter", "{jitter_ms:.0}ms jit" }
+                            span { class: "text-[var(--text-dim)]", title: crate::i18n::text("Network jitter", &[]), {crate::i18n::text("{0}ms jit", &[format!("{0:.0}" , jitter_ms)])} }
                             span {
                                 class: "text-[var(--text-dim)]",
-                                title: "Delay the decoder is holding, on top of our own playback buffer",
-                                "{buffer_ms:.0}ms buf"
+                                title: crate::i18n::text("Delay the decoder is holding, on top of our own playback buffer", &[]),
+                                {crate::i18n::text("{0}ms buf", &[format!("{0:.0}" , buffer_ms)])}
                             }
                             span {
                                 class: "text-[var(--text-dim)]",
-                                title: "Times loss had to be concealed — loss that became audible",
-                                "{concealment_events} conc"
+                                title: crate::i18n::text("Times loss had to be concealed — loss that became audible", &[]),
+                                {crate::i18n::text("{0} conc", &[(concealment_events).to_string()])}
                             }
                         },
                         crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, target_kbps } => rsx! {
                             span {
                                 class: "text-[var(--text-dim)]",
-                                title: "What the encoder produced, measured between readings (payload only, so the wire is a little higher) — it is aiming for {target_kbps} kbit/s, and redundancy against packet loss roughly doubles what that costs",
+                                title: crate::i18n::text("What the encoder produced, measured between readings (payload only, so the wire is a little higher) — it is aiming for {0} kbit/s, and redundancy against packet loss roughly doubles what that costs", &[(target_kbps).to_string()]),
                                 {rate_or_dash(*bitrate_kbps, "kbit/s out")}
                             }
                             span {
                                 class: "text-[var(--text-dim)]",
-                                title: "Packets a second — around 50 while you're transmitting, near zero while silence is held back",
+                                title: crate::i18n::text("Packets a second — around 50 while you're transmitting, near zero while silence is held back", &[]),
                                 {rate_or_dash(*packets_per_sec, "pkt/s")}
                             }
                         },
@@ -1299,13 +1299,13 @@ fn ScreenShareStatsRow(
     let Some(stats) = stats else {
         return rsx! {
             div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] text-[var(--text-dim)]",
-                span { class: "text-[var(--text-muted)]", "Screen share {direction}: " }
+                span { class: "text-[var(--text-muted)]", {crate::i18n::text("Screen share {0}: ", &[(direction).to_string()])} }
                 if direction == "outbound" && native_screen_share {
-                    "Waiting for native capture stats."
+                    {crate::i18n::text("Waiting for native capture stats.", &[])}
                 } else if direction == "inbound" {
-                    "Waiting for a remote screen share."
+                    {crate::i18n::text("Waiting for a remote screen share.", &[])}
                 } else {
-                    "Waiting for a local WebView screen share."
+                    {crate::i18n::text("Waiting for a local WebView screen share.", &[])}
                 }
             }
         };
@@ -1403,14 +1403,14 @@ fn ScreenShareStatsRow(
 
     rsx! {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] font-mono",
-            div { class: "text-[var(--text-muted)] mb-0.5", "Screen share {direction}" }
+            div { class: "text-[var(--text-muted)] mb-0.5", {crate::i18n::text("Screen share {0}", &[(direction).to_string()])} }
             div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[var(--text-dim)]",
                 if stats.outbound { span { "{capture_label}" } }
                 if let Some(processing) = processing { span { "{processing}" } }
                 if let Some(encoding) = encoding { span { "{encoding}" } }
                 if let Some(callbacks) = callbacks { span { "{callbacks}" } }
                 if let Some(paced_out) = paced_out {
-                    span { title: "Includes intentional skips to match the selected FPS", "{paced_out}" }
+                    span { title: crate::i18n::text("Includes intentional skips to match the selected FPS", &[]), "{paced_out}" }
                 }
                 if let Some(adapter_dropped) = adapter_dropped { span { "{adapter_dropped}" } }
                 span { "{encoded_label}" }
@@ -1419,13 +1419,13 @@ fn ScreenShareStatsRow(
                 if let Some(target) = target_bitrate { span { "{target}" } }
                 span { "{codec_path_label}" }
                 span { "{efficiency_label}" }
-                if stats.outbound { span { "limit {limitation}" } }
+                if stats.outbound { span { {crate::i18n::text("limit {0}", &[(limitation).to_string()])} } }
                 span { "{frames_label}" }
                 span { "{packets_label}" }
                 if let Some(jitter) = jitter { span { "{jitter}" } }
             }
             if let Some(error) = stats.error.as_deref() {
-                div { class: "text-[var(--warn)] mt-0.5", "Stats error: {error}" }
+                div { class: "text-[var(--warn)] mt-0.5", {crate::i18n::text("Stats error: {0}", &[(error).to_string()])} }
             }
         }
     }
@@ -1498,13 +1498,13 @@ fn VoiceOccupant(
                 }
                 span { class: "truncate flex-1",
                     "{name}"
-                    if is_self { " (you)" }
+                    if is_self { {crate::i18n::text(" (you)", &[])} }
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
-                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "deafened" }
+                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", {crate::i18n::text("deafened", &[])} }
                 } else if remote_muted {
-                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "muted" }
+                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", {crate::i18n::text("muted", &[])} }
                 }
                 if !is_self && (locally_muted || volume != 100) {
                     button {
@@ -1513,7 +1513,7 @@ fn VoiceOccupant(
                         } else {
                             "w-5 h-5 flex items-center justify-center rounded text-[var(--accent)] shrink-0"
                         },
-                        title: if locally_muted { "Muted for you — click for options" } else { "{volume}% for you — click for options" },
+                        title: if locally_muted { crate::i18n::text("Muted for you — click for options", &[]) } else { crate::i18n::text("{0}% for you — click for options", &[(volume).to_string()]) },
                         onclick: open_menu_click,
                         dangerous_inner_html: if locally_muted {
                             crate::features::icons::SPEAKER_OFF
@@ -1531,11 +1531,11 @@ fn VoiceOccupant(
                         },
                         disabled: !can_watch,
                         title: if !can_watch {
-                            "Sharing their screen"
+                            crate::i18n::text("Sharing their screen", &[])
                         } else if is_watching_screen {
-                            "Stop watching their screen"
+                            crate::i18n::text("Stop watching their screen", &[])
                         } else {
-                            "Watch their screen"
+                            crate::i18n::text("Watch their screen", &[])
                         },
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
@@ -1558,11 +1558,11 @@ fn VoiceOccupant(
                         },
                         disabled: !can_watch_camera,
                         title: if !can_watch_camera {
-                            "Their camera is on — join the channel to watch"
+                            crate::i18n::text("Their camera is on — join the channel to watch", &[])
                         } else if is_watching_camera {
-                            "Hide their camera"
+                            crate::i18n::text("Hide their camera", &[])
                         } else {
-                            "Watch their camera"
+                            crate::i18n::text("Watch their camera", &[])
                         },
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
@@ -1700,20 +1700,20 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             "{voice_where}"
                         }
                         span { class: "shrink-0 font-mono text-[10.5px] text-[var(--text-dim)]",
-                            "{voice_bitrate_kbps} kbps"
+                            {crate::i18n::text("{0} kbps", &[(voice_bitrate_kbps).to_string()])}
                         }
                     }
                     div { class: "min-w-0 text-[11px] text-[var(--text-dim)] truncate", title: "{voice_sub}", "{voice_sub}" }
                     button {
                         class: "col-start-2 row-start-1 row-span-2 justify-self-end h-9 px-2.5 flex items-center justify-center gap-1.5 rounded-lg border text-[11.5px] font-semibold text-[var(--danger)] transition-colors hover:brightness-125",
                         style: "background-color: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent);",
-                        title: "Leave voice",
+                        title: crate::i18n::text("Leave voice", &[]),
                         onclick: move |_| {
                             g_for_hang.send(ClientMessage::LeaveVoice);
                             v_for_hang.send(VoiceCmd::Disconnect { done: None });
                         },
                         span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PHONE_HANGUP }
-                        "Leave"
+                        {crate::i18n::text("Leave", &[])}
                     }
                 }
             }
@@ -1741,7 +1741,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         } else {
                             "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                         },
-                        title: if deafened { "undeafen" } else { "deafen" },
+                        title: if deafened { crate::i18n::text("undeafen", &[]) } else { crate::i18n::text("deafen", &[]) },
                         onclick: move |_| {
                             let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
                             {
@@ -1768,10 +1768,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             },
                             disabled: !camera_capture_available,
                             title: if !camera_capture_available {
-                                "This build's webview has no camera support."
+                                crate::i18n::text("This build's webview has no camera support.", &[])
                             } else if camera_starting {
-                                "Starting your camera…"
-                            } else if camera_on { "Turn your camera off" } else { "Turn your camera on" },
+                                crate::i18n::text("Starting your camera…", &[])
+                            } else if camera_on { crate::i18n::text("Turn your camera off", &[]) } else { crate::i18n::text("Turn your camera on", &[]) },
                             // While it is still starting, a press cancels it.
                             onclick: move |_| {
                                 if camera_on || camera_starting {
@@ -1793,8 +1793,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                             },
                             title: if !screen_capture_available {
-                                "Screen capture isn't available in this webview — pressing this will explain why."
-                            } else if sharing { "Stop sharing your screen" } else { "Share your screen" },
+                                crate::i18n::text("Screen capture isn't available in this webview — pressing this will explain why.", &[])
+                            } else if sharing { crate::i18n::text("Stop sharing your screen", &[]) } else { crate::i18n::text("Share your screen", &[]) },
                             onclick: move |_| {
                                 let now = !sharing;
                                 if !now {
@@ -1835,7 +1835,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             },
                             id: "dxf-soundboard-toggle",
                             onpointerdown: move |e| e.stop_propagation(),
-                            title: "Soundboard — right-click for its volume",
+                            title: crate::i18n::text("Soundboard — right-click for its volume", &[]),
                             onclick: move |e: MouseEvent| {
                                 let at = e.client_coordinates();
                                 let inside = e.element_coordinates();
@@ -1859,7 +1859,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
             }
             if let Some(err) = voice_error {
                 div { class: "px-3 pb-2 text-[10px] text-[var(--danger)] break-all",
-                    "{err}"
+                    {crate::i18n::message(&(err).to_string())}
                 }
             }
             div { class: "h-14 px-2 flex items-center gap-1 border-t border-[var(--border)]",
@@ -1873,7 +1873,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     div { class: "flex-1 min-w-0",
                         div { class: "flex items-center gap-1.5",
                             span { class: "text-[12.5px] font-medium text-[var(--text)] truncate", "{name}" }
-                            span { class: "text-[9px] font-semibold text-[var(--text-dim)] shrink-0", "Lv {level}" }
+                            span { class: "text-[9px] font-semibold text-[var(--text-dim)] shrink-0", {crate::i18n::text("Lv {0}", &[(level).to_string()])} }
                         }
                         // The key under the name: this is the account, and the
                         // account is the key (trap 12).
@@ -2180,7 +2180,7 @@ fn StartDmByKey() -> Element {
             input {
                 class: "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--accent)]",
                 r#type: "text",
-                placeholder: "npub1… or hex key",
+                placeholder: crate::i18n::text("npub1… or hex key", &[]),
                 value: "{input}",
                 oninput: move |e| { input.set(e.value()); error.set(None); },
                 onkeydown: move |e| {
@@ -2188,7 +2188,7 @@ fn StartDmByKey() -> Element {
                 },
             }
             if let Some(err) = error() {
-                div { class: "px-1 text-[10px] text-[var(--danger,#f87171)]", "{err}" }
+                div { class: "px-1 text-[10px] text-[var(--danger,#f87171)]", {crate::i18n::message(&(err).to_string())} }
             }
         }
     }

@@ -141,48 +141,48 @@ fn CameraSetupDialog() -> Element {
                 style: "width: min(38rem, calc(100vw - 2rem));",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { id: "camera-setup-title", class: "text-sm font-medium text-[var(--accent)] flex-1", "Set up your camera" }
-                    button { title: "Close camera setup", onclick: close, "✕" }
+                    h3 { id: "camera-setup-title", class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Set up your camera", &[])} }
+                    button { title: crate::i18n::text("Close camera setup", &[]), onclick: close, "✕" }
                 }
                 div { class: "p-3 space-y-3 overflow-y-auto",
                     div { style: "aspect-ratio: 16 / 9; background: #000; position: relative; overflow: hidden; border-radius: 8px;",
                         if cfg!(target_os = "windows") && !image().is_empty() {
-                            img { src: image(), alt: "Local camera preview", style: "width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1);" }
+                            img { src: image(), alt: crate::i18n::text("Local camera preview", &[]), style: "width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1);" }
                         }
                         div { id: "camera-setup-video", style: "width: 100%; height: 100%;" }
-                        if !ready() { p { role: "status", class: "text-xs text-[var(--text-muted)]", style: "position: absolute; inset: 0; display: grid; place-items: center;", if error().is_some() { "Preview unavailable" } else { "Opening camera…" } } }
+                        if !ready() { p { role: "status", class: "text-xs text-[var(--text-muted)]", style: "position: absolute; inset: 0; display: grid; place-items: center;", if error().is_some() { {crate::i18n::text("Preview unavailable", &[])} } else { {crate::i18n::text("Opening camera…", &[])} } } }
                     }
-                    p { class: "text-xs text-[var(--text-muted)]", "Only you can see this preview." }
-                    label { r#for: "camera-device", class: "text-xs text-[var(--text-muted)]", "Camera" }
+                    p { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Only you can see this preview.", &[])} }
+                    label { r#for: "camera-device", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Camera", &[])} }
                     select { id: "camera-device", disabled: submitting(), value: device(), class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                         onchange: move |e| device.set(e.value()),
-                        option { value: "", "Default camera" }
+                        option { value: "", {crate::i18n::text("Default camera", &[])} }
                         for camera in state.read().available_cameras.clone() {
                             option { value: camera.id, "{camera.label}" }
                         }
                     }
                     div { style: "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;",
                         div {
-                            label { r#for: "camera-resolution", class: "text-xs text-[var(--text-muted)]", "Resolution" }
+                            label { r#for: "camera-resolution", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Resolution", &[])} }
                             select { id: "camera-resolution", disabled: submitting(), value: quality().height.to_string(), class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 onchange: move |e| { let current = quality(); quality.set(CameraQuality { height: e.value().parse().unwrap_or(720), ..current }.normalized()); },
-                                for height in [480, 720, 1080] { option { value: "{height}", "{height}p" } }
+                                for height in [480, 720, 1080] { option { value: "{height}", {crate::i18n::text("{0}p", &[(height).to_string()])} } }
                             }
                         }
                         div {
-                            label { r#for: "camera-fps", class: "text-xs text-[var(--text-muted)]", "Frames per second" }
+                            label { r#for: "camera-fps", class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Frames per second", &[])} }
                             select { id: "camera-fps", disabled: submitting(), value: quality().fps.to_string(), class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 onchange: move |e| { let current = quality(); quality.set(CameraQuality { fps: e.value().parse().unwrap_or(30), ..current }.normalized()); },
-                                for fps in [15, 30, 60] { option { value: "{fps}", "{fps} FPS" } }
+                                for fps in [15, 30, 60] { option { value: "{fps}", {crate::i18n::text("{0} FPS", &[(fps).to_string()])} } }
                             }
                         }
                     }
-                    p { class: "text-xs text-[var(--text-muted)]", "Bitrate adjusts automatically. Your camera may use the nearest supported resolution and FPS." }
-                    if let Some((width, height)) = dimensions() { p { class: "text-xs text-[var(--text-muted)]", "Preview capture: {width} × {height}" } }
-                    if let Some(message) = error() { p { role: "alert", class: "text-xs text-[var(--accent)]", "{message}" } }
+                    p { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Bitrate adjusts automatically. Your camera may use the nearest supported resolution and FPS.", &[])} }
+                    if let Some((width, height)) = dimensions() { p { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Preview capture: {0} × {1}", &[(width).to_string(), (height).to_string()])} } }
+                    if let Some(message) = error() { p { role: "alert", class: "text-xs text-[var(--accent)]", {crate::i18n::message(&(message).to_string())} } }
                 }
                 div { class: "px-4 py-3 flex items-center gap-2 border-t border-[var(--border)]",
-                    button { disabled: submitting(), onclick: close, "Cancel" }
+                    button { disabled: submitting(), onclick: close, {crate::i18n::text("Cancel", &[])} }
                     button {
                         disabled: !can_start, class: "px-3 py-2 rounded bg-[var(--accent)] text-white text-sm",
                         onclick: move |_| {
@@ -215,7 +215,7 @@ fn CameraSetupDialog() -> Element {
                                 super::toggle_camera(state, settings, &gateway, true);
                             });
                         },
-                        if submitting() { "Starting…" } else { "Start camera" }
+                        if submitting() { {crate::i18n::text("Starting…", &[])} } else { {crate::i18n::text("Start camera", &[])} }
                     }
                 }
             }

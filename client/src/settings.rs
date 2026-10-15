@@ -24,6 +24,8 @@ pub struct SavedEmoji {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClientSettings {
+    #[serde(default)]
+    pub language: crate::i18n::Language,
     pub theme: String,
     #[serde(default = "default_ui_size")]
     pub text_size_percent: u16,
@@ -327,6 +329,7 @@ fn default_rendezvous_servers() -> Vec<String> {
 impl Default for ClientSettings {
     fn default() -> Self {
         Self {
+            language: crate::i18n::Language::System,
             theme: "ember".into(),
             text_size_percent: default_ui_size(),
             emoji_size_percent: default_ui_size(),

@@ -208,12 +208,12 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                 onclick: move |e| e.stop_propagation(),
                 header { class: "guild-hub-header",
                     div {
-                        h3 { id: "guild-hub-title", "Add guild" }
-                        p { "Create a home, join one here, or bring yours from Discord." }
+                        h3 { id: "guild-hub-title", {crate::i18n::text("Add guild", &[])} }
+                        p { {crate::i18n::text("Create a home, join one here, or bring yours from Discord.", &[])} }
                     }
-                    button { class: "guild-hub-close", title: "Close", aria_label: "Close", disabled: locked, onclick: close, "×" }
+                    button { class: "guild-hub-close", title: crate::i18n::text("Close", &[]), aria_label: crate::i18n::text("Close", &[]), disabled: locked, onclick: close, "×" }
                 }
-                div { class: "guild-hub-tabs", role: "tablist", aria_label: "Add guild options",
+                div { class: "guild-hub-tabs", role: "tablist", aria_label: crate::i18n::text("Add guild options", &[]),
                     for (choice, label, suffix) in [(Tab::Create, "Create", "create"), (Tab::Explore, "Explore", "explore"), (Tab::Discord, "Discord", "discord")] {
                         button {
                             key: "{suffix}",
@@ -230,15 +230,15 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                                     if choice == Tab::Explore && !catalog_loaded() { fetch_catalog(0); }
                                 }
                             },
-                            "{label}"
+                            {crate::i18n::label(label)}
                         }
                     }
                 }
                 div { class: "guild-hub-content",
-                    if let Some(message) = error() { div { class: "guild-hub-error", role: "alert", "{message}" } }
+                    if let Some(message) = error() { div { class: "guild-hub-error", role: "alert", {crate::i18n::message(&(message).to_string())} } }
                     div { id: "guild-panel-create", role: "tabpanel", aria_labelledby: "guild-tab-create", hidden: tab() != Tab::Create,
-                        h4 { "Your own guild" }
-                        p { class: "guild-hub-description", "Create a new space on this server. You can set its picture, channels and permissions afterwards." }
+                        h4 { {crate::i18n::text("Your own guild", &[])} }
+                        p { class: "guild-hub-description", {crate::i18n::text("Create a new space on this server. You can set its picture, channels and permissions afterwards.", &[])} }
                         form { class: "guild-hub-form",
                             onsubmit: {
                                 let gateway = gateway.clone();
@@ -253,22 +253,22 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                                     }
                                 }
                             },
-                            label { r#for: "guild-hub-name", "Guild name" }
-                            input { id: "guild-hub-name", autofocus: true, maxlength: 64, placeholder: "Give your guild a name", value: "{name}", disabled: locked, oninput: move |e| name.set(e.value()) }
-                            div { class: "guild-hub-actions", button { class: "guild-hub-primary", r#type: "submit", disabled: locked || !ready || name().trim().is_empty(), if pending().is_some() { "Creating…" } else { "Create guild" } } }
+                            label { r#for: "guild-hub-name", {crate::i18n::text("Guild name", &[])} }
+                            input { id: "guild-hub-name", autofocus: true, maxlength: 64, placeholder: crate::i18n::text("Give your guild a name", &[]), value: "{name}", disabled: locked, oninput: move |e| name.set(e.value()) }
+                            div { class: "guild-hub-actions", button { class: "guild-hub-primary", r#type: "submit", disabled: locked || !ready || name().trim().is_empty(), if pending().is_some() { {crate::i18n::text("Creating…", &[])} } else { {crate::i18n::text("Create guild", &[])} } } }
                         }
                     }
                     div { id: "guild-panel-explore", role: "tabpanel", aria_labelledby: "guild-tab-explore", hidden: tab() != Tab::Explore,
-                        h4 { "Find your next guild" }
-                        p { class: "guild-hub-description", "Browse public guilds on this host, or join with an invite code." }
+                        h4 { {crate::i18n::text("Find your next guild", &[])} }
+                        p { class: "guild-hub-description", {crate::i18n::text("Browse public guilds on this host, or join with an invite code.", &[])} }
                         div { class: "guild-hub-catalog-tools",
-                            input { aria_label: "Search guilds", placeholder: "Search guilds…", value: "{filter}", oninput: move |e| filter.set(e.value()) }
-                            button { disabled: locked || catalog_loading().is_some() || !ready, onclick: { let mut fetch_catalog = fetch_catalog.clone(); move |_| fetch_catalog(0) }, "Refresh" }
+                            input { aria_label: crate::i18n::text("Search guilds", &[]), placeholder: crate::i18n::text("Search guilds…", &[]), value: "{filter}", oninput: move |e| filter.set(e.value()) }
+                            button { disabled: locked || catalog_loading().is_some() || !ready, onclick: { let mut fetch_catalog = fetch_catalog.clone(); move |_| fetch_catalog(0) }, {crate::i18n::text("Refresh", &[])} }
                         }
                         div { class: "guild-hub-catalog", aria_busy: catalog_loading().is_some(),
-                            if catalog_loading().is_some() { p { class: "guild-hub-description", role: "status", "Loading guilds…" } }
+                            if catalog_loading().is_some() { p { class: "guild-hub-description", role: "status", {crate::i18n::text("Loading guilds…", &[])} } }
                             if catalog_loaded() && available.is_empty() && catalog_loading().is_none() {
-                                p { class: "guild-hub-description", if filter().trim().is_empty() { "No more public guilds here. Try an invite or create your own." } else { "No guilds match your search." } }
+                                p { class: "guild-hub-description", if filter().trim().is_empty() { {crate::i18n::text("No more public guilds here. Try an invite or create your own.", &[])} } else { {crate::i18n::text("No guilds match your search.", &[])} } }
                             }
                             for g in available {
                                 {
@@ -279,15 +279,15 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                                     rsx! {
                                         div { key: "{gid}", class: "guild-hub-guild",
                                             span { class: "guild-hub-icon", "{label}" }
-                                            div { class: "guild-hub-guild-info", strong { "{g.name}" } span { "{g.member_count} members" } }
+                                            div { class: "guild-hub-guild-info", strong { "{g.name}" } span { {crate::i18n::plural("{0} member", "{0} members", (g . member_count) as usize)} } }
                                             button { disabled: locked || !ready, onclick: move |_| {
                                                 if begin(Action::Join(gid)) { gateway.send(ClientMessage::JoinGuild { guild_id: gid, accept: false, pow_nonce: None }); }
-                                            }, "Join" }
+                                            }, {crate::i18n::text("Join", &[])} }
                                         }
                                     }
                                 }
                             }
-                            if catalog_len < catalog_total { button { disabled: locked || catalog_loading().is_some() || !ready, onclick: { let mut fetch_catalog = fetch_catalog.clone(); move |_| fetch_catalog(catalog_len as u32) }, "Load more" } }
+                            if catalog_len < catalog_total { button { disabled: locked || catalog_loading().is_some() || !ready, onclick: { let mut fetch_catalog = fetch_catalog.clone(); move |_| fetch_catalog(catalog_len as u32) }, {crate::i18n::text("Load more", &[])} } }
                         }
                         form { class: "guild-hub-invite",
                             onsubmit: {
@@ -298,16 +298,16 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                                     if !code.is_empty() && begin(Action::Invite) { gateway.send(ClientMessage::JoinByInvite { code, accept: false, pow_nonce: None }); }
                                 }
                             },
-                            label { r#for: "guild-hub-invite", "Have an invite code?" }
+                            label { r#for: "guild-hub-invite", {crate::i18n::text("Have an invite code?", &[])} }
                             div { class: "guild-hub-catalog-tools",
-                                input { id: "guild-hub-invite", placeholder: "Paste an invite code", value: "{invite}", disabled: locked, oninput: move |e| invite.set(e.value()) }
-                                button { class: "guild-hub-primary", r#type: "submit", disabled: locked || !ready || invite().trim().is_empty(), "Join" }
+                                input { id: "guild-hub-invite", placeholder: crate::i18n::text("Paste an invite code", &[]), value: "{invite}", disabled: locked, oninput: move |e| invite.set(e.value()) }
+                                button { class: "guild-hub-primary", r#type: "submit", disabled: locked || !ready || invite().trim().is_empty(), {crate::i18n::text("Join", &[])} }
                             }
                         }
-                        if pending().is_some() { p { class: "guild-hub-description", role: "status", "Waiting for the server…" } }
+                        if pending().is_some() { p { class: "guild-hub-description", role: "status", {crate::i18n::text("Waiting for the server…", &[])} } }
                     }
                     div { id: "guild-panel-discord", role: "tabpanel", aria_labelledby: "guild-tab-discord", hidden: tab() != Tab::Discord,
-                        h4 { "Bring your guild from Discord" }
+                        h4 { {crate::i18n::text("Bring your guild from Discord", &[])} }
                         super::discord_import::DiscordImportPanel { locked: import_locked, on_close }
                     }
                 }

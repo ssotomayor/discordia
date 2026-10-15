@@ -105,22 +105,24 @@ fn diagram_svg(legs: &[Leg], you: &str) -> String {
 <marker id="dxa-lo" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--text-muted)"/></marker>
 </defs>
 <rect x="8" y="{you_y}" width="{LEFT_W}" height="{BOX_H}" rx="9" fill="var(--accent-soft)" stroke="var(--accent)"/>
-<text x="{you_cx}" y="{you_t1}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--accent)">You</text>
+<text x="{you_cx}" y="{you_t1}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--accent)">{you_text}</text>
 <text x="{you_cx}" y="{you_t2}" text-anchor="middle" font-size="9" fill="var(--text-muted)">{you_label}</text>
 "##,
+        you_text = esc(crate::i18n::label("You")),
         you_y = mid - BOX_H / 2.0,
         you_cx = 8.0 + LEFT_W / 2.0,
         you_t1 = mid - 1.0,
         you_t2 = mid + 12.0,
-        you_label = esc(you),
+        you_label = esc(crate::i18n::label(you)),
     );
 
     // Said under the box it belongs to rather than drawn as an arrow: an arrow
     // to a box labelled "never leaves" is a picture arguing with its caption.
     if stays > 0 {
         out.push_str(&format!(
-            r##"<text x="{cx}" y="{y}" text-anchor="middle" font-size="8.5" fill="var(--text-dim)">your key never leaves</text>
+            r##"<text x="{cx}" y="{y}" text-anchor="middle" font-size="8.5" fill="var(--text-dim)">{key_text}</text>
 "##,
+            key_text = esc(crate::i18n::label("your key never leaves")),
             cx = 8.0 + LEFT_W / 2.0,
             y = mid + BOX_H / 2.0 + 13.0,
         ));
@@ -146,8 +148,8 @@ fn diagram_svg(legs: &[Leg], you: &str) -> String {
             tx = RIGHT_X + RIGHT_W / 2.0,
             t1 = cy - 2.0,
             t2 = cy + 12.0,
-            what = esc(leg.what),
-            node = esc(leg.node),
+            what = esc(crate::i18n::label(leg.what)),
+            node = esc(crate::i18n::label(leg.node)),
             addr = esc(&ellipsize(&leg.where_to, 28)),
         ));
         if let Some(via) = &leg.via {
@@ -155,7 +157,7 @@ fn diagram_svg(legs: &[Leg], you: &str) -> String {
             // visual middle closely enough to hang a label on.
             let vx = (x0 + RIGHT_X) / 2.0;
             let vy = (mid + cy) / 2.0;
-            let label = ellipsize(via, 18);
+            let label = ellipsize(crate::i18n::label(via), 18);
             // Clamped, not merely sized: the gap between the two columns is
             // fixed, so a long hop name would otherwise sit on top of the box
             // it is supposed to be pointing at.
@@ -366,7 +368,7 @@ pub fn TopologyDialog(on_close: EventHandler<()>) -> Element {
                 class: "dxf-modal-in w-[34rem] max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e: MouseEvent| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Where your data goes" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Where your data goes", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                         onclick: move |_| on_close.call(()),
@@ -396,7 +398,7 @@ pub fn TopologyDialog(on_close: EventHandler<()>) -> Element {
                                                 "<svg width=\"22\" height=\"6\" viewBox=\"0 0 22 6\"><line x1=\"0\" y1=\"3\" x2=\"22\" y2=\"3\" stroke=\"{color}\" stroke-width=\"1.8\" stroke-dasharray=\"{dash}\"/></svg>"
                                             ),
                                         }
-                                        span { style: "color: {color};", "{label}" }
+                                        span { style: "color: {color};", {crate::i18n::label(label)} }
                                     }
                                 }
                             }
@@ -404,9 +406,9 @@ pub fn TopologyDialog(on_close: EventHandler<()>) -> Element {
                     }
                     div { class: "rounded-lg border border-[var(--edge)] p-2.5", style: "background: var(--bg2);",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1",
-                            "The database"
+                            {crate::i18n::text("The database", &[])}
                         }
-                        div { class: "text-xs text-[var(--text)] leading-relaxed", "{db_line}" }
+                        div { class: "text-xs text-[var(--text)] leading-relaxed", {crate::i18n::label(db_line)} }
                     }
 
                     for leg in legs {
@@ -416,22 +418,22 @@ pub fn TopologyDialog(on_close: EventHandler<()>) -> Element {
                                 div { key: "{leg.node}", class: "rounded-lg border border-[var(--edge)] p-2.5",
                                     div { class: "flex items-center gap-2 mb-1",
                                         span { class: "text-xs font-medium text-[var(--text)] flex-1 truncate",
-                                            "{leg.node}"
+                                            {crate::i18n::label(leg.node)}
                                         }
                                         span {
                                             class: "shrink-0 text-[9px] uppercase tracking-wider px-1.5 py-px rounded",
                                             style: "color: {color}; background: color-mix(in srgb, {color} 12%, transparent);",
-                                            "{chip}"
+                                            {crate::i18n::label(chip)}
                                         }
                                     }
-                                    div { class: "text-[11px] text-[var(--text-muted)] leading-relaxed", "{leg.note}" }
+                                    div { class: "text-[11px] text-[var(--text-muted)] leading-relaxed", {crate::i18n::message(&leg.note)} }
                                 }
                             }
                         }
                     }
 
                     div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed pt-1",
-                        "\"End to end\" means whoever forwards it cannot read it. \"In transit\" means the wire is encrypted but an endpoint on the path can."
+                        {crate::i18n::text("\"End to end\" means whoever forwards it cannot read it. \"In transit\" means the wire is encrypted but an endpoint on the path can.", &[])}
                     }
                 }
             }

@@ -11,6 +11,10 @@ Text and voice channels, guilds with roles and moderation, screen sharing with
 system audio, cameras, bots, and DMs that no server can read. Rust workspace,
 native desktop client.
 
+The desktop interface supports English, Spanish and Brazilian Portuguese. It
+follows the system language by default; change it on the identity screen, in
+Appearance, or in Settings → Language. The choice is saved on this computer.
+
 > **Pre-release.** Persistence, moderation, voice, screen sharing, bots and
 > guild export/import work and are covered by the suite. No web client, no
 > hosted instance. The open issues are the honest list.

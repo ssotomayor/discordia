@@ -10,7 +10,7 @@ fn ActivityCard(activity: crate::protocol::Activity) -> Element {
     rsx! {
         div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background-color: var(--bg2); display: flow-root;",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                "{activity.kind.verb()}"
+                {crate::i18n::label(activity.kind.verb())}
             }
             div { style: "float: left; width: 48px; height: 48px; margin-right: 10px; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center;",
                 if let Some(image) = activity.image.as_deref() {
@@ -36,12 +36,13 @@ fn ActivityCard(activity: crate::protocol::Activity) -> Element {
 #[component]
 fn ActivityElapsed(started_ms: i64) -> Element {
     let text = elapsed_since(started_ms, chrono::Utc::now().timestamp_millis())
-        .map(|e| format!("{e} elapsed"))
+        .map(|e| crate::i18n::text("{0} elapsed", &[e]))
         .unwrap_or_default();
     rsx! { div {
         class: "text-xs text-[var(--text-dim)] font-mono mt-1",
         "data-activity-start": "{started_ms}",
         "data-activity-clock": "",
+        "data-activity-suffix": crate::i18n::label("elapsed"),
         "{text}"
     } }
 }
@@ -57,7 +58,7 @@ fn ProfileActivity(pubkey: String) -> Element {
 
 /// "Playing Factorio" — the one line a member row has space for.
 pub fn activity_line(a: &crate::protocol::Activity) -> String {
-    format!("{} {}", a.kind.verb(), a.name)
+    format!("{} {}", crate::i18n::label(a.kind.verb()), a.name)
 }
 
 /// `1:04:12` past the hour mark, `04:12` under it, and nothing at all for a
@@ -169,7 +170,7 @@ fn ProfileBanner(pubkey: String, accent: String) -> Element {
     let image = use_profile_image(&pubkey, true);
     rsx! {
         if let Some(b) = image() {
-            img { class: "h-24 w-full object-cover block", src: "{b}", alt: "banner" }
+            img { class: "h-24 w-full object-cover block", src: "{b}", alt: crate::i18n::text("banner", &[]) }
         } else {
             div { class: "h-24 w-full", style: "background: linear-gradient(150deg, {accent}, transparent 80%), var(--bg2);" }
         }
@@ -324,14 +325,14 @@ pub fn ProfileCard() -> Element {
                         }
                     }
                     div { class: "mt-3 flex items-center gap-2 flex-wrap",
-                        span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background-color:{status_color(&status)};", title: "{status}" }
+                        span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background-color:{status_color(&status)};", title: crate::i18n::message(&(status).to_string()) }
                         span { class: "dxf-display text-2xl font-bold", style: "color: {accent};",
                             "{name}"
                         }
                         span { class: "text-[var(--text-dim)] font-mono text-sm", "#{disc}" }
                         span { class: "flex items-center gap-1 px-2 py-0.5 rounded-md text-xs",
                             style: "background: color-mix(in srgb, var(--up) 12%, transparent); color: var(--up);",
-                            "✓ Key verified"
+                            {crate::i18n::text("✓ Key verified", &[])}
                         }
                     }
                     if let Some(cs) = custom_status {
@@ -340,13 +341,13 @@ pub fn ProfileCard() -> Element {
                     ProfileActivity { pubkey: pubkey.clone() }
                     div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
                         div { class: "flex items-center justify-between mb-1.5",
-                            span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]", "Nostr public key" }
+                            span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]", {crate::i18n::text("Nostr public key", &[])} }
                             button {
                                 class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] rounded-md px-2 py-0.5 hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| {
                                     crate::clipboard::copy_text(&copy_pubkey);
                                 },
-                                "Copy"
+                                {crate::i18n::text("Copy", &[])}
                             }
                         }
                         div { class: "font-mono text-xs text-[var(--text-muted)] break-all leading-relaxed", "{pubkey}" }
@@ -361,7 +362,7 @@ pub fn ProfileCard() -> Element {
                     }
                     if !member_roles.is_empty() {
                         div { class: "mt-3",
-                            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Roles" }
+                            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Roles", &[])} }
                             div { class: "flex flex-wrap gap-1.5",
                                 for role in member_roles.iter() {
                                     {
@@ -389,7 +390,7 @@ pub fn ProfileCard() -> Element {
                                 Some(c) => format!("color: {c};"),
                                 None => "color: var(--accent);".to_string(),
                             },
-                            title: "Earned on this server, counted by it",
+                            title: crate::i18n::text("Earned on this server, counted by it", &[]),
                             match rank.as_ref() {
                                 Some(t) => t.name.clone(),
                                 None => format!("Lv {level}"),
@@ -409,8 +410,8 @@ pub fn ProfileCard() -> Element {
                             }
                             span {
                                 class: "text-[9px] px-1.5 py-px rounded bg-white/[0.04] text-[var(--text-dim)] uppercase tracking-wider shrink-0",
-                                title: "Published by this key to Nostr and checked by nobody. It gates nothing.",
-                                "self-reported"
+                                title: crate::i18n::text("Published by this key to Nostr and checked by nobody. It gates nothing.", &[]),
+                                {crate::i18n::text("self-reported", &[])}
                             }
                         }
                     }
@@ -418,14 +419,14 @@ pub fn ProfileCard() -> Element {
                     if !is_self {
                         button {
                             class: "mt-4 w-full py-2 rounded-xl text-xs border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all",
-                            title: if is_contact { "Remove from your Nostr contact list. This list is public." } else { "Add to your Nostr contact list, so they follow you to any server. This list is public." },
+                            title: if is_contact { crate::i18n::text("Remove from your Nostr contact list. This list is public.", &[]) } else { crate::i18n::text("Add to your Nostr contact list, so they follow you to any server. This list is public.", &[]) },
                             onclick: move |_| {
                                 nostr_contact.send(crate::nostr::service::NostrCmd::SetContact {
                                     peer: contact_pubkey.clone(),
                                     keep: !is_contact,
                                 });
                             },
-                            if is_contact { "✓ In your contacts" } else { "+ Add contact" }
+                            if is_contact { {crate::i18n::text("✓ In your contacts", &[])} } else { {crate::i18n::text("+ Add contact", &[])} }
                         }
                         button {
                             class: "dxf-cta mt-2 w-full py-2.5 rounded-xl text-sm transition-all",
@@ -435,7 +436,7 @@ pub fn ProfileCard() -> Element {
                                 });
                                 state.write().profile_card = None;
                             },
-                            "Message"
+                            {crate::i18n::text("Message", &[])}
                         }
                     }
                 }
@@ -557,7 +558,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
     rsx! {
         button {
             class: "{class}",
-            title: "Edit your profile",
+            title: crate::i18n::text("Edit your profile", &[]),
             onclick: move |_| { load_current(); err.set(None); open.set(true); },
             {children}
         }
@@ -595,20 +596,20 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                 div {
                     class: "dxf-modal-in w-80 max-h-[90vh] overflow-y-auto bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
-                    h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Edit profile" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Edit profile", &[])} }
 
                     div { class: "flex items-center gap-3 mb-3",
                         div { class: "w-16 h-16 rounded-md border border-[var(--border)] overflow-hidden flex items-center justify-center text-[var(--text-dim)] text-xs shrink-0",
                             if let Some(url) = avatar().and_then(|a| state.read().media_src(&a).map(str::to_string)) {
-                                img { class: "w-full h-full object-cover", src: "{url}", alt: "avatar preview" }
+                                img { class: "w-full h-full object-cover", src: "{url}", alt: crate::i18n::text("avatar preview", &[]) }
                             } else {
-                                "none"
+                                {crate::i18n::text("none", &[])}
                             }
                         }
                         div { class: "flex flex-col gap-1",
                             label {
                                 class: "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer text-center",
-                                "Choose image"
+                                {crate::i18n::text("Choose image", &[])}
                                 input {
                                     r#type: "file",
                                     accept: "image/*",
@@ -643,25 +644,25 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                     r#type: "button",
                                     class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                                     onclick: move |_| avatar.set(None),
-                                    "Remove"
+                                    {crate::i18n::text("Remove", &[])}
                                 }
                             }
                         }
                     }
 
                     div { class: "mb-3",
-                        div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", "Banner" }
+                        div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", {crate::i18n::text("Banner", &[])} }
                         div { class: "h-16 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if let Some(url) = banner().and_then(|b| state.read().media_src(&b).map(str::to_string)) {
-                                img { class: "w-full h-full object-cover", src: "{url}", alt: "banner preview" }
+                                img { class: "w-full h-full object-cover", src: "{url}", alt: crate::i18n::text("banner preview", &[]) }
                             } else {
-                                "no banner"
+                                {crate::i18n::text("no banner", &[])}
                             }
                         }
                         div { class: "flex gap-2 mt-1",
                             label {
                                 class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
-                                "Choose banner"
+                                {crate::i18n::text("Choose banner", &[])}
                                 input {
                                     r#type: "file",
                                     accept: "image/*",
@@ -696,13 +697,13 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                     r#type: "button",
                                     class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                                     onclick: move |_| banner.set(None),
-                                    "Remove"
+                                    {crate::i18n::text("Remove", &[])}
                                 }
                             }
                         }
                     }
 
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", "Status" }
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", {crate::i18n::text("Status", &[])} }
                     div { class: "flex gap-1 mb-3",
                         for (id, label, color) in [
                             ("online", "Online", "var(--success)"),
@@ -719,7 +720,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                         class: "flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] transition-colors {ring}",
                                         onclick: move |_| status.set(id.to_string()),
                                         span { class: "w-2 h-2 rounded-full", style: "background-color:{color};" }
-                                        "{label}"
+                                        {crate::i18n::label(label)}
                                     }
                                 }
                             }
@@ -728,7 +729,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                     input {
                         class: "w-full mb-3 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-sm text-[var(--text)] outline-none transition-colors",
                         r#type: "text",
-                        placeholder: "Custom status (optional)",
+                        placeholder: crate::i18n::text("Custom status (optional)", &[]),
                         maxlength: 80,
                         value: "{custom_status}",
                         oninput: move |e| custom_status.set(e.value()),
@@ -736,7 +737,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
 
                     textarea {
                         class: "w-full h-20 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-sm text-[var(--text)] outline-none resize-none transition-colors",
-                        placeholder: "Bio (optional)",
+                        placeholder: crate::i18n::text("Bio (optional)", &[]),
                         maxlength: 280,
                         value: "{bio}",
                         oninput: move |e| bio.set(e.value()),
@@ -751,7 +752,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                         checked: show_crown(),
                                         oninput: move |e| show_crown.set(e.value() == "true"),
                                     }
-                                    "Show a crown on guilds I own"
+                                    {crate::i18n::text("Show a crown on guilds I own", &[])}
                                 }
                             }
                             if is_operator {
@@ -761,7 +762,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                         checked: show_operator(),
                                         oninput: move |e| show_operator.set(e.value() == "true"),
                                     }
-                                    "Show that I run this server"
+                                    {crate::i18n::text("Show that I run this server", &[])}
                                 }
                             }
                         }
@@ -771,19 +772,19 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
 
                     div { class: "mt-2 text-[10px] text-[var(--text-dim)]", {IMAGE_HELP} }
                     if let Some(e) = err() {
-                        div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }
+                        div { class: "mt-2 text-[10px] text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
                     }
 
                     div { class: "mt-3 flex gap-2 justify-end",
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                             onclick: move |_| open.set(false),
-                            "Cancel"
+                            {crate::i18n::text("Cancel", &[])}
                         }
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                             onclick: move |_| save(),
-                            "Save"
+                            {crate::i18n::text("Save", &[])}
                         }
                     }
                 }
@@ -810,10 +811,10 @@ fn SavedEmojiSection() -> Element {
     };
     rsx! {
         div { class: "mt-3 pt-3 border-t border-[var(--border)]",
-            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", "Saved emoji" }
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", {crate::i18n::text("Saved emoji", &[])} }
             if saved_emoji.is_empty() {
                 div { class: "text-xs text-[var(--text-dim)]",
-                    "Right-click a guild's emoji in a picker to keep it here. Saved emoji work in DMs."
+                    {crate::i18n::text("Right-click a guild's emoji in a picker to keep it here. Saved emoji work in DMs.", &[])}
                 }
             }
             div { class: "flex flex-col gap-1 max-h-40 overflow-y-auto",
@@ -834,7 +835,7 @@ fn SavedEmojiSection() -> Element {
                                 button {
                                     r#type: "button",
                                     class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors shrink-0",
-                                    title: "Remove from my emoji",
+                                    title: crate::i18n::text("Remove from my emoji", &[]),
                                     onclick: move |_| state.write().remove_saved_emoji(&image),
                                     "✕"
                                 }

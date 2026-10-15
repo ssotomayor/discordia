@@ -33,14 +33,14 @@ pub fn asks_more(pinned: &AppManifest, newer: &AppManifest) -> Vec<String> {
         .permissions
         .iter()
         .filter(|p| !pinned.permissions.contains(p))
-        .map(|p| p.label().to_string())
+        .map(|p| crate::i18n::label(p.label()).to_string())
         .collect();
     out.extend(
         newer
             .intents
             .iter()
             .filter(|i| !pinned.intents.contains(i))
-            .map(|i| i.label().to_string()),
+            .map(|i| crate::i18n::label(i.label()).to_string()),
     );
     let caps = |m: &AppManifest| {
         m.activity
@@ -53,7 +53,7 @@ pub fn asks_more(pinned: &AppManifest, newer: &AppManifest) -> Vec<String> {
         caps(newer)
             .into_iter()
             .filter(|c| !old_caps.contains(c))
-            .map(|c| c.label().to_string()),
+            .map(|c| crate::i18n::label(c.label()).to_string()),
     );
     let players = |m: &AppManifest| m.activity.as_ref().map_or(1, |a| a.max_players);
     if players(newer) > players(pinned) {
@@ -92,7 +92,7 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                 class: "dxf-modal-in w-[26rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Integrations" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Integrations", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                         onclick: move |_| on_close.call(()),
@@ -102,11 +102,11 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                 div { class: "flex-1 overflow-y-auto p-3 space-y-4",
                     div {
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                            "Installed"
+                            {crate::i18n::text("Installed", &[])}
                         }
                         if installs.is_empty() {
                             div { class: "text-xs text-[var(--text-dim)] py-2",
-                                "Nothing installed. Add an app below by its key."
+                                {crate::i18n::text("Nothing installed. Add an app below by its key.", &[])}
                             }
                         }
                         for bot in installs.iter().cloned() {
@@ -146,7 +146,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                 }
                 span { class: "text-sm text-[var(--text)] font-medium truncate flex-1", "{bot.name}" }
                 if let Some(app) = &bot.app {
-                    span { class: "text-[9px] text-[var(--text-dim)] font-mono", "v{app.version}" }
+                    span { class: "text-[9px] text-[var(--text-dim)] font-mono", {crate::i18n::text("v{0}", &[(app . version).to_string()])} }
                 }
                 button {
                     class: "text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 rounded px-2 py-0.5 hover:bg-[var(--danger)]/10 transition-colors",
@@ -154,7 +154,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                         guild_id,
                         bot_pubkey: pk.clone(),
                     }),
-                    "Remove"
+                    {crate::i18n::text("Remove", &[])}
                 }
             }
             div { class: "font-mono text-[10px] text-[var(--text-dim)] truncate",
@@ -164,7 +164,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
             div { class: "flex flex-wrap gap-1",
                 for p in bot.permissions.iter().copied() {
                     span { class: "text-[9px] px-1.5 py-px rounded bg-white/[0.04] text-[var(--text-muted)]",
-                        "{p.label()}"
+                        {crate::i18n::label(p.label())}
                     }
                 }
                 for i in bot.intents.iter().copied() {
@@ -174,13 +174,13 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                         } else {
                             "text-[9px] px-1.5 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)]"
                         },
-                        "{i.label()}"
+                        {crate::i18n::label(i.label())}
                     }
                 }
             }
             if let Some(curator) = blocked {
                 div { class: "text-[11px] text-[var(--danger)]",
-                    "On a blocklist this guild follows ({truncate_pubkey(&npub_of(&curator))}). Consider removing it."
+                    {crate::i18n::text("On a blocklist this guild follows ({0}). Consider removing it.", &[(truncate_pubkey (& npub_of (& curator))).to_string()])}
                 }
             }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
@@ -192,7 +192,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
             if let Some((version, more)) = update {
                 div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
                     div { class: "text-[11px] font-semibold text-[var(--warn)]",
-                        "Version {version} asks for more:"
+                        {crate::i18n::text("Version {0} asks for more:", &[(version).to_string()])}
                     }
                     for line in more.iter() {
                         div { class: "text-[11px] text-[var(--text)]", "• {line}" }
@@ -203,7 +203,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                             guild_id,
                             bot_pubkey: approve_pk.clone(),
                         }),
-                        "Approve update"
+                        {crate::i18n::text("Approve update", &[])}
                     }
                 }
             }
@@ -255,24 +255,24 @@ fn ManualInstall(guild_id: Id) -> Element {
     rsx! {
         div { class: "border-t border-[var(--border)] pt-3",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                "Install without a manifest"
+                {crate::i18n::text("Install without a manifest", &[])}
             }
             div { class: "space-y-2",
                 input {
                     class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
-                    placeholder: "Bot public key (64 hex chars)",
+                    placeholder: crate::i18n::text("Bot public key (64 hex chars)", &[]),
                     value: "{pubkey}",
                     oninput: move |e| pubkey.set(e.value()),
                 }
                 input {
                     class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                    placeholder: "Display name (e.g. PingBot)",
+                    placeholder: crate::i18n::text("Display name (e.g. PingBot)", &[]),
                     value: "{name}",
                     maxlength: 32,
                     oninput: move |e| name.set(e.value()),
                 }
 
-                div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", "Permissions" }
+                div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", {crate::i18n::text("Permissions", &[])} }
                 for p in Permission::BOT_INSTALLABLE.iter().copied() {
                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                         input {
@@ -284,11 +284,11 @@ fn ManualInstall(guild_id: Id) -> Element {
                                 else { v.push(p); }
                             },
                         }
-                        "{p.label()}"
+                        {crate::i18n::label(p.label())}
                     }
                 }
 
-                div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", "Events (intents)" }
+                div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", {crate::i18n::text("Events (intents)", &[])} }
                 for i in Intent::ALL.iter().copied() {
                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                         input {
@@ -303,35 +303,35 @@ fn ManualInstall(guild_id: Id) -> Element {
                                 confirming.set(false);
                             },
                         }
-                        span { "{i.label()}" }
+                        span { {crate::i18n::label(i.label())} }
                         if i.is_privileged() {
                             span { class: "text-[8px] px-1 py-px rounded bg-[var(--warn)]/15 text-[var(--warn)] uppercase tracking-wider font-semibold",
-                                "Privileged"
+                                {crate::i18n::text("Privileged", &[])}
                             }
                         }
                     }
                 }
 
                 if let Some(err) = error() {
-                    div { class: "text-[11px] text-[var(--danger)]", "{err}" }
+                    div { class: "text-[11px] text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
                 }
 
                 if confirming() {
                     div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
                         div { class: "text-[11px] font-semibold text-[var(--warn)]",
-                            "This bot will be able to read:"
+                            {crate::i18n::text("This bot will be able to read:", &[])}
                         }
                         for i in intents().iter().copied().filter(|i| i.is_privileged()) {
                             div { class: "text-[11px] text-[var(--text)]",
                                 match i {
-                                    Intent::MessageContent => "• the text and images of every message in this guild",
-                                    Intent::Members => "• who joins and who leaves this guild",
-                                    _ => "• —",
+                                    Intent::MessageContent => crate::i18n::text("• the text and images of every message in this guild", &[]),
+                                    Intent::Members => crate::i18n::text("• who joins and who leaves this guild", &[]),
+                                    _ => "• —".to_owned(),
                                 }
                             }
                         }
                         div { class: "text-[10px] text-[var(--text-muted)]",
-                            "Uninstalling later stops the delivery, not what was already read."
+                            {crate::i18n::text("Uninstalling later stops the delivery, not what was already read.", &[])}
                         }
                     }
                 }
@@ -343,13 +343,13 @@ fn ManualInstall(guild_id: Id) -> Element {
                         "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
                     },
                     onclick: move |_| submit(),
-                    if confirming() { "Grant and install" } else { "Install" }
+                    if confirming() { {crate::i18n::text("Grant and install", &[])} } else { {crate::i18n::text("Install", &[])} }
                 }
                 if confirming() {
                     button {
                         class: "w-full rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                         onclick: move |_| confirming.set(false),
-                        "Cancel"
+                        {crate::i18n::text("Cancel", &[])}
                     }
                 }
             }
@@ -410,12 +410,12 @@ fn InstallForm(guild_id: Id) -> Element {
     rsx! {
         div { class: "border-t border-[var(--border)] pt-3 space-y-2",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                "Install an app"
+                {crate::i18n::text("Install an app", &[])}
             }
             div { class: "flex gap-2",
                 input {
                     class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
-                    placeholder: "npub1… or hex key",
+                    placeholder: crate::i18n::text("npub1… or hex key", &[]),
                     value: "{input}",
                     oninput: move |e| { input.set(e.value()); looked_up.set(None); },
                     onkeydown: move |e| if e.key() == Key::Enter { look_up.call(()); },
@@ -423,11 +423,11 @@ fn InstallForm(guild_id: Id) -> Element {
                 button {
                     class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                     onclick: move |_| look_up.call(()),
-                    "Look up"
+                    {crate::i18n::text("Look up", &[])}
                 }
             }
             if let Some(err) = error() {
-                div { class: "text-[11px] text-[var(--danger)]", "{err}" }
+                div { class: "text-[11px] text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
             }
             if let Some((key, best, problem, host_answered)) = found() {
                 match best {
@@ -444,11 +444,11 @@ fn InstallForm(guild_id: Id) -> Element {
                     None => rsx! {
                         div { class: "text-[11px] text-[var(--text-dim)]",
                             if let Some(p) = problem {
-                                "That key's manifest was refused: {p}"
+                                {crate::i18n::text("That key's manifest was refused: {0}", std::slice::from_ref(&(p)))}
                             } else if host_answered {
-                                "Looking on your relays… This host has never seen that app's manifest."
+                                {crate::i18n::text("Looking on your relays… This host has never seen that app's manifest.", &[])}
                             } else {
-                                "Looking…"
+                                {crate::i18n::text("Looking…", &[])}
                             }
                         }
                     },
@@ -457,7 +457,7 @@ fn InstallForm(guild_id: Id) -> Element {
             button {
                 class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--text-muted)] underline",
                 onclick: move |_| manual.set(!manual()),
-                if manual() { "Hide manual install" } else { "Install a bot without a manifest" }
+                if manual() { {crate::i18n::text("Hide manual install", &[])} } else { {crate::i18n::text("Install a bot without a manifest", &[])} }
             }
             if manual() {
                 ManualInstall { guild_id }
@@ -500,52 +500,52 @@ fn AppConsent(
                 div { class: "flex-1 min-w-0",
                     div { class: "text-sm text-[var(--text)] font-medium truncate", "{manifest.name}" }
                     div { class: "font-mono text-[10px] text-[var(--text-dim)] truncate", title: "{npub}",
-                        "{truncate_pubkey(&npub)} · v{manifest.version}"
+                        {crate::i18n::text("{0} · v{1}", &[(truncate_pubkey (& npub)).to_string(), (manifest . version).to_string()])}
                     }
                 }
             }
             if !manifest.description.is_empty() {
                 div { class: "text-[11px] text-[var(--text-muted)]", "{manifest.description}" }
             }
-            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "It asks to" }
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("It asks to", &[])} }
             ul { class: "space-y-0.5",
                 for p in manifest.permissions.iter().copied() {
-                    li { class: "text-[11px] text-[var(--text)]", "• {p.label()}" }
+                    li { class: "text-[11px] text-[var(--text)]", {format!("• {}", crate::i18n::label(p.label()))} }
                 }
                 for i in manifest.intents.iter().copied() {
                     li { class: if i.is_privileged() { "text-[11px] text-[var(--warn)]" } else { "text-[11px] text-[var(--text)]" },
-                        "• Receive: {i.label()}"
+                        {crate::i18n::text("• Receive: {0}", &[(i . label ()).to_string()])}
                     }
                 }
                 if let Some(a) = &manifest.activity {
                     for c in a.capabilities.iter().copied() {
-                        li { class: "text-[11px] text-[var(--text)]", "• Activity: {c.label()}" }
+                        li { class: "text-[11px] text-[var(--text)]", {crate::i18n::text("• Activity: {0}", &[(c . label ()).to_string()])} }
                     }
                     if a.max_players > 1 {
-                        li { class: "text-[11px] text-[var(--text)]", "• Activity for up to {a.max_players} players" }
+                        li { class: "text-[11px] text-[var(--text)]", {crate::i18n::text("• Activity for up to {0} players", &[(a . max_players).to_string()])} }
                     }
                 }
                 if manifest.permissions.is_empty() && manifest.intents.is_empty() && manifest.activity.is_none() {
-                    li { class: "text-[11px] text-[var(--text-dim)]", "Nothing beyond appearing in the member list" }
+                    li { class: "text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Nothing beyond appearing in the member list", &[])} }
                 }
             }
             if !manifest.commands.is_empty() {
                 div { class: "text-[10px] text-[var(--text-dim)]",
-                    "Buttons: "
+                    {crate::i18n::text("Buttons: ", &[])}
                     {manifest.commands.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", ")}
                 }
             }
             if privileged {
                 div { class: "text-[10px] text-[var(--warn)]",
-                    "Highlighted items let it read what members write or who comes and goes. Uninstalling later stops the delivery, not what was already read."
+                    {crate::i18n::text("Highlighted items let it read what members write or who comes and goes. Uninstalling later stops the delivery, not what was already read.", &[])}
                 }
             }
             div { class: "text-[10px] text-[var(--text-dim)]",
-                "A later version that asks for more waits for your approval."
+                {crate::i18n::text("A later version that asks for more waits for your approval.", &[])}
             }
             if let Some(curator) = &blocked {
                 div { class: "text-[11px] text-[var(--danger)]",
-                    "This app is on a blocklist this guild follows ({truncate_pubkey(&npub_of(curator))}), so it can't be installed."
+                    {crate::i18n::text("This app is on a blocklist this guild follows ({0}), so it can't be installed.", &[(truncate_pubkey (& npub_of (curator))).to_string()])}
                 }
             }
             button {
@@ -556,7 +556,7 @@ fn AppConsent(
                     "w-full rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
                 },
                 onclick: install,
-                "Approve and install"
+                {crate::i18n::text("Approve and install", &[])}
             }
         }
     }
@@ -686,10 +686,10 @@ fn BundleRow(
     rsx! {
         div { class: "text-[11px] flex flex-col gap-1",
             if held {
-                div { class: "text-[var(--text-muted)]", "Activity ready for members" }
+                div { class: "text-[var(--text-muted)]", {crate::i18n::text("Activity ready for members", &[])} }
             } else {
-                div { class: "text-[var(--warn)]", "Waiting for the app to send its activity — its bot sends it when online." }
-                div { class: "text-[10px] text-[var(--text-dim)]", "Or provide the file yourself:" }
+                div { class: "text-[var(--warn)]", {crate::i18n::text("Waiting for the app to send its activity — its bot sends it when online.", &[])} }
+                div { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Or provide the file yourself:", &[])} }
                 div { class: "flex gap-2",
                     button {
                         class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
@@ -697,7 +697,7 @@ fn BundleRow(
                         onclick: move |_| {
                             spawn(async move {
                                 let Some(file) = rfd::AsyncFileDialog::new()
-                                    .add_filter("Activity bundle", &["zip", "html", "htm"])
+                                    .add_filter(crate::i18n::label("Activity bundle"), &["zip", "html", "htm"])
                                     .pick_file()
                                     .await
                                 else {
@@ -709,12 +709,12 @@ fn BundleRow(
                                 busy.set(false);
                             });
                         },
-                        "Upload file…"
+                        {crate::i18n::text("Upload file…", &[])}
                     }
                     if let Some(url) = url {
                         button {
                             class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
-                            title: "Downloads from {url} — that site sees your address. Members never do.",
+                            title: crate::i18n::text("Downloads from {0} — that site sees your address. Members never do.", std::slice::from_ref(&(url))),
                             disabled: busy(),
                             onclick: move |_| {
                                 let url = url.clone();
@@ -728,13 +728,13 @@ fn BundleRow(
                                     busy.set(false);
                                 });
                             },
-                            "Download from the developer"
+                            {crate::i18n::text("Download from the developer", &[])}
                         }
                     }
                 }
             }
             if let Some(err) = error() {
-                div { class: "text-[var(--danger)]", "{err}" }
+                div { class: "text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
             }
         }
     }
@@ -798,7 +798,7 @@ fn AppCallsRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Elemen
             button {
                 class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--text-muted)]",
                 onclick: move |_| open.set(!open()),
-                if allowed == 0 { "May call no other app" } else { "May call {allowed} other app(s)" }
+                if allowed == 0 { {crate::i18n::text("May call no other app", &[])} } else { {crate::i18n::text("May call {0} other app(s)", &[(allowed).to_string()])} }
                 if open() { " ▴" } else { " ▾" }
             }
             if open() {
@@ -831,7 +831,7 @@ fn AppCallsRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Elemen
                         }
                     }
                     div { class: "text-[10px] text-[var(--text-dim)]",
-                        "A call can't do more than the calling app may, or than the person who started it may."
+                        {crate::i18n::text("A call can't do more than the calling app may, or than the person who started it may.", &[])}
                     }
                 }
             }
@@ -922,10 +922,10 @@ fn BlocklistsSection(guild_id: Id) -> Element {
     rsx! {
         div { class: "border-t border-[var(--border)] pt-3 space-y-2",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                "App blocklists"
+                {crate::i18n::text("App blocklists", &[])}
             }
             div { class: "text-[10px] text-[var(--text-dim)]",
-                "Follow someone's list of apps to refuse. Nothing is followed unless you add it here."
+                {crate::i18n::text("Follow someone's list of apps to refuse. Nothing is followed unless you add it here.", &[])}
             }
             for curator in curators.iter().cloned() {
                 div { key: "{curator}", class: "flex items-center gap-2 text-[11px]",
@@ -945,25 +945,25 @@ fn BlocklistsSection(guild_id: Id) -> Element {
                             let rest: Vec<String> = curators.iter().filter(|c| **c != curator).cloned().collect();
                             move |_| gateway.send(ClientMessage::SetGuildBlocklists { guild_id, curators: rest.clone() })
                         },
-                        "Unfollow"
+                        {crate::i18n::text("Unfollow", &[])}
                     }
                 }
             }
             div { class: "flex gap-2",
                 input {
                     class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
-                    placeholder: "Curator npub1…",
+                    placeholder: crate::i18n::text("Curator npub1…", &[]),
                     value: "{input}",
                     oninput: move |e| input.set(e.value()),
                 }
                 button {
                     class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                     onclick: follow,
-                    "Follow"
+                    {crate::i18n::text("Follow", &[])}
                 }
             }
             if let Some(err) = error() {
-                div { class: "text-[11px] text-[var(--danger)]", "{err}" }
+                div { class: "text-[11px] text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
             }
         }
     }

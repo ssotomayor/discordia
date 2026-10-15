@@ -92,7 +92,7 @@ pub fn AppearanceButton() -> Element {
         div {
             button {
                 class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                title: "Theme, accent and background",
+                title: crate::i18n::text("Theme, accent and background", &[]),
                 onclick: move |e| {
                     let c = e.client_coordinates();
                     at.set((c.x, c.y));
@@ -113,7 +113,8 @@ pub fn AppearanceButton() -> Element {
                     // anchored upward it opened off the top of the screen.
                     style: "left: min(max({at_x}px - 280px, 8px), calc(100vw - 328px)); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
-                    h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Appearance", &[])} }
+                    div { class: "mb-4", crate::i18n::LanguageSelector {} }
 
                     for (label, kind) in [
                         ("Text size", SizeKind::Text),
@@ -125,7 +126,7 @@ pub fn AppearanceButton() -> Element {
                             let size = kind.get(&current);
                             rsx! {
                                 label { class: "flex items-center gap-2 mb-3 text-xs",
-                                    span { class: "flex-1", "{label}" }
+                                    span { class: "flex-1", {crate::i18n::label(label)} }
                                     input {
                                         r#type: "range", min: "{lo}", max: "{hi}", step: "10", value: "{size}",
                                         class: "w-24 accent-[var(--accent)]",
@@ -142,10 +143,10 @@ pub fn AppearanceButton() -> Element {
                     }
                     button { class: "text-xs text-[var(--accent)] mb-4",
                         onclick: move |_| update(&|s| { s.text_size_percent = 100; s.emoji_size_percent = 100; s.reaction_size_percent = 100; }),
-                        "Reset sizes"
+                        {crate::i18n::text("Reset sizes", &[])}
                     }
 
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Theme" }
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Theme", &[])} }
                     div { class: "grid grid-cols-5 gap-2 mb-4",
                         for theme in THEMES.iter() {
                             {
@@ -160,14 +161,14 @@ pub fn AppearanceButton() -> Element {
                                     button {
                                         key: "{id}",
                                         class: "flex flex-col items-center gap-1 group",
-                                        title: "{theme.label}",
+                                        title: crate::i18n::label(theme.label),
                                         onclick: move |_| update(&|s| s.theme = id.to_string()),
                                         span {
                                             class: "w-full h-11 rounded-lg {ring}",
                                             style: "background: linear-gradient(150deg, {theme.swatch}, transparent 78%), #12100e;",
                                         }
                                         span { class: "text-[9px] text-[var(--text-dim)] group-hover:text-[var(--text-muted)]",
-                                            "{theme.label}"
+                                            {crate::i18n::label(theme.label)}
                                         }
                                     }
                                 }
@@ -175,7 +176,7 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Background" }
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Background", &[])} }
                     div { class: "grid grid-cols-3 gap-2 mb-4",
                         for (id, label, preview) in BACKGROUND_TILES.iter().copied() {
                             {
@@ -191,14 +192,14 @@ pub fn AppearanceButton() -> Element {
                                         class: "h-14 rounded-lg flex items-center justify-center text-xs font-medium text-[var(--text)] {ring}",
                                         style: "{preview}",
                                         onclick: move |_| update(&|s| { s.pattern = id.to_string(); s.background = None; }),
-                                        "{label}"
+                                        {crate::i18n::label(label)}
                                     }
                                 }
                             }
                         }
                     }
 
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Accent" }
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Accent", &[])} }
                     div { class: "flex items-center gap-2 mb-4",
                         input {
                             r#type: "color",
@@ -210,13 +211,13 @@ pub fn AppearanceButton() -> Element {
                             },
                         }
                         span { class: "text-xs text-[var(--text-muted)] flex-1",
-                            if current.accent.is_some() { "Custom accent" } else { "Theme default" }
+                            if current.accent.is_some() { {crate::i18n::text("Custom accent", &[])} } else { {crate::i18n::text("Theme default", &[])} }
                         }
                         if current.accent.is_some() {
                             button {
                                 class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                                 onclick: move |_| update(&|s| s.accent = None),
-                                "Reset"
+                                {crate::i18n::text("Reset", &[])}
                             }
                         }
                     }
@@ -230,28 +231,28 @@ pub fn AppearanceButton() -> Element {
                                 update(&move |s| s.keep_my_accent = on);
                             },
                         }
-                        span { class: "text-xs text-[var(--text)] flex-1", "Keep my accent everywhere" }
+                        span { class: "text-xs text-[var(--text)] flex-1", {crate::i18n::text("Keep my accent everywhere", &[])} }
                     }
                     div { class: "text-[10px] text-[var(--text-dim)] mb-4",
                         if current.keep_my_accent {
-                            "Guilds that set their own accent are ignored — you see this colour everywhere."
+                            {crate::i18n::text("Guilds that set their own accent are ignored — you see this colour everywhere.", &[])}
                         } else {
-                            "A guild that sets its own accent overrides this inside that guild. Your colour comes back in direct messages and on the home screen."
+                            {crate::i18n::text("A guild that sets its own accent overrides this inside that guild. Your colour comes back in direct messages and on the home screen.", &[])}
                         }
                     }
 
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Custom image" }
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Custom image", &[])} }
                     div { class: "h-20 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs mb-2",
                         if let Some(url) = current.background.clone() {
-                            img { class: "w-full h-full object-cover", src: "{url}", alt: "background preview" }
+                            img { class: "w-full h-full object-cover", src: "{url}", alt: crate::i18n::text("background preview", &[]) }
                         } else {
-                            "no background"
+                            {crate::i18n::text("no background", &[])}
                         }
                     }
                     div { class: "flex items-center gap-2 mb-3",
                         label {
                             class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
-                            "Choose image"
+                            {crate::i18n::text("Choose image", &[])}
                             input {
                                 r#type: "file",
                                 accept: "image/*",
@@ -290,14 +291,14 @@ pub fn AppearanceButton() -> Element {
                             button {
                                 class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
                                 onclick: move |_| update(&|s| s.background = None),
-                                "Remove"
+                                {crate::i18n::text("Remove", &[])}
                             }
                         }
                     }
 
                     if current.background.is_some() {
                         div { class: "flex items-center gap-2 mb-1",
-                            span { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] w-10", "Dim" }
+                            span { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] w-10", {crate::i18n::text("Dim", &[])} }
                             input {
                                 r#type: "range",
                                 class: "flex-1 accent-[var(--accent)]",
@@ -315,18 +316,18 @@ pub fn AppearanceButton() -> Element {
                     }
 
                     if let Some(e) = err() {
-                        div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }
+                        div { class: "mt-2 text-[10px] text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
                     }
 
                     div { class: "mt-4 pt-3 border-t border-[var(--edge)] text-[11px] text-[var(--text-dim)] leading-relaxed",
-                        "Tip: drag panel headers to move, corners to resize. Toggle Edit layout for snap presets."
+                        {crate::i18n::text("Tip: drag panel headers to move, corners to resize. Toggle Edit layout for snap presets.", &[])}
                     }
 
                     div { class: "mt-3 flex justify-end",
                         button {
                             class: "px-3 py-1.5 rounded-lg text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] hover:border-[var(--accent)] transition-colors",
                             onclick: move |_| open.set(false),
-                            "Done"
+                            {crate::i18n::text("Done", &[])}
                         }
                     }
                 }

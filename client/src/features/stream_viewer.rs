@@ -40,6 +40,7 @@ pub(super) struct Popouts {
 }
 
 pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
+    let locale = use_context::<crate::i18n::Locale>();
     let gateway = crate::state::use_gateway();
     let mut reported = use_signal(|| None);
     use_effect(move || {
@@ -170,7 +171,9 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 commands: commands.clone(),
                 generation: id,
             },
-        );
+        )
+        .with_root_context(locale);
+        let dom = dom.with_root_context(crate::i18n::WindowTitle("Discordia — Streams"));
         let cfg = dioxus::desktop::Config::new()
             .with_window(
                 dioxus::desktop::tao::window::WindowBuilder::new()
@@ -482,7 +485,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
         div { class: "dxf-ui h-full flex flex-col bg-[var(--bg)] text-[var(--text)]", style: "{theme}",
             if multiple_streams || !status().is_empty() {
                 div { class: "flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
-                    span { class: "flex-1 text-xs text-[var(--text-muted)]", "{status}" }
+                    span { class: "flex-1 text-xs text-[var(--text-muted)]", {crate::i18n::message(&(status).to_string())} }
                     if multiple_streams {
                         WindowControls { pinned, commands: props.commands.clone(), generation }
                     }
@@ -519,15 +522,15 @@ fn WindowControls(props: WindowControlsProps) -> Element {
     let fullscreen_window = pin_window.clone();
     rsx! {
         div { class: "flex flex-wrap items-center justify-end gap-2",
-            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: "Keep window on top", aria_pressed: "{pinned}",
+            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: crate::i18n::text("Keep window on top", &[]), aria_pressed: "{pinned}",
                 onclick: move |_| { pinned.toggle(); pin_window.window.set_always_on_top(pinned()); },
-                if pinned() { "Unpin" } else { "Pin" }
+                if pinned() { {crate::i18n::text("Unpin", &[])} } else { {crate::i18n::text("Pin", &[])} }
             }
             button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| {
                 let active = fullscreen_window.window.fullscreen().is_some();
                 fullscreen_window.window.set_fullscreen(if active { None } else { Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None)) });
-            }, "Full screen" }
-            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands, generation, Command::DockAll), "Return to app" }
+            }, {crate::i18n::text("Full screen", &[])} }
+            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands, generation, Command::DockAll), {crate::i18n::text("Return to app", &[])} }
         }
     }
 }
@@ -670,9 +673,9 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
                 super::screenshare::StreamViewers { names: stream.viewers.clone() }
                 if props.multiple_streams {
-                    button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), "Return" }
+                    button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), {crate::i18n::text("Return", &[])} }
                 }
-                button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", aria_label: "Stop watching", onclick: move |_| send(&stop, generation, Command::Stop(pk_stop.clone())), "✕" }
+                button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", aria_label: crate::i18n::text("Stop watching", &[]), onclick: move |_| send(&stop, generation, Command::Stop(pk_stop.clone())), "✕" }
             }
             div { id: "{container}", class: "flex-1 min-h-0 bg-black flex items-center justify-center text-sm text-[var(--text-muted)]",
                 style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
@@ -694,7 +697,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                         focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
                     }
                 },
-                "Connecting to stream…"
+                {crate::i18n::text("Connecting to stream…", &[])}
             }
             div { class: "grid items-center gap-2 px-3 py-2 shrink-0", style: "grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);",
                 div { class: "min-w-0",
@@ -702,8 +705,8 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                     super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
                 }
                 div { class: "flex items-center gap-2",
-                button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { "Unmute" } else { "Mute" } }
-                input { r#type: "range", min: "0", max: "100", value: "{stream.volume}", class: "w-24 accent-[var(--accent)]", aria_label: "Stream volume", disabled: !stream.has_audio || stream.muted,
+                button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { {crate::i18n::text("Unmute", &[])} } else { {crate::i18n::text("Mute", &[])} } }
+                input { r#type: "range", min: "0", max: "100", value: "{stream.volume}", class: "w-24 accent-[var(--accent)]", aria_label: crate::i18n::text("Stream volume", &[]), disabled: !stream.has_audio || stream.muted,
                     oninput: move |event| if let Ok(value) = event.value().parse::<u32>() { send(&volume, generation, Command::Volume(pk_volume.clone(), value.min(100))); }
                 }
                 span { class: "text-xs text-[var(--text-muted)]", "{stream.volume}%" }

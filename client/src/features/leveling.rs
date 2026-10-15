@@ -46,8 +46,8 @@ pub fn XpLedgerService() -> Element {
 pub fn global_label(total: crate::nostr::xp::GlobalXp) -> String {
     let level = crate::protocol::level_progress(total.xp).0;
     match total.servers {
-        0 | 1 => format!("Lv {level}"),
-        n => format!("Lv {level} · {n} servers"),
+        0 | 1 => crate::i18n::text("Lv {0}", &[level.to_string()]),
+        n => crate::i18n::text("Lv {0} · {1} servers", &[level.to_string(), n.to_string()]),
     }
 }
 

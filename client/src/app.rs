@@ -621,6 +621,12 @@ pub fn App() -> Element {
     let mut quitting = use_signal(|| false);
     use_context_provider(|| QuitRequest(quitting));
     let mut session = use_signal(|| None::<SessionParams>);
+    let settings = use_signal(crate::settings::load_or_default);
+    use_context_provider(|| settings);
+    let locale =
+        use_hook(move || Signal::new_in_scope(settings.peek().language.resolve(), ScopeId::ROOT));
+    use_drop(move || locale.manually_drop());
+    use_context_provider(|| crate::i18n::Locale(locale));
     let quit_window = dioxus::desktop::use_window();
     let close_to_tray = use_signal(|| false);
     let close_window = quit_window.clone();
@@ -688,9 +694,13 @@ pub fn App() -> Element {
             }
         });
 
-        let tray_icon = use_hook(|| {
+        let tray_exit = use_hook(|| {
+            MenuItem::with_id("discordia-quit", crate::i18n::label("Exit"), true, None)
+        });
+        let exit = tray_exit.clone();
+        use_effect(move || tray_exit.set_text(crate::i18n::label("Exit")));
+        let tray_icon = use_hook(move || {
             let menu = Menu::new();
-            let exit = MenuItem::with_id("discordia-quit", "Exit", true, None);
             if let Err(error) = menu.append(&exit) {
                 tracing::warn!("Could not create tray menu: {error}");
                 return None;
@@ -746,8 +756,6 @@ pub fn App() -> Element {
         }
     });
 
-    let settings = use_signal(crate::settings::load_or_default);
-    use_context_provider(|| settings);
     let appearance = settings.read();
     let theme = appearance.theme.clone();
     let size_css = crate::ui_size::text_css(appearance.text_size_percent);
@@ -878,6 +886,7 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
 /// props of Style/Script is not supported".
 pub(crate) fn AppHead() -> Element {
     rsx! {
+        crate::i18n::LanguageDocument {}
         document::Style { {TAILWIND_CSS} }
         document::Script { {LIVEKIT_JS} }
         document::Script { {include_str!("../assets/gif-playback.js")} }

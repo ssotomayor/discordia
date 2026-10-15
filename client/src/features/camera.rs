@@ -406,7 +406,7 @@ pub fn CameraSelfPreview() -> Element {
                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--accent);" }
                 span {
                     class: "text-[11px] text-[var(--text)] truncate flex-1",
-                    if starting() && !on() { "Starting your camera…" } else { "Your camera" }
+                    if starting() && !on() { {crate::i18n::text("Starting your camera…", &[])} } else { {crate::i18n::text("Your camera", &[])} }
                 }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
@@ -414,7 +414,7 @@ pub fn CameraSelfPreview() -> Element {
                         e.stop_propagation();
                         toggle_camera(state, settings, &gateway, false);
                     },
-                    "Stop"
+                    {crate::i18n::text("Stop", &[])}
                 }
             }
             div { id: "camera-self", class: "flex-1 min-h-0 bg-black" }
@@ -452,7 +452,7 @@ fn CameraTile(pubkey: String) -> Element {
             class: "relative rounded overflow-hidden bg-black w-full h-full min-h-0",
             div {
                 class: "absolute inset-0 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                "Connecting…"
+                {crate::i18n::text("Connecting…", &[])}
             }
             div { id: "{cid}", class: "absolute inset-0" }
             div {
@@ -519,10 +519,10 @@ pub fn CameraGridWindow() -> Element {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
                 },
-                span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Cameras · {others().len()}" }
+                span { class: "text-[11px] text-[var(--text)] truncate flex-1", {crate::i18n::text("Cameras · {0}", &[(others () . len ()).to_string()])} }
                 button {
                     class: "text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)]",
-                    title: "Stop watching every camera",
+                    title: crate::i18n::text("Stop watching every camera", &[]),
                     onmousedown: move |e| {
                         e.stop_propagation();
                         state.write().cameras_watching.clear();

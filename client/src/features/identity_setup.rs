@@ -44,18 +44,18 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     crate::app::DiscordiaLogo { class: "w-16 h-16" }
                 }
                 h1 { class: "dxf-display dxf-wordmark text-6xl font-extrabold tracking-tight",
-                    "Discordia"
+                    {crate::i18n::text("Discordia", &[])}
                 }
                 p { class: "text-[15px] text-[var(--text-muted)] mt-5 text-center max-w-[320px] leading-relaxed",
-                    "Your keys are your account. No email, no phone number, no company in the middle."
+                    {crate::i18n::text("Your keys are your account. No email, no phone number, no company in the middle.", &[])}
                 }
                 div { class: "flex flex-wrap items-center justify-center gap-2 mt-7",
                     span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs text-[var(--accent)]",
-                        style: "background: var(--accent-soft);", "🔑 Nostr identity"
+                        style: "background: var(--accent-soft);", {crate::i18n::text("🔑 Nostr identity", &[])}
                     }
                     span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs",
                         style: "background: color-mix(in srgb, var(--up) 10%, transparent); color: var(--up);",
-                        "⌂ Self-hosted"
+                        {crate::i18n::text("⌂ Self-hosted", &[])}
                     }
                 }
             }
@@ -66,13 +66,14 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
                 FolderSettings { rev: folder_rev }
+                div { class: "px-8 py-2", crate::i18n::LanguageSelector {} }
                 div { class: "flex-1 overflow-auto px-8 py-8 flex flex-col dxf-no-drag",
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5",
 
                 div { class: "space-y-1",
-                    h1 { class: "dxf-display text-2xl font-bold text-[var(--text)]", "Set up your identity" }
+                    h1 { class: "dxf-display text-2xl font-bold text-[var(--text)]", {crate::i18n::text("Set up your identity", &[])} }
                     p { class: "text-sm text-[var(--text-muted)]",
-                        "Your identity is universal — the same account on every server you join."
+                        {crate::i18n::text("Your identity is universal — the same account on every server you join.", &[])}
                     }
                 }
 
@@ -80,7 +81,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
 
                 if let Some(err) = error.read().clone() {
                     div { class: "text-xs text-[var(--danger)] border border-[var(--danger)]/40 rounded-lg px-3 py-2",
-                        "{err}"
+                        {crate::i18n::message(&(err).to_string())}
                     }
                 }
 
@@ -95,8 +96,8 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                 on_error: move |e: String| error.set(Some(e)),
                             }
                             ChooseOption {
-                                title: "Create new identity",
-                                blurb: "Generate a fresh Nostr keypair. You'll get a 12-word recovery phrase to save.",
+                                title: crate::i18n::text("Create new identity", &[]),
+                                blurb: crate::i18n::text("Generate a fresh Nostr keypair. You'll get a 12-word recovery phrase to save.", &[]),
                                 onclick: move |_| {
                                     error.set(None);
                                     match Identity::create(default_name()) {
@@ -110,16 +111,16 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                 },
                             }
                             ChooseOption {
-                                title: "Restore from seed phrase",
-                                blurb: "Paste a 12-word BIP39 phrase. Works with any NIP-06 Nostr wallet.",
+                                title: crate::i18n::text("Restore from seed phrase", &[]),
+                                blurb: crate::i18n::text("Paste a 12-word BIP39 phrase. Works with any NIP-06 Nostr wallet.", &[]),
                                 onclick: move |_| {
                                     error.set(None);
                                     step.set(Step::RestorePhrase);
                                 },
                             }
                             ChooseOption {
-                                title: "Import private key",
-                                blurb: "Paste an nsec (bech32) or a 64-char hex secret key.",
+                                title: crate::i18n::text("Import private key", &[]),
+                                blurb: crate::i18n::text("Paste an nsec (bech32) or a 64-char hex secret key.", &[]),
                                 onclick: move |_| {
                                     error.set(None);
                                     step.set(Step::ImportKey);
@@ -139,7 +140,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                         rsx! {
                             div { class: "space-y-3",
                                 div { class: "space-y-1",
-                                    div { class: LABEL, "Your pubkey" }
+                                    div { class: LABEL, {crate::i18n::text("Your pubkey", &[])} }
                                     code { class: "block text-xs font-mono text-[var(--text-muted)] border border-[var(--edge)] rounded-xl p-3 break-all select-all leading-relaxed",
                                         style: "background: var(--bg2);",
                                         "{pubkey}"
@@ -153,13 +154,13 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
 
                                 div { class: "space-y-1",
                                     div { class: "flex items-center gap-2",
-                                        span { class: LABEL, "Recovery phrase" }
+                                        span { class: LABEL, {crate::i18n::text("Recovery phrase", &[])} }
                                         span { class: "flex-1" }
                                         button {
                                             r#type: "button",
                                             class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider",
                                             onclick: move |_| reveal.set(!reveal()),
-                                            if reveal() { "Hide" } else { "Reveal" }
+                                            if reveal() { {crate::i18n::text("Hide", &[])} } else { {crate::i18n::text("Reveal", &[])} }
                                         }
                                     }
                                     div { class: "text-sm font-mono text-[var(--text)] border border-[var(--edge)] rounded-xl p-3 leading-relaxed select-all break-words",
@@ -167,12 +168,12 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         "{phrase_display}"
                                     }
                                     p { class: "text-[10px] text-[var(--warn)]",
-                                        "Write this down. It's the only way to restore your identity if you lose this device."
+                                        {crate::i18n::text("Write this down. It's the only way to restore your identity if you lose this device.", &[])}
                                     }
                                 }
 
                                 div { class: "space-y-1",
-                                    label { class: LABEL, "Display name" }
+                                    label { class: LABEL, {crate::i18n::text("Display name", &[])} }
                                     input {
                                         class: INPUT,
                                         r#type: "text",
@@ -197,7 +198,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         }
                                         on_done.call(id);
                                     },
-                                    "I've saved my phrase — continue"
+                                    {crate::i18n::text("I've saved my phrase — continue", &[])}
                                 }
                                 BackButton { onclick: move |_| {
                                     draft_identity.set(None);
@@ -210,20 +211,20 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     Step::RestorePhrase => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                label { class: LABEL, "12-word recovery phrase" }
+                                label { class: LABEL, {crate::i18n::text("12-word recovery phrase", &[])} }
                                 textarea {
                                     class: "{INPUT} resize-none h-24 lowercase",
-                                    placeholder: "apple banana cherry dog ...",
+                                    placeholder: crate::i18n::text("apple banana cherry dog ...", &[]),
                                     value: "{restore_phrase}",
                                     oninput: move |e| restore_phrase.set(e.value()),
                                 }
                             }
                             div { class: "space-y-1",
-                                label { class: LABEL, "Display name" }
+                                label { class: LABEL, {crate::i18n::text("Display name", &[])} }
                                 input {
                                     class: INPUT,
                                     r#type: "text",
-                                    placeholder: "your-handle",
+                                    placeholder: crate::i18n::text("your-handle", &[]),
                                     value: "{display_name}",
                                     oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                 }
@@ -246,7 +247,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         Err(e) => error.set(Some(e)),
                                     }
                                 },
-                                "Restore identity"
+                                {crate::i18n::text("Restore identity", &[])}
                             }
                             BackButton { onclick: move |_| {
                                 restore_phrase.set(String::new());
@@ -258,29 +259,29 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     Step::ImportKey => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                label { class: LABEL, "Private key (nsec or hex)" }
+                                label { class: LABEL, {crate::i18n::text("Private key (nsec or hex)", &[])} }
                                 textarea {
                                     class: "{INPUT} resize-none h-20 font-mono text-[11px]",
-                                    placeholder: "nsec1… or 64-char hex",
+                                    placeholder: crate::i18n::text("nsec1… or 64-char hex", &[]),
                                     value: "{private_key_input}",
                                     oninput: move |e| private_key_input.set(e.value()),
                                 }
                                 p { class: "text-[10px] text-[var(--text-dim)]",
-                                    "Accepts an nsec (bech32) or a raw 32-byte secret as 64 hex chars."
+                                    {crate::i18n::text("Accepts an nsec (bech32) or a raw 32-byte secret as 64 hex chars.", &[])}
                                 }
                             }
                             div { class: "space-y-1",
-                                label { class: LABEL, "Display name" }
+                                label { class: LABEL, {crate::i18n::text("Display name", &[])} }
                                 input {
                                     class: INPUT,
                                     r#type: "text",
-                                    placeholder: "your-handle",
+                                    placeholder: crate::i18n::text("your-handle", &[]),
                                     value: "{display_name}",
                                     oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                 }
                             }
                             div { class: "text-[10px] text-[var(--warn)] border border-[var(--edge)] rounded-lg p-2.5 leading-relaxed",
-                                "Keys imported this way have no seed phrase. Back up the key string itself if you want to restore later."
+                                {crate::i18n::text("Keys imported this way have no seed phrase. Back up the key string itself if you want to restore later.", &[])}
                             }
                             button {
                                 r#type: "button",
@@ -300,7 +301,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         Err(e) => error.set(Some(e)),
                                     }
                                 },
-                                "Import identity"
+                                {crate::i18n::text("Import identity", &[])}
                             }
                             BackButton { onclick: move |_| {
                                 private_key_input.set(String::new());
@@ -344,9 +345,9 @@ fn DetectedIdentities(
     rsx! {
         div { class: "space-y-2",
             div { class: "flex items-baseline gap-2",
-                span { class: "{LABEL} flex-1", "On this machine" }
+                span { class: "{LABEL} flex-1", {crate::i18n::text("On this machine", &[])} }
                 if count > 1 {
-                    span { class: "text-[10px] text-[var(--text-dim)]", "{count} keys" }
+                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::plural("{0} key", "{0} keys", count)} }
                 }
             }
             div { class: "max-h-64 overflow-y-auto space-y-2 pr-0.5",
@@ -413,7 +414,7 @@ fn DetectedIdentities(
                                 button {
                                     r#type: "button",
                                     class: "shrink-0 flex items-center justify-center transition-colors {forget_cls}",
-                                    title: "Delete this key from this machine. Without its recovery phrase it cannot be brought back.",
+                                    title: crate::i18n::text("Delete this key from this machine. Without its recovery phrase it cannot be brought back.", &[]),
                                     onclick: move |_| {
                                         if !asking {
                                             confirming.set(Some(drop_key.clone()));
@@ -425,7 +426,7 @@ fn DetectedIdentities(
                                         confirming.set(None);
                                         rev += 1;
                                     },
-                                    if asking { "Forget?" } else { "✕" }
+                                    if asking { {crate::i18n::text("Forget?", &[])} } else { "✕" }
                                 }
                             }
                         }
@@ -435,14 +436,18 @@ fn DetectedIdentities(
         }
         div { class: "flex items-center gap-3 py-1",
             div { class: "h-px flex-1 bg-[var(--edge)]" }
-            span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "or" }
+            span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("or", &[])} }
             div { class: "h-px flex-1 bg-[var(--edge)]" }
         }
     }
 }
 
 #[component]
-fn ChooseOption(title: &'static str, blurb: &'static str, onclick: EventHandler<()>) -> Element {
+fn ChooseOption(
+    #[props(into)] title: String,
+    #[props(into)] blurb: String,
+    onclick: EventHandler<()>,
+) -> Element {
     rsx! {
         button {
             r#type: "button",
@@ -464,7 +469,7 @@ fn BackButton(onclick: EventHandler<()>) -> Element {
             r#type: "button",
             class: "w-full text-xs text-[var(--text-muted)] hover:text-[var(--text)] py-1 transition-colors",
             onclick: move |_| onclick.call(()),
-            "← back"
+            {crate::i18n::text("← back", &[])}
         }
     }
 }
@@ -513,7 +518,7 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
             button {
                 r#type: "button",
                 class: "w-8 h-8 rounded-lg flex items-center justify-center text-base text-[var(--text-dim)] hover:text-[var(--text)] border border-transparent hover:border-[var(--edge)] transition-colors",
-                title: "Where keys are stored",
+                title: crate::i18n::text("Where keys are stored", &[]),
                 onclick: move |_| {
                     if !open() {
                         input.set(crate::identity::identities_dir().display().to_string());
@@ -529,9 +534,9 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
                     style: "background: var(--panel2);",
                     div { class: "space-y-1",
                         div { class: "flex items-baseline gap-2",
-                            span { class: "{LABEL} flex-1", "Identities folder" }
+                            span { class: "{LABEL} flex-1", {crate::i18n::text("Identities folder", &[])} }
                             if is_default {
-                                span { class: "text-[10px] text-[var(--text-dim)]", "default" }
+                                span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("default", &[])} }
                             }
                         }
                         code {
@@ -546,7 +551,7 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
                             r#type: "text",
                             spellcheck: "false",
                             value: "{input}",
-                            placeholder: "/absolute/path/to/folder",
+                            placeholder: crate::i18n::text("/absolute/path/to/folder", &[]),
                             oninput: move |e| input.set(e.value()),
                         }
                         div { class: "flex flex-wrap gap-2",
@@ -566,7 +571,7 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
                                             }
                                         });
                                     },
-                                    "Browse…"
+                                    {crate::i18n::text("Browse…", &[])}
                                 }
                             }
                             button {
@@ -574,23 +579,23 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
                                 class: "px-3 py-1.5 rounded-lg text-xs dxf-cta transition-colors disabled:opacity-30",
                                 disabled: input().trim().is_empty(),
                                 onclick: move |_| apply(Some(std::path::PathBuf::from(input().trim()))),
-                                "Use this folder"
+                                {crate::i18n::text("Use this folder", &[])}
                             }
                             button {
                                 r#type: "button",
                                 class: "px-3 py-1.5 rounded-lg border border-[var(--edge)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors disabled:opacity-30",
                                 disabled: is_default,
                                 onclick: move |_| apply(None),
-                                "Use default"
+                                {crate::i18n::text("Use default", &[])}
                             }
                         }
                     }
                     if let Some(e) = error() {
-                        div { class: "text-xs text-[var(--danger)]", "{e}" }
+                        div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
                     }
                     p { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
-                        "Keys in this folder are encrypted for this computer; the passphrase lives in "
-                        "{crate::keyvault::backend().describe()}. A copy of the folder opens nowhere else."
+                        {crate::i18n::text("Keys in this folder are encrypted for this computer; the passphrase lives in ", &[])}
+                        {crate::i18n::text("{0}. A copy of the folder opens nowhere else.", &[(crate :: keyvault :: backend () . describe ()).to_string()])}
                     }
                 }
             }
