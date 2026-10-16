@@ -300,6 +300,21 @@ fn reclaim_orphan(dir: &Path, port: u16) -> Result<(), String> {
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+fn media_command(path: &Path) -> Command {
+    let mut command = Command::new(path);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    // CREATE_NO_WINDOW still creates a headless conhost; our stdio pipes need no console.
+    command.creation_flags(DETACHED_PROCESS);
+    command
+}
 
 #[cfg(windows)]
 fn process_matches(pid: u32, image: &str) -> bool {
@@ -404,15 +419,8 @@ pub async fn spawn_livekit_with_ports(
         .map_err(|e| format!("livekit extraction task: {e}"))??
     };
 
-    let mut command = Command::new(&path);
-    command
-        .arg("--config")
-        .arg(&config_path)
-        .kill_on_drop(true)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
+    let mut command = media_command(&path);
+    command.arg("--config").arg(&config_path);
     let mut child = command.spawn().map_err(|e| format!("spawn livekit: {e}"))?;
 
     forward_output(&mut child);
@@ -719,15 +727,13 @@ mod tests {
         let config = dir.join("test.yaml");
         write_private(&config, config_yaml_for(&Advertise::Local, p, &creds)).unwrap();
         drop((ws, tcp, udp));
-        let mut command = Command::new(&path);
+        let mut command = media_command(&path);
         command
             .arg("--config")
             .arg(config)
             .kill_on_drop(true)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        #[cfg(windows)]
-        command.creation_flags(CREATE_NO_WINDOW);
         let mut child = command.spawn().unwrap();
         let ready = wait_for_ready(&mut child, p.ws, &creds, Duration::from_secs(10)).await;
         if std::net::TcpListener::bind("[::1]:0").is_ok() {
@@ -756,15 +762,13 @@ mod tests {
         )
         .unwrap();
         drop((blocked_ws, blocked_tcp));
-        let mut blocked_command = Command::new(path);
+        let mut blocked_command = media_command(&path);
         blocked_command
             .arg("--config")
             .arg(blocked_config)
             .kill_on_drop(true)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        #[cfg(windows)]
-        blocked_command.creation_flags(CREATE_NO_WINDOW);
         let mut blocked_child = blocked_command.spawn().unwrap();
         let blocked = wait_for_ready(
             &mut blocked_child,
@@ -800,6 +804,80 @@ mod tests {
             blocked_log.contains("bind"),
             "expected an actual UDP bind failure"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "starts the bundled SFU and queries Windows child processes through CIM"]
+    async fn windows_sfu_needs_no_console_for_startup_logs_or_shutdown() {
+        use tokio::io::AsyncReadExt;
+
+        let dir = scratch("console-free-sfu");
+        private_dir(&dir).unwrap();
+        let path = ensure_binary(
+            &dir,
+            "Discordia-media-test.exe",
+            LIVEKIT_BIN,
+            LIVEKIT_SHA256,
+            LIVEKIT_SIZE.trim().parse().unwrap(),
+        )
+        .unwrap();
+        let p = unused_ports();
+        let creds = Credentials::generate();
+        let config = dir.join("test.yaml");
+        write_private(&config, config_yaml_for(&Advertise::Local, p, &creds)).unwrap();
+        let mut child = media_command(&path)
+            .arg("--config")
+            .arg(config)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let output = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).await.unwrap();
+            bytes
+        });
+        let errors = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).await.unwrap();
+            bytes
+        });
+        let ready = wait_for_ready(&mut child, p.ws, &creds, Duration::from_secs(10)).await;
+        let consoles = tokio::task::spawn_blocking(move || {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &format!(
+                        "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process \
+                         -Filter 'ParentProcessId = {pid}' | \
+                         Where-Object Name -eq 'conhost.exe').Count"
+                    ),
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        child.kill().await.unwrap();
+        let logs = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut logs = output.await.unwrap();
+            logs.extend(errors.await.unwrap());
+            String::from_utf8_lossy(&logs).into_owned()
+        })
+        .await
+        .unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+        fs::remove_dir_all(dir).unwrap();
+        assert!(ready.is_ok(), "{ready:?}; {logs}");
+        assert!(consoles.status.success(), "{consoles:?}");
+        assert_eq!(String::from_utf8_lossy(&consoles.stdout).trim(), "0");
+        assert!(logs.contains("starting LiveKit server"), "{logs}");
     }
 
     fn compress(bytes: &[u8]) -> Vec<u8> {
