@@ -14,7 +14,8 @@ On Windows, `Discordia.exe` includes the app icon and product/version metadata
 even in plain Cargo builds. `build.rs` embeds those resources for Cargo;
 `dx` owns them when `DX_RUSTC` is set, using `client/Dioxus.toml`.
 Its taskbar identity is `com.discordia.app`;
-the bundled SFU appears as `Discordia-media-<digest>.exe`. WebView2 remains a
+the bundled SFU appears as `Discordia-RTC.exe`, with its version kept in an
+internal `rtc-<digest>` directory. WebView2 remains a
 Microsoft runtime with separate processes; Task Manager grouping varies by
 Windows/runtime version. The installer leaves one top-level Start Menu icon and
 no separate uninstall shortcut, so Uninstall lives on that icon's context menu.
