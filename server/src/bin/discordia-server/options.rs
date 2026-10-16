@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use discordia_server::protocol::IceServer;
+use discordia_server::protocol::rendezvous::GeoPoint;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_ADDR: &str = "0.0.0.0:9000";
@@ -63,6 +64,44 @@ pub struct ServerOptions {
     #[arg(long, env = "DISCORDIA_LIVEKIT_AUTOSPAWN", value_parser = clap::builder::BoolishValueParser::new())]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub livekit_autospawn: Option<bool>,
+    /// Rendezvous URLs to register on, so friends join by name or code; unset publishes nowhere
+    #[arg(long, env = "DISCORDIA_PUBLISH_TO", value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_to: Option<Vec<String>>,
+    /// The name friends type to join, held by a key derived from quic-secret [default: a random code]
+    #[arg(long, env = "DISCORDIA_PUBLISH_NAME")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_name: Option<String>,
+    /// One line shown beside the name in a directory
+    #[arg(long, env = "DISCORDIA_PUBLISH_DESCRIPTION")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_description: Option<String>,
+    /// List it in each rendezvous's public directory, not only behind its name [default: false]
+    #[arg(long, env = "DISCORDIA_PUBLISH_PUBLIC", value_parser = clap::builder::BoolishValueParser::new())]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_public: Option<bool>,
+    /// "lat,lon" for the directory's globe; self-declared, kept to a tenth of a degree
+    #[arg(long, env = "DISCORDIA_PUBLISH_LOCATION")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_location: Option<Location>,
+}
+
+/// "lat,lon" on the command line and in the environment, a table in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Location(pub GeoPoint);
+
+impl std::str::FromStr for Location {
+    type Err = String;
+    fn from_str(text: &str) -> Result<Self, String> {
+        let bad = || format!("not \"lat,lon\": {text}");
+        let (lat, lon) = text.split_once(',').ok_or_else(bad)?;
+        let point = GeoPoint {
+            lat: lat.trim().parse().map_err(|_| bad())?,
+            lon: lon.trim().parse().map_err(|_| bad())?,
+        };
+        point.coarse().map(|_| Location(point)).ok_or_else(bad)
+    }
 }
 
 /// A JSON string on the command line and in the environment, a TOML array in the file.
@@ -96,6 +135,11 @@ impl ServerOptions {
             livekit_api_key: self.livekit_api_key.or(file.livekit_api_key),
             livekit_api_secret: self.livekit_api_secret.or(file.livekit_api_secret),
             livekit_autospawn: self.livekit_autospawn.or(file.livekit_autospawn),
+            publish_to: self.publish_to.or(file.publish_to),
+            publish_name: self.publish_name.or(file.publish_name),
+            publish_description: self.publish_description.or(file.publish_description),
+            publish_public: self.publish_public.or(file.publish_public),
+            publish_location: self.publish_location.or(file.publish_location),
         }
     }
 
@@ -148,6 +192,9 @@ mod tests {
                     credential: "c".into(),
                 }])),
                 livekit_autospawn: Some(true),
+                publish_to: Some(vec!["ws://rendezvous.example:7700".into()]),
+                publish_name: Some("Casa".into()),
+                publish_location: Some("-34.6,-58.4".parse().unwrap()),
                 ..ServerOptions::default()
             }),
             rendezvous: Some(discordia_rendezvous::run::Options {
@@ -163,6 +210,15 @@ mod tests {
     fn a_misspelt_table_is_refused() {
         assert!(toml::from_str::<ConfigFile>("[sever]\nquic_port = 1\n").is_err());
         assert!(toml::from_str::<ConfigFile>("[server]\nquic_prot = 1\n").is_err());
+    }
+
+    #[test]
+    fn a_location_is_two_numbers_on_the_globe() {
+        let at: Location = " -34.61 , -58.38 ".parse().unwrap();
+        assert_eq!((at.0.lat, at.0.lon), (-34.61, -58.38));
+        assert!("-34.6".parse::<Location>().is_err());
+        assert!("91,0".parse::<Location>().is_err());
+        assert!("a,b".parse::<Location>().is_err());
     }
 
     #[test]

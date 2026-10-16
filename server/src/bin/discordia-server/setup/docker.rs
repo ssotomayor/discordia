@@ -181,6 +181,7 @@ pub fn report(a: &Answers, dir: &Path) {
                 "Server      not up after 30 s: docker compose -f {compose} logs discordia"
             ),
         }
+        super::report_published(a);
     }
     if a.role.rendezvous() {
         let host = crate::serve::bare_host(&a.public_address);

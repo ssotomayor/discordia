@@ -137,6 +137,7 @@ pub fn report(a: &Answers) {
             }
             None => println!("Server      not up after 30 s: journalctl -u discordia-server -n 50"),
         }
+        super::report_published(a);
     }
     if a.role.rendezvous() {
         let up = super::wait_for(15, || {

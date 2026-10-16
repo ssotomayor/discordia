@@ -1,14 +1,17 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::livekit_bundle::{self, Advertise};
 use discordia_server::quic::Coordination;
+use discordia_server::rendezvous::{HostKey, TransportAdvert};
 
 use crate::options::{DEFAULT_ADDR, ServerOptions};
 
 pub async fn serve(opts: ServerOptions) -> Result<(), String> {
     let addr = opts.addr.unwrap_or(DEFAULT_ADDR.parse().unwrap());
+    let publish_to = crate::publish::targets(opts.publish_to.as_deref().unwrap_or_default())?;
     let data_dir = opts.data_dir();
     let _data_lease = livekit_bundle::HostLease::claim(&data_dir)
         .map_err(|e| format!("host ownership refused: {e}"))?;
@@ -116,6 +119,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
         tracing::error!(error = %e, "cannot persist the QUIC key; friends will have to re-add this server after a restart");
         iroh::SecretKey::generate()
     });
+    let name_key = Arc::new(HostKey::derived_from(&quic_secret));
     let quic_port = opts
         .quic_port
         .unwrap_or(discordia_server::quic::DEFAULT_PORT);
@@ -152,10 +156,25 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
                     share = %share_string(&key, opts.public_address.as_deref(), port, &coordination),
                     "friends connect with this address"
                 );
+                if !publish_to.is_empty() {
+                    // A rendezvous admits only literal addresses, checked against the peer it saw.
+                    let public_ip = public.as_ref().map(|(_, ip)| ip.to_string());
+                    let transport = TransportAdvert {
+                        key: key.clone(),
+                        addrs: share_addrs(public_ip.as_deref(), port, &coordination),
+                    };
+                    tracing::info!(rendezvous = ?publish_to, addrs = ?transport.addrs, "publishing");
+                    crate::publish::spawn(
+                        publish_to.clone(),
+                        crate::publish::options(&opts),
+                        transport,
+                        name_key.clone(),
+                    );
+                }
                 Some(handle)
             }
             Err(e) => {
-                tracing::warn!(error = %e, "QUIC gateway not serving");
+                tracing::warn!(error = %e, "QUIC gateway not serving; nothing to publish");
                 None
             }
         }
@@ -178,6 +197,17 @@ pub fn share_string(
     port: u16,
     coordination: &Coordination,
 ) -> String {
+    discordia_server::protocol::format_quic_share(
+        key,
+        &share_addrs(public_address, port, coordination),
+    )
+}
+
+pub fn share_addrs(
+    public_address: Option<&str>,
+    port: u16,
+    coordination: &Coordination,
+) -> Vec<String> {
     let mut addrs: Vec<String> = match public_address {
         Some(name) => vec![with_port(name, port)],
         None => {
@@ -194,7 +224,7 @@ pub fn share_string(
     if let Coordination::Relay(url) = coordination {
         addrs.push(url.clone());
     }
-    discordia_server::protocol::format_quic_share(key, &addrs)
+    addrs
 }
 
 pub fn bare_host(name: &str) -> String {

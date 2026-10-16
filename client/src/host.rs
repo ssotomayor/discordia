@@ -605,7 +605,7 @@ pub async fn start_self_host(
                 url: rendezvous_url.clone().unwrap_or_default(),
                 options: publish,
                 transport,
-                identity: identity.clone(),
+                signer: std::sync::Arc::new(identity.clone()),
             };
             (
                 Some(info.shortcode),

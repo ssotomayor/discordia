@@ -7,6 +7,7 @@ pub mod livekit;
 pub mod livekit_bundle;
 pub mod media;
 pub mod quic;
+pub mod rendezvous;
 pub mod sanitize;
 pub mod sfu_proxy;
 pub mod state;

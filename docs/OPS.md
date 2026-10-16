@@ -45,6 +45,11 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `LIVEKIT_PORT` | `7880` | port used when deriving the URL (the bundled SFU always binds 7880) |
 | `DISCORDIA_LIVEKIT_AUTOSPAWN` | `1` | `0` when LiveKit runs separately |
 | `DISCORDIA_ICE_SERVERS` | — | JSON list of `{urls, username, credential}` handed to every voice client; for a box behind NAT with its own TURN |
+| `DISCORDIA_PUBLISH_TO` | — | comma-separated `ws://`/`wss://` rendezvous to register on, so friends join by name or code; unset publishes nowhere. Retried with backoff while one is down |
+| `DISCORDIA_PUBLISH_NAME` | random code | the name friends type; held by a key derived from `quic-secret`, so a restored backup keeps it |
+| `DISCORDIA_PUBLISH_DESCRIPTION` | — | one line beside the name |
+| `DISCORDIA_PUBLISH_PUBLIC` | `false` | also list it in each rendezvous's `/discover`; otherwise only the name or code finds it |
+| `DISCORDIA_PUBLISH_LOCATION` | — | `lat,lon` for the globe; self-declared, rounded to a tenth of a degree |
 
 **Rendezvous**
 
@@ -158,7 +163,7 @@ rendezvous entry. The plaintext gateway binds loopback only.
 | Self-host, nothing else | loopback | share string with the LAN address ("Accept direct connections" starts enabled for new hosts) | direct with global IPv6 and an open firewall; otherwise unreachable |
 | + rendezvous | loopback | punched, or carried by the relay | gateway introduced or relayed; voice tries usable local routes before the shared SFU |
 | + port mapping (UPnP/NAT-PMP/PCP or manual) | loopback | direct | direct on the forwarded QUIC UDP port; voice on this machine's SFU when media ports are usable |
-| Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DISCORDIA_PUBLIC_HOSTS`) |
+| Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string or by the name it publishes (`DISCORDIA_PUBLISH_TO`), or `wss://` through a TLS proxy (`DISCORDIA_PUBLIC_HOSTS`) |
 
 Port mapping failure is the normal case and never stops hosting. It also
 measures hairpin NAT for diagnostics. LiveKit keeps LAN candidates alongside the
@@ -231,8 +236,10 @@ The installer downloads the latest `discordia-server-linux`, checks it against
 replaces the binary and restarts. `setup` asks what runs here (server,
 rendezvous or both), the public address (detected: an interface's public IPv4,
 else STUN), operator keys, and whether to run TURN and lend the SFU to other
-hosts. Every question is a flag, and `--yes` takes the defaults (`setup --help`).
-A rerun reads the existing file as its defaults and keeps keys it does not manage.
+hosts. A server is asked which rendezvous to publish on (none by default), and
+then its name, description and whether to list it publicly. Every question is a
+flag, and `--yes` takes the defaults (`setup --help`). A rerun reads the existing
+file as its defaults and keeps keys it does not manage; `--publish-to none` stops publishing.
 
 | | systemd (default) | `--docker` |
 |---|---|---|
@@ -244,7 +251,11 @@ A rerun reads the existing file as its defaults and keeps keys it does not manag
 | Share string | printed at the end; later `sudo discordia-server share` | `docker compose -f … exec discordia discordia-server share` |
 
 Back up `quic-secret` in the server's data directory: it is the key in the
-share string. TLS is not set up (`wss://` through a proxy, `public_hosts`); QUIC needs none.
+share string, and the published name's owner. TLS is not set up (`wss://` through a proxy, `public_hosts`); QUIC needs none.
+
+A rendezvous lists only addresses matching the IP the registration came from, so
+the advert carries `public_address` resolved to an IP. An IPv4 box registering
+over IPv6 (a rendezvous with an AAAA record) is listed without a direct address.
 
 ## Deploying the test box
 

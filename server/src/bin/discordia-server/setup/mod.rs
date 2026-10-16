@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use discordia_server::livekit_bundle::Credentials;
+use discordia_server::protocol::rendezvous::join_code;
 
 use crate::options::ConfigFile;
 
@@ -31,6 +32,18 @@ pub struct SetupArgs {
     /// Let the rendezvous hand this machine's SFU to hosts nobody can reach [default: true]
     #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
     pub shared_voice: Option<bool>,
+    /// Rendezvous URL to publish the server on, so friends join by name; repeat for several, `none` for none
+    #[arg(long = "publish-to")]
+    pub publish_to: Vec<String>,
+    /// Name friends type to join [default: a random code]
+    #[arg(long)]
+    pub publish_name: Option<String>,
+    /// One line shown beside the name
+    #[arg(long)]
+    pub publish_description: Option<String>,
+    /// List it in each rendezvous's public directory [default: false]
+    #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
+    pub publish_public: Option<bool>,
     /// Docker: where the compose project lives [default: /opt/discordia]
     #[arg(long)]
     pub dir: Option<PathBuf>,
@@ -86,11 +99,21 @@ pub struct Answers {
     pub operators: Vec<String>,
     pub turn: bool,
     pub shared_voice: bool,
+    pub publish: Publish,
     /// Kept across reruns: a fresh pair would orphan every token a host holds.
     pub livekit: Credentials,
     /// What a rerun found, so hand-edited keys survive it.
     pub existing: ConfigFile,
     pub config_path: PathBuf,
+}
+
+/// Empty `to` publishes nowhere; the rest is then left as the file had it.
+#[derive(Debug, Clone, Default)]
+pub struct Publish {
+    pub to: Vec<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub public: bool,
 }
 
 pub enum Step {
@@ -271,6 +294,11 @@ fn gather(args: &SetupArgs, config_path: &Path, ask: &mut Prompter) -> Result<An
         None => false,
     };
 
+    let publish = match role.server() {
+        true => gather_publish(args, &old_server, ask)?,
+        false => Publish::default(),
+    };
+
     let livekit = match old_server
         .livekit_api_key
         .clone()
@@ -294,10 +322,81 @@ fn gather(args: &SetupArgs, config_path: &Path, ask: &mut Prompter) -> Result<An
         operators,
         turn,
         shared_voice,
+        publish,
         livekit,
         existing,
         config_path: config_path.to_path_buf(),
     })
+}
+
+fn gather_publish(
+    args: &SetupArgs,
+    old: &crate::options::ServerOptions,
+    ask: &mut Prompter,
+) -> Result<Publish, String> {
+    let typed = match args.publish_to.is_empty() {
+        false => args.publish_to.clone(),
+        true => {
+            let previous = old.publish_to.clone().unwrap_or_default().join(",");
+            let answer = ask.text(
+                "Rendezvous to publish on, so friends join by name: ws:// URLs, comma-separated \
+                 (e.g. ws://rendezvous.discordia.world:7700; `none` or empty for none)",
+                Some(previous.as_str()),
+            )?;
+            answer.split(',').map(str::to_string).collect()
+        }
+    };
+    let typed: Vec<String> = typed.into_iter().filter(|u| u.trim() != "none").collect();
+    let to = crate::publish::targets(&typed)?;
+    if to.is_empty() {
+        return Ok(Publish::default());
+    }
+    let name = match &args.publish_name {
+        Some(name) => name.clone(),
+        None => ask.text(
+            "Name friends type to join (empty for none: a random code)",
+            old.publish_name.as_deref(),
+        )?,
+    };
+    let name = Some(name.trim().to_string()).filter(|n| !n.is_empty());
+    if let Some(name) = &name
+        && join_code(name).is_none()
+    {
+        return Err(format!(
+            "'{name}' has no letters or digits to make a code from"
+        ));
+    }
+    let description = match &args.publish_description {
+        Some(d) => d.clone(),
+        None => ask.text(
+            "One line describing it (empty for none)",
+            old.publish_description.as_deref(),
+        )?,
+    };
+    let public = match args.publish_public {
+        Some(p) => p,
+        None => ask.yes_no(
+            "List it in their public directories too, not only behind its name?",
+            old.publish_public.unwrap_or(false),
+        )?,
+    };
+    Ok(Publish {
+        to,
+        name,
+        description: Some(description.trim().to_string()).filter(|d| !d.is_empty()),
+        public,
+    })
+}
+
+pub fn report_published(a: &Answers) {
+    if !a.role.server() || a.publish.to.is_empty() {
+        return;
+    }
+    let code = match a.publish.name.as_deref().and_then(join_code) {
+        Some(code) => format!("as {code}"),
+        None => "under a random code, logged at start".to_string(),
+    };
+    println!("Published   on {} {code}", a.publish.to.join(", "));
 }
 
 /// Shared by both layouts: they differ in paths and ports, not in what a role means.
@@ -314,6 +413,12 @@ pub fn config_for(a: &Answers, layout: Layout) -> ConfigFile {
         s.public_address = Some(a.public_address.clone());
         s.operators = (!a.operators.is_empty()).then(|| a.operators.clone());
         s.relay_url = a.role.rendezvous().then(|| relay_url.clone());
+        s.publish_to = (!a.publish.to.is_empty()).then(|| a.publish.to.clone());
+        if !a.publish.to.is_empty() {
+            s.publish_name = a.publish.name.clone();
+            s.publish_description = a.publish.description.clone();
+            s.publish_public = a.publish.public.then_some(true);
+        }
         match layout.external_sfu {
             true => {
                 s.livekit_url = Some(sfu_url.clone());
@@ -641,6 +746,7 @@ pub mod tests {
             operators: vec!["ab".repeat(32)],
             turn: true,
             shared_voice: role == Role::Both,
+            publish: Publish::default(),
             livekit: Credentials {
                 key: "APIkey".into(),
                 secret: "secret".into(),
@@ -681,6 +787,30 @@ pub mod tests {
         a.public_address = "2001:db8::7".into();
         let r = config_for(&a, native::LAYOUT).rendezvous.unwrap();
         assert_eq!(r.relay_url.as_deref(), Some("http://[2001:db8::7]:7701"));
+    }
+
+    #[test]
+    fn publishing_is_written_only_when_a_rendezvous_is_named() {
+        let mut a = answers(Role::Server);
+        a.existing.server = Some(ServerOptions {
+            publish_name: Some("Kept".into()),
+            ..ServerOptions::default()
+        });
+        let s = config_for(&a, native::LAYOUT).server.unwrap();
+        assert_eq!(s.publish_to, None);
+        assert_eq!(s.publish_name.as_deref(), Some("Kept"));
+
+        a.publish = Publish {
+            to: vec!["ws://r.example:7700".into()],
+            name: None,
+            description: Some("Fridays".into()),
+            public: true,
+        };
+        let s = config_for(&a, native::LAYOUT).server.unwrap();
+        assert_eq!(s.publish_to.unwrap(), ["ws://r.example:7700"]);
+        assert_eq!(s.publish_name, None);
+        assert_eq!(s.publish_description.as_deref(), Some("Fridays"));
+        assert_eq!(s.publish_public, Some(true));
     }
 
     #[test]

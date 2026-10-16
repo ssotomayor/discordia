@@ -1,5 +1,6 @@
 mod archive;
 mod options;
+mod publish;
 mod serve;
 mod setup;
 
