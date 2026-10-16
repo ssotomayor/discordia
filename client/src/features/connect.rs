@@ -108,7 +108,8 @@ pub fn ConnectForm(
     let identity_for_submit = identity.clone();
     let rendezvous_for_submit = rendezvous.clone();
     let publish_for_submit = publish_target.clone();
-    let submit = move |_| {
+    let submit = move |event: FormEvent| {
+        event.prevent_default();
         lookup_error.set(None);
         let params = match mode() {
             Mode::Join => match join_by(&server_url(), &code(), &rendezvous_for_submit) {
@@ -1482,6 +1483,63 @@ mod tests {
     use crate::protocol::rendezvous::DiscoverEntry;
 
     const NONE: &[String] = &[];
+
+    #[test]
+    fn hosting_submission_keeps_the_current_document_alive() {
+        use dioxus::core::Mutation;
+        use dioxus::prelude::*;
+        use std::{any::Any, cell::RefCell, rc::Rc};
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let captured = Rc::new(RefCell::new(None::<crate::state::SessionParams>));
+        let mut dom = VirtualDom::new_with_props(
+            |captured: Rc<RefCell<Option<crate::state::SessionParams>>>| {
+                use_context_provider(|| Signal::new(crate::settings::ClientSettings::default()));
+                rsx! {
+                    super::ConnectForm {
+                        identity: crate::identity::Identity::restore_from_private_key("01".repeat(32), "Test").unwrap(),
+                        on_connect: move |params| { captured.replace(Some(params)); },
+                    }
+                }
+            },
+            captured.clone(),
+        );
+        let mutations = dom.rebuild_to_vec();
+        let form = mutations
+            .edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if *name == "submit" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let create = mutations
+            .edits
+            .iter()
+            .filter_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if *name == "click" => Some(*id),
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        let click: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+            dioxus::html::SerializedMouseData::default(),
+        )));
+        dom.runtime()
+            .handle_event("click", Event::new(click, true), create);
+        dom.render_immediate_to_vec();
+        let data: dioxus::html::SerializedFormData = serde_json::from_str("{}").unwrap();
+        let submit: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(data)));
+        let event = Event::new(submit, true);
+        dom.runtime().handle_event("submit", event.clone(), form);
+        assert!(matches!(
+            captured.borrow().as_ref().map(|params| &params.mode),
+            Some(crate::state::SessionMode::SelfHost { .. })
+        ));
+        assert!(
+            !event.default_action_enabled(),
+            "hosting must not navigate away from the live interface"
+        );
+    }
 
     fn r() -> Vec<String> {
         vec!["ws://rendezvous.example:7700".into()]
