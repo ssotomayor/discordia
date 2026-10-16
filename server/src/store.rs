@@ -38,6 +38,8 @@ pub struct LoadedState {
     pub bot_installs: Vec<BotInstall>,
 }
 
+const DEFAULT_GUILD_KEY: &str = "default_guild";
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -153,6 +155,8 @@ impl Store {
     async fn init_schema(&self) -> Result<()> {
         let ddl = [
             "CREATE TABLE IF NOT EXISTS guild_file_policies (guild_id TEXT PRIMARY KEY, policy TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS server_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS default_guild_offers (guild_id TEXT NOT NULL, pubkey TEXT NOT NULL, PRIMARY KEY (guild_id, pubkey))",
             "CREATE TABLE IF NOT EXISTS guild_stickers (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL, image TEXT NOT NULL, added_by TEXT NOT NULL, created_ms INTEGER NOT NULL, UNIQUE(guild_id, shortcode))",
             "CREATE TABLE IF NOT EXISTS users (
                 pubkey TEXT PRIMARY KEY, username TEXT NOT NULL)",
@@ -580,12 +584,18 @@ impl Store {
             "invites",
             "bot_installs",
             "guild_xp",
+            "default_guild_offers",
         ] {
             sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
                 .bind(&gid)
                 .execute(&mut *tx)
                 .await?;
         }
+        sqlx::query("DELETE FROM server_settings WHERE key = ? AND value = ?")
+            .bind(DEFAULT_GUILD_KEY)
+            .bind(&gid)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM guilds WHERE id = ?")
             .bind(&gid)
             .execute(&mut *tx)
@@ -1206,6 +1216,43 @@ impl Store {
     ) -> Result<()> {
         sqlx::query("INSERT INTO guild_file_policies(guild_id, policy) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET policy = excluded.policy")
             .bind(guild_id.to_string()).bind(serde_json::to_string(policy).expect("policy serializes")).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn default_guild(&self) -> Result<Option<Id>> {
+        let row = sqlx::query("SELECT value FROM server_settings WHERE key = ?")
+            .bind(DEFAULT_GUILD_KEY)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.and_then(|r| r.get::<String, _>(0).parse().ok()))
+    }
+
+    pub async fn set_default_guild(&self, guild_id: Option<Id>) -> Result<()> {
+        match guild_id {
+            Some(id) => sqlx::query("INSERT INTO server_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                .bind(DEFAULT_GUILD_KEY).bind(id.to_string()).execute(&self.pool).await?,
+            None => sqlx::query("DELETE FROM server_settings WHERE key = ?")
+                .bind(DEFAULT_GUILD_KEY).execute(&self.pool).await?,
+        };
+        Ok(())
+    }
+
+    pub async fn default_guild_offered(&self, guild_id: Id, pubkey: &str) -> Result<bool> {
+        let row =
+            sqlx::query("SELECT 1 FROM default_guild_offers WHERE guild_id = ? AND pubkey = ?")
+                .bind(guild_id.to_string())
+                .bind(pubkey)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn record_default_guild_offer(&self, guild_id: Id, pubkey: &str) -> Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO default_guild_offers(guild_id, pubkey) VALUES (?, ?)")
+            .bind(guild_id.to_string())
+            .bind(pubkey)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

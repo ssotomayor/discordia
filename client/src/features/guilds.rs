@@ -261,7 +261,14 @@ pub fn GuildsSidebar() -> Element {
                                 .iter()
                                 .find(|g| g.id == gid)
                                 .and_then(|g| g.accent.clone());
+                            let can_be_default = s.is_operator
+                                && s.guilds.iter().any(|g| {
+                                    g.id == gid
+                                        && g.visibility == crate::protocol::GuildVisibility::Public
+                                });
+                            let is_default = s.default_guild == Some(gid);
                             drop(s);
+                            let gw_default = gateway.clone();
                             let gw_set = gateway.clone();
                             let gw_clear = gateway.clone();
                             rsx! {
@@ -321,6 +328,19 @@ pub fn GuildsSidebar() -> Element {
                                                     },
                                                     if muted { {crate::i18n::text("Unmute server", &[])} } else { {crate::i18n::text("Mute server", &[])} }
                                                 }
+                                            }
+                                        }
+                                        if can_be_default {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                title: crate::i18n::text("Newcomers to this server join this guild and open it first", &[]),
+                                                onclick: move |_| {
+                                                    let next = (!is_default).then_some(gid);
+                                                    state.write().default_guild = next;
+                                                    gw_default.send(ClientMessage::SetDefaultGuild { guild_id: next });
+                                                    menu.set(None);
+                                                },
+                                                if is_default { {crate::i18n::text("Unset server default", &[])} } else { {crate::i18n::text("Make server default", &[])} }
                                             }
                                         }
                                         if can_roles {

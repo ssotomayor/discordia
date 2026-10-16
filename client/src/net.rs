@@ -1372,6 +1372,7 @@ fn apply(
             activities,
             bot_commands,
             operator,
+            default_guild,
         } => {
             let recovering = s.status == ConnectionStatus::Reconnecting;
             let selected_guild = s.selected_guild;
@@ -1381,6 +1382,7 @@ fn apply(
             let local_channel = s.voice.channel_id;
             s.self_user = Some(user);
             s.is_operator = operator;
+            s.default_guild = default_guild;
             s.server_chat_tools = chat_tools;
             s.guilds = guilds;
             s.channels = channels;
@@ -1474,6 +1476,7 @@ fn apply(
             let chosen = selected_guild
                 .filter(|id| recovering && s.guilds.iter().any(|g| g.id == *id))
                 .or_else(|| asked.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
+                .or_else(|| default_guild.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
                 .or_else(|| s.guilds.first().map(|g| g.id));
             if selected_dm {
                 s.selected_guild = chosen;
@@ -1712,6 +1715,9 @@ fn apply(
                 .entry(channel_id)
                 .or_default()
                 .insert(user_pubkey, (username, std::time::Instant::now()));
+        }
+        ServerMessage::DefaultGuild { guild_id } => {
+            s.default_guild = guild_id;
         }
         ServerMessage::GuildUpdate(guild) => {
             if let Some(slot) = s.guilds.iter_mut().find(|g| g.id == guild.id) {
@@ -2611,6 +2617,7 @@ mod tests {
                         activities: vec![],
                         bot_commands: vec![],
                         operator: false,
+                        default_guild: None,
                     },
                     &tx,
                     &voice_tx,

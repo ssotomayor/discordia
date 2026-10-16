@@ -236,10 +236,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                             break;
                         }
                         is_bot = bot;
-                        let ready = if is_bot {
-                            Ok(ctx.state.snapshot_for_bot(&new_user))
+                        let gated_default = if is_bot {
+                            Ok(None)
                         } else {
-                            ctx.state.snapshot_for(&new_user).await
+                            ctx.state.offer_default_guild(&new_user).await
+                        };
+                        let ready = match &gated_default {
+                            Err(message) => Err(message.clone()),
+                            Ok(_) if is_bot => Ok(ctx.state.snapshot_for_bot(&new_user)),
+                            Ok(_) => ctx.state.snapshot_for(&new_user).await,
                         };
                         let ready = match ready {
                             Ok(ready) => ready,
@@ -250,6 +255,12 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         };
                         if send(&mut ws_tx, &ready).await.is_err() {
+                            break;
+                        }
+                        if let Ok(Some(guild_id)) = gated_default
+                            && let Gate::Challenge(challenge) = check_join_gate(&ctx.state, guild_id, &new_user.pubkey, false, None, None, &nonce)
+                            && send(&mut ws_tx, &challenge).await.is_err()
+                        {
                             break;
                         }
                         if is_bot {
@@ -557,11 +568,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         };
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
+                        let was_default = ctx.state.default_guild() == Some(guild_id);
                         match ctx.state.delete_guild(guild_id, &u.pubkey).await {
                             Ok(()) => {
                                 share_instances(&ctx.state, ctx.state.prune_instances());
                                 tracing::info!(%guild_id, by = ?u.username, "guild deleted");
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
+                                if was_default {
+                                    ctx.state.broadcast(ServerMessage::DefaultGuild { guild_id: None });
+                                }
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -2222,6 +2237,23 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 tracing::info!(%guild_id, ?days, by = ?u.username, "guild retention set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetDefaultGuild { guild_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_default_guild(guild_id, &u.pubkey).await {
+                            Ok(()) => {
+                                tracing::info!(?guild_id, by = ?u.username, "default guild set");
+                                ctx.state.broadcast(ServerMessage::DefaultGuild { guild_id });
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
