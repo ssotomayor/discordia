@@ -270,7 +270,7 @@ fn unzip_into(
         let Some(rel) = entry.enclosed_name() else {
             return Err(format!(
                 "the update contains an unsafe path: {}",
-                entry.name()
+                entry.name().unwrap_or_default()
             ));
         };
         let out = into.join(&rel);
