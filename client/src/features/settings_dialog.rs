@@ -281,6 +281,7 @@ pub fn SettingsDialog() -> Element {
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
                             {crate::i18n::text("What others hear, when the gate opens, and what is processed before it leaves.", &[])}
                         }
+                        crate::features::voice::mic_test::MicrophoneTestPanel {}
                         div { class: "mb-2",
                             span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Input", &[])} }
                             select {
