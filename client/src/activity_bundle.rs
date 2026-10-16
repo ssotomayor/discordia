@@ -45,7 +45,10 @@ pub fn unpack(bytes: &[u8]) -> Result<Bundle, String> {
         if entry.is_dir() {
             continue;
         }
-        let path = clean_path(entry.name()).ok_or("a bundle path leaves the bundle")?;
+        let name = entry
+            .name()
+            .map_err(|e| format!("unreadable bundle: {e}"))?;
+        let path = clean_path(&name).ok_or("a bundle path leaves the bundle")?;
         let mut data = Vec::new();
         let read = (&mut entry)
             .take(budget + 1)

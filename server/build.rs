@@ -158,7 +158,7 @@ fn extract_zip(bytes: &[u8], target: &str) -> Result<Vec<u8>, String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        if file.name().ends_with(target) {
+        if file.name().is_ok_and(|name| name.ends_with(target)) {
             let mut buf = Vec::new();
             file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
             return Ok(buf);

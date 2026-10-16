@@ -72,7 +72,7 @@ futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 minisign-verify = "0.2.5"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 scrypt = { version = "0.11", default-features = false }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 zeroize = "1"
