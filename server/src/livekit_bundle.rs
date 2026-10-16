@@ -20,7 +20,7 @@ const LIVEKIT_DIGEST: &str = include_str!(concat!(env!("OUT_DIR"), "/livekit-ser
 
 const LEGACY_BIN_STEM: &str = "livekit-server";
 #[cfg(target_os = "windows")]
-const LIVEKIT_BIN_STEM: &str = "Discordia-media";
+const LIVEKIT_BIN_STEM: &str = "Discordia-RTC";
 #[cfg(not(target_os = "windows"))]
 const LIVEKIT_BIN_STEM: &str = LEGACY_BIN_STEM;
 
@@ -226,6 +226,11 @@ fn sweep_stale(dir: &Path, keep: &str) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
+        #[cfg(windows)]
+        if name != keep && bundle_directory_name(name) && entry.path().is_dir() {
+            let _ = fs::remove_file(entry.path().join("Discordia-RTC.exe"));
+            let _ = fs::remove_dir(entry.path());
+        }
         if bundled_image_name(name) && name != keep && !name.ends_with(".pid") {
             let _ = fs::remove_file(entry.path());
         }
@@ -259,17 +264,74 @@ fn pid_file_name_for(port: u16) -> String {
 }
 
 fn bundled_image_name(name: &str) -> bool {
-    [LIVEKIT_BIN_STEM, LEGACY_BIN_STEM].iter().any(|stem| {
-        name.strip_prefix(stem)
-            .is_some_and(|rest| rest.starts_with('-'))
-    })
+    [LIVEKIT_BIN_STEM, LEGACY_BIN_STEM, "Discordia-media"]
+        .iter()
+        .any(|stem| {
+            name.strip_prefix(stem)
+                .is_some_and(|rest| rest.starts_with('-'))
+        })
 }
 
 fn parse_pid_record(contents: &str) -> Option<(u32, &str)> {
     let mut lines = contents.lines();
     let pid = lines.next()?.trim().parse::<u32>().ok()?;
     let image = lines.next()?.trim();
+    #[cfg(windows)]
+    if Path::new(image).is_absolute()
+        && Path::new(image)
+            .file_name()
+            .is_some_and(|name| name == "Discordia-RTC.exe")
+    {
+        return Some((pid, image));
+    }
     bundled_image_name(image).then_some((pid, image))
+}
+
+#[cfg(windows)]
+fn bundle_directory_name(name: &str) -> bool {
+    name.strip_prefix("rtc-").is_some_and(|digest| {
+        digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn bundled_binary_path(dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        dir.join(format!("rtc-{}", LIVEKIT_DIGEST.trim()))
+            .join("Discordia-RTC.exe")
+    }
+    #[cfg(not(windows))]
+    dir.join(format!(
+        "{LIVEKIT_BIN_STEM}-{}-{}{LIVEKIT_BIN_EXT}",
+        LIVEKIT_DIGEST.trim(),
+        directory_scope(dir)
+    ))
+}
+
+fn image_belongs_to(dir: &Path, image: &str) -> bool {
+    #[cfg(windows)]
+    if Path::new(image).is_absolute() {
+        let Some(parent) = Path::new(image).parent() else {
+            return false;
+        };
+        return parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(bundle_directory_name)
+            && parent.parent().is_some_and(|root| same_path(root, dir));
+    }
+    image.ends_with(&format!("-{}{LIVEKIT_BIN_EXT}", directory_scope(dir)))
+}
+
+#[cfg(windows)]
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy()),
+        _ => false,
+    }
 }
 
 fn directory_scope(dir: &Path) -> String {
@@ -284,7 +346,7 @@ fn reclaim_orphan(dir: &Path, port: u16) -> Result<(), String> {
     if let Some((pid, image)) = parse_pid_record(&contents)
         && process_matches(pid, image)
     {
-        if !image.ends_with(&format!("-{}{LIVEKIT_BIN_EXT}", directory_scope(dir))) {
+        if !image_belongs_to(dir, image) {
             return Err("An older media process is still running; its ownership cannot be verified. Stop that host before restarting it.".into());
         }
         tracing::warn!(
@@ -318,12 +380,45 @@ fn media_command(path: &Path) -> Command {
 
 #[cfg(windows)]
 fn process_matches(pid: u32, image: &str) -> bool {
-    use std::os::windows::process::CommandExt;
-    let out = std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).contains(image))
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        },
+    };
+    use windows::core::PWSTR;
+    // SAFETY: only limited image-path access is requested for this PID.
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return false;
+    };
+    let mut buffer = vec![0_u16; 32768];
+    let mut length = buffer.len() as u32;
+    // SAFETY: the handle is live and the writable buffer has the supplied UTF-16 capacity.
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        )
+    };
+    // SAFETY: the query has completed and this handle is no longer used.
+    if let Err(error) = unsafe { CloseHandle(handle) } {
+        tracing::warn!(%error, "could not close media process query handle");
+    }
+    if result.is_err() {
+        return false;
+    }
+    let actual = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length as usize]));
+    if Path::new(image).is_absolute() {
+        same_path(&actual, Path::new(image))
+    } else {
+        actual
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(image))
+    }
 }
 
 #[cfg(not(windows))]
@@ -394,26 +489,35 @@ pub async fn spawn_livekit_with_ports(
 
     let dir = data_dir.join("livekit");
     let ownership = ownership::MediaOwnership::claim(&dir, p)?;
-    let bin_name = format!(
-        "{LIVEKIT_BIN_STEM}-{}-{}{LIVEKIT_BIN_EXT}",
-        LIVEKIT_DIGEST.trim(),
-        directory_scope(&dir)
-    );
+    let binary = bundled_binary_path(&dir);
     let config_path = dir.join(format!("livekit-{}.yaml", p.ws));
     let config = config_yaml_for(&advertise, p, creds);
 
     let path = {
-        let (dir, bin_name, config_path) = (dir.clone(), bin_name.clone(), config_path.clone());
+        let (dir, binary, config_path) = (dir.clone(), binary.clone(), config_path.clone());
         tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
             private_dir(&dir).map_err(|e| format!("livekit dir {}: {e}", dir.display()))?;
             reclaim_orphan(&dir, p.ws)?;
-            sweep_stale(&dir, &bin_name);
-            let path = ensure_binary(&dir, &bin_name, LIVEKIT_BIN, LIVEKIT_SHA256, bundle_size)
+            let relative = binary.strip_prefix(&dir).map_err(|e| e.to_string())?;
+            let keep = relative
+                .components()
+                .next()
+                .ok_or("missing bundle path")?
+                .as_os_str()
+                .to_string_lossy();
+            sweep_stale(&dir, &keep);
+            let parent = binary.parent().ok_or("missing bundle directory")?;
+            private_dir(parent).map_err(|e| format!("bundle directory: {e}"))?;
+            let name = binary
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("invalid bundle name")?;
+            let path = ensure_binary(parent, name, LIVEKIT_BIN, LIVEKIT_SHA256, bundle_size)
                 .map_err(|e| format!("write livekit binary: {e}"))?;
             let _ = fs::remove_file(&config_path);
             write_private(&config_path, config)
                 .map_err(|e| format!("write livekit config: {e}"))?;
-            Ok(path)
+            path.canonicalize().map_err(|e| format!("bundle path: {e}"))
         })
         .await
         .map_err(|e| format!("livekit extraction task: {e}"))??
@@ -426,9 +530,13 @@ pub async fn spawn_livekit_with_ports(
     forward_output(&mut child);
 
     if let Some(pid) = child.id() {
+        #[cfg(windows)]
+        let image = path.to_string_lossy();
+        #[cfg(not(windows))]
+        let image = path.file_name().unwrap_or_default().to_string_lossy();
         let _ = fs::write(
             dir.join(pid_file_name_for(p.ws)),
-            format!("{pid}\n{bin_name}\n"),
+            format!("{pid}\n{image}\n"),
         );
     }
 
@@ -623,11 +731,20 @@ mod tests {
         let third_ports = unused_ports();
         let third_media = third_dir.join("livekit");
         private_dir(&third_media).unwrap();
-        let second_image = format!(
-            "{LIVEKIT_BIN_STEM}-{}-{}{LIVEKIT_BIN_EXT}",
-            LIVEKIT_DIGEST.trim(),
-            directory_scope(&second_dir.join("livekit"))
-        );
+        let second_path = bundled_binary_path(&second_dir.join("livekit"));
+        let second_image = if cfg!(windows) {
+            second_path
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            second_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
         fs::write(
             third_media.join(pid_file_name_for(third_ports.ws)),
             format!("{}\n{second_image}\n", second.child.id().unwrap()),
@@ -1240,6 +1357,79 @@ mod tests {
             !process_matches(me, "livekit-server-0000000000000000"),
             "a live pid running something else must not match"
         );
+        #[cfg(windows)]
+        {
+            assert!(process_matches(me, &exe.to_string_lossy()));
+            assert!(!process_matches(
+                me,
+                &exe.with_file_name("foreign.exe").to_string_lossy()
+            ));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rtc_name_stays_short_and_paths_preserve_ownership() {
+        let root = scratch("rtc-name");
+        let first = root.join("first");
+        let second = root.join("second");
+        let path = bundled_binary_path(&first);
+        private_dir(path.parent().unwrap()).unwrap();
+        private_dir(&second).unwrap();
+        fs::write(&path, b"test").unwrap();
+        let image = path.canonicalize().unwrap().to_string_lossy().into_owned();
+        assert_eq!(path.file_name().unwrap(), "Discordia-RTC.exe");
+        assert_eq!(
+            parse_pid_record(&format!("42\n{image}\n")),
+            Some((42, image.as_str()))
+        );
+        assert!(image_belongs_to(&first, &image));
+        assert!(!image_belongs_to(&second, &image));
+        assert!(parse_pid_record("42\nDiscordia-media-deadbeef.exe\n").is_some());
+        let old = first.join("rtc-0123456789abcdef");
+        private_dir(&old).unwrap();
+        fs::write(old.join("Discordia-RTC.exe"), b"old").unwrap();
+        let unrelated = first.join("rtc-not-a-bundle");
+        private_dir(&unrelated).unwrap();
+        fs::write(unrelated.join("Discordia-RTC.exe"), b"unrelated").unwrap();
+        sweep_stale(
+            &first,
+            path.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
+        assert!(path.exists());
+        assert!(!old.exists());
+        assert!(unrelated.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "starts the real bundled SFU and reclaims its verified process"]
+    async fn rtc_orphan_is_reclaimed_by_its_full_path() {
+        let dir = scratch("rtc-orphan");
+        let ports = unused_ports();
+        let creds = Credentials::generate();
+        let mut sfu = spawn_livekit_with_ports(Advertise::Local, &creds, &dir, ports)
+            .await
+            .unwrap();
+        assert_eq!(
+            bundled_binary_path(&dir.join("livekit"))
+                .file_name()
+                .unwrap(),
+            "Discordia-RTC.exe"
+        );
+        reclaim_orphan(&dir.join("livekit"), ports.ws).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), sfu.child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(sfu);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
