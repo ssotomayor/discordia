@@ -2335,6 +2335,11 @@ pub enum ClientMessage {
         guild_id: Id,
         on: bool,
     },
+    /// Operators only. `None` returns everyone to the system guilds.
+    SetDefaultGuild {
+        #[serde(default)]
+        guild_id: Option<Id>,
+    },
     SetGuildLeveling {
         guild_id: Id,
         leveling: Leveling,
@@ -2464,6 +2469,9 @@ pub enum ServerMessage {
         bot_commands: Vec<BotCommandSet>,
         #[serde(default)]
         operator: bool,
+        /// The guild a connection opens when it has none of its own to return to.
+        #[serde(default)]
+        default_guild: Option<Id>,
     },
     GuildEmojis {
         guild_id: Id,
@@ -2578,6 +2586,10 @@ pub enum ServerMessage {
         username: String,
     },
     GuildUpdate(Guild),
+    DefaultGuild {
+        #[serde(default)]
+        guild_id: Option<Id>,
+    },
     GuildIntegrations {
         guild_id: Id,
         bots: Vec<BotInstall>,

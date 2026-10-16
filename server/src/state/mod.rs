@@ -119,6 +119,7 @@ pub struct AppState {
     /// extra point, which is cheaper than a disk write per message.
     pub xp_cooldown: DashMap<Id, DashMap<String, std::time::Instant>>,
     pub operators: std::collections::HashSet<String>,
+    default_guild: std::sync::Mutex<Option<Id>>,
     conns: DashMap<u64, Conn>,
     conns_by_ip: DashMap<std::net::IpAddr, u32>,
     conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
@@ -165,6 +166,7 @@ impl AppState {
             voice_states: DashMap::new(),
             voice_owners: std::sync::Mutex::new(Default::default()),
             operators,
+            default_guild: std::sync::Mutex::new(None),
             conns: DashMap::new(),
             conns_by_ip: DashMap::new(),
             conn_ids_by_pubkey: DashMap::new(),
@@ -263,6 +265,7 @@ impl AppState {
             state.app_blocklists.insert(list.curator.clone(), list);
         }
 
+        *state.default_guild_slot() = state.store.default_guild().await?;
         state.detach_inline_images().await;
         if fresh {
             state.seed_lobby().await?;
@@ -999,15 +1002,91 @@ impl AppState {
         Ok((guild, channels, member, roles))
     }
 
-    pub async fn snapshot_for(&self, user: &User) -> Result<ServerMessage, String> {
-        let system_guilds: Vec<Id> = self
+    fn default_guild_slot(&self) -> std::sync::MutexGuard<'_, Option<Id>> {
+        self.default_guild
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn default_guild(&self) -> Option<Id> {
+        *self.default_guild_slot()
+    }
+
+    pub async fn set_default_guild(
+        &self,
+        guild_id: Option<Id>,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        if !self.operators.contains(by_pubkey) {
+            return Err("only a server operator can choose the default guild".into());
+        }
+        let _write = self.durable_writes.lock().await;
+        if let Some(gid) = guild_id {
+            let visibility = self.guilds.get(&gid).map(|g| g.visibility);
+            match visibility {
+                None => return Err("unknown guild".into()),
+                Some(crate::protocol::GuildVisibility::Private) => {
+                    return Err("only a public guild can be the default".into());
+                }
+                Some(crate::protocol::GuildVisibility::Public) => {}
+            }
+        }
+        durable(
+            self.store.set_default_guild(guild_id).await,
+            "default guild",
+        )?;
+        *self.default_guild_slot() = guild_id;
+        Ok(())
+    }
+
+    /// Once per person per default guild, so leaving it or being kicked sticks.
+    /// Returns a gated guild, whose challenge the connection must send itself.
+    pub async fn offer_default_guild(&self, user: &User) -> Result<Option<Id>, String> {
+        let Some(gid) = self.default_guild() else {
+            return Ok(None);
+        };
+        let guild = self
             .guilds
-            .iter()
-            .filter(|g| g.owner_pubkey.is_empty())
-            .map(|g| g.id)
-            .collect();
-        for gid in system_guilds {
-            self.add_member(gid, user).await?;
+            .get(&gid)
+            .map(|g| (g.visibility, g.join_gate, g.panic_mode));
+        // A lockdown defers the offer rather than spending it.
+        let Some((crate::protocol::GuildVisibility::Public, gate, false)) = guild else {
+            return Ok(None);
+        };
+        if self.is_banned(gid, &user.pubkey) {
+            return Ok(None);
+        }
+        let _write = self.durable_writes.lock().await;
+        if durable(
+            self.store.default_guild_offered(gid, &user.pubkey).await,
+            "default guild offer",
+        )? {
+            return Ok(None);
+        }
+        let member = self.is_guild_member(gid, &user.pubkey);
+        if !member && gate == crate::protocol::JoinGate::Open {
+            self.save_member(gid, user, None).await?;
+        }
+        durable(
+            self.store
+                .record_default_guild_offer(gid, &user.pubkey)
+                .await,
+            "default guild offer",
+        )?;
+        Ok((!member && gate != crate::protocol::JoinGate::Open).then_some(gid))
+    }
+
+    pub async fn snapshot_for(&self, user: &User) -> Result<ServerMessage, String> {
+        if self.default_guild().is_none() {
+            let system_guilds: Vec<Id> = self
+                .guilds
+                .iter()
+                .filter(|g| g.owner_pubkey.is_empty())
+                .map(|g| g.id)
+                .collect();
+            for gid in system_guilds {
+                self.add_member(gid, user).await?;
+            }
         }
 
         let my_guild_ids: Vec<Id> = self
@@ -1077,6 +1156,7 @@ impl AppState {
             activities,
             bot_commands,
             operator: self.operators.contains(&user.pubkey),
+            default_guild: self.default_guild(),
         })
     }
 
@@ -2524,6 +2604,11 @@ impl AppState {
             return Err("only the owner can delete this guild".into());
         }
         durable(self.store.delete_guild(guild_id).await, "guild delete")?;
+        let mut default = self.default_guild_slot();
+        if *default == Some(guild_id) {
+            *default = None;
+        }
+        drop(default);
         self.guilds.remove(&guild_id);
         self.members.remove(&guild_id);
         self.roles.remove(&guild_id);
@@ -3268,6 +3353,7 @@ impl AppState {
             activities: Vec::new(),
             bot_commands: Vec::new(),
             operator: false,
+            default_guild: None,
         }
     }
 }

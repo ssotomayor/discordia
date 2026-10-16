@@ -496,6 +496,8 @@ pub struct AppState {
     pub open_guild_on_ready: Option<Id>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
+    /// The connected server's, from Ready and `DefaultGuild`.
+    pub default_guild: Option<Id>,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
 }
 
@@ -642,6 +644,7 @@ impl AppState {
             open_guild_on_ready: None,
             gateway_failure: None,
             is_operator: false,
+            default_guild: None,
             audit_logs: HashMap::new(),
         }
     }
@@ -754,6 +757,7 @@ impl AppState {
         self.invites.clear();
         self.audit_logs.clear();
         self.is_operator = false;
+        self.default_guild = None;
     }
 
     pub fn is_owner(&self, guild_id: Id) -> bool {
