@@ -149,6 +149,13 @@ pub fn MicrophoneTestPanel() -> Element {
     let active = enabled() && !busy;
     let (peak, open) = level();
     let percent = if active { peak_to_meter_pct(peak) } else { 0 };
+    let threshold = state.read().mic_sensitivity;
+    let threshold_pct = peak_to_meter_pct(threshold);
+    let threshold_label = format!(
+        "{}: {}",
+        crate::i18n::text("Sensitivity", &[]),
+        peak_to_db_label(threshold)
+    );
     rsx! {
         div { class: "mb-4 rounded-lg border border-[var(--border)] p-3",
             div { class: "flex items-center justify-between gap-2",
@@ -167,8 +174,9 @@ pub fn MicrophoneTestPanel() -> Element {
             p { class: "mt-1 text-[11px] text-[var(--text-dim)]",
                 {crate::i18n::text("Speak to hear yourself through the selected output with your current microphone settings. Use headphones to avoid feedback.", &[])}
             }
-            div { class: "w-full h-2 mt-2 rounded-full overflow-hidden", style: "background-color: var(--bg2);",
+            div { class: "relative w-full h-2 mt-2 rounded-full overflow-hidden", style: "background-color: var(--bg2);", title: threshold_label,
                 div { class: "h-full rounded-full transition-all duration-75", style: "width: {percent}%; background-color: var(--accent);" }
+                div { class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none", style: "left: clamp(0px, {threshold_pct}%, calc(100% - 2px));" }
             }
             if busy {
                 p { class: "mt-1 text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Leave your voice call to test the microphone.", &[])} }
