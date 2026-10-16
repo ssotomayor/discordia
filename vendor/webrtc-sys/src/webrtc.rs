@@ -66,6 +66,10 @@ pub mod ffi {
         PreEncoded,
     }
 
+    extern "Rust" {
+        fn log_media_foundation_failure(operation: &str, hresult: i32);
+    }
+
     unsafe extern "C++" {
         include!("livekit/webrtc.h");
 
@@ -79,3 +83,8 @@ pub mod ffi {
 }
 
 impl_thread_safety!(ffi::LogSink, Send + Sync);
+
+fn log_media_foundation_failure(operation: &str, hresult: i32) {
+    // libwebrtc currently demotes native warnings to debug, hiding driver failures in normal logs.
+    log::warn!(target: "webrtc_sys::mediafoundation", "Media Foundation {operation} failed: 0x{:08X}", hresult as u32);
+}

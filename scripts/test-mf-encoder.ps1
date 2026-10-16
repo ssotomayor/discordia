@@ -8,7 +8,7 @@ $output = Join-Path $repo 'target/mf-encoder-tests'
 New-Item -ItemType Directory -Force $output | Out-Null
 Push-Location $output
 try {
-    & cl.exe /nologo /std:c++17 /EHsc /W4 /WX (Join-Path $repo 'vendor/webrtc-sys/tests/realtime_encoder.cpp') /Fe:realtime_encoder.exe
+    & cl.exe /nologo /std:c++17 /EHsc /W4 /WX (Join-Path $repo 'vendor/webrtc-sys/tests/realtime_encoder.cpp') /Fe:realtime_encoder.exe /link mfplat.lib mfuuid.lib
     if ($LASTEXITCODE -ne 0) { throw 'Encoder regression tests did not compile' }
     & ./realtime_encoder.exe
     if ($LASTEXITCODE -ne 0) { throw 'Encoder regression tests failed' }

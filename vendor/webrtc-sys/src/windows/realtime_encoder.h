@@ -8,6 +8,27 @@
 #include <utility>
 
 namespace webrtc::mf {
+template <typename Metadata, typename Sample>
+class RetriableInput {
+ public:
+  bool Empty() const { return !pending_; }
+  void Prepare(Metadata metadata, Sample sample) {
+    pending_.emplace(Entry{std::move(metadata), std::move(sample)});
+  }
+  template <typename Send, typename Accepted>
+  int32_t Submit(Send send, Accepted accepted, int32_t busy) {
+    if (!pending_) return 0;
+    const int32_t result = send(pending_->sample);
+    if (result == busy || result < 0) return result;
+    accepted(pending_->metadata);
+    pending_.reset();
+    return result;
+  }
+ private:
+  struct Entry { Metadata metadata; Sample sample; };
+  std::optional<Entry> pending_;
+};
+
 // LiveKit leaves the NAL byte and one slice-header byte clear before encrypting H.264.
 inline bool FitsLiveKitH264Prefix(uint8_t header) {
   unsigned bit = 0;

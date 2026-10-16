@@ -1,4 +1,5 @@
 #include "mf_encoder_factory.h"
+#include "mf_input_buffer.h"
 #include "realtime_encoder.h"
 
 #include <windows.h>
@@ -35,6 +36,7 @@
 #include "modules/video_coding/include/video_error_codes.h"
 #include "rtc_base/logging.h"
 #include "third_party/libyuv/include/libyuv/convert_from.h"
+#include "livekit/webrtc.h"
 
 namespace webrtc {
 namespace {
@@ -92,8 +94,12 @@ std::vector<ComPtr<IMFActivate>> HardwareEncoders() {
   return result;
 }
 
+void LogFailure(const std::string& operation, HRESULT hr) {
+  livekit_ffi::log_media_foundation_failure(operation, static_cast<int32_t>(hr));
+}
+
 #define MF_TRY(call) do { HRESULT hr = (call); if (FAILED(hr)) { \
-  RTC_LOG(LS_WARNING) << #call << " failed: " << hr; return hr; } } while (false)
+  LogFailure(#call, hr); return hr; } } while (false)
 
 HRESULT VideoType(const GUID& subtype, const VideoCodec& settings,
                   IMFMediaType** result) {
@@ -116,7 +122,6 @@ HRESULT SetCodecUint(ICodecAPI* codec, const GUID& key, ULONG value) {
   setting.vt = VT_UI4;
   setting.ulVal = value;
   HRESULT hr = codec->SetValue(&key, &setting);
-  if (FAILED(hr)) RTC_LOG(LS_WARNING) << "Hardware encoder rejected tuning property: " << hr;
   return hr;
 }
 
@@ -127,6 +132,7 @@ struct Session {
   ComPtr<IMFTransform> transform;
   ComPtr<IMFMediaEventGenerator> events;
   ComPtr<ICodecAPI> codec;
+  MFT_INPUT_STREAM_INFO input_info{};
   MFT_OUTPUT_STREAM_INFO output_info{};
   DWORD input_id = 0;
   DWORD output_id = 0;
@@ -137,6 +143,8 @@ struct Session {
   int width = 0;
   int height = 0;
   std::map<LONGLONG, VideoFrame> submitted;
+  struct InputMetadata { LONGLONG time; VideoFrame frame; };
+  mf::RetriableInput<InputMetadata, ComPtr<IMFSample>> pending;
   std::string name;
 
   ~Session() {
@@ -154,16 +162,17 @@ struct Session {
     ComPtr<IMFAttributes> attributes;
     MF_TRY(transform->GetAttributes(&attributes));
     MF_TRY(attributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE));
+    std::string friendly = EncoderName(activation);
+    bool intel = friendly.find("Intel") != std::string::npos;
     UINT32 d3d11 = 0;
     if (SUCCEEDED(attributes->GetUINT32(MF_SA_D3D11_AWARE, &d3d11)) && d3d11) {
       ComPtr<IDXGIFactory1> factory;
       MF_TRY(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
       UINT64 luid = 0;
       bool has_luid = SUCCEEDED(activation->GetUINT64(MFT_ENUM_ADAPTER_LUID, &luid));
-      std::string friendly = EncoderName(activation);
       UINT vendor = friendly.find("AMD") != std::string::npos ? 0x1002
           : friendly.find("NVIDIA") != std::string::npos ? 0x10de
-          : friendly.find("Intel") != std::string::npos ? 0x8086 : 0;
+          : intel ? 0x8086 : 0;
       ComPtr<IDXGIAdapter1> selected;
       for (UINT i = 0; ; ++i) {
         ComPtr<IDXGIAdapter1> adapter;
@@ -175,6 +184,7 @@ struct Session {
         if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
             && (has_luid ? adapter_luid == luid : !vendor || desc.VendorId == vendor)) {
           selected = adapter;
+          intel = desc.VendorId == 0x8086;
           break;
         }
       }
@@ -198,10 +208,17 @@ struct Session {
       low_latency.boolVal = VARIANT_TRUE;
       if (codec->IsSupported(&CODECAPI_AVLowLatencyMode) == S_OK) {
         HRESULT hr = codec->SetValue(&CODECAPI_AVLowLatencyMode, &low_latency);
-        if (FAILED(hr)) RTC_LOG(LS_WARNING) << "Hardware low-latency mode unavailable: " << hr;
+        if (FAILED(hr)) LogFailure("CODECAPI_AVLowLatencyMode (optional)", hr);
       }
-      SetCodecUint(codec.Get(), CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR);
-      SetCodecUint(codec.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+      MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR));
+      if (intel && codec->IsSupported(&CODECAPI_AVEncVideoTemporalLayerCount) == S_OK) {
+        // Intel drivers can require an explicit layer count even without temporal scalability.
+        MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncVideoTemporalLayerCount, 1));
+      }
+      if (codec->IsSupported(&CODECAPI_AVEncMPVDefaultBPictureCount) == S_OK) {
+        HRESULT hr = SetCodecUint(codec.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+        if (FAILED(hr)) LogFailure("CODECAPI_AVEncMPVDefaultBPictureCount (optional)", hr);
+      }
     }
     ComPtr<IMFMediaType> output;
     MF_TRY(VideoType(MFVideoFormat_H264, settings, &output));
@@ -214,6 +231,7 @@ struct Session {
     MF_TRY(transform->SetInputType(input_id, input.Get(), 0));
     // Some hardware MFTs ignore MF_MT_AVG_BITRATE unless ICodecAPI is set as well.
     MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncCommonMeanBitRate, settings.startBitrate * 1000));
+    MF_TRY(transform->GetInputStreamInfo(input_id, &input_info));
     MF_TRY(transform->GetOutputStreamInfo(output_id, &output_info));
     MF_TRY(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
     MF_TRY(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0));
@@ -224,14 +242,15 @@ struct Session {
     return S_OK;
   }
 
-  HRESULT Input(const VideoFrame& frame, bool keyframe) {
+  HRESULT PrepareInput(const VideoFrame& frame, bool keyframe) {
+    if (!pending.Empty()) return E_UNEXPECTED;
     auto buffer = frame.video_frame_buffer()->ToI420();
     if (!buffer || buffer->width() != width || buffer->height() != height) return E_INVALIDARG;
     ComPtr<IMFMediaBuffer> memory;
     uint64_t allocation = static_cast<uint64_t>(width) * height * 3 / 2;
     if (allocation > MAXDWORD) return E_INVALIDARG;
     DWORD bytes = static_cast<DWORD>(allocation);
-    MF_TRY(MFCreateMemoryBuffer(bytes, &memory));
+    MF_TRY(mf::CreateInputBuffer(input_info, bytes, &memory));
     BYTE* pixels = nullptr;
     MF_TRY(memory->Lock(&pixels, nullptr, nullptr));
     int converted = libyuv::I420ToNV12(buffer->DataY(), buffer->StrideY(),
@@ -249,10 +268,21 @@ struct Session {
     MF_TRY(sample->SetSampleTime(time));
     MF_TRY(sample->SetSampleDuration(duration));
     if (keyframe) MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1));
-    MF_TRY(transform->ProcessInput(input_id, sample.Get(), 0));
-    submitted.emplace(time, frame);
-    --input_requests;
+    pending.Prepare(InputMetadata{time, frame}, std::move(sample));
     return S_OK;
+  }
+
+  HRESULT SubmitInput() {
+    HRESULT hr = pending.Submit(
+        [this](const ComPtr<IMFSample>& sample) {
+          return static_cast<int32_t>(transform->ProcessInput(input_id, sample.Get(), 0));
+        },
+        [this](const InputMetadata& metadata) {
+          submitted.emplace(metadata.time, metadata.frame);
+          --input_requests;
+        }, static_cast<int32_t>(MF_E_NOTACCEPTING));
+    if (FAILED(hr) && hr != MF_E_NOTACCEPTING) LogFailure("ProcessInput", hr);
+    return hr;
   }
 
   HRESULT Output(EncodedImageCallback* callback, bool renegotiated = false) {
@@ -312,7 +342,7 @@ struct Session {
       if ((type == H264::kIdr || type == H264::kSlice)
           && (nalu.payload_size < 2
               || !mf::FitsLiveKitH264Prefix(data->data()[nalu.payload_start_offset + 1]))) {
-        RTC_LOG(LS_WARNING) << "Hardware H264 slice header is incompatible with LiveKit encryption; requesting software fallback";
+        LogFailure("H264 slice header incompatible with LiveKit encryption", E_FAIL);
         return E_FAIL;
       }
       if (type == H264::kIdr)
@@ -404,8 +434,7 @@ class WindowsMfEncoder : public VideoEncoder {
         auto candidate = std::make_unique<Session>();
         failure = candidate->Open(activation.Get(), settings);
         if (SUCCEEDED(failure)) { session = std::move(candidate); break; }
-        RTC_LOG(LS_WARNING) << "Hardware encoder initialization failed: "
-                            << EncoderName(activation.Get()) << " / " << failure;
+        LogFailure("Initialize " + EncoderName(activation.Get()), failure);
       }
     }
     {
@@ -433,7 +462,10 @@ class WindowsMfEncoder : public VideoEncoder {
       if (bitrate != previous_bitrate) {
         if (bitrate) {
           failure = SetCodecUint(session->codec.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate);
-          if (FAILED(failure)) break;
+          if (FAILED(failure)) {
+            LogFailure("Update CODECAPI_AVEncCommonMeanBitRate", failure);
+            break;
+          }
         }
         previous_bitrate = bitrate;
       }
@@ -454,19 +486,22 @@ class WindowsMfEncoder : public VideoEncoder {
         if (FAILED(failure)) break;
       }
       if (FAILED(failure)) break;
-      if (session->watchdog.Stalled(bitrate && (queued || !session->submitted.empty()),
+      if (session->watchdog.Stalled(bitrate && (queued || !session->pending.Empty() || !session->submitted.empty()),
                                     mf::OutputWatchdog::Clock::now())) {
-        RTC_LOG(LS_ERROR) << "Hardware encoder stopped producing frames; requesting software fallback";
+        LogFailure("Hardware encoder stalled without output", MF_E_HW_MFT_FAILED_START_STREAMING);
         failure = MF_E_HW_MFT_FAILED_START_STREAMING;
         break;
       }
       std::optional<mf::LatestFrames<VideoFrame>::Entry> frame;
+      bool submit = false;
       {
         std::unique_lock lock(mutex_);
         if (stop_) break;
-        if (bitrate && session->input_requests && !queue_.Empty() && session->submitted.size() < 8) {
-          frame = queue_.Pop();
-        } else if (queue_.Empty() && session->submitted.empty()) {
+        if (bitrate && session->input_requests && session->submitted.size() < 8
+            && (!session->pending.Empty() || !queue_.Empty())) {
+          if (session->pending.Empty()) frame = queue_.Pop();
+          submit = true;
+        } else if (queue_.Empty() && session->pending.Empty() && session->submitted.empty()) {
           wake_.wait(lock, [this, previous_bitrate] {
             return stop_ || !queue_.Empty() || bitrate_ != previous_bitrate;
           });
@@ -474,10 +509,18 @@ class WindowsMfEncoder : public VideoEncoder {
           wake_.wait_for(lock, std::chrono::milliseconds(2));
         }
       }
-      if (frame) failure = session->Input(frame->frame, frame->key);
+      if (frame) failure = session->PrepareInput(frame->frame, frame->key);
+      if (SUCCEEDED(failure) && submit) {
+        failure = session->SubmitInput();
+        if (failure == MF_E_NOTACCEPTING) {
+          failure = S_OK;
+          std::unique_lock lock(mutex_);
+          wake_.wait_for(lock, std::chrono::milliseconds(2), [this] { return stop_; });
+        }
+      }
     }
     if (FAILED(failure)) {
-      RTC_LOG(LS_ERROR) << "Media Foundation hardware encoding failed: " << failure;
+      LogFailure("Hardware encoding stopped: " + session->name, failure);
       std::lock_guard lock(mutex_);
       failure_ = failure;
     }
