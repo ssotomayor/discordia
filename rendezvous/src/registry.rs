@@ -1,13 +1,12 @@
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use dashmap::{DashMap, mapref::entry::Entry};
 use discordia_protocol::rendezvous::{
     DiscoverEntry, GeoPoint, MAX_NAME_CHARS, ReservedName, join_code,
 };
-use serde::{Deserialize, Serialize};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::limits::Limits;
 
@@ -47,16 +46,6 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Reservation {
-    pub slug: String,
-    pub owner_pubkey: String,
-    /// Wall clock, unlike `last_seen_ms`, because it must survive a restart.
-    /// A file without it counts from when it was loaded rather than expiring at once.
-    #[serde(default = "now_unix")]
-    pub last_live_unix: u64,
-}
-
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -86,6 +75,7 @@ impl Default for ReservationCaps {
 pub enum ReleaseError {
     NotYours,
     LiveNow,
+    Storage,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,20 +84,31 @@ pub enum ClaimError {
     LiveElsewhere,
     OwnerLimit,
     Full,
+    Storage,
 }
 
 pub struct Registry {
     voice_grants: DashMap<String, String>,
     pub hosts: DashMap<String, Arc<HostEntry>>,
-    reservations: DashMap<String, Reservation>,
-    store_path: Option<PathBuf>,
-    // Ownership, quotas and live-session changes must not race with persistence.
-    registration_lock: std::sync::Mutex<()>,
+    /// The only copy of the reservations, so an operator's `sqlite3` edit
+    /// takes effect without a restart.
+    reservations: Mutex<Connection>,
+    // Ownership, quotas and live-session changes must not race with each other.
+    registration_lock: Mutex<()>,
     caps: ReservationCaps,
     /// Here and not on `AppCtx` because the server's tests build that by
     /// struct literal.
     pub limits: Limits,
 }
+
+const SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS reservations (
+        slug TEXT PRIMARY KEY,
+        owner_pubkey TEXT NOT NULL COLLATE NOCASE,
+        last_live_unix INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS reservations_by_owner ON reservations (owner_pubkey);
+";
 
 /// Returns the join code `name` claims; the name itself stays as written,
 /// so a host can be "Friday Game Night" and still be typed.
@@ -127,39 +128,56 @@ impl Default for Registry {
     }
 }
 
+fn storage<E>(error: rusqlite::Error, fallback: E) -> E {
+    tracing::error!(%error, "reservations store failed");
+    fallback
+}
+
+fn holder(db: &Connection, slug: &str) -> rusqlite::Result<Option<String>> {
+    db.prepare_cached("SELECT owner_pubkey FROM reservations WHERE slug = ?1")?
+        .query_row([slug], |row| row.get(0))
+        .optional()
+}
+
+fn set_live(db: &Connection, slug: &str, now: u64) -> rusqlite::Result<usize> {
+    db.prepare_cached("UPDATE reservations SET last_live_unix = ?2 WHERE slug = ?1")?
+        .execute(params![slug, now as i64])
+}
+
 impl Registry {
+    /// In memory: for tests and anything that need not survive a restart.
     pub fn new() -> Self {
-        Self::with_store(DashMap::new(), None)
+        let db = Connection::open_in_memory().expect("in-memory sqlite");
+        db.execute_batch(SCHEMA).expect("reservations schema");
+        Self::with_db(db)
     }
 
-    pub fn load(path: PathBuf) -> Self {
-        let reservations = DashMap::new();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Vec<Reservation>>(&text) {
-                Ok(list) => {
-                    for r in list {
-                        reservations.insert(r.slug.clone(), r);
-                    }
-                    tracing::info!(count = reservations.len(), path = %path.display(), "reservations loaded");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, path = %path.display(), "reservations file unreadable — starting empty")
-                }
-            },
-            Err(_) => {
-                tracing::info!(path = %path.display(), "no reservations file yet — starting empty")
-            }
+    pub fn open(path: &Path) -> Result<Self, String> {
+        let fail = |e: rusqlite::Error| format!("reservations store {}: {e}", path.display());
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         }
-        Self::with_store(reservations, Some(path))
+        let db = Connection::open(path).map_err(fail)?;
+        // An operator's `sqlite3` may hold the write lock for a moment.
+        db.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(fail)?;
+        db.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
+            .map_err(fail)?;
+        db.execute_batch(SCHEMA).map_err(fail)?;
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM reservations", [], |row| row.get(0))
+            .map_err(fail)?;
+        tracing::info!(count, path = %path.display(), "reservations loaded");
+        Ok(Self::with_db(db))
     }
 
-    fn with_store(reservations: DashMap<String, Reservation>, store_path: Option<PathBuf>) -> Self {
+    fn with_db(db: Connection) -> Self {
         Self {
             hosts: DashMap::new(),
             voice_grants: DashMap::new(),
-            reservations,
-            store_path,
-            registration_lock: std::sync::Mutex::new(()),
+            reservations: Mutex::new(db),
+            registration_lock: Mutex::new(()),
             caps: ReservationCaps::default(),
             limits: Limits::default(),
         }
@@ -170,35 +188,16 @@ impl Registry {
         self
     }
 
-    fn persist(&self) {
-        let Some(path) = self.store_path.as_ref() else {
-            return;
-        };
-        let list: Vec<Reservation> = self
-            .reservations
-            .iter()
-            .map(|r| r.value().clone())
-            .collect();
-        let json = match serde_json::to_string_pretty(&list) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to serialize reservations");
-                return;
-            }
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let tmp = path.with_extension("json.tmp");
-        let written = std::fs::File::create(&tmp).and_then(|mut f| {
-            f.write_all(json.as_bytes())?;
-            f.sync_all()?;
-            std::fs::rename(&tmp, path)
-        });
-        if let Err(e) = written {
-            tracing::error!(error = %e, path = %path.display(), "failed to persist reservations");
-            let _ = std::fs::remove_file(&tmp);
-        }
+    fn db(&self) -> MutexGuard<'_, Connection> {
+        self.reservations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn registration(&self) -> MutexGuard<'_, ()> {
+        self.registration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn claim_name(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
@@ -206,134 +205,138 @@ impl Registry {
     }
 
     fn claim_name_at(&self, slug: &str, owner: &str, now: u64) -> Result<(), ClaimError> {
-        let _registration = self
-            .registration_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _registration = self.registration();
         self.claim_name_locked(slug, owner, now)
     }
 
     /// The owner's own live session is no obstacle: `claim_host` replaces it,
     /// which is how a host back from a dropped link skips the heartbeat timeout.
     fn claim_name_locked(&self, slug: &str, owner: &str, now: u64) -> Result<(), ClaimError> {
-        self.expire_locked(now);
-        let already_mine = self
-            .reservations
-            .get(slug)
-            .map(|r| r.owner_pubkey.eq_ignore_ascii_case(owner));
-        if already_mine == Some(false) {
-            return Err(ClaimError::Taken);
-        }
-        if already_mine == Some(true) {
-            if let Some(mut r) = self.reservations.get_mut(slug) {
-                r.last_live_unix = now;
+        let db = self.db();
+        self.claim_in(&db, slug, owner, now)
+            .unwrap_or_else(|e| Err(storage(e, ClaimError::Storage)))
+    }
+
+    fn claim_in(
+        &self,
+        db: &Connection,
+        slug: &str,
+        owner: &str,
+        now: u64,
+    ) -> rusqlite::Result<Result<(), ClaimError>> {
+        self.expire(db, now)?;
+        match holder(db, slug)? {
+            Some(held) if !held.eq_ignore_ascii_case(owner) => return Ok(Err(ClaimError::Taken)),
+            Some(_) => {
+                set_live(db, slug, now)?;
+                return Ok(Ok(()));
             }
-            self.persist();
-            return Ok(());
+            None => {}
         }
         if self.hosts.contains_key(slug) {
-            return Err(ClaimError::LiveElsewhere);
+            return Ok(Err(ClaimError::LiveElsewhere));
         }
-        if self.reservations.len() >= self.caps.total {
-            return Err(ClaimError::Full);
+        let total: i64 = db.query_row("SELECT COUNT(*) FROM reservations", [], |row| row.get(0))?;
+        if total as usize >= self.caps.total {
+            return Ok(Err(ClaimError::Full));
         }
-        let owned = self
-            .reservations
-            .iter()
-            .filter(|r| r.owner_pubkey.eq_ignore_ascii_case(owner))
-            .count();
-        if owned >= self.caps.per_owner {
-            return Err(ClaimError::OwnerLimit);
+        let owned: i64 = db.query_row(
+            "SELECT COUNT(*) FROM reservations WHERE owner_pubkey = ?1",
+            [owner],
+            |row| row.get(0),
+        )?;
+        if owned as usize >= self.caps.per_owner {
+            return Ok(Err(ClaimError::OwnerLimit));
         }
-        self.reservations.insert(
-            slug.to_string(),
-            Reservation {
-                slug: slug.to_string(),
-                owner_pubkey: owner.to_ascii_lowercase(),
-                last_live_unix: now,
-            },
-        );
-        self.persist();
-        Ok(())
+        db.execute(
+            "INSERT INTO reservations (slug, owner_pubkey, last_live_unix) VALUES (?1, ?2, ?3)",
+            params![slug, owner.to_ascii_lowercase(), now as i64],
+        )?;
+        Ok(Ok(()))
     }
 
     /// A live name never expires, whatever its timestamp says: that is only
     /// refreshed when a session starts or ends, and by `sweep`.
-    fn expire_locked(&self, now: u64) -> bool {
-        let before = self.reservations.len();
-        let ttl = self.caps.ttl_secs;
-        self.reservations.retain(|slug, r| {
-            self.hosts.contains_key(slug) || now.saturating_sub(r.last_live_unix) < ttl
-        });
-        let expired = self.reservations.len() != before;
-        if expired {
-            self.persist();
+    fn expire(&self, db: &Connection, now: u64) -> rusqlite::Result<()> {
+        let Some(cutoff) = now.checked_sub(self.caps.ttl_secs) else {
+            return Ok(());
+        };
+        let stale: Vec<String> = db
+            .prepare_cached("SELECT slug FROM reservations WHERE last_live_unix <= ?1")?
+            .query_map([cutoff as i64], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for slug in stale.iter().filter(|slug| !self.hosts.contains_key(*slug)) {
+            db.execute("DELETE FROM reservations WHERE slug = ?1", [slug])?;
         }
-        expired
+        Ok(())
     }
 
     /// Run periodically. Refreshing live names keeps a restart of this process,
     /// which forgets every session, from expiring a name its host is about to reclaim.
     pub fn sweep(&self, now: u64) {
-        let _registration = self
-            .registration_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut refreshed = false;
-        for mut r in self.reservations.iter_mut() {
-            if self.hosts.contains_key(r.key()) {
-                r.last_live_unix = now;
-                refreshed = true;
+        let _registration = self.registration();
+        let live: Vec<String> = self.hosts.iter().map(|h| h.key().clone()).collect();
+        let db = self.db();
+        let swept = db.unchecked_transaction().and_then(|tx| {
+            for slug in &live {
+                set_live(&tx, slug, now)?;
             }
-        }
-        if !self.expire_locked(now) && refreshed {
-            self.persist();
+            self.expire(&tx, now)?;
+            tx.commit()
+        });
+        if let Err(e) = swept {
+            storage(e, ());
         }
     }
 
     pub fn names_of(&self, owner: &str, now: u64) -> Vec<ReservedName> {
         let ttl = self.caps.ttl_secs;
-        let mut names: Vec<ReservedName> = self
-            .reservations
-            .iter()
-            .filter(|r| r.owner_pubkey.eq_ignore_ascii_case(owner))
-            .filter_map(|r| {
-                if self.hosts.contains_key(r.key()) {
+        let held: rusqlite::Result<Vec<(String, i64)>> = self
+            .db()
+            .prepare_cached(
+                "SELECT slug, last_live_unix FROM reservations WHERE owner_pubkey = ?1 ORDER BY slug",
+            )
+            .and_then(|mut query| {
+                query
+                    .query_map([owner], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            });
+        let held = held.unwrap_or_else(|e| storage(e, Vec::new()));
+        held.into_iter()
+            .filter_map(|(slug, last_live)| {
+                if self.hosts.contains_key(&slug) {
                     return Some(ReservedName {
-                        code: r.slug.clone(),
+                        code: slug,
                         expires_in_secs: None,
                     });
                 }
-                let left = ttl.checked_sub(now.saturating_sub(r.last_live_unix))?;
-                (left > 0).then(|| ReservedName {
-                    code: r.slug.clone(),
+                let left = ttl.checked_sub(now.saturating_sub(last_live as u64))?;
+                (left > 0).then_some(ReservedName {
+                    code: slug,
                     expires_in_secs: Some(left),
                 })
             })
-            .collect();
-        names.sort_by(|a, b| a.code.cmp(&b.code));
-        names
+            .collect()
     }
 
     pub fn release_name(&self, slug: &str, owner: &str) -> Result<(), ReleaseError> {
-        let _registration = self
-            .registration_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match self.reservations.get(slug) {
-            Some(r) if r.owner_pubkey.eq_ignore_ascii_case(owner) => {}
-            _ => return Err(ReleaseError::NotYours),
+        let _registration = self.registration();
+        let db = self.db();
+        match holder(&db, slug) {
+            Ok(Some(held)) if held.eq_ignore_ascii_case(owner) => {}
+            Ok(_) => return Err(ReleaseError::NotYours),
+            Err(e) => return Err(storage(e, ReleaseError::Storage)),
         }
         if self.hosts.contains_key(slug) {
             return Err(ReleaseError::LiveNow);
         }
-        self.reservations.remove(slug);
-        self.persist();
-        Ok(())
+        db.execute("DELETE FROM reservations WHERE slug = ?1", [slug])
+            .map(|_| ())
+            .map_err(|e| storage(e, ReleaseError::Storage))
     }
 
     pub fn reservation_owner(&self, slug: &str) -> Option<String> {
-        self.reservations.get(slug).map(|r| r.owner_pubkey.clone())
+        holder(&self.db(), slug).unwrap_or_else(|e| storage(e, None))
     }
 
     pub fn issue_voice_grant(&self, shortcode: &str) -> String {
@@ -353,13 +356,13 @@ impl Registry {
         owner: Option<&str>,
         entry: HostEntry,
     ) -> Result<Arc<HostEntry>, ClaimError> {
-        let _registration = self
-            .registration_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _registration = self.registration();
         if let Some(owner) = owner {
             self.claim_name_locked(shortcode, owner, now_unix())?;
-        } else if self.reservations.contains_key(shortcode) {
+        } else if holder(&self.db(), shortcode)
+            .map_err(|e| storage(e, ClaimError::Storage))?
+            .is_some()
+        {
             return Err(ClaimError::Taken);
         }
         entry.touch();
@@ -382,10 +385,7 @@ impl Registry {
     /// Ends one session. A superseded session ends after its successor took
     /// the name, so it removes the listing only if the listing is still its own.
     pub fn release(&self, shortcode: &str, entry: &Arc<HostEntry>, grant: Option<&str>) {
-        let _registration = self
-            .registration_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _registration = self.registration();
         if let Some(grant) = grant {
             self.voice_grants.remove(grant);
         }
@@ -393,11 +393,9 @@ impl Registry {
             .hosts
             .remove_if(shortcode, |_, live| Arc::ptr_eq(live, entry))
             .is_some()
-            && let Some(mut r) = self.reservations.get_mut(shortcode)
+            && let Err(e) = set_live(&self.db(), shortcode, now_unix())
         {
-            r.last_live_unix = now_unix();
-            drop(r);
-            self.persist();
+            storage(e, ());
         }
     }
 
@@ -521,29 +519,27 @@ mod tests {
                 .count()
         });
         assert_eq!(successes, 3);
-        assert_eq!(registry.reservations.len(), 3);
+        assert_eq!(registry.names_of("owner", now_unix()).len(), 3);
     }
 
     #[test]
     fn stored_uppercase_keys_reclaim_and_release_as_the_same_identity() {
-        let path = tmp();
+        let dir = tmp();
+        let path = dir.join("reservations.db");
         let uppercase = "AB".repeat(32);
         let lowercase = uppercase.to_ascii_lowercase();
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&vec![Reservation {
-                slug: "legacy".to_string(),
-                owner_pubkey: uppercase,
-                last_live_unix: now_unix(),
-            }])
-            .unwrap(),
-        )
-        .unwrap();
-        let registry = Registry::load(path.clone()).with_caps(ReservationCaps {
+        let registry = Registry::open(&path).unwrap().with_caps(ReservationCaps {
             per_owner: 1,
             total: 100,
             ..Default::default()
         });
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO reservations VALUES ('legacy', ?1, ?2)",
+                params![uppercase, now_unix() as i64],
+            )
+            .unwrap();
         assert!(registry.claim_name("legacy", &lowercase).is_ok());
         assert_eq!(
             registry.claim_name("second", &lowercase),
@@ -551,11 +547,12 @@ mod tests {
         );
         assert!(registry.release_name("legacy", &lowercase).is_ok());
         assert!(registry.claim_name("second", &lowercase).is_ok());
-        std::fs::remove_file(path).unwrap();
+        drop(registry);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
-    fn tmp() -> PathBuf {
-        std::env::temp_dir().join(format!("rzv-res-{}.json", uuid::Uuid::new_v4()))
+    fn tmp() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("rzv-res-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
@@ -618,57 +615,41 @@ mod tests {
     }
 
     #[test]
-    fn a_file_from_before_the_fields_were_dropped_still_loads() {
-        let path = tmp();
-        std::fs::write(
-            &path,
-            r#"[{"slug":"acme","name":"Acme","owner_pubkey":"owner_a",
-                 "description":"a description nobody read","public":true}]"#,
-        )
-        .unwrap();
-
-        let reg = Registry::load(path.clone());
+    fn reservations_survive_reopen() {
+        let dir = tmp();
+        let path = dir.join("reservations.db");
+        Registry::open(&path)
+            .unwrap()
+            .claim_name("acme", "owner_a")
+            .unwrap();
+        let reopened = Registry::open(&path).unwrap();
         assert_eq!(
-            reg.reservation_owner("acme").as_deref(),
-            Some("owner_a"),
-            "the one field that is read must survive the older format"
+            reopened.reservation_owner("acme").as_deref(),
+            Some("owner_a")
         );
         assert_eq!(
-            reg.claim_name("acme", "someone_else"),
+            reopened.claim_name("acme", "someone_else"),
             Err(ClaimError::Taken)
         );
-        let _ = std::fs::remove_file(path);
+        assert!(reopened.claim_name("acme", "owner_a").is_ok());
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn reservations_survive_reload() {
-        let path = tmp();
-        {
-            let reg = Registry::load(path.clone());
-            reg.claim_name("acme", "owner_a").unwrap();
-        }
-        let reg2 = Registry::load(path.clone());
-        assert_eq!(reg2.reservation_owner("acme").as_deref(), Some("owner_a"));
-        assert_eq!(
-            reg2.claim_name("acme", "someone_else"),
-            Err(ClaimError::Taken)
-        );
-        assert!(reg2.claim_name("acme", "owner_a").is_ok());
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn persist_leaves_no_temp_file_and_a_whole_file() {
-        let path = tmp();
-        let tmp_path = path.with_extension("json.tmp");
-        let reg = Registry::load(path.clone());
-        reg.claim_name("acme", "owner_a").unwrap();
-        reg.claim_name("beta", "owner_b").unwrap();
-        assert!(!tmp_path.exists(), "temp file left behind");
-        let text = std::fs::read_to_string(&path).unwrap();
-        let list: Vec<Reservation> = serde_json::from_str(&text).unwrap();
-        assert_eq!(list.len(), 2);
-        let _ = std::fs::remove_file(path);
+    fn an_operator_edit_takes_effect_without_a_restart() {
+        let dir = tmp();
+        let path = dir.join("reservations.db");
+        let registry = Registry::open(&path).unwrap();
+        registry.claim_name("squatted", "owner_a").unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .execute("DELETE FROM reservations WHERE slug = 'squatted'", [])
+            .unwrap();
+        assert_eq!(registry.reservation_owner("squatted"), None);
+        assert!(registry.claim_name("squatted", "owner_b").is_ok());
+        drop(registry);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

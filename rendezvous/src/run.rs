@@ -159,11 +159,8 @@ pub async fn run(opts: Options) -> Result<(), String> {
     let data_dir = opts
         .data_dir
         .unwrap_or_else(|| PathBuf::from("./rendezvous-data"));
-    let reservations_path = data_dir.join("reservations.json");
-    tracing::info!(path = %reservations_path.display(), "reservations persistence");
-
     let ctx = AppCtx {
-        registry: Arc::new(Registry::load(reservations_path)),
+        registry: Arc::new(Registry::open(&data_dir.join("reservations.db"))?),
         config: Arc::new(config),
     };
     let sweeper = ctx.registry.clone();

@@ -112,6 +112,9 @@ pub async fn handle_host_control(
                     Err(ReleaseError::NotYours) => {
                         send_err(&mut tx, &format!("'{slug}' is not reserved by that key")).await;
                     }
+                    Err(ReleaseError::Storage) => {
+                        send_err(&mut tx, "this rendezvous cannot record names right now").await;
+                    }
                     Err(ReleaseError::LiveNow) => {
                         send_err(
                             &mut tx,
@@ -241,6 +244,7 @@ pub async fn handle_host_control(
                     "this key already holds its share of names — release one first".to_string()
                 }
                 ClaimError::Full => "this rendezvous is not taking new names".to_string(),
+                ClaimError::Storage => "this rendezvous cannot record names right now".to_string(),
             };
             send_err(&mut tx, &message).await;
             return;
