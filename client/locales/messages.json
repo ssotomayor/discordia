@@ -1,4 +1,12 @@
 {
+  "Microphone test": ["Prueba de micrófono","Teste de microfone"],
+  "Stop test": ["Detener prueba","Parar teste"],
+  "Test microphone": ["Probar micrófono","Testar microfone"],
+  "Speak to hear yourself through the selected output with your current microphone settings. Use headphones to avoid feedback.": ["Habla para escucharte por la salida seleccionada con los ajustes actuales del micrófono. Usa auriculares para evitar acoples.","Fale para se ouvir pela saída selecionada com as configurações atuais do microfone. Use fones de ouvido para evitar microfonia."],
+  "Leave your voice call to test the microphone.": ["Sal de la llamada de voz para probar el micrófono.","Saia da chamada de voz para testar o microfone."],
+  "Playing your voice back": ["Reproduciendo tu voz","Reproduzindo sua voz"],
+  "No audio output is available for the microphone test.": ["No hay una salida de audio disponible para la prueba de micrófono.","Nenhuma saída de áudio está disponível para o teste de microfone."],
+  "The microphone test stopped because an audio device became unavailable.": ["La prueba de micrófono se detuvo porque un dispositivo de audio dejó de estar disponible.","O teste de microfone parou porque um dispositivo de áudio ficou indisponível."],
   " (you)": [" (tú)"," (você)"],
   " · via {0}": [" · mediante {0}"," · via {0}"],
   " · {0} watching": [" · {0} mirando"," · {0} assistindo"],

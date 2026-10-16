@@ -45,6 +45,8 @@ use camera::CameraPublisher;
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
 #[path = "voice_direct.rs"]
 pub mod direct;
+#[path = "voice_mic_test.rs"]
+pub mod mic_test;
 #[path = "voice_subscriptions.rs"]
 mod subscriptions;
 const CHANNELS: u32 = 1;
