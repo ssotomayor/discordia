@@ -21,6 +21,8 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
+# 0.32 because it links the libsqlite3-sys the server's sqlx does; Cargo allows one.
+rusqlite = { version = "0.32", features = ["bundled"] }
 futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

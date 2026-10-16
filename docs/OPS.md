@@ -56,7 +56,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | Var | Default | Meaning |
 |---|---|---|
 | `DISCORDIA_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | HTTP bind: `/control`, `/discover`, `/resolve`, `/config`, `/voice-token`, `/voice-evict` |
-| `DISCORDIA_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations |
+| `DISCORDIA_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | name reservations, `reservations.db` (SQLite) |
 | `DISCORDIA_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
 | `DISCORDIA_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
 | `DISCORDIA_RENDEZVOUS_TURN_URL` | — | enables the TURN relay: what clients dial, e.g. `turn:rendezvous.example:7702`. Hosts behind NAT keep their calls on their own SFU; friends who cannot reach it are relayed here, ciphertext only |
@@ -148,6 +148,7 @@ peer tests use synthesized PCM and real Opus decoding without audio hardware.
 | Another identity requests a reserved name | `already taken — reserved by a different identity` |
 | Owner sends signed `ListNames` | Its names, live or with seconds until expiry — the Create tab's "Your names here" |
 | Owner sends signed `ReleaseName` | Removes the reservation only after the live session has ended |
+| Operator frees a name | `sqlite3 reservations.db "DELETE FROM reservations WHERE slug = '<code>'"` while it runs; the table is the only copy, read on every claim |
 
 Name-handling fixes require updating the rendezvous service; updating only the
 desktop client does not change the remote registry.
