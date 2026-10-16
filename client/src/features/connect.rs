@@ -703,6 +703,8 @@ fn TabButton(active: bool, #[props(into)] label: String, onclick: EventHandler<(
         button {
             r#type: "button",
             class: "flex-1 min-w-0 px-2 py-2.5 rounded-lg text-[13.5px] font-semibold whitespace-nowrap truncate transition-colors {cls}",
+            aria_label: label.clone(),
+            aria_pressed: if active { "true" } else { "false" },
             onclick: move |_| onclick.call(()),
             "{label}"
         }
@@ -1486,7 +1488,7 @@ mod tests {
 
     #[test]
     fn hosting_submission_keeps_the_current_document_alive() {
-        use dioxus::core::Mutation;
+        use dioxus::core::{AttributeValue, Mutation};
         use dioxus::prelude::*;
         use std::{any::Any, cell::RefCell, rc::Rc};
         dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
@@ -1515,12 +1517,20 @@ mod tests {
         let create = mutations
             .edits
             .iter()
-            .filter_map(|edit| match edit {
-                Mutation::NewEventListener { name, id } if *name == "click" => Some(*id),
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: AttributeValue::Text(label),
+                    id,
+                    ..
+                } if label == "Create a server" => Some(*id),
                 _ => None,
             })
-            .nth(1)
-            .unwrap();
+            .expect("the Create a server button must have an accessible name");
+        assert!(mutations.edits.iter().any(|edit| matches!(
+            edit,
+            Mutation::NewEventListener { name, id } if name == "click" && *id == create
+        )));
         let click: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
             dioxus::html::SerializedMouseData::default(),
         )));
