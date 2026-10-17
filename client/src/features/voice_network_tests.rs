@@ -2,49 +2,6 @@ use super::*;
 use livekit::webrtc::stats::{InboundRtpStats, OutboundRtpStats, RemoteInboundRtpStats};
 
 #[test]
-fn loss_profiles_reduce_bandwidth_and_recover_without_exceeding_the_preference() {
-    for loss in [5.0, 10.0, 25.0] {
-        let start = Instant::now();
-        let mut control = AdaptiveBitrate::new(64);
-        for second in 0..10 {
-            control.update(64, Some(loss), start + Duration::from_secs(second));
-        }
-        assert_eq!(control.target(), 24, "loss={loss}");
-        for second in 10..30 {
-            control.update(48, Some(0.0), start + Duration::from_secs(second));
-            assert_eq!(control.target(), 24);
-        }
-        control.update(48, Some(0.0), start + Duration::from_secs(30));
-        assert_eq!(control.target(), 32);
-        for second in 31..100 {
-            control.update(48, Some(0.0), start + Duration::from_secs(second));
-        }
-        assert_eq!(control.target(), 48);
-        control.update(24, None, start + Duration::from_secs(100));
-        assert_eq!(control.target(), 24);
-    }
-}
-
-#[test]
-fn isolated_loss_silence_and_missing_feedback_do_not_cause_oscillation() {
-    let now = Instant::now();
-    let mut control = AdaptiveBitrate::new(64);
-    control.update(64, Some(8.0), now);
-    control.update(64, Some(0.0), now + Duration::from_secs(1));
-    assert_eq!(control.target(), 64);
-    control.update(64, Some(25.0), now + Duration::from_secs(2));
-    assert_eq!(control.target(), 24);
-    control.update(64, Some(0.0), now + Duration::from_secs(3));
-    control.update(64, None, now + Duration::from_secs(40));
-    control.update(64, Some(0.0), now + Duration::from_secs(41));
-    assert_eq!(control.target(), 24);
-    for invalid in [f32::NAN, -1.0, 101.0] {
-        control.update(64, Some(invalid), now + Duration::from_secs(42));
-    }
-    assert_eq!(control.target(), 24);
-}
-
-#[test]
 fn recent_reception_distinguishes_loss_late_packets_and_concealment() {
     let now = Instant::now();
     let mut window = ReceiveWindow::default();
@@ -72,7 +29,6 @@ fn recent_reception_distinguishes_loss_late_packets_and_concealment() {
     assert_eq!(recent.loss_pct, 4.0);
     assert_eq!(recent.late_pct, 2.0);
     assert_eq!(recent.concealed_pct, 10.0);
-    assert_eq!(recent.pressure(), 6.0);
     stats.stream.ssrc = 99;
     assert!(
         window
@@ -111,74 +67,6 @@ fn late_recovery_and_counter_resets_do_not_create_negative_loss() {
     );
 }
 
-#[test]
-fn jitter_alone_does_not_reduce_quality_but_late_packet_bursts_do() {
-    let now = Instant::now();
-    let mut window = ReceiveWindow::default();
-    let mut control = AdaptiveBitrate::new(64);
-    let mut stats = InboundRtpStats::default();
-    stats.received.jitter = 0.180;
-    window.sample(&stats, now);
-    for second in 1..=10 {
-        stats.received.packets_received += 50;
-        if (4..=6).contains(&second) {
-            stats.inbound.packets_discarded += 20;
-        }
-        let at = now + Duration::from_secs(second);
-        let recent = window.sample(&stats, at).unwrap();
-        control.update(64, Some(recent.pressure()), at);
-        if second < 4 {
-            assert_eq!(control.target(), 64);
-        }
-    }
-    assert_eq!(control.target(), 24);
-    assert_eq!(stats.received.packets_lost, 0);
-}
-
-fn report(track: &str, sequence: u64, loss_pct: f32) -> Vec<u8> {
-    serde_json::to_vec(&ListenerReport {
-        track: track.into(),
-        sequence,
-        loss_pct,
-    })
-    .unwrap()
-}
-
-#[test]
-fn listener_feedback_is_track_scoped_bounded_ordered_and_expires() {
-    let now = Instant::now();
-    let mut feedback = ListenerFeedback::default();
-    feedback.receive("peer", "mic", &report("old-mic", 1, 50.0), now);
-    feedback.receive("peer", "mic", &report("mic", 1, 101.0), now);
-    feedback.receive("peer", "mic", &[0; 257], now);
-    assert_eq!(feedback.recent(now).1, None);
-    feedback.receive("peer", "mic", &report("mic", 2, 25.0), now);
-    assert_eq!(feedback.recent(now).1, Some(25.0));
-    feedback.receive(
-        "peer",
-        "mic",
-        &report("mic", 1, 0.0),
-        now + Duration::from_secs(2),
-    );
-    assert_eq!(feedback.recent(now).1, Some(25.0));
-    feedback.receive(
-        "peer",
-        "mic",
-        &report("mic", 3, 0.0),
-        now + Duration::from_secs(2),
-    );
-    assert_eq!(feedback.recent(now).1, Some(0.0));
-    assert_eq!(feedback.recent(now + Duration::from_secs(10)).1, None);
-    feedback.receive(
-        "peer",
-        "mic",
-        &report("mic", 4, 25.0),
-        now + Duration::from_secs(11),
-    );
-    feedback.remove("peer");
-    assert_eq!(feedback.recent(now + Duration::from_secs(11)).1, None);
-}
-
 fn sender_stats(timestamp: i64, packets: u64, loss: f64) -> Vec<RtcStats> {
     let mut out = OutboundRtpStats::default();
     out.rtc.id = "mic".into();
@@ -197,31 +85,22 @@ fn sender_stats(timestamp: i64, packets: u64, loss: f64) -> Vec<RtcStats> {
 
 #[test]
 fn upstream_reports_must_be_fresh_match_the_sender_and_have_active_audio() {
-    let now = Instant::now();
     let mut feedback = UplinkFeedback::default();
-    assert!(!feedback.sample(&sender_stats(1, 50, 0.25), now).0);
-    assert_eq!(
-        feedback.sample(&sender_stats(2, 100, 0.25), now),
-        (true, true, Some(25.0))
-    );
-    assert!(!feedback.sample(&sender_stats(2, 150, 0.25), now).0);
-    assert!(!feedback.sample(&sender_stats(3, 150, 0.0), now).0);
+    assert_eq!(feedback.sample(&sender_stats(1, 50, 0.25)), None);
+    assert_eq!(feedback.sample(&sender_stats(2, 100, 0.25)), Some(25.0));
+    assert_eq!(feedback.sample(&sender_stats(2, 150, 0.25)), None);
+    assert_eq!(feedback.sample(&sender_stats(3, 150, 0.0)), None);
     let mut mismatched = sender_stats(4, 200, 0.25);
     if let RtcStats::RemoteInboundRtp(report) = &mut mismatched[1] {
         report.remote_inbound.local_id = "other-track".into();
     }
-    assert!(!feedback.sample(&mismatched, now).0);
-    assert_eq!(
-        feedback
-            .sample(&sender_stats(3, 150, 0.0), now + Duration::from_secs(8))
-            .2,
-        None
-    );
+    assert_eq!(feedback.sample(&mismatched), None);
+    assert_eq!(feedback.sample(&sender_stats(5, 250, 0.5)), Some(50.0));
 }
 
 #[tokio::test]
-#[ignore = "starts the bundled SFU; measures live bitrate changes and continued decoded audio"]
-async fn listener_feedback_reduces_a_live_sender_without_reconnecting() {
+#[ignore = "starts the bundled SFU; checks Opus FEC is negotiated and a new ceiling applies live"]
+async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecting() {
     use futures_util::StreamExt;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
     use livekit_api::access_token::{AccessToken, VideoGrants};
@@ -254,7 +133,7 @@ async fn listener_feedback_reduces_a_live_sender_without_reconnecting() {
             .to_jwt()
             .unwrap()
     };
-    let (sender, mut sender_events) = Room::connect(&url, &token("sender"), RoomOptions::default())
+    let (sender, _sender_events) = Room::connect(&url, &token("sender"), RoomOptions::default())
         .await
         .unwrap();
     let sender = Arc::new(sender);
@@ -321,92 +200,70 @@ async fn listener_feedback_reduces_a_live_sender_without_reconnecting() {
     });
     let mut dom = VirtualDom::new(|| rsx! {});
     dom.rebuild_in_place();
-    let feedback = Arc::new(Mutex::new(ListenerFeedback::default()));
-    let (state, task) = dom.in_scope(ScopeId::ROOT, || {
+    let (controls, task) = dom.in_scope(ScopeId::ROOT, || {
         let mut initial = AppState::empty();
         initial.voice.phase = VoicePhase::Connected;
         initial.voice_bitrate_kbps = 64;
         let controls = AudioControls::from_state(&initial);
-        let state = Signal::new(initial);
         let task = spawn_stats_task(
-            state,
+            Signal::new(initial),
             sender.clone(),
             audio.clone(),
             None,
-            controls,
-            feedback.clone(),
+            controls.clone(),
         );
-        (state, task)
+        (controls, task)
     });
     let started = Instant::now();
-    let mut sent = false;
     let mut before = None;
+    let mut lowered_at = None;
     let mut after = None;
-    let mut received_feedback = false;
-    let mut remote_received = None;
     while started.elapsed() < Duration::from_secs(12) {
         tokio::select! {
             _ = dom.wait_for_work() => { dom.render_immediate_to_vec(); }
             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-            Some(event) = sender_events.recv() => {
-                if let RoomEvent::DataReceived { topic, payload, participant: Some(peer), .. } = event
-                    && topic.as_deref() == Some(FEEDBACK_TOPIC)
-                {
-                    feedback.lock().receive(&peer.identity().0, &publication.sid().to_string(), &payload, Instant::now());
-                    received_feedback = true;
-                }
-            }
         }
-        if !sent && started.elapsed() > Duration::from_secs(3) {
+        if before.is_none() && started.elapsed() > Duration::from_secs(3) {
             assert_eq!(audio.max_bitrate(), Some(64_000));
             before = Some(frames.load(Ordering::Relaxed));
-            listener
-                .local_participant()
-                .publish_data(livekit::DataPacket {
-                    payload: report(&publication.sid().to_string(), 1, 25.0),
-                    topic: Some(FEEDBACK_TOPIC.into()),
-                    destination_identities: vec!["sender".into()],
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            sent = true;
+            controls.bitrate_kbps.store(24, Ordering::Relaxed);
         }
-        if state.peek().voice_adaptive_bitrate == Some(24) && after.is_none() {
-            after = Some(Instant::now());
+        if lowered_at.is_none() && audio.max_bitrate() == Some(24_000) {
+            lowered_at = Some(Instant::now());
         }
-        if after.is_some_and(|at| at.elapsed() > Duration::from_secs(2)) {
-            remote_received = Some(frames.load(Ordering::Relaxed));
+        if lowered_at.is_some_and(|at| at.elapsed() > Duration::from_secs(2)) {
+            after = Some(frames.load(Ordering::Relaxed));
             break;
         }
     }
-    let bitrate = audio
-        .get_stats()
-        .await
-        .unwrap()
+    let stats = audio.get_stats().await.unwrap();
+    let out = stats
         .iter()
         .find_map(|s| match s {
-            RtcStats::OutboundRtp(s) => Some(s.outbound.target_bitrate),
+            RtcStats::OutboundRtp(s) => Some(s.clone()),
             _ => None,
         })
         .unwrap();
+    let codec = codec_line(&stats, &out.stream.codec_id);
     println!(
-        "feedback delivered={received_feedback}, sender target={bitrate} bps, frames before={before:?}, after={remote_received:?}"
-    );
-    assert!(received_feedback);
-    assert_eq!(state.peek().voice_adaptive_bitrate, Some(24));
-    assert_eq!(audio.max_bitrate(), Some(24_000));
-    assert!(
-        bitrate > 0.0 && bitrate <= 24_000.0,
-        "encoder target was not reduced: {bitrate}"
+        "codec={codec}, sender target={} bps, frames before={before:?}, after={after:?}",
+        out.outbound.target_bitrate
     );
     assert!(
-        remote_received.unwrap() > before.unwrap() + 50,
+        codec.contains("useinbandfec=1"),
+        "Opus FEC was not negotiated: {codec}"
+    );
+    assert!(lowered_at.is_some(), "the new ceiling was never applied");
+    assert!(
+        out.outbound.target_bitrate > 0.0 && out.outbound.target_bitrate <= 24_000.0,
+        "encoder target did not follow the ceiling: {}",
+        out.outbound.target_bitrate
+    );
+    assert!(
+        after.unwrap() > before.unwrap() + 50,
         "decoded audio stalled during the live update"
     );
     assert_eq!(audio.sid(), publication.sid());
-    audio.set_max_bitrate(48_000).unwrap();
-    assert_eq!(audio.max_bitrate(), Some(48_000));
     dom.in_scope(ScopeId::ROOT, || task.cancel());
     pump.abort();
     listen.abort();

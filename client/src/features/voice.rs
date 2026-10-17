@@ -881,10 +881,7 @@ impl ActiveVoice {
             false,
             &controls.watched_streams.borrow(),
         );
-        let network_feedback = Arc::new(Mutex::new(network::ListenerFeedback::default()));
         let event_task = tokio::spawn({
-            let network_feedback = network_feedback.clone();
-            let microphone_track = local_audio_for_mute.clone();
             let mixer_handle = mixer_handle.clone();
             let room = room.clone();
             let local = self_pubkey.clone().unwrap_or_default();
@@ -897,24 +894,10 @@ impl ActiveVoice {
                 {
                     while consumers.try_join_next().is_some() {}
                     match &ev {
-                        RoomEvent::DataReceived {
-                            payload,
-                            topic,
-                            participant: Some(participant),
-                            ..
-                        } if topic.as_deref() == Some(network::FEEDBACK_TOPIC) => {
-                            network_feedback.lock().receive(
-                                &participant.identity().0,
-                                &microphone_track.sid().to_string(),
-                                payload,
-                                Instant::now(),
-                            );
-                        }
                         RoomEvent::ParticipantConnected(p) => {
                             crate::dlog!("[voice] participant connected: {}", p.identity().0);
                         }
                         RoomEvent::ParticipantDisconnected(p) => {
-                            network_feedback.lock().remove(&p.identity().0);
                             crate::dlog!("[voice] participant left: {}", p.identity().0);
                             let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
                         }
@@ -1062,7 +1045,6 @@ impl ActiveVoice {
             local_audio_for_mute.clone(),
             self_pubkey.clone(),
             controls.clone(),
-            network_feedback,
         );
 
         let active = Self {
@@ -1586,7 +1568,6 @@ impl ActiveVoice {
             s.screen_audio_joined = false;
             s.voice_quality.clear();
             s.voice_stats.clear();
-            s.voice_adaptive_bitrate = None;
             s.voice_uplink_congested = false;
             s.voice_send_route = None;
             s.voice_receive_route = None;

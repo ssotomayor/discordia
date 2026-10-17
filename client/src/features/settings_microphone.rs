@@ -170,12 +170,7 @@ fn VoiceQualitySettings() -> Element {
                     option { value: "64", {crate::i18n::text("Maximum — 64 kbit/s", &[])} }
                 }
             }
-            p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("The selected quality is a ceiling. Voice bandwidth adjusts automatically during the call.", &[])} }
-            if let Some(adaptive_bitrate) = state.read().voice_adaptive_bitrate.filter(|kbps| *kbps < bitrate) {
-                p { class: "mt-1 text-[12px] text-[var(--text-muted)]",
-                    {crate::i18n::text("Protecting voice on a poor connection: {0} kbit/s. Quality recovers gradually.", &[adaptive_bitrate.to_string()])}
-                }
-            }
+            p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Higher sounds better on low voices and background music, and costs more upload.", &[])} }
         }
     }
 }

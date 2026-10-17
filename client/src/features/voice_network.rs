@@ -2,7 +2,6 @@ use super::*;
 use std::collections::VecDeque;
 use std::time::Duration;
 
-pub(super) const FEEDBACK_TOPIC: &str = "discordia.voice-quality.v1";
 const FEEDBACK_TTL: Duration = Duration::from_secs(7);
 const WINDOW: Duration = Duration::from_secs(5);
 
@@ -27,128 +26,6 @@ pub(super) fn spawn_video_budget(
     })
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListenerReport {
-    track: String,
-    sequence: u64,
-    loss_pct: f32,
-}
-
-#[derive(Default)]
-pub(super) struct ListenerFeedback {
-    reports: HashMap<String, (u64, f32, Instant)>,
-    revision: u64,
-}
-
-impl ListenerFeedback {
-    pub fn receive(&mut self, identity: &str, track: &str, payload: &[u8], now: Instant) {
-        if payload.len() > 256 {
-            return;
-        }
-        let Ok(report) = serde_json::from_slice::<ListenerReport>(payload) else {
-            return;
-        };
-        if report.track != track
-            || !report.loss_pct.is_finite()
-            || !(0.0..=100.0).contains(&report.loss_pct)
-        {
-            return;
-        }
-        if let Some((sequence, _, at)) = self.reports.get(identity)
-            && (report.sequence <= *sequence || now.duration_since(*at) < Duration::from_secs(1))
-        {
-            return;
-        }
-        if self.reports.len() >= 256 && !self.reports.contains_key(identity) {
-            return;
-        }
-        self.reports
-            .insert(identity.into(), (report.sequence, report.loss_pct, now));
-        self.revision = self.revision.wrapping_add(1);
-    }
-
-    pub fn remove(&mut self, identity: &str) {
-        self.reports.remove(identity);
-    }
-
-    fn recent(&mut self, now: Instant) -> (u64, Option<f32>) {
-        self.reports
-            .retain(|_, (_, _, at)| now.duration_since(*at) <= FEEDBACK_TTL);
-        (
-            self.revision,
-            self.reports
-                .values()
-                .map(|(_, loss, _)| *loss)
-                .reduce(f32::max),
-        )
-    }
-}
-
-pub(super) struct AdaptiveBitrate {
-    target: u32,
-    healthy_since: Option<Instant>,
-    last_sample: Option<Instant>,
-    last_reduction: Option<Instant>,
-    bad_reports: u8,
-}
-
-impl AdaptiveBitrate {
-    pub fn new(ceiling: u32) -> Self {
-        Self {
-            target: ceiling,
-            healthy_since: None,
-            last_sample: None,
-            last_reduction: None,
-            bad_reports: 0,
-        }
-    }
-    pub fn target(&self) -> u32 {
-        self.target
-    }
-
-    pub fn update(&mut self, ceiling: u32, loss: Option<f32>, now: Instant) {
-        self.target = self.target.min(ceiling);
-        if self
-            .last_sample
-            .is_some_and(|last| now.duration_since(last) > FEEDBACK_TTL)
-        {
-            self.healthy_since = None;
-            self.bad_reports = 0;
-        }
-        let Some(loss) = loss.filter(|v| v.is_finite() && (0.0..=100.0).contains(v)) else {
-            return;
-        };
-        self.last_sample = Some(now);
-        if loss >= 5.0 {
-            self.healthy_since = None;
-            self.bad_reports = self.bad_reports.saturating_add(1);
-            if loss >= 15.0
-                || (self.bad_reports >= 2
-                    && self
-                        .last_reduction
-                        .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(5)))
-            {
-                self.target = if loss >= 15.0 { 24 } else { self.target / 2 }
-                    .max(24)
-                    .min(ceiling);
-                self.last_reduction = Some(now);
-                self.bad_reports = 0;
-            }
-        } else {
-            self.bad_reports = 0;
-            if loss > 1.0 {
-                self.healthy_since = None;
-            } else if now.duration_since(*self.healthy_since.get_or_insert(now))
-                >= Duration::from_secs(20)
-            {
-                self.target = (self.target + 8).min(ceiling);
-                self.healthy_since = Some(now);
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Reception {
     at: Instant,
@@ -166,16 +43,11 @@ pub(super) struct RecentReception {
     pub concealed_pct: f32,
 }
 
-impl RecentReception {
-    fn pressure(&self) -> f32 {
-        (self.loss_pct + self.late_pct).min(100.0)
-    }
-}
-
 #[derive(Default)]
 pub(super) struct ReceiveWindow {
     stream: Option<(String, u32)>,
     samples: VecDeque<Reception>,
+    logged_at: Option<Instant>,
 }
 
 impl ReceiveWindow {
@@ -231,57 +103,61 @@ impl ReceiveWindow {
     }
 }
 
+const LOSS_LOG_EVERY: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 struct UplinkFeedback {
     last_report: Option<(u32, i64)>,
     last_packets: Option<(u32, u64)>,
-    recent: Option<(f32, Instant)>,
 }
 
 impl UplinkFeedback {
-    fn sample(&mut self, stats: &[RtcStats], now: Instant) -> (bool, bool, Option<f32>) {
-        let Some(out) = stats.iter().find_map(|s| match s {
+    /// Loss from a receiver report not seen before, while audio is flowing.
+    fn sample(&mut self, stats: &[RtcStats]) -> Option<f32> {
+        let out = stats.iter().find_map(|s| match s {
             RtcStats::OutboundRtp(s) => Some(s),
             _ => None,
-        }) else {
-            return (false, false, None);
-        };
+        })?;
         let sent = (out.stream.ssrc, out.sent.packets_sent);
         let previous = self.last_packets.replace(sent);
         if previous.is_some_and(|(ssrc, packets)| ssrc != sent.0 || sent.1 < packets) {
-            self.recent = None;
             self.last_report = None;
         }
+        // DTX sends a few packets a second in silence; a report over those says little.
         let active = previous
             .is_some_and(|(ssrc, packets)| ssrc == sent.0 && sent.1.saturating_sub(packets) >= 20);
-        let mut fresh = false;
-        if let Some(report) = stats.iter().find_map(|s| match s {
+        let report = stats.iter().find_map(|s| match s {
             RtcStats::RemoteInboundRtp(s)
                 if s.remote_inbound.local_id == out.rtc.id && s.stream.ssrc == out.stream.ssrc =>
             {
                 Some(s)
             }
             _ => None,
-        }) {
-            let key = (report.stream.ssrc, report.rtc.timestamp);
-            if self
-                .last_report
-                .is_none_or(|last| key.0 != last.0 || key.1 > last.1)
-            {
-                self.last_report = Some(key);
-                let loss = report.remote_inbound.fraction_lost;
-                if active && loss.is_finite() && (0.0..=1.0).contains(&loss) {
-                    self.recent = Some((loss as f32 * 100.0, now));
-                    fresh = true;
-                }
-            }
+        })?;
+        let key = (report.stream.ssrc, report.rtc.timestamp);
+        if self
+            .last_report
+            .is_some_and(|last| key.0 == last.0 && key.1 <= last.1)
+        {
+            return None;
         }
-        let loss = self
-            .recent
-            .filter(|(_, at)| now.duration_since(*at) <= FEEDBACK_TTL)
-            .map(|(loss, _)| loss);
-        (fresh, active, loss)
+        self.last_report = Some(key);
+        let loss = report.remote_inbound.fraction_lost;
+        (active && loss.is_finite() && (0.0..=1.0).contains(&loss)).then_some(loss as f32 * 100.0)
     }
+}
+
+/// What a `voice loss:` line compares against Discord: whether Opus FEC and NACK engage.
+fn codec_line(stats: &[RtcStats], codec_id: &str) -> String {
+    stats
+        .iter()
+        .find_map(|s| match s {
+            RtcStats::Codec(c) if c.rtc.id == codec_id => {
+                Some(format!("{} {}", c.codec.mime_type, c.codec.sdp_fmtp_line))
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn spawn_stats_task(
@@ -290,18 +166,13 @@ pub(super) fn spawn_stats_task(
     audio: LocalAudioTrack,
     self_pubkey: Option<String>,
     controls: AudioControls,
-    feedback: Arc<Mutex<ListenerFeedback>>,
 ) -> Task {
     spawn(async move {
         let mut windows = HashMap::<String, ReceiveWindow>::new();
         let mut uplink = UplinkFeedback::default();
-        let mut adaptive = AdaptiveBitrate::new(controls.bitrate_kbps.load(Ordering::Relaxed));
         let mut applied = None;
         let mut applied_ssrc = None;
-        let mut listener_revision = 0;
-        let mut sequence = 0_u64;
         let mut prev_out = None;
-        let mut last_feedback_sent = Instant::now();
         let mut latest_uplink_problem = None;
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -338,13 +209,8 @@ pub(super) fn spawn_stats_task(
                 latest_uplink_problem = None;
                 uplink = UplinkFeedback::default();
                 windows.clear();
-                feedback.lock().reports.clear();
-                if state.peek().voice_adaptive_bitrate.is_some()
-                    || state.peek().voice_uplink_congested
-                {
-                    let mut s = state.write();
-                    s.voice_adaptive_bitrate = None;
-                    s.voice_uplink_congested = false;
+                if state.peek().voice_uplink_congested {
+                    state.write().voice_uplink_congested = false;
                 }
                 continue;
             }
@@ -354,62 +220,51 @@ pub(super) fn spawn_stats_task(
                 continue;
             };
             let now = Instant::now();
-            let ssrc = stats.iter().find_map(|s| match s {
-                RtcStats::OutboundRtp(s) => Some(s.stream.ssrc),
+            let out = stats.iter().find_map(|s| match s {
+                RtcStats::OutboundRtp(s) => Some(s),
                 _ => None,
             });
+            let ssrc = out.map(|s| s.stream.ssrc);
             if ssrc != applied_ssrc {
                 applied = None;
                 applied_ssrc = ssrc;
+                if let Some(out) = out {
+                    tracing::info!(
+                        codec = %codec_line(&stats, &out.stream.codec_id),
+                        "voice loss: microphone codec negotiated"
+                    );
+                }
             }
-            let (fresh, active, upstream_loss) = uplink.sample(&stats, now);
-            let (revision, listener_loss) = feedback.lock().recent(now);
-            let loss = match (upstream_loss, listener_loss) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (a, b) => a.or(b),
-            };
+            // Loss keeps the voice bitrate: Opus FEC and resends repair it, and a lower
+            // bitrate sends as many packets, so it only cost quality (Discord holds it too).
             let ceiling = controls.bitrate_kbps.load(Ordering::Relaxed);
-            adaptive.update(
-                ceiling,
-                if active && (fresh || revision != listener_revision) {
-                    loss
-                } else {
-                    None
-                },
-                now,
-            );
-            listener_revision = revision;
-            if fresh && upstream_loss.is_some_and(|v| v >= 5.0) {
+            if applied != Some(ceiling) {
+                match audio.set_max_bitrate(u64::from(ceiling) * 1000) {
+                    Ok(()) => applied = Some(ceiling),
+                    Err(error) => tracing::warn!(%error, "could not apply the voice bitrate"),
+                }
+            }
+            let upstream_loss = uplink.sample(&stats);
+            if let (Some(loss), Some(out)) = (upstream_loss.filter(|l| *l > 0.0), out) {
+                tracing::info!(
+                    loss_pct = loss,
+                    target_kbps = (out.outbound.target_bitrate / 1000.0).round(),
+                    nacks = out.outbound.nack_count,
+                    resent = out.outbound.retransmitted_packets_sent,
+                    "voice loss: sending"
+                );
+            }
+            if upstream_loss.is_some_and(|v| v >= 5.0) {
                 latest_uplink_problem = Some(now);
             }
             let uplink_congested = latest_uplink_problem
                 .is_some_and(|at| now.duration_since(at) < Duration::from_secs(20));
-            if applied != Some(adaptive.target()) {
-                match audio.set_max_bitrate(u64::from(adaptive.target()) * 1000) {
-                    Ok(()) => {
-                        applied = Some(adaptive.target());
-                        tracing::info!(
-                            kbps = adaptive.target(),
-                            ceiling,
-                            ?loss,
-                            "voice bandwidth adjusted"
-                        );
-                    }
-                    Err(error) => tracing::warn!(%error, "could not adjust voice bandwidth"),
-                }
-            }
-            if state.peek().voice_adaptive_bitrate != applied
-                || state.peek().voice_uplink_congested != uplink_congested
-            {
-                let mut s = state.write();
-                s.voice_adaptive_bitrate = applied;
-                s.voice_uplink_congested = uplink_congested;
+            if state.peek().voice_uplink_congested != uplink_congested {
+                state.write().voice_uplink_congested = uplink_congested;
             }
             let display = controls.stats_polling.load(Ordering::Relaxed);
-            let send_feedback = now.duration_since(last_feedback_sent) >= Duration::from_secs(2);
             let mut next = HashMap::new();
             let mut live = HashSet::new();
-            let mut reports = Vec::new();
             let mut tracks = Vec::new();
             for (identity, participant) in room.remote_participants() {
                 for publication in participant.track_publications().into_values() {
@@ -445,21 +300,33 @@ pub(super) fn spawn_stats_task(
                     continue;
                 };
                 live.insert(sid.clone());
-                let recent = windows.entry(sid.clone()).or_default().sample(inbound, now);
-                if send_feedback
-                    && !state.peek().voice.deafened
-                    && state.peek().voice_gain_of(&identity.0) > 0.0
-                    && let Some(recent) = recent
+                let window = windows.entry(sid.clone()).or_default();
+                let recent = window.sample(inbound, now);
+                if let Some(recent) = recent.filter(|r| r.loss_pct > 0.0)
+                    && window
+                        .logged_at
+                        .is_none_or(|at| now.duration_since(at) >= LOSS_LOG_EVERY)
                 {
-                    sequence = sequence.wrapping_add(1);
-                    let report = ListenerReport {
-                        track: sid,
-                        sequence,
-                        loss_pct: recent.pressure(),
-                    };
-                    if let Ok(payload) = serde_json::to_vec(&report) {
-                        reports.push((identity.clone(), payload));
-                    }
+                    window.logged_at = Some(now);
+                    let i = &inbound.inbound;
+                    tracing::info!(
+                        from = %crate::identity::truncate_pubkey(&identity.0),
+                        loss_pct = recent.loss_pct,
+                        concealed_pct = recent.concealed_pct,
+                        fec_received = i.fec_packets_received,
+                        fec_used = i.fec_packets_received.saturating_sub(i.fec_packets_discarded),
+                        nacks = i.nack_count,
+                        resent = i.retransmitted_packets_received,
+                        target_buffer_ms = if i.jitter_buffer_emitted_count == 0 {
+                            0.0
+                        } else {
+                            (1000.0 * i.jitter_buffer_target_delay
+                                / i.jitter_buffer_emitted_count as f64)
+                                .round()
+                        },
+                        codec = %codec_line(&track_stats, &inbound.stream.codec_id),
+                        "voice loss: receiving"
+                    );
                 }
                 if display {
                     let mut view = inbound_stats(inbound);
@@ -477,35 +344,10 @@ pub(super) fn spawn_stats_task(
                     next.insert(identity.0.clone(), view);
                 }
             }
-            futures_util::stream::iter(reports)
-                .for_each_concurrent(8, |(identity, payload)| {
-                    let room = &room;
-                    async move {
-                        let local = room.local_participant();
-                        let send = local.publish_data(livekit::DataPacket {
-                            payload,
-                            topic: Some(FEEDBACK_TOPIC.into()),
-                            destination_identities: vec![identity],
-                            ..Default::default()
-                        });
-                        if let Ok(Err(error)) =
-                            tokio::time::timeout(Duration::from_millis(250), send).await
-                        {
-                            tracing::debug!(%error, "voice quality feedback unavailable");
-                        }
-                    }
-                })
-                .await;
             windows.retain(|sid, _| live.contains(sid));
-            if send_feedback {
-                last_feedback_sent = now;
-            }
             if display
                 && let Some(pk) = &self_pubkey
-                && let Some(out) = stats.iter().find_map(|s| match s {
-                    RtcStats::OutboundRtp(s) => Some(s),
-                    _ => None,
-                })
+                && let Some(out) = out
             {
                 let rates =
                     outbound_rates(prev_out, out.sent.packets_sent, out.sent.bytes_sent, now);
@@ -515,7 +357,7 @@ pub(super) fn spawn_stats_task(
                     TrackStats::Outbound {
                         bitrate_kbps: rates.map(|(_, b)| b),
                         packets_per_sec: rates.map(|(p, _)| p),
-                        target_kbps: applied.unwrap_or(ceiling),
+                        target_kbps: ceiling,
                     },
                 );
             } else {
