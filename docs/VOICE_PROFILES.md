@@ -150,8 +150,8 @@ manual override and before/after listening, rather than universal optimal values
 The dialog grows from 780 × 560 to 920 × 660 (about 18% per dimension), constrained
 by the viewport. Its sidebar stays fixed and each tab scrolls independently.
 Microphone order is input → output setup/profile → test/calibration → volume →
-collapsed advanced processing. Audio keeps output, app sounds, soundboard and
-network quality. Small helper text is at least 12 px; controls have consistent
+voice quality → collapsed advanced processing. Audio keeps output, app sounds and
+soundboard. Small helper text is at least 12 px; controls have consistent
 spacing and keyboard focus. New labels include Spanish and Portuguese.
 
 ## Validation notes

@@ -114,6 +114,7 @@ pub(super) fn MicrophoneSettings() -> Element {
                     output { "for": "mic-volume", "{config.volume}%" }
                     input { id: "mic-volume", r#type: "range", min: "0", max: "200", value: "{config.volume}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.volume = e.value().parse().unwrap_or(config.volume); slide(next); }, onchange: persist }
                 }
+            VoiceQualitySettings {}
             details { class: "dxf-mic-advanced",
                 summary { {crate::i18n::text("Advanced voice settings", &[])} }
                 div { class: "dxf-settings-control",
@@ -150,7 +151,7 @@ pub(super) fn MicrophoneSettings() -> Element {
 }
 
 #[component]
-pub(super) fn VoiceQualitySettings() -> Element {
+fn VoiceQualitySettings() -> Element {
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let voice = use_voice_tx();
@@ -170,6 +171,11 @@ pub(super) fn VoiceQualitySettings() -> Element {
                 }
             }
             p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("The selected quality is a ceiling. Voice bandwidth adjusts automatically during the call.", &[])} }
+            if let Some(adaptive_bitrate) = state.read().voice_adaptive_bitrate.filter(|kbps| *kbps < bitrate) {
+                p { class: "mt-1 text-[12px] text-[var(--text-muted)]",
+                    {crate::i18n::text("Protecting voice on a poor connection: {0} kbit/s. Quality recovers gradually.", &[adaptive_bitrate.to_string()])}
+                }
+            }
         }
     }
 }
