@@ -648,7 +648,7 @@
   "Packets a second — around 50 while you're transmitting, near zero while silence is held back": ["Paquetes por segundo: unos 50 al transmitir y casi cero cuando se omite el silencio","Pacotes por segundo: cerca de 50 ao transmitir e quase zero quando o silêncio é suprimido"],
   "Packets that never arrived": ["Paquetes que nunca llegaron","Pacotes que nunca chegaram"],
   "Panel layout": ["Distribución de paneles","Disposição dos painéis"],
-  "Participants in this call — reported by their clients, refreshed every 5 seconds. No IP addresses are shared.": ["Participantes de esta llamada, informados por sus clientes cada 5 segundos. No se comparten direcciones IP.","Participantes desta chamada, informados pelos clientes a cada 5 segundos. Endereços IP não são compartilhados."],
+  "Participants in this call — updated when routes change or participants join. No IP addresses are shared.": ["Participantes de esta llamada: se actualiza cuando cambian las rutas o se suma alguien. No se comparten direcciones IP.","Participantes desta chamada: atualizado quando as rotas mudam ou alguém entra. Endereços IP não são compartilhados."],
   "Paste a 12-word BIP39 phrase. Works with any NIP-06 Nostr wallet.": ["Pega una frase BIP39 de 12 palabras. Compatible con cualquier billetera Nostr NIP-06.","Cole uma frase BIP39 de 12 palavras. Compatível com qualquer carteira Nostr NIP-06."],
   "Paste an invite code": ["Pega un código de invitación","Cole um código de convite"],
   "Paste an nsec (bech32) or a 64-char hex secret key.": ["Pega una clave nsec (bech32) o una clave secreta hexadecimal de 64 caracteres.","Cole uma chave nsec (bech32) ou uma chave secreta hexadecimal de 64 caracteres."],

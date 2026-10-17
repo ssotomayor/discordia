@@ -39,6 +39,7 @@ mod protocol;
 mod quic;
 mod rawmic;
 mod rendezvous;
+mod route_reporting;
 mod session;
 mod settings;
 mod sfu_tunnel;
