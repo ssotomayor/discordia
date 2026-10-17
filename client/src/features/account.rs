@@ -27,6 +27,7 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.muted_guilds = saved.muted_guilds.iter().copied().collect();
     s.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
     s.mic_volume = saved.mic_volume.min(200);
+    s.mic_processing = saved.mic_processing;
     s.auto_gain_control = saved.auto_gain_control;
     s.noise_cancellation = saved.noise_cancellation;
     s.bypass_system_audio_processing =

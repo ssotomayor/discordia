@@ -79,35 +79,11 @@ pub fn SettingsDialog() -> Element {
     }
 
     let selected_camera_id = settings.read().camera_device_id.clone();
-    let mic_sensitivity = state.read().mic_sensitivity;
-    let mic_level = state.read().mic_gate_level;
-    let noise_cancellation = state.read().noise_cancellation;
-    let atten_lim_db = state.read().denoise_atten_lim_db;
-    let mic_volume = state.read().mic_volume;
-    let auto_gain_control = state.read().auto_gain_control;
-    let bypass_supported = crate::rawmic::supported();
-    let bypass_system_audio = state.read().bypass_system_audio_processing;
-    let bypass_error = state.read().mic_bypass_error.clone();
-    let voice_bitrate_kbps = state.read().voice_bitrate_kbps;
-
-    let v_for_input_change = voice.clone();
     let v_for_output_change = voice.clone();
-    let v_for_sensitivity = voice.clone();
-    let v_for_denoise = voice.clone();
-    let v_for_atten = voice.clone();
-    let v_for_mic_volume = voice.clone();
-    let v_for_agc = voice.clone();
-    let v_for_bypass = voice.clone();
-    let v_for_bitrate = voice.clone();
 
     let voice_phase = state.read().voice.phase;
     let dm_phase = state.read().dm_call.as_ref().map(|call| call.phase);
-    let microphone_unavailable = state
-        .read()
-        .dm_call
-        .as_ref()
-        .is_some_and(|call| call.microphone_error.is_some());
-    let reconnecting = matches!(voice_phase, VoicePhase::Connecting)
+    let reconnecting = voice_phase == VoicePhase::Connecting
         || matches!(
             dm_phase,
             Some(
@@ -115,21 +91,7 @@ pub fn SettingsDialog() -> Element {
                     | crate::features::dm_call::Phase::Reconnecting
             )
         );
-    let microphone_active = !microphone_unavailable
-        && (voice_phase == VoicePhase::Connected
-            || dm_phase == Some(crate::features::dm_call::Phase::Connected));
-    let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
-    let mic_level_pre = state.read().mic_level_pre;
-    let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
-    let show_pre = noise_cancellation && mic_level_pre != mic_level;
-    let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
-    let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
-    let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
-    let pre_caption = "Grey tick: before noise suppression. Sensitivity is measured before automatic gain and microphone volume.";
-
-    let available_input_devices = state.read().available_input_devices.clone();
     let available_output_devices = state.read().available_output_devices.clone();
-    let selected_input_device = state.read().selected_input_device.clone();
     let selected_output_device = state.read().selected_output_device.clone();
     let available_cameras = state.read().available_cameras.clone();
 
@@ -141,19 +103,16 @@ pub fn SettingsDialog() -> Element {
         .map(|(_, _, hint)| *hint)
         .unwrap_or("");
 
-    let self_voice = state.read().voice.clone();
-    let muted = self_voice.muted;
-    let gate_open = self_voice.speaking;
-
     rsx! {
+        style { {include_str!("../../assets/settings.css")} }
         div {
             class: "dxf-backdrop-in fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-6",
             onclick: move |_| state.write().audio_settings = false,
             div {
-                // A fixed height, not a shrink-wrap: the tallest tab decides it once,
-                // so switching tabs moves nothing. `max-h-full` still gives way on
-                // a short window, and the right pane scrolls inside either way.
-                class: "dxf-modal-in w-[780px] h-[560px] max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-settings dxf-modal-in max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                role: "dialog",
+                aria_modal: "true",
+                aria_label: crate::i18n::text("Settings", &[]),
                 onclick: move |e: MouseEvent| e.stop_propagation(),
 
                 div { class: "h-8 px-2 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
@@ -166,7 +125,7 @@ pub fn SettingsDialog() -> Element {
                 }
 
                     div { class: "flex-1 flex min-h-0",
-                        div { class: "w-48 shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
+                        div { class: "dxf-settings-nav shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
                             for (group, t, label, icon) in SETTINGS_TABS.iter().copied() {
                                 {
                                     let group = crate::i18n::label(group);
@@ -201,7 +160,7 @@ pub fn SettingsDialog() -> Element {
                                 }
                             }
                         }
-                        div { class: "flex-1 min-w-0 overflow-y-auto p-4",
+                        div { class: "dxf-settings-content flex-1 min-w-0 overflow-y-auto",
                         if settings_tab() == SettingsTab::General {
                             h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
                             div { class: "mt-4", crate::i18n::LanguageSelector {} }
@@ -222,12 +181,16 @@ pub fn SettingsDialog() -> Element {
                                     let val_cloned = val.clone();
                                     let mut next = settings.read().clone();
                                     if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
+                                    let mic = (next.selected_output_device != settings.peek().selected_output_device)
+                                        .then(|| crate::mic_profile::Config::from_state(&state.peek()).for_new_output());
+                                    if let Some(config) = mic { config.apply_settings(&mut next); }
                                     settings.set(next.clone());
                                     crate::settings::save(&next);
 
                                     let mut s = state.write();
                                     s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
                                     let v = v_for_output_change.clone();
+                                    if let Some(config) = mic { config.apply_state(&mut s); v.send(crate::features::voice::VoiceCmd::ApplyMicrophone { config }); }
                                     v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
                                 },
                                 option { value: "", {crate::i18n::text("System default", &[])} }
@@ -277,278 +240,7 @@ pub fn SettingsDialog() -> Element {
                         }
                         }
                         if settings_tab() == SettingsTab::Mic {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Microphone", &[])} }
-                        p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            {crate::i18n::text("What others hear, when the gate opens, and what is processed before it leaves.", &[])}
-                        }
-                        crate::features::voice::mic_test::MicrophoneTestPanel {}
-                        div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Input", &[])} }
-                            select {
-                                class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
-                                style: "color: var(--text); background: var(--panel-solid);",
-                                disabled: "{reconnecting}",
-                                onchange: move |e| {
-                                    let val = e.value();
-                                    let val_cloned = val.clone();
-                                    let mut next = settings.read().clone();
-                                    if val_cloned.is_empty() { next.selected_input_device = None; } else { next.selected_input_device = Some(val_cloned.clone()); }
-                                    settings.set(next.clone());
-                                    crate::settings::save(&next);
-
-                                    let mut s = state.write();
-                                    s.selected_input_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
-                                    let v = v_for_input_change.clone();
-                                    v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
-                                },
-                                option { value: "", {crate::i18n::text("System default", &[])} }
-                                for dev in available_input_devices.iter() {
-                                    option { selected: selected_input_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
-                                }
-                            }
-                        }
-                        div { class: "mb-2",
-                            div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Level", &[])} }
-                                if microphone_unavailable {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("microphone unavailable — retrying", &[])} }
-                                } else if reconnecting {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("reconnecting", &[])} }
-                                } else if microphone_active {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_display}" }
-                                } else {
-                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("join voice", &[])} }
-                                }
-                            }
-                            if microphone_active && !reconnecting {
-                                div {
-                                    class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
-                                    style: "background: var(--bg2);",
-                                    div {
-                                        class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
-                                        style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
-                                    }
-                                    if show_pre {
-                                        div {
-                                            class: "absolute top-0 bottom-0 w-0.5 bg-[var(--text-dim)] pointer-events-none",
-                                            style: "left: {mic_level_pre_pct}%;",
-                                        }
-                                    }
-                                    div {
-                                        class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none",
-                                        style: "left: {threshold_pct}%;",
-                                    }
-                                }
-                                if show_pre {
-                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                        "{pre_caption}"
-                                    }
-                                }
-                            } else {
-                                div {
-                                    class: "w-full h-2 mt-1 rounded-full",
-                                    style: "background: var(--bg2);",
-                                }
-                            }
-                        }
-                        div { class: "mb-2",
-                            div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Microphone Volume", &[])} }
-                                span { class: "text-[10px] text-[var(--text-dim)]", "{mic_volume}%" }
-                            }
-                            input {
-                                r#type: "range",
-                                min: "0",
-                                max: "200",
-                                value: "{mic_volume}",
-                                class: "w-full mt-1 accent-[var(--accent)]",
-                                oninput: move |e| {
-                                    let pct: u16 = e.value().parse().unwrap_or(100).min(200);
-                                    let mut next = settings.read().clone();
-                                    next.mic_volume = pct;
-                                    settings.set(next);
-                                    state.write().mic_volume = pct;
-                                    let v = v_for_mic_volume.clone();
-                                    v.send(crate::features::voice::VoiceCmd::SetMicVolume { percent: pct });
-                                },
-                                onchange: persist_settings,
-                            }
-                            if auto_gain_control {
-                                span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    {crate::i18n::text("Volume adjusts the level after automatic gain. Peaks are limited to prevent clipping.", &[])}
-                                }
-                            }
-                        }
-                        div { class: "mb-2",
-                            div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", title: crate::i18n::text("Measured before automatic gain and microphone volume", &[]), {crate::i18n::text("Sensitivity", &[])} }
-                                span { class: "text-[10px] text-[var(--text-dim)]", "{sensitivity_display}" }
-                            }
-                            input {
-                                r#type: "range",
-                                min: "0",
-                                max: "100",
-                                value: "{threshold_pct}",
-                                class: "w-full mt-1 accent-[var(--accent)]",
-                                oninput: move |e| {
-                                    let pct: u32 = e.value().parse().unwrap_or(40).clamp(0, 100);
-                                    let val = crate::features::voice::meter_pct_to_peak(pct);
-                                    let mut next = settings.read().clone();
-                                    next.mic_sensitivity = val;
-                                    settings.set(next);
-                                    state.write().mic_sensitivity = val;
-                                    let v = v_for_sensitivity.clone();
-                                    v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
-                                },
-                                onchange: persist_settings,
-                            }
-                            if microphone_active && !reconnecting {
-                                if muted {
-                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", {crate::i18n::text("Muted", &[])} }
-                                } else if gate_open {
-                                    span { class: "text-[10px] mt-0.5 block", style: "color: var(--up);", {crate::i18n::text("Transmitting", &[])} }
-                                } else {
-                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", {crate::i18n::text("Below threshold — not transmitting", &[])} }
-                                }
-                            }
-                        }
-                        if bypass_supported {
-                            div { class: "mb-2",
-                                label { class: "flex items-center gap-2 cursor-pointer select-none",
-                                    input {
-                                        r#type: "checkbox",
-                                        class: "accent-[var(--accent)]",
-                                        checked: bypass_system_audio,
-                                        onchange: move |e| {
-                                            let on = e.checked();
-                                            let mut next = settings.read().clone();
-                                            next.bypass_system_audio_processing = on;
-                                            settings.set(next.clone());
-                                            crate::settings::save(&next);
-                                            state.write().bypass_system_audio_processing = on;
-                                            v_for_bypass.send(crate::features::voice::VoiceCmd::SetBypassSystemProcessing { enabled: on });
-                                        },
-                                    }
-                                    span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Bypass system audio processing", &[])} }
-                                }
-                                span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    {crate::i18n::text("Skips the suppression and gain your audio driver applies before we hear anything, so only this app's processing touches your voice. Reopens the microphone.", &[])}
-                                }
-                                if let Some(err) = bypass_error {
-                                    span { class: "text-[10px] mt-0.5 block", style: "color: var(--danger);",
-                                        {crate::i18n::text("Couldn't bypass it: {0}. The microphone is open the usual way.", std::slice::from_ref(&(err)))}
-                                    }
-                                }
-                            }
-                        }
-                        div { class: "mb-2",
-                            label { class: "flex items-center gap-2 cursor-pointer select-none",
-                                input {
-                                    r#type: "checkbox",
-                                    class: "accent-[var(--accent)]",
-                                    checked: auto_gain_control,
-                                    onchange: move |e| {
-                                        let on = e.checked();
-                                        let mut next = settings.read().clone();
-                                        next.auto_gain_control = on;
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
-                                        state.write().auto_gain_control = on;
-                                        let v = v_for_agc.clone();
-                                        v.send(crate::features::voice::VoiceCmd::SetAutoGainControl { enabled: on });
-                                    },
-                                }
-                                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Automatic gain control", &[])} }
-                            }
-                        }
-                        div { class: "mb-2",
-                            label { class: "flex items-center gap-2 cursor-pointer select-none",
-                                input {
-                                    r#type: "checkbox",
-                                    class: "accent-[var(--accent)]",
-                                    checked: noise_cancellation,
-                                    onchange: move |e| {
-                                        let on = e.checked();
-                                        let mut next = settings.read().clone();
-                                        next.noise_cancellation = on;
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
-                                        state.write().noise_cancellation = on;
-                                        v_for_denoise.send(crate::features::voice::VoiceCmd::SetNoiseCancellation { enabled: on });
-                                    },
-                                }
-                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Noise cancellation", &[])} }
-                            }
-                            span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                {crate::i18n::text("Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU).", &[])}
-                            }
-                        }
-                        if noise_cancellation {
-                            div { class: "mb-2",
-                                div { class: "flex items-center justify-between",
-                                    span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Suppression strength", &[])} }
-                                    span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("{0} dB max", &[(atten_lim_db).to_string()])} }
-                                }
-                                input {
-                                    r#type: "range",
-                                    min: "{crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN}",
-                                    max: "{crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX}",
-                                    step: "1",
-                                    value: "{atten_lim_db}",
-                                    class: "w-full mt-1 accent-[var(--accent)]",
-                                    oninput: move |e| {
-                                        let db: u32 = e.value().parse().unwrap_or(30).clamp(
-                                            crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
-                                            crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
-                                        );
-                                        let mut next = settings.read().clone();
-                                        next.denoise_atten_lim_db = db;
-                                        settings.set(next);
-                                        state.write().denoise_atten_lim_db = db;
-                                        v_for_atten.send(crate::features::voice::VoiceCmd::SetDenoiseAttenLim { db });
-                                    },
-                                    onchange: persist_settings,
-                                }
-                                span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    {crate::i18n::text("Lower keeps more of your voice, and more of the room with it.", &[])}
-                                }
-                            }
-                        }
-                        div { class: "h-px bg-[var(--border)] my-4" }
-                        p { class: "mb-3 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
-                            {crate::i18n::text("Transmission", &[])}
-                        }
-                        if reconnecting {
-                            div { class: "mb-3 flex items-center gap-2 px-2.5 py-2 rounded-lg border text-[12px] text-[var(--warn)]",
-                                style: "background: color-mix(in srgb, var(--warn) 8%, transparent); border-color: color-mix(in srgb, var(--warn) 35%, transparent);",
-                                span { class: "dx-spinner" }
-                                span { {crate::i18n::text("Reconnecting audio…", &[])} }
-                            }
-                        }
-                        div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Voice quality", &[])} }
-                            select {
-                                class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                                value: "{voice_bitrate_kbps}",
-                                onchange: move |e| {
-                                    let kbps = crate::settings::normalize_voice_bitrate(
-                                        e.value().parse().unwrap_or(48),
-                                    );
-                                    let mut next = settings.read().clone();
-                                    next.voice_bitrate_kbps = kbps;
-                                    settings.set(next.clone());
-                                    crate::settings::save(&next);
-                                    state.write().voice_bitrate_kbps = kbps;
-                                    v_for_bitrate.send(crate::features::voice::VoiceCmd::SetVoiceBitrate { kbps });
-                                },
-                                option { value: "24", {crate::i18n::text("Standard — 24 kbit/s", &[])} }
-                                option { value: "48", {crate::i18n::text("High — 48 kbit/s", &[])} }
-                                option { value: "64", {crate::i18n::text("Maximum — 64 kbit/s", &[])} }
-                            }
-                            span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                {crate::i18n::text("Higher sounds better on low voices and background music, and costs more upload.", &[])}
-                            }
-                        }
+                            super::settings_microphone::MicrophoneSettings {}
                         }
                         if settings_tab() == SettingsTab::Video {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Video and screen", &[])} }

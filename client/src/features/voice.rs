@@ -43,10 +43,17 @@ mod camera;
 use camera::CameraPublisher;
 
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
+#[path = "voice_calibration.rs"]
+mod calibration;
 #[path = "voice_direct.rs"]
 pub mod direct;
+#[path = "voice_dsp.rs"]
+mod dsp;
 #[path = "voice_mic_test.rs"]
 pub mod mic_test;
+pub(crate) fn microphone_context(state: &AppState) -> Result<crate::mic_profile::Context, String> {
+    calibration::context(state)
+}
 #[path = "voice_network.rs"]
 mod network;
 #[path = "voice_subscriptions.rs"]
@@ -84,6 +91,7 @@ fn inert_apm_options() -> AudioSourceOptions {
 /// never block on a `Signal` read.
 #[derive(Clone)]
 struct AudioControls {
+    processing: Arc<Mutex<crate::mic_profile::Processing>>,
     threshold: Arc<AtomicI32>,
     mic_gain_pct: Arc<AtomicI32>,
     agc: Arc<AtomicBool>,
@@ -101,6 +109,32 @@ struct AudioControls {
 }
 
 impl AudioControls {
+    fn mic_config(&self) -> crate::mic_profile::Config {
+        let processing = self.processing.lock();
+        crate::mic_profile::Config {
+            processing: *processing,
+            threshold: self.threshold.load(Ordering::Relaxed).clamp(1, 1000) as u32,
+            volume: self.mic_gain_pct.load(Ordering::Relaxed).clamp(0, 200) as u16,
+            agc: self.agc.load(Ordering::Relaxed),
+            denoise: self.denoise.load(Ordering::Relaxed),
+            suppression: self.atten_lim_db.load(Ordering::Relaxed),
+        }
+    }
+
+    fn apply_mic(&self, config: crate::mic_profile::Config) {
+        let config = config.normalized();
+        let mut processing = self.processing.lock();
+        *processing = config.processing;
+        self.threshold
+            .store(config.threshold as i32, Ordering::Relaxed);
+        self.mic_gain_pct
+            .store(config.volume as i32, Ordering::Relaxed);
+        self.agc.store(config.agc, Ordering::Relaxed);
+        self.denoise.store(config.denoise, Ordering::Relaxed);
+        self.atten_lim_db
+            .store(config.suppression, Ordering::Relaxed);
+    }
+
     fn sync_stream_gains(&self, state: &AppState) {
         *self.stream_gains.lock() = crate::stream_audio::playback_gains(state, &[])
             .into_iter()
@@ -116,6 +150,7 @@ impl AudioControls {
 
     fn from_state(s: &AppState) -> Self {
         Self {
+            processing: Arc::new(Mutex::new(s.mic_processing)),
             threshold: Arc::new(AtomicI32::new(s.mic_sensitivity as i32)),
             mic_gain_pct: Arc::new(AtomicI32::new(s.mic_volume as i32)),
             agc: Arc::new(AtomicBool::new(s.auto_gain_control)),
@@ -160,6 +195,9 @@ pub const DENOISE_ATTEN_LIM_DB_MIN: u32 = 6;
 pub const DENOISE_ATTEN_LIM_DB_MAX: u32 = 60;
 
 pub enum VoiceCmd {
+    ApplyMicrophone {
+        config: crate::mic_profile::Config,
+    },
     Connect {
         livekit_url: String,
         alternate_urls: Vec<String>,
@@ -185,22 +223,7 @@ pub enum VoiceCmd {
     SetDeafen {
         deafened: bool,
     },
-    SetSensitivity {
-        threshold: u32,
-    },
-    SetDenoiseAttenLim {
-        db: u32,
-    },
-    SetNoiseCancellation {
-        enabled: bool,
-    },
     SetBypassSystemProcessing {
-        enabled: bool,
-    },
-    SetMicVolume {
-        percent: u16,
-    },
-    SetAutoGainControl {
         enabled: bool,
     },
     SetVoiceBitrate {
@@ -445,35 +468,9 @@ async fn service_loop(
                 controls.deafened.store(deafened, Ordering::Relaxed);
                 state.write().voice.deafened = deafened;
             }
-            VoiceCmd::SetSensitivity { threshold } => {
-                let threshold = threshold.clamp(1, 1000);
-                eprintln!("[voice] SetSensitivity threshold={threshold}");
-                controls
-                    .threshold
-                    .store(threshold as i32, Ordering::Relaxed);
-                state.write().mic_sensitivity = threshold;
-            }
-            VoiceCmd::SetDenoiseAttenLim { db } => {
-                let db = db.clamp(DENOISE_ATTEN_LIM_DB_MIN, DENOISE_ATTEN_LIM_DB_MAX);
-                controls.atten_lim_db.store(db, Ordering::Relaxed);
-                state.write().denoise_atten_lim_db = db;
-            }
-            VoiceCmd::SetNoiseCancellation { enabled } => {
-                eprintln!("[voice] SetNoiseCancellation enabled={enabled}");
-                controls.denoise.store(enabled, Ordering::Relaxed);
-                state.write().noise_cancellation = enabled;
-            }
-            VoiceCmd::SetMicVolume { percent } => {
-                let percent = percent.min(200);
-                controls
-                    .mic_gain_pct
-                    .store(percent as i32, Ordering::Relaxed);
-                state.write().mic_volume = percent;
-            }
-            VoiceCmd::SetAutoGainControl { enabled } => {
-                eprintln!("[voice] SetAutoGainControl enabled={enabled}");
-                controls.agc.store(enabled, Ordering::Relaxed);
-                state.write().auto_gain_control = enabled;
+            VoiceCmd::ApplyMicrophone { config } => {
+                config.apply_state(&mut state.write());
+                controls.apply_mic(config);
             }
             VoiceCmd::SetVoiceBitrate { kbps } => {
                 let kbps = crate::settings::normalize_voice_bitrate(kbps);
@@ -2302,142 +2299,67 @@ fn denoise_gate_loop(
     stats: Arc<GateStats>,
     reference_rx: crate::audio_queue::AudioReceiver<i16>,
 ) {
-    let mut denoiser: Option<crate::denoise::Denoiser> = None;
-    let mut agc = crate::agc::Agc::new();
-    let mut applied_atten_lim = 0u32;
-    let mut gate = GateState::default();
-    let mut gated = 0u64;
-    let mut echo = crate::echo::Echo::new(reference_rx);
-    let mut echo_error_reported = false;
-
+    let mut processor = dsp::Processor::new(reference_rx);
     while let Some(packet) = frame_rx.blocking_recv() {
         if !packet.is_fresh() {
-            gate.silence();
+            processor.silence();
             continue;
         }
-        let mut samples = packet.samples;
-        if let Err(error) = echo.process(
-            &mut samples,
+        let config = controls.mic_config();
+        let result = processor.process(
+            packet.samples,
+            config,
             50 + packet.captured.elapsed().as_millis().min(450) as i32,
-        ) && !echo_error_reported
-        {
-            tracing::warn!(%error, "microphone echo cancellation failed");
-            echo_error_reported = true;
-        }
-        if muted.load(Ordering::Relaxed) {
-            let peak = peak_fixed(&samples);
-            meter.gate_peak.fetch_max(peak, Ordering::Relaxed);
-            meter.bump_peak(peak);
-            meter.bump_peak_pre(peak);
-            meter.open.store(false, Ordering::Relaxed);
-            gate.silence();
-            continue;
-        }
-
-        let peak_pre = peak_fixed(&samples);
-        meter.bump_peak_pre(peak_pre);
-        let mut denoised = false;
-
-        if controls.denoise.load(Ordering::Relaxed) {
-            if denoiser.is_none() {
-                match crate::denoise::Denoiser::new() {
-                    Ok(d) => {
-                        eprintln!("[voice] DeepFilterNet loaded, noise cancellation active");
-                        denoiser = Some(d);
-                        let mut dropped = 0;
-                        while frame_rx.try_recv().is_ok() {
-                            dropped += 1;
-                        }
-                        if dropped > 0 {
-                            eprintln!("[voice] dropped {dropped} hops queued during model load");
-                        }
-                        gate.silence();
-                    }
-                    Err(e) => {
-                        eprintln!("[voice] noise cancellation unavailable: {e}");
-                        controls.denoise.store(false, Ordering::Relaxed);
-                    }
-                }
-            }
-            if let Some(d) = denoiser.as_mut() {
-                let want = controls.atten_lim_db.load(Ordering::Relaxed);
-                if want != applied_atten_lim {
-                    d.set_atten_lim(want as f32);
-                    applied_atten_lim = want;
-                    stats.atten_lim_applied.store(want, Ordering::Relaxed);
-                }
-                d.process_hop(&mut samples);
-                denoised = true;
-            }
-        } else if denoiser.is_some() {
-            eprintln!("[voice] noise cancellation off, releasing model");
-            denoiser = None;
-            applied_atten_lim = 0;
-            stats.atten_lim_applied.store(0, Ordering::Relaxed);
-        }
-
-        let gate_peak = peak_fixed(&samples);
-        meter.gate_peak.fetch_max(gate_peak, Ordering::Relaxed);
-        let threshold = controls.threshold.load(Ordering::Relaxed);
-        if controls.agc.load(Ordering::Relaxed) {
-            // Raising gain on room tone behind the gate makes the next word jump.
-            if gate_peak > threshold {
-                agc.process(&mut samples);
-            } else {
-                agc.hold(&mut samples);
-            }
-        } else {
-            agc.reset();
-        }
-        let gain = controls.mic_gain_pct.load(Ordering::Relaxed) as f32 / 100.0;
-        for sample in &mut samples {
-            *sample *= gain;
-        }
-        crate::agc::limit(&mut samples);
-        if gain == 0.0 {
-            gate.silence();
-            meter.open.store(false, Ordering::Relaxed);
-            stats.dropped.fetch_add(1, Ordering::Relaxed);
-            gated += 1;
-            continue;
-        }
-
-        let peak = if denoised || controls.agc.load(Ordering::Relaxed) {
-            peak_fixed(&samples)
-        } else {
-            peak_pre
-        };
-        meter.bump_peak(peak);
-        stats.peak_after.fetch_max(peak, Ordering::Relaxed);
-
-        stats.threshold.store(threshold, Ordering::Relaxed);
-        let action = gate.step(gate_peak, threshold);
-        meter.open.store(
-            matches!(action, GateAction::Pass | GateAction::RampIn),
-            Ordering::Relaxed,
+            muted.load(Ordering::Relaxed),
         );
-        match action {
-            GateAction::Pass => {}
-            GateAction::RampIn => ramp(&mut samples, true),
-            GateAction::RampOut => ramp(&mut samples, false),
-            GateAction::Drop => {
-                gated += 1;
-                stats.dropped.fetch_add(1, Ordering::Relaxed);
+        let processed = match result {
+            Ok(processed) => processed,
+            Err(error) => {
+                tracing::warn!(%error, "microphone processing unavailable; disabling noise reduction");
+                controls.denoise.store(false, Ordering::Relaxed);
                 continue;
             }
+        };
+        if processed.model_loaded {
+            while frame_rx.try_recv().is_ok() {}
+        }
+        meter.bump_peak_pre(processed.pre);
+        meter
+            .gate_peak
+            .fetch_max(processed.gate_peak, Ordering::Relaxed);
+        meter.bump_peak(processed.peak);
+        stats
+            .peak_after
+            .fetch_max(processed.peak, Ordering::Relaxed);
+        stats
+            .threshold
+            .store(config.threshold as i32, Ordering::Relaxed);
+        stats.atten_lim_applied.store(
+            if config.denoise {
+                config.suppression
+            } else {
+                0
+            },
+            Ordering::Relaxed,
+        );
+        let open = matches!(processed.action, GateAction::Pass | GateAction::RampIn);
+        meter.open.store(open, Ordering::Relaxed);
+        if processed.action == GateAction::Drop {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            continue;
         }
         stats.passed.fetch_add(1, Ordering::Relaxed);
-
-        let data = samples.map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+        let data = processed
+            .samples
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
         let packet = crate::audio_queue::Frame {
             samples: data,
             captured: packet.captured,
         };
         if packet.is_fresh() && crate::audio_queue::offer(&out_tx, packet).is_err() {
-            break;
+            return;
         }
     }
-    eprintln!("[voice] denoise/gate thread ended ({gated} frames gated)");
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

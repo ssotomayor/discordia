@@ -2,7 +2,7 @@ use super::*;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-fn read_speech(path: &Path) -> Vec<f32> {
+pub(super) fn read_speech(path: &Path) -> Vec<f32> {
     let bytes = std::fs::read(path).expect("Open Speech Repository PCM WAV fixture");
     assert_eq!(&bytes[..4], b"RIFF");
     assert_eq!(&bytes[8..12], b"WAVE");
