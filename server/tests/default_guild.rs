@@ -215,7 +215,7 @@ async fn a_gated_default_is_offered_through_its_gate() {
 }
 
 #[tokio::test]
-async fn deleting_the_default_returns_newcomers_to_the_lobby() {
+async fn the_default_cannot_be_deleted_until_another_is_chosen() {
     let operator_id = BotIdentity::generate();
     let (url, _h) = spawn_with(&operator_id).await;
     let (mut operator, ..) = arrive(&url, &operator_id, "Op").await;
@@ -227,8 +227,24 @@ async fn deleting_the_default_returns_newcomers_to_the_lobby() {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::DefaultGuild { guild_id } = next_timeout(&mut operator).await {
-            assert_eq!(guild_id, None);
+        match next_timeout(&mut operator).await {
+            ServerMessage::Error { message } => {
+                assert!(message.contains("default"), "got: {message}");
+                break;
+            }
+            ServerMessage::GuildDelete { .. } => panic!("the default was deleted"),
+            _ => continue,
+        }
+    }
+
+    set_default(&mut operator, None).await.unwrap();
+    operator
+        .send(&ClientMessage::DeleteGuild { guild_id: home })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildDelete { guild_id } = next_timeout(&mut operator).await {
+            assert_eq!(guild_id, home);
             break;
         }
     }
@@ -275,6 +291,11 @@ async fn an_operator_may_delete_the_lobby_once_another_guild_is_default() {
     let (_, guilds, default_guild, _) = arrive(&url, &BotIdentity::generate(), "New").await;
     assert_eq!(names(&guilds), ["Home"]);
     assert_eq!(default_guild, Some(home));
+
+    let err = set_default(&mut operator, None).await.unwrap_err();
+    assert!(err.contains("newcomers"), "got: {err}");
+    let other = make_guild(&mut operator, "Other").await;
+    set_default(&mut operator, Some(other)).await.unwrap();
 }
 
 #[tokio::test]

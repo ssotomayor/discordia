@@ -1030,6 +1030,11 @@ impl AppState {
                 }
                 Some(crate::protocol::GuildVisibility::Public) => {}
             }
+        } else if !self.guilds.iter().any(|g| g.owner_pubkey.is_empty()) {
+            return Err(
+                "no system guild is left for newcomers; choose another default instead of none"
+                    .into(),
+            );
         }
         durable(
             self.store.set_default_guild(guild_id).await,
@@ -2600,18 +2605,23 @@ impl AppState {
             .get(&guild_id)
             .map(|g| g.owner_pubkey.clone())
             .ok_or_else(|| "unknown guild".to_string())?;
-        if owner.is_empty() {
-            if !self.operators.contains(by_pubkey) {
-                return Err("only the owner can delete this guild".into());
-            }
-            // Without a default, newcomers land in the system guilds — removing one strands them.
-            if self.default_guild().is_none_or(|d| d == guild_id) {
-                return Err(
-                    "make another guild the server default before deleting a system guild".into(),
-                );
-            }
-        } else if owner != by_pubkey {
+        let allowed = if owner.is_empty() {
+            self.operators.contains(by_pubkey)
+        } else {
+            owner == by_pubkey
+        };
+        if !allowed {
             return Err("only the owner can delete this guild".into());
+        }
+        let default = self.default_guild();
+        if default == Some(guild_id) {
+            return Err("choose another server default before deleting this guild".into());
+        }
+        // Without a default, newcomers land in the system guilds — removing one strands them.
+        if owner.is_empty() && default.is_none() {
+            return Err(
+                "make another guild the server default before deleting a system guild".into(),
+            );
         }
         durable(self.store.delete_guild(guild_id).await, "guild delete")?;
         let mut default = self.default_guild_slot();

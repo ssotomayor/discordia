@@ -268,7 +268,8 @@ pub fn GuildsSidebar() -> Element {
                                 });
                             let is_default = s.default_guild == Some(gid);
                             let can_delete = is_owner
-                                && (!is_system || s.default_guild.is_some_and(|d| d != gid));
+                                && !is_default
+                                && (!is_system || s.default_guild.is_some());
                             drop(s);
                             let gw_default = gateway.clone();
                             let gw_set = gateway.clone();
