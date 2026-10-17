@@ -36,6 +36,9 @@ use crate::{prelude::*, rtc_engine::lk_runtime::LkRuntime};
 
 pub use libwebrtc::native::packet_trailer::{PublishTimingEvent, PublishTimingStage};
 
+#[path = "network_bitrate.rs"]
+mod network_bitrate;
+
 const PUBLISH_TIMING_BUFFER: usize = 256;
 
 /// A simulcast layer currently configured on a local video publisher.
@@ -109,6 +112,7 @@ pub struct LocalVideoTrack {
     publish_timing_tx: Arc<Mutex<Option<broadcast::Sender<PublishTimingEvent>>>>,
     /// Last qualities requested by dynacast, re-applied after renegotiation.
     subscribed_qualities: Arc<Mutex<Option<Vec<proto::SubscribedQuality>>>>,
+    bandwidth_defaults: Arc<Mutex<Option<network_bitrate::EncodingLimits>>>,
 }
 
 impl Debug for LocalVideoTrack {
@@ -155,6 +159,7 @@ impl LocalVideoTrack {
             packet_trailer_handler: Arc::new(Mutex::new(None)),
             publish_timing_tx: Arc::new(Mutex::new(None)),
             subscribed_qualities: Arc::new(Mutex::new(None)),
+            bandwidth_defaults: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -258,7 +263,9 @@ impl LocalVideoTrack {
             self.apply_publish_timing_observer(&handler);
         }
 
-        PublishTimingEventStream { inner: BroadcastStream::new(tx.subscribe()) }
+        PublishTimingEventStream {
+            inner: BroadcastStream::new(tx.subscribe()),
+        }
     }
 
     /// Returns the packet trailer handler associated with this track, if any.
@@ -313,6 +320,27 @@ impl LocalVideoTrack {
         super::local_track::get_stats(&self.inner).await
     }
 
+    pub fn set_network_bitrate_limit(&self, limit: Option<u64>) -> RoomResult<()> {
+        let transceiver = self.transceiver().ok_or_else(|| {
+            RoomError::Internal("cannot limit video bitrate: no transceiver".into())
+        })?;
+        let sender = transceiver.sender();
+        let mut params = sender.parameters();
+        if params.encodings.is_empty() || limit == Some(0) {
+            return Err(RoomError::Internal(
+                "cannot limit video bitrate: invalid limit or no encoding".into(),
+            ));
+        }
+        let mut defaults = self.bandwidth_defaults.lock();
+        let original = defaults
+            .get_or_insert_with(|| params.encodings.iter().map(|e| e.max_bitrate).collect());
+        network_bitrate::apply_limit(&mut params.encodings, original, limit)
+            .map_err(|error| RoomError::Internal(error.into()))?;
+        sender.set_parameters(params).map_err(|error| {
+            RoomError::Internal(format!("could not limit video bandwidth: {error}"))
+        })
+    }
+
     pub(crate) fn on_muted(&self, f: impl Fn(Track) + Send + 'static) {
         self.inner.events.lock().muted.replace(Box::new(f));
     }
@@ -326,6 +354,7 @@ impl LocalVideoTrack {
     }
 
     pub(crate) fn set_transceiver(&self, transceiver: Option<RtpTransceiver>) {
+        *self.bandwidth_defaults.lock() = None;
         // clear subscribed qualities on unpublish
         if transceiver.is_none() {
             *self.subscribed_qualities.lock() = None;
@@ -351,7 +380,11 @@ impl LocalVideoTrack {
             .iter()
             .map(|e| {
                 let quality = crate::options::video_quality_for_rid_or_default(&e.rid);
-                PublishingLayer { rid: e.rid.clone(), quality: quality.into(), active: e.active }
+                PublishingLayer {
+                    rid: e.rid.clone(),
+                    quality: quality.into(),
+                    active: e.active,
+                }
             })
             .collect()
     }
@@ -363,7 +396,12 @@ impl LocalVideoTrack {
         &self,
         qualities: &[proto::SubscribedQuality],
     ) -> RoomResult<()> {
-        merge_qualities(self.subscribed_qualities.lock().get_or_insert_with(Vec::new), qualities);
+        merge_qualities(
+            self.subscribed_qualities
+                .lock()
+                .get_or_insert_with(Vec::new),
+            qualities,
+        );
         self.apply_publishing_layers(qualities)
     }
 
@@ -392,7 +430,11 @@ impl LocalVideoTrack {
         for encoding in &mut params.encodings {
             // The SFU addresses layers by spatial index (0 = Low), so a
             // single rid-less encoding is addressed as Low, not High.
-            let rid = if encoding.rid.is_empty() { "q" } else { encoding.rid.as_str() };
+            let rid = if encoding.rid.is_empty() {
+                "q"
+            } else {
+                encoding.rid.as_str()
+            };
             let quality = crate::options::video_quality_for_rid_or_default(rid);
 
             // A quality missing from the update is left untouched.
@@ -464,7 +506,10 @@ mod tests {
     use super::*;
 
     fn quality(quality: proto::VideoQuality, enabled: bool) -> proto::SubscribedQuality {
-        proto::SubscribedQuality { quality: quality as i32, enabled }
+        proto::SubscribedQuality {
+            quality: quality as i32,
+            enabled,
+        }
     }
 
     #[test]
@@ -475,7 +520,10 @@ mod tests {
         merge_qualities(&mut cached, &[quality(proto::VideoQuality::Medium, true)]);
         assert_eq!(
             cached,
-            [quality(proto::VideoQuality::Medium, true), quality(proto::VideoQuality::High, false)]
+            [
+                quality(proto::VideoQuality::Medium, true),
+                quality(proto::VideoQuality::High, false)
+            ]
         );
     }
 }

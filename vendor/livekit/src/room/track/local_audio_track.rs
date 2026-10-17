@@ -137,6 +137,36 @@ impl LocalAudioTrack {
         super::local_track::get_stats(&self.inner).await
     }
 
+    pub fn set_max_bitrate(&self, bitrate: u64) -> RoomResult<()> {
+        let transceiver = self.transceiver().ok_or_else(|| {
+            RoomError::Internal("cannot set audio bitrate: no transceiver".into())
+        })?;
+        let sender = transceiver.sender();
+        let mut parameters = sender.parameters();
+        if bitrate == 0 || parameters.encodings.is_empty() {
+            return Err(RoomError::Internal(
+                "cannot set audio bitrate: invalid bitrate or no encoding".into(),
+            ));
+        }
+        for encoding in &mut parameters.encodings {
+            encoding.max_bitrate = Some(bitrate);
+            encoding.priority = libwebrtc::rtp_parameters::Priority::High;
+        }
+        sender
+            .set_parameters(parameters)
+            .map_err(|error| RoomError::Internal(format!("failed to set audio bitrate: {error}")))
+    }
+
+    pub fn max_bitrate(&self) -> Option<u64> {
+        self.transceiver()?
+            .sender()
+            .parameters()
+            .encodings
+            .iter()
+            .filter_map(|e| e.max_bitrate)
+            .min()
+    }
+
     pub(crate) fn on_muted(&self, f: impl Fn(Track) + Send + 'static) {
         self.inner.events.lock().muted.replace(Box::new(f));
     }

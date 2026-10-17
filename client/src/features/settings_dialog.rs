@@ -547,12 +547,17 @@ pub fn SettingsDialog() -> Element {
                             }
                             span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                 if voice_phase == VoicePhase::Connected {
-                                    {crate::i18n::text("Applies the next time you join a voice channel.", &[])}
+                                    {crate::i18n::text("The selected quality is a ceiling. Voice bandwidth adjusts automatically during the call.", &[])}
                                 } else {
                                     {crate::i18n::text("Higher sounds better on low voices and background music, and costs more upload.", &[])}
                                 }
                             }
                         }
+                        }
+                        if matches!(settings_tab(), SettingsTab::Mic | SettingsTab::Audio) && state.read().voice_adaptive_bitrate.is_some_and(|kbps| kbps < voice_bitrate_kbps) {
+                            p { class: "mt-1 text-[11px] text-[var(--text-muted)]",
+                                {crate::i18n::text("Protecting voice on a poor connection: {0} kbit/s. Quality recovers gradually.", &[state.read().voice_adaptive_bitrate.unwrap_or(voice_bitrate_kbps).to_string()])}
+                            }
                         }
                         if settings_tab() == SettingsTab::Video {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Video and screen", &[])} }

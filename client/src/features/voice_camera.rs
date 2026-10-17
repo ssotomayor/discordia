@@ -5,6 +5,7 @@ pub(super) struct CameraPublisher {
     sid: TrackSid,
     capture: crate::syscamera::Capture,
     fatal_task: Task,
+    network_task: Task,
     pub key: Option<String>,
     pub quality: crate::camera_quality::CameraQuality,
 }
@@ -40,7 +41,7 @@ impl CameraPublisher {
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
         let publication = match room
             .local_participant()
-            .publish_track(LocalTrack::Video(track), options(quality))
+            .publish_track(LocalTrack::Video(track.clone()), options(quality))
             .await
         {
             Ok(p) => p,
@@ -86,11 +87,13 @@ impl CameraPublisher {
             }
         });
         let key = Some(capture.device.id.clone());
+        let network_task = network::spawn_video_budget(state, track, 160_000);
         Ok(Self {
             room,
             sid: publication.sid(),
             capture,
             fatal_task,
+            network_task,
             key,
             quality,
         })
@@ -98,6 +101,7 @@ impl CameraPublisher {
 
     pub async fn shutdown(self) {
         self.fatal_task.cancel();
+        self.network_task.cancel();
         self.capture.stop().await;
         if let Err(e) = self
             .room
