@@ -630,13 +630,46 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 .can(gid, crate::protocol::Permission::ManageMessages)
         });
     let pinned = message.pinned;
-    let can_delete = {
-        let s = state.read();
-        let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
-        is_author
-            || guild_id
-                .map(|gid| s.can(gid, crate::protocol::Permission::ManageMessages))
-                .unwrap_or(false)
+    let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
+    let can_delete = is_author
+        || guild_id.is_some_and(|gid| {
+            state
+                .read()
+                .can(gid, crate::protocol::Permission::ManageMessages)
+        });
+    // A DM lives on Nostr relays, which hold no edits.
+    let can_edit = is_author && guild_id.is_some();
+    let mut editing = use_signal(|| None::<String>);
+    let has_media = message.image.is_some() || message.attachment.is_some();
+    let edit_pending = state.read().pending_edits.contains(&message_id);
+    let edited = message.edited_at.map(|t| {
+        t.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    });
+    let save_edit = {
+        let original = message.content.clone();
+        let gateway = gateway.clone();
+        use_callback(move |_: ()| {
+            let Some(draft) = editing() else { return };
+            let text = draft.trim().to_string();
+            if text == original.trim() {
+                editing.set(None);
+                return;
+            }
+            if text.is_empty() && !has_media {
+                return;
+            }
+            state
+                .write()
+                .edit_locally(channel_id, message_id, text.clone());
+            gateway.send(ClientMessage::EditMessage {
+                channel_id,
+                message_id,
+                content: text,
+            });
+            editing.set(None);
+        })
     };
 
     let delivery_mark = delivery.map(|delivery| {
@@ -731,9 +764,59 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
                     }
                 }
-                if has_text {
+                if let Some(draft) = editing() {
+                    div { class: "mt-0.5 flex flex-col gap-1",
+                        textarea {
+                            class: "w-full resize-none bg-[var(--panel2)] border border-[var(--border-strong)] focus:border-[var(--accent)] rounded-lg px-2.5 py-1.5 text-sm text-[var(--text)] outline-none leading-relaxed",
+                            rows: "{draft.lines().count().clamp(1, 8)}",
+                            maxlength: 2000,
+                            value: "{draft}",
+                            aria_label: crate::i18n::text("Edit message", &[]),
+                            oninput: move |e| editing.set(Some(e.value())),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter && !e.modifiers().shift() {
+                                    e.prevent_default();
+                                    save_edit.call(());
+                                } else if e.key() == Key::Escape {
+                                    e.prevent_default();
+                                    editing.set(None);
+                                }
+                            },
+                            onmounted: move |e| async move {
+                                let _ = e.set_focus(true).await;
+                            },
+                        }
+                        div { class: "flex items-center gap-2 text-[10px] text-[var(--text-dim)]",
+                            span { class: "flex-1", {crate::i18n::text("Enter save · Shift+Enter new line · Esc cancel", &[])} }
+                            button {
+                                class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                                onclick: move |_| editing.set(None),
+                                {crate::i18n::text("Cancel", &[])}
+                            }
+                            button {
+                                class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                                onclick: move |_| save_edit.call(()),
+                                {crate::i18n::text("Save", &[])}
+                            }
+                        }
+                    }
+                } else if has_text {
                     div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
                         MessageContent { content: message.content.clone(), channel_id, message_id }
+                        if let Some(when) = edited.clone() {
+                            span {
+                                class: "ml-1 text-[10px] text-[var(--text-dim)] select-none",
+                                title: crate::i18n::text("Edited {0}", std::slice::from_ref(&when)),
+                                {crate::i18n::text("(edited)", &[])}
+                            }
+                        }
+                        if edit_pending {
+                            span {
+                                class: "ml-1 inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]",
+                                title: crate::i18n::text("Saving…", &[]),
+                                dangerous_inner_html: crate::features::icons::CLOCK,
+                            }
+                        }
                         if let Some(mark) = delivery_mark.clone() {
                             span { class: "ml-1.5", {mark} }
                         }
@@ -838,6 +921,21 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             }
                         },
                         "↩"
+                    }
+                    if can_edit {
+                        button {
+                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
+                            title: crate::i18n::text("Edit message", &[]),
+                            onclick: {
+                                let body = message.content.clone();
+                                move |_| {
+                                    show_react.set(false);
+                                    confirm_delete.set(false);
+                                    editing.set(Some(body.clone()));
+                                }
+                            },
+                            "✎"
+                        }
                     }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",

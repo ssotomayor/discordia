@@ -1361,6 +1361,7 @@ fn apply(
             operator,
             default_guild,
         } => {
+            s.pending_edits.clear();
             let recovering = s.status == ConnectionStatus::Reconnecting;
             let selected_guild = s.selected_guild;
             let selected_channel = s.selected_channel;
@@ -1942,6 +1943,12 @@ fn apply(
                 }
             }
         }
+        ServerMessage::MessageUpdate {
+            channel_id,
+            message_id,
+            content,
+            edited_at,
+        } => s.apply_message_edit(channel_id, message_id, content, edited_at),
         ServerMessage::MessageDelete {
             channel_id,
             message_id,
@@ -2569,6 +2576,7 @@ mod tests {
                         channel,
                         vec![crate::protocol::Message {
                             author_bot: false,
+                            edited_at: None,
                             image_metadata: None,
                             attachment: None,
                             pinned: false,
@@ -2683,6 +2691,7 @@ mod tests {
             channel,
             vec![crate::protocol::Message {
                 author_bot: false,
+                edited_at: None,
                 image_metadata: None,
                 attachment: None,
                 pinned: false,

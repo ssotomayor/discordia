@@ -1,4 +1,9 @@
 {
+  "Edit message": ["Editar mensaje","Editar mensagem"],
+  "Enter save · Shift+Enter new line · Esc cancel": ["Enter guarda · Shift+Enter nueva línea · Esc cancela","Enter salva · Shift+Enter nova linha · Esc cancela"],
+  "Edited {0}": ["Editado {0}","Editado {0}"],
+  "(edited)": ["(editado)","(editado)"],
+  "Saving…": ["Guardando…","Salvando…"],
   "{0}B bold · {0}I italic · {0}U underline": ["{0}B negrita · {0}I cursiva · {0}U subrayado","{0}B negrito · {0}I itálico · {0}U sublinhado"],
   "Or type **bold**, *italic* and __underline__": ["O escribe **negrita**, *cursiva* y __subrayado__","Ou digite **negrito**, *itálico* e __sublinhado__"],
   "Markdown on": ["Markdown activado","Markdown ativado"],

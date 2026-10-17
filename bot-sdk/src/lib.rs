@@ -303,6 +303,20 @@ impl Bot {
         .await
     }
 
+    pub async fn edit_message(
+        &mut self,
+        channel_id: Id,
+        message_id: Id,
+        content: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::EditMessage {
+            channel_id,
+            message_id,
+            content: content.to_string(),
+        })
+        .await
+    }
+
     pub async fn react(&mut self, channel_id: Id, message_id: Id, emoji: &str) -> Result<()> {
         self.send(&ClientMessage::React {
             channel_id,

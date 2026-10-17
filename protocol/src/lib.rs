@@ -1002,6 +1002,8 @@ pub struct Message {
     #[serde(default)]
     pub reply_to: Option<ReplyRef>,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub edited_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2301,6 +2303,12 @@ pub enum ClientMessage {
         channel_id: Id,
         message_id: Id,
     },
+    /// Only the author's own, and only where they could still post it.
+    EditMessage {
+        channel_id: Id,
+        message_id: Id,
+        content: String,
+    },
     TransferOwnership {
         guild_id: Id,
         new_owner_pubkey: String,
@@ -2572,6 +2580,15 @@ pub enum ServerMessage {
     MessageDelete {
         channel_id: Id,
         message_id: Id,
+    },
+    /// Also sent to an editor whose edit was refused, carrying what is stored,
+    /// so a client that showed the edit early puts the message back.
+    MessageUpdate {
+        channel_id: Id,
+        message_id: Id,
+        content: String,
+        #[serde(default)]
+        edited_at: Option<DateTime<Utc>>,
     },
     ReactionUpdate {
         channel_id: Id,

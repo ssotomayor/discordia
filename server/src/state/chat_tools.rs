@@ -237,6 +237,7 @@ impl AppState {
                     id: uuid::Uuid::new_v4(),
                     channel_id,
                     author_bot: self.is_installed_bot(channel_id, &user.pubkey),
+                    edited_at: None,
                     author: user.clone(),
                     content: content.trim().to_owned(),
                     image: None,
