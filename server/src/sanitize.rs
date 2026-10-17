@@ -92,6 +92,7 @@ pub fn channel(c: &mut Channel) {
     if !c.kind.is_divider() {
         c.divider = Default::default();
     }
+    c.markdown &= c.kind == crate::protocol::ChannelKind::Text;
 }
 
 pub fn access(a: crate::protocol::ChannelAccess) -> crate::protocol::ChannelAccess {
@@ -314,6 +315,7 @@ mod tests {
                 topic: None,
                 read_only: false,
                 slowmode_secs: 0,
+                markdown: false,
                 position: 0,
                 access: Some(crate::protocol::ChannelAccess::default()),
             };

@@ -2097,7 +2097,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         }
                     }
-                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs, divider } => {
+                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs, divider, markdown } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -2108,7 +2108,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, divider, &u.pubkey).await {
+                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, divider, markdown, &u.pubkey).await {
                             Ok(channel) => {
                                 let targets = viewers_of(&ctx.state, &channel);
                                 ctx.state.deliver(targets, ServerMessage::ChannelUpdate(channel));

@@ -545,3 +545,78 @@ async fn concurrent_redemptions_cannot_lose_each_other() {
     );
     assert_eq!(invite.max_uses, Some(5), "the cap round-trips");
 }
+
+#[tokio::test]
+async fn a_markdown_channel_keeps_the_setting_and_only_text_takes_it() {
+    let dir = temp_data_dir();
+    let owner_id = BotIdentity::generate();
+    let text: Id;
+    {
+        let (url, handle) = spawn_on(&dir).await;
+        let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+            .await
+            .unwrap();
+        owner
+            .send(&ClientMessage::CreateGuild {
+                name: "Docs".into(),
+                template: None,
+            })
+            .await
+            .unwrap();
+        let channels = loop {
+            if let ServerMessage::GuildJoined { channels, .. } = next_timeout(&mut owner).await {
+                break channels;
+            }
+        };
+        let of = |kind| channels.iter().find(|c| c.kind == kind).unwrap().clone();
+        let (t, voice) = (of(ChannelKind::Text), of(ChannelKind::Voice));
+        text = t.id;
+
+        let mut update =
+            async |c: &discordia_server::protocol::Channel, name: &str, markdown: Option<bool>| {
+                owner
+                    .send(&ClientMessage::UpdateChannel {
+                        channel_id: c.id,
+                        divider: None,
+                        name: name.into(),
+                        topic: None,
+                        read_only: false,
+                        position: c.position,
+                        slowmode_secs: 0,
+                        markdown,
+                    })
+                    .await
+                    .unwrap();
+                loop {
+                    if let ServerMessage::ChannelUpdate(u) = next_timeout(&mut owner).await
+                        && u.id == c.id
+                    {
+                        return u;
+                    }
+                }
+            };
+        assert!(update(&t, &t.name, Some(true)).await.markdown);
+        assert!(
+            update(&t, "notes", None).await.markdown,
+            "an update that does not mention it keeps it"
+        );
+        assert!(
+            !update(&voice, &voice.name, Some(true)).await.markdown,
+            "a voice channel has no messages to render"
+        );
+        handle.abort();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (url, handle) = spawn_on(&dir).await;
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
+    let channels = loop {
+        if let ServerMessage::Ready { channels, .. } = next_timeout(&mut owner).await {
+            break channels;
+        }
+    };
+    assert!(channels.iter().any(|c| c.id == text && c.markdown));
+    handle.abort();
+}

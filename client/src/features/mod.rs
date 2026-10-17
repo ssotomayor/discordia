@@ -25,6 +25,7 @@ pub mod identity_setup;
 pub mod image_editor;
 pub mod integrations;
 pub mod leveling;
+pub mod markup;
 pub mod members;
 #[cfg(test)]
 mod native_teardown;

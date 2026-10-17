@@ -1,4 +1,11 @@
 {
+  "{0}B bold · {0}I italic · {0}U underline": ["{0}B negrita · {0}I cursiva · {0}U subrayado","{0}B negrito · {0}I itálico · {0}U sublinhado"],
+  "Or type **bold**, *italic* and __underline__": ["O escribe **negrita**, *cursiva* y __subrayado__","Ou digite **negrito**, *itálico* e __sublinhado__"],
+  "Markdown on": ["Markdown activado","Markdown ativado"],
+  "Headings, lists, quotes, code and links render here": ["Aquí se muestran títulos, listas, citas, código y enlaces","Títulos, listas, citações, código e links aparecem aqui"],
+  "Headings, lists, quotes, code and links render in this channel; bold, italic and underline work everywhere": ["En este canal se muestran títulos, listas, citas, código y enlaces; la negrita, la cursiva y el subrayado funcionan en todas partes","Neste canal aparecem títulos, listas, citações, código e links; negrito, itálico e sublinhado funcionam em todo lugar"],
+  "Turn off markdown": ["Desactivar markdown","Desativar markdown"],
+  "Allow markdown": ["Permitir markdown","Permitir markdown"],
   "Microphone test": ["Prueba de micrófono","Teste de microfone"],
   "Stop test": ["Detener prueba","Parar teste"],
   "Test microphone": ["Probar micrófono","Testar microfone"],

@@ -1232,67 +1232,22 @@ fn UnicodeEmojiText(text: String, size: f64) -> Element {
 #[component]
 fn MessageContent(content: String, channel_id: Id, message_id: Id) -> Element {
     let state = use_app_state();
-    let guild_id = state
+    let (guild_id, markdown) = state
         .read()
         .channels
         .iter()
         .find(|c| c.id == channel_id)
-        .map(|c| c.guild_id);
+        .map(|c| (Some(c.guild_id), c.markdown))
+        .unwrap_or_default();
     let extra: Vec<(String, String)> = state
         .read()
         .dm_emoji
         .get(&message_id)
         .cloned()
         .unwrap_or_default();
-    let lines: Vec<&str> = content.split('\n').collect();
-    let last = lines.len().saturating_sub(1);
     rsx! {
-        for (li, line) in lines.iter().enumerate() {
-            {
-                let words: Vec<&str> = line.split(' ').collect();
-                let lastw = words.len().saturating_sub(1);
-                rsx! {
-                    for (wi, word) in words.iter().enumerate() {
-                        {
-                            let w = word.to_string();
-                            let trailing = if wi < lastw { " " } else { "" };
-                            if is_url(&w) {
-                                let href = w.clone();
-                                rsx! {
-                                    span {
-                                        span {
-                                            class: "text-[var(--accent)] underline cursor-pointer hover:text-[var(--accent-strong)]",
-                                            onclick: move |_| crate::app::open_external(&href),
-                                            "{w}"
-                                        }
-                                        "{trailing}"
-                                    }
-                                }
-                            } else if w.starts_with('@') && w.len() > 1 {
-                                rsx! {
-                                    span {
-                                        span { class: "text-[var(--accent)] bg-[var(--accent-soft)] rounded px-0.5", "{w}" }
-                                        "{trailing}"
-                                    }
-                                }
-                            } else if crate::emoji::needs_rendering(&w) {
-                                rsx! { span { EmojiText { text: w.clone(), guild_id, extra: extra.clone() } "{trailing}" } }
-                            } else {
-                                rsx! { span { "{w}{trailing}" } }
-                            }
-                        }
-                    }
-                    if li < last {
-                        br {}
-                    }
-                }
-            }
-        }
+        super::markup::Markup { content, markdown, guild_id, extra }
     }
-}
-
-fn is_url(w: &str) -> bool {
-    w.starts_with("http://") || w.starts_with("https://")
 }
 
 // Document listeners survive a composer rebuilt when a channel locks or unlocks.
@@ -1384,6 +1339,23 @@ return (async function () {
     saved = r.cloneRange();
     report();
   };
+  // Marks, not <b>: the browser's own bold is lost when the field is serialized.
+  const wrap = (mark) => {
+    const el = find();
+    const r = el && caretIn(el);
+    if (!r) return;
+    const tail = document.createTextNode(mark), head = document.createTextNode(mark);
+    const end = r.cloneRange(); end.collapse(false); end.insertNode(tail);
+    const start = r.cloneRange(); start.collapse(true); start.insertNode(head);
+    const inside = document.createRange();
+    inside.setStartAfter(head); inside.setEndBefore(tail);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(inside);
+    saved = inside.cloneRange();
+    report();
+  };
+  const MARKS = { b: '**', i: '*', u: '__' };
   const api = {
     insertText: (text, replaceToken) => insert([document.createTextNode(text)], replaceToken),
     insertEmoji: (code, url, replaceToken, space) => {
@@ -1413,6 +1385,8 @@ return (async function () {
   const onInput = (e) => { if (within(e)) report(); };
   const onKey = (e) => {
     if (!within(e) || e.isComposing) return;
+    const mark = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && MARKS[e.key.toLowerCase()];
+    if (mark) { e.preventDefault(); wrap(mark); return; }
     if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey) document.execCommand('insertLineBreak');
@@ -1803,6 +1777,16 @@ fn Composer(
     });
 
     let is_dm = state.read().dm_of(channel_id).is_some();
+    let markdown = state
+        .read()
+        .channels
+        .iter()
+        .any(|c| c.id == channel_id && c.markdown);
+    let shortcut = if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
+    };
     let file_guild = state
         .read()
         .channels
@@ -2389,10 +2373,23 @@ fn Composer(
                         }
                     }
                 }
-                div { class: "flex gap-3.5 pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
+                div {
+                    class: "flex flex-wrap pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
+                    style: "column-gap: 0.875rem; row-gap: 0.125rem;",
                     span { {crate::i18n::text("Enter send", &[])} }
                     span { {crate::i18n::text("Shift+Enter new line", &[])} }
                     span { {crate::i18n::text(":name for emoji", &[])} }
+                    span {
+                        title: crate::i18n::text("Or type **bold**, *italic* and __underline__", &[]),
+                        {crate::i18n::text("{0}B bold · {0}I italic · {0}U underline", &[shortcut.to_string()])}
+                    }
+                    if markdown {
+                        span {
+                            class: "text-[var(--accent)]",
+                            title: crate::i18n::text("Headings, lists, quotes, code and links render here", &[]),
+                            {crate::i18n::text("Markdown on", &[])}
+                        }
+                    }
                     if file_request().is_some() {
                         span { class: "text-[var(--accent)]", {crate::i18n::text("Uploading file…", &[])} }
                     }

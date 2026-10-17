@@ -262,6 +262,7 @@ impl Store {
             "ALTER TABLE guilds ADD COLUMN leveling TEXT",
             "ALTER TABLE channels ADD COLUMN access TEXT",
             "ALTER TABLE channels ADD COLUMN divider TEXT",
+            "ALTER TABLE channels ADD COLUMN markdown INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE bot_installs ADD COLUMN app TEXT",
             "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
             "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
@@ -351,7 +352,7 @@ impl Store {
         }
         for r in sqlx::query(
             "SELECT id, guild_id, name, kind, topic, read_only, slowmode_secs, position, access,
-                    divider
+                    divider, markdown
              FROM channels",
         )
         .fetch_all(&self.pool)
@@ -366,6 +367,7 @@ impl Store {
                 topic: r.get(4),
                 read_only: r.get::<i64, _>(5) != 0,
                 slowmode_secs: r.get::<i64, _>(6).max(0) as u32,
+                markdown: r.get::<i64, _>(10) != 0,
                 position: r.get::<i64, _>(7).max(0) as u32,
                 access: r
                     .get::<Option<String>, _>(8)
@@ -613,12 +615,12 @@ impl Store {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO channels (id, guild_id, name, kind, topic, read_only,
-                                   slowmode_secs, position, access, divider)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   slowmode_secs, position, access, divider, markdown)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, topic=excluded.topic,
                read_only=excluded.read_only, slowmode_secs=excluded.slowmode_secs,
                position=excluded.position, access=excluded.access,
-               divider=excluded.divider",
+               divider=excluded.divider, markdown=excluded.markdown",
         )
         .bind(c.id.to_string())
         .bind(c.guild_id.to_string())
@@ -634,6 +636,7 @@ impl Store {
                 .and_then(|a| serde_json::to_string(a).ok()),
         )
         .bind(divider_str(c.divider))
+        .bind(c.markdown as i64)
         .execute(executor)
         .await?;
         Ok(())

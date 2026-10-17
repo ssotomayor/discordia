@@ -299,6 +299,7 @@ impl AppState {
             topic: None,
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 0,
             access: None,
         };
@@ -311,6 +312,7 @@ impl AppState {
             topic: None,
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 1,
             access: None,
         };
@@ -954,6 +956,7 @@ impl AppState {
                 topic: None,
                 read_only: *read_only,
                 slowmode_secs: 0,
+                markdown: false,
                 position: pos as u32,
                 access: None,
             });
@@ -2135,6 +2138,7 @@ impl AppState {
                 .filter(|t| !t.is_empty() && !kind.is_divider()),
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: next_pos,
             access: None,
         };
@@ -2191,6 +2195,7 @@ impl AppState {
         position: u32,
         slowmode_secs: u32,
         divider: Option<crate::protocol::DividerStyle>,
+        markdown: Option<bool>,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
         let _write = self.durable_writes.lock().await;
@@ -2213,6 +2218,9 @@ impl AppState {
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
             channel.slowmode_secs = slowmode_secs.min(21_600);
             channel.position = position;
+            if let Some(on) = markdown {
+                channel.markdown = on && channel.kind == crate::protocol::ChannelKind::Text;
+            }
             if channel.kind.is_divider() {
                 channel.topic = None;
                 channel.divider = divider.unwrap_or(channel.divider);

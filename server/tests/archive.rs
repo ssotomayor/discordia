@@ -294,6 +294,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
             topic: Some("t".repeat(1000)),
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 0,
             access: None,
         }],

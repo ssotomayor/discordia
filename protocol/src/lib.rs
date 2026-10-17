@@ -288,6 +288,9 @@ pub struct Channel {
     pub access: Option<ChannelAccess>,
     #[serde(default)]
     pub divider: DividerStyle,
+    /// Text only: messages render as full markdown, not just bold, italic and underline.
+    #[serde(default)]
+    pub markdown: bool,
 }
 
 /// An allowlist: these roles and these people see and may join the channel,
@@ -2287,6 +2290,9 @@ pub enum ClientMessage {
         position: u32,
         #[serde(default)]
         slowmode_secs: u32,
+        /// `None` keeps the current setting.
+        #[serde(default)]
+        markdown: Option<bool>,
     },
     DeleteChannel {
         channel_id: Id,

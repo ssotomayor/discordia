@@ -51,6 +51,7 @@ fn channel(guild_id: Id) -> Channel {
         topic: None,
         read_only: false,
         slowmode_secs: 0,
+        markdown: false,
         position: 0,
         access: None,
     }
