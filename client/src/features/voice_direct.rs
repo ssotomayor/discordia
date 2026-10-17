@@ -237,21 +237,7 @@ pub(super) fn update_controls(controls: &AudioControls, state: &AppState) {
     controls
         .deafened
         .store(state.voice.deafened, Ordering::Relaxed);
-    controls
-        .threshold
-        .store(state.mic_sensitivity as i32, Ordering::Relaxed);
-    controls
-        .mic_gain_pct
-        .store(state.mic_volume as i32, Ordering::Relaxed);
-    controls
-        .agc
-        .store(state.auto_gain_control, Ordering::Relaxed);
-    controls
-        .denoise
-        .store(state.noise_cancellation, Ordering::Relaxed);
-    controls
-        .atten_lim_db
-        .store(state.denoise_atten_lim_db, Ordering::Relaxed);
+    controls.apply_mic(crate::mic_profile::Config::from_state(state));
     let mut gains = controls.gains.lock();
     gains.clear();
     for peer in state.user_volumes.keys().chain(state.user_muted.iter()) {
