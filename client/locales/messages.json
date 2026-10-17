@@ -5,8 +5,6 @@
   "{0}% late": ["{0}% descartados","{0}% descartados"],
   "Average target jitter buffer delay since this track started": ["Retardo objetivo promedio del búfer desde el inicio de esta pista","Atraso alvo médio do buffer desde o início desta faixa"],
   "Audio concealed over the last 5 seconds: {0}%. Total concealment events: {1}.": ["Audio reconstruido en los últimos 5 segundos: {0}%. Total de eventos de reconstrucción: {1}.","Áudio reconstruído nos últimos 5 segundos: {0}%. Total de eventos de reconstrução: {1}."],
-  "The selected quality is a ceiling. Voice bandwidth adjusts automatically during the call.": ["La calidad elegida es un máximo. El consumo de voz se adapta automáticamente durante la llamada.","A qualidade escolhida é um limite máximo. O consumo de voz se adapta automaticamente durante a chamada."],
-  "Protecting voice on a poor connection: {0} kbit/s. Quality recovers gradually.": ["Protegiendo la voz con mala conexión: {0} kbit/s. La calidad se recupera gradualmente.","Protegendo a voz em uma conexão ruim: {0} kbit/s. A qualidade se recupera gradualmente."],
   "Edit message": ["Editar mensaje","Editar mensagem"],
   "Enter save · Shift+Enter new line · Esc cancel": ["Enter guarda · Shift+Enter nueva línea · Esc cancela","Enter salva · Shift+Enter nova linha · Esc cancela"],
   "Edited {0}": ["Editado {0}","Editado {0}"],

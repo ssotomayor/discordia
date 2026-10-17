@@ -445,7 +445,6 @@ pub struct AppState {
     pub bypass_system_audio_processing: bool,
     pub mic_bypass_error: Option<String>,
     pub voice_bitrate_kbps: u32,
-    pub voice_adaptive_bitrate: Option<u32>,
     pub voice_uplink_congested: bool,
     pub voice_quality: HashMap<String, ConnectionHealth>,
     pub voice_stats: HashMap<String, TrackStats>,
@@ -611,7 +610,6 @@ impl AppState {
             bypass_system_audio_processing: true,
             mic_bypass_error: None,
             voice_bitrate_kbps: 64,
-            voice_adaptive_bitrate: None,
             voice_uplink_congested: false,
             voice_quality: HashMap::new(),
             voice_stats: HashMap::new(),
@@ -755,7 +753,6 @@ impl AppState {
         self.voice_menu = None;
         self.voice_quality.clear();
         self.voice_stats.clear();
-        self.voice_adaptive_bitrate = None;
         self.voice_uplink_congested = false;
         self.screen_share_stats = None;
         self.screen_share_in_stats = None;
