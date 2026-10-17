@@ -2290,7 +2290,10 @@ fn Composer(
 
             form {
                 onsubmit: move |e| { e.prevent_default(); submit(); },
-                div { class: "h-12 border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex items-center pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
+                // A minimum, not a height: lines past the first must push the row up, not spill over the messages.
+                div {
+                    class: "border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex py-1 pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
+                    style: "min-height: 3rem; align-items: flex-end;",
 
                     div { class: "relative shrink-0",
                         button {
