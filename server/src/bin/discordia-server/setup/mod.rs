@@ -262,7 +262,8 @@ fn gather(args: &SetupArgs, config_path: &Path, ask: &mut Prompter) -> Result<An
     } else if role.server() {
         let previous = old_server.operators.clone().unwrap_or_default().join(",");
         let typed = ask.text(
-            "Operator pubkeys, hex, comma-separated (moderate system guilds; empty for none)",
+            "Your pubkey, hex (profile card → Copy), and any other operators, comma-separated: \
+             they own the Lobby",
             Some(previous.as_str()),
         )?;
         typed
@@ -273,9 +274,7 @@ fn gather(args: &SetupArgs, config_path: &Path, ask: &mut Prompter) -> Result<An
     } else {
         Vec::new()
     };
-    if let Some(bad) = operators.iter().find(|k| !is_hex_pubkey(k)) {
-        return Err(format!("operator '{bad}' is not a 64-character hex pubkey"));
-    }
+    check_operators(role, &operators)?;
 
     let turn = match args.turn {
         Some(t) => t,
@@ -597,6 +596,19 @@ fn is_root() -> bool {
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
+/// The Lobby has no stored owner; without an operator nobody can moderate it.
+fn check_operators(role: Role, operators: &[String]) -> Result<(), String> {
+    if let Some(bad) = operators.iter().find(|k| !is_hex_pubkey(k)) {
+        return Err(format!("operator '{bad}' is not a 64-character hex pubkey"));
+    }
+    if role.server() && operators.is_empty() {
+        return Err(
+            "a server needs an operator to own its Lobby: pass --operator <your hex pubkey>".into(),
+        );
+    }
+    Ok(())
+}
+
 fn is_hex_pubkey(key: &str) -> bool {
     key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -811,6 +823,15 @@ pub mod tests {
         assert_eq!(s.publish_name, None);
         assert_eq!(s.publish_description.as_deref(), Some("Fridays"));
         assert_eq!(s.publish_public, Some(true));
+    }
+
+    #[test]
+    fn a_server_needs_an_operator_and_a_rendezvous_does_not() {
+        assert!(check_operators(Role::Server, &[]).is_err());
+        assert!(check_operators(Role::Both, &[]).is_err());
+        assert!(check_operators(Role::Rendezvous, &[]).is_ok());
+        assert!(check_operators(Role::Server, &["ab".repeat(32)]).is_ok());
+        assert!(check_operators(Role::Server, &["npub1xyz".into()]).is_err());
     }
 
     #[test]

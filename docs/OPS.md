@@ -38,7 +38,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_RELAY_URL` | — | an iroh relay (a rendezvous's `/config` names one) that introduces friends behind NAT and carries ciphertext when a punch fails |
 | `DISCORDIA_DATA_DIR` | `./discordia-data` | SQLite, media blobs, `livekit-keys`, `quic-secret` (the key in the share string; back it up or friends re-add you) |
 | `DISCORDIA_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it |
-| `DISCORDIA_OPERATORS` | — | comma-separated hex pubkeys who moderate system guilds |
+| `DISCORDIA_OPERATORS` | — | comma-separated hex pubkeys who own the system guilds, the seeded Lobby among them: every owner right but delete, transfer and leave. `setup` requires one for a server |
 | `DISCORDIA_PUBLIC_HOSTS` | — | comma-separated `host`, `host:port` or URLs clients dial (a DNS name, a reverse proxy). Loopback and every interface IP are always accepted; a login signed for any other address is refused |
 | `LIVEKIT_URL` | derived per-connection | SFU URL handed to clients |
 | `LIVEKIT_API_KEY` / `_SECRET` | generated into `<data dir>/livekit-keys` on first run | set only for an external SFU (`LIVEKIT_URL`); must match it |
@@ -236,7 +236,7 @@ The installer downloads the latest `discordia-server-linux`, checks it against
 `setup`. Rerun it to upgrade: with a config present and no arguments it only
 replaces the binary and restarts. `setup` asks what runs here (server,
 rendezvous or both), the public address (detected: an interface's public IPv4,
-else STUN), operator keys, and whether to run TURN and lend the SFU to other
+else STUN), operator keys (at least one for a server, or nobody owns the Lobby), and whether to run TURN and lend the SFU to other
 hosts. A server is asked which rendezvous to publish on (none by default), and
 then its name, description and whether to list it publicly. Every question is a
 flag, and `--yes` takes the defaults (`setup --help`). A rerun reads the existing
