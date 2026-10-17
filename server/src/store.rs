@@ -255,6 +255,7 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
+            "ALTER TABLE messages ADD COLUMN edited_at_ms INTEGER",
             "ALTER TABLE invites ADD COLUMN expires_at_ms INTEGER",
             "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
@@ -262,6 +263,7 @@ impl Store {
             "ALTER TABLE guilds ADD COLUMN leveling TEXT",
             "ALTER TABLE channels ADD COLUMN access TEXT",
             "ALTER TABLE channels ADD COLUMN divider TEXT",
+            "ALTER TABLE channels ADD COLUMN markdown INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE bot_installs ADD COLUMN app TEXT",
             "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
             "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
@@ -351,7 +353,7 @@ impl Store {
         }
         for r in sqlx::query(
             "SELECT id, guild_id, name, kind, topic, read_only, slowmode_secs, position, access,
-                    divider
+                    divider, markdown
              FROM channels",
         )
         .fetch_all(&self.pool)
@@ -366,6 +368,7 @@ impl Store {
                 topic: r.get(4),
                 read_only: r.get::<i64, _>(5) != 0,
                 slowmode_secs: r.get::<i64, _>(6).max(0) as u32,
+                markdown: r.get::<i64, _>(10) != 0,
                 position: r.get::<i64, _>(7).max(0) as u32,
                 access: r
                     .get::<Option<String>, _>(8)
@@ -613,12 +616,12 @@ impl Store {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO channels (id, guild_id, name, kind, topic, read_only,
-                                   slowmode_secs, position, access, divider)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   slowmode_secs, position, access, divider, markdown)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, topic=excluded.topic,
                read_only=excluded.read_only, slowmode_secs=excluded.slowmode_secs,
                position=excluded.position, access=excluded.access,
-               divider=excluded.divider",
+               divider=excluded.divider, markdown=excluded.markdown",
         )
         .bind(c.id.to_string())
         .bind(c.guild_id.to_string())
@@ -634,6 +637,7 @@ impl Store {
                 .and_then(|a| serde_json::to_string(a).ok()),
         )
         .bind(divider_str(c.divider))
+        .bind(c.markdown as i64)
         .execute(executor)
         .await?;
         Ok(())
@@ -1137,8 +1141,9 @@ impl Store {
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
                                    content, image, reactions, reply_id,
                                    reply_author_pubkey, reply_author_username,
-                                   reply_excerpt, created_at, attachment, pinned, image_metadata)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   reply_excerpt, created_at, attachment, pinned, image_metadata,
+                                   edited_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -1163,6 +1168,7 @@ impl Store {
                 serde_json::to_string(metadata).expect("image metadata serializes")
             }),
         )
+        .bind(m.edited_at.map(|t| t.timestamp_millis()))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1174,7 +1180,7 @@ impl Store {
         query: &crate::protocol::MessageSearch,
         offset: u32,
     ) -> Result<Vec<Message>> {
-        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
+        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata, edited_at_ms FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
             .bind(channel_id.to_string()).bind(&query.text)
             .bind(&query.author).bind(&query.author)
             .bind(query.after_ms).bind(query.after_ms)
@@ -1322,7 +1328,8 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata
+                            reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata,
+                            edited_at_ms
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1336,7 +1343,8 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata
+                            reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata,
+                            edited_at_ms
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1398,6 +1406,55 @@ impl Store {
         Ok(row.map(|r| r.get(0)))
     }
 
+    /// Refused, by matching nothing, for another author or an edit that would leave
+    /// a message with no text and nothing attached.
+    pub async fn edit_message(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+        author: &str,
+        content: &str,
+        edited_at_ms: i64,
+    ) -> Result<bool> {
+        let res = sqlx::query(
+            "UPDATE messages SET content = ?, edited_at_ms = ?
+             WHERE id = ? AND channel_id = ? AND author_pubkey = ?
+               AND (? <> '' OR image IS NOT NULL OR attachment IS NOT NULL)",
+        )
+        .bind(content)
+        .bind(edited_at_ms)
+        .bind(message_id.to_string())
+        .bind(channel_id.to_string())
+        .bind(author)
+        .bind(content)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Author, text and edit time, for putting back an edit that was refused.
+    pub async fn message_text(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+    ) -> Result<Option<(String, String, Option<DateTime<Utc>>)>> {
+        let row = sqlx::query(
+            "SELECT author_pubkey, content, edited_at_ms FROM messages WHERE id = ? AND channel_id = ?",
+        )
+        .bind(message_id.to_string())
+        .bind(channel_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            (
+                r.get(0),
+                r.get(1),
+                r.get::<Option<i64>, _>(2)
+                    .and_then(DateTime::<Utc>::from_timestamp_millis),
+            )
+        }))
+    }
+
     pub async fn delete_message(&self, channel_id: Id, message_id: Id) -> Result<()> {
         sqlx::query("DELETE FROM messages WHERE id = ? AND channel_id = ?")
             .bind(message_id.to_string())
@@ -1456,6 +1513,9 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         reactions: serde_json::from_str(&r.get::<String, _>(6)).unwrap_or_default(),
         reply_to,
         created_at: DateTime::<Utc>::from_timestamp_millis(ms).unwrap_or_else(Utc::now),
+        edited_at: r
+            .get::<Option<i64>, _>("edited_at_ms")
+            .and_then(DateTime::<Utc>::from_timestamp_millis),
     }
 }
 

@@ -142,6 +142,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         client_msg,
                         ClientMessage::FetchMessages { .. }
                             | ClientMessage::SendMessage { .. }
+                            | ClientMessage::EditMessage { .. }
                             | ClientMessage::React { .. }
                             | ClientMessage::RegisterCommands { .. }
                             | ClientMessage::RegisterManifest { .. }
@@ -152,7 +153,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                     )
                 {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
-                        message: "bots may only fetch history, send messages, react, declare commands and manifests, call and answer commands, and speak in their activities".into(),
+                        message: "bots may only fetch history, send and edit messages, react, declare commands and manifests, call and answer commands, and speak in their activities".into(),
                     }).await;
                     continue;
                 }
@@ -380,27 +381,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }).await;
                                 continue;
                             }
-                            if ctx.state.channel_read_only(channel_id) {
-                                let allowed = if is_bot {
-                                    ctx.state
-                                        .bot_install(gid, &author.pubkey)
-                                        .map(|i| {
-                                            i.has_permission(Permission::ManageMessages)
-                                                || i.has_permission(Permission::ManageChannels)
-                                        })
-                                        .unwrap_or(false)
-                                } else {
-                                    let perms =
-                                        ctx.state.effective_permissions(gid, &author.pubkey);
-                                    perms.contains(&Permission::ManageMessages)
-                                        || perms.contains(&Permission::ManageChannels)
-                                };
-                                if !allowed {
-                                    let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                        message: "this channel is read-only".into(),
-                                    }).await;
-                                    continue;
-                                }
+                            if ctx.state.channel_read_only(channel_id)
+                                && !ctx.state.writes_when_read_only(gid, &author.pubkey, is_bot)
+                            {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                    message: "this channel is read-only".into(),
+                                }).await;
+                                continue;
                             }
                             let mod_exempt = {
                                 let perms = ctx.state.effective_permissions(gid, &author.pubkey);
@@ -2097,7 +2084,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         }
                     }
-                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs, divider } => {
+                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs, divider, markdown } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -2108,7 +2095,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, divider, &u.pubkey).await {
+                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, divider, markdown, &u.pubkey).await {
                             Ok(channel) => {
                                 let targets = viewers_of(&ctx.state, &channel);
                                 ctx.state.deliver(targets, ServerMessage::ChannelUpdate(channel));
@@ -2171,6 +2158,43 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::EditMessage { channel_id, message_id, content } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        let outcome = if limiter.allow() {
+                            ctx.state.edit_message(channel_id, message_id, &content, &u.pubkey, is_bot).await
+                        } else {
+                            Err("rate limited: too many messages, slow down".into())
+                        };
+                        match outcome {
+                            Ok(edited_at) => {
+                                if let Some(audience) = channel_audience(&ctx.state, channel_id) {
+                                    ctx.state.deliver(audience, ServerMessage::MessageUpdate {
+                                        channel_id,
+                                        message_id,
+                                        content: content.trim().to_string(),
+                                        edited_at: Some(edited_at),
+                                    });
+                                }
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                // Only to its own author: anyone else may no longer see the channel.
+                                if let Ok(Some((author, content, edited_at))) =
+                                    ctx.state.store.message_text(channel_id, message_id).await
+                                    && author == u.pubkey
+                                {
+                                    let _ = send(&mut ws_tx, &ServerMessage::MessageUpdate {
+                                        channel_id, message_id, content, edited_at,
+                                    }).await;
+                                }
                             }
                         }
                     }
@@ -3201,7 +3225,8 @@ fn filter_for_bot(
             let install = state.bot_install(*guild_id, bot_pubkey)?;
             install.has_intent(Intent::Members).then(|| msg.clone())
         }
-        ServerMessage::MessageDelete { channel_id, .. } => {
+        ServerMessage::MessageDelete { channel_id, .. }
+        | ServerMessage::MessageUpdate { channel_id, .. } => {
             let gid = state.channel_guild(*channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
             install

@@ -349,6 +349,7 @@ pub fn WorkspaceView(
         (gateway_tx, gateway_shutdown, voice_tx)
     });
     provide_context(gateway_tx.clone());
+    crate::route_reporting::use_route_reports(state, gateway_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     provide_context(params.identity.clone());
@@ -1294,7 +1295,7 @@ fn VoiceRouteBadge() -> Element {
                 p { {crate::i18n::text("Audio send: {0}", std::slice::from_ref(&(send)))} }
                 p { {crate::i18n::text("Audio receive: {0}", std::slice::from_ref(&(receive)))} }
                 p { style: "overflow-wrap: anywhere;", {crate::i18n::text("Voice signaling: {0}", &[(signaling).to_string()])} }
-                p { {crate::i18n::text("Participants in this call — reported by their clients, refreshed every 5 seconds. No IP addresses are shared.", &[])} }
+                p { {crate::i18n::text("Participants in this call — updated when routes change or participants join. No IP addresses are shared.", &[])} }
                 for (name, report) in peers {
                     div { class: "border-t border-[var(--border)] py-2",
                         strong { "{name}" }

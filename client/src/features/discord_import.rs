@@ -647,6 +647,7 @@ pub async fn run_import(
             read_only: p.read_only,
             position: c.position,
             slowmode_secs: p.slowmode_secs,
+            markdown: None,
         });
         done += 1;
         pause().await;

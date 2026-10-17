@@ -836,6 +836,7 @@ fn insert_message(
         cid,
         Message {
             author_bot: false,
+            edited_at: None,
             image_metadata: None,
             attachment: None,
             pinned: false,

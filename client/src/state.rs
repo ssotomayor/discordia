@@ -340,6 +340,8 @@ pub struct AppState {
     pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
+    /// Edits shown before the server answered; its `MessageUpdate` settles each.
+    pub pending_edits: HashSet<Id>,
     pub dm_call: Option<crate::features::dm_call::CallView>,
     pub contacts: crate::nostr::nip02::ContactList,
     /// Seeded from `ClientSettings::dm_blocked` until our kind 10000 arrives.
@@ -537,6 +539,7 @@ impl AppState {
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
             dm_delivery: HashMap::new(),
+            pending_edits: HashSet::new(),
             dm_call: None,
             contacts: Default::default(),
             mutes: Default::default(),
@@ -719,6 +722,7 @@ impl AppState {
         self.profiles.clear();
         self.activities.clear();
         self.message_search = None;
+        self.pending_edits.clear();
         self.file_upload_result = None;
         self.server_chat_tools = false;
         self.guild_file_policies.clear();
@@ -1221,6 +1225,33 @@ impl AppState {
     /// Puts one message in its conversation in time order, and says whether it
     /// was new. Arriving twice is ordinary here, not exceptional: relays replay
     /// their whole history and a fetched page overlaps what was delivered live.
+    pub fn apply_message_edit(
+        &mut self,
+        channel_id: Id,
+        message_id: Id,
+        content: String,
+        edited_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        self.pending_edits.remove(&message_id);
+        let search = self
+            .message_search
+            .as_mut()
+            .filter(|(cid, ..)| *cid == channel_id)
+            .map(|(_, _, found)| found);
+        for messages in self.messages.get_mut(&channel_id).into_iter().chain(search) {
+            for m in messages.iter_mut().filter(|m| m.id == message_id) {
+                m.content = content.clone();
+                m.edited_at = edited_at;
+            }
+        }
+    }
+
+    /// Shown at once with a pending mark; the server's answer replaces it either way.
+    pub fn edit_locally(&mut self, channel_id: Id, message_id: Id, content: String) {
+        self.apply_message_edit(channel_id, message_id, content, Some(chrono::Utc::now()));
+        self.pending_edits.insert(message_id);
+    }
+
     pub fn insert_message(&mut self, channel_id: Id, message: Message) -> bool {
         if self
             .messages
@@ -1922,6 +1953,7 @@ mod tests {
     fn at(id: Id, channel_id: Id, secs: i64) -> Message {
         Message {
             author_bot: false,
+            edited_at: None,
             image_metadata: None,
             attachment: None,
             pinned: false,
@@ -2093,6 +2125,27 @@ mod tests {
         assert_eq!(s.messages[&cid].last().unwrap().id, tail);
     }
 
+    #[test]
+    fn an_edit_shows_at_once_and_the_servers_answer_settles_it() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        let mid = Id::new_v4();
+        s.insert_message(cid, at(mid, cid, 100));
+
+        s.edit_locally(cid, mid, "fixed".into());
+        assert_eq!(s.messages[&cid][0].content, "fixed");
+        assert!(s.messages[&cid][0].edited_at.is_some());
+        assert!(s.pending_edits.contains(&mid));
+
+        s.apply_message_edit(cid, mid, "t100".into(), None);
+        assert_eq!(
+            s.messages[&cid][0].content, "t100",
+            "a refusal puts it back"
+        );
+        assert!(s.messages[&cid][0].edited_at.is_none());
+        assert!(s.pending_edits.is_empty());
+    }
+
     fn text_channel(s: &mut AppState, guild_id: Id) -> Id {
         let id = Id::new_v4();
         s.channels.push(Channel {
@@ -2104,6 +2157,7 @@ mod tests {
             topic: None,
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 0,
             access: None,
         });
@@ -2226,6 +2280,7 @@ mod tests {
         for at in ats {
             entry.push(Message {
                 author_bot: false,
+                edited_at: None,
                 image_metadata: None,
                 attachment: None,
                 pinned: false,

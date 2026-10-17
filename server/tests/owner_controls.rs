@@ -928,6 +928,7 @@ async fn channel_crud_gated_and_broadcast() {
             read_only: true,
             position: created.position,
             slowmode_secs: 0,
+            markdown: None,
         })
         .await
         .unwrap();
@@ -1012,6 +1013,7 @@ async fn dividers_keep_their_style_and_take_no_messages() {
                 read_only: false,
                 position: divider.position,
                 slowmode_secs: 0,
+                markdown: None,
             })
             .await
             .unwrap();
@@ -1066,6 +1068,7 @@ async fn read_only_channel_gates_posting() {
             read_only: true,
             position: 0,
             slowmode_secs: 0,
+            markdown: None,
         })
         .await
         .unwrap();
@@ -1854,6 +1857,7 @@ async fn slowmode_throttles_posting() {
             read_only: false,
             position: 0,
             slowmode_secs: 30,
+            markdown: None,
         })
         .await
         .unwrap();
@@ -2087,6 +2091,7 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
                 read_only: false,
                 position: 0,
                 slowmode_secs: 0,
+                markdown: None,
             })
             .await
             .unwrap();
@@ -2270,6 +2275,7 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
             read_only: false,
             position: 0,
             slowmode_secs: 0,
+            markdown: None,
         })
         .await
         .unwrap();

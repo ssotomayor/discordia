@@ -174,6 +174,7 @@ async fn a_history_page_is_clamped_however_much_is_asked_for() {
             store
                 .insert_message(&Message {
                     author_bot: false,
+                    edited_at: None,
                     image_metadata: None,
                     attachment: None,
                     pinned: false,

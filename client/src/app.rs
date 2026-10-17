@@ -334,6 +334,19 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-file-type { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 44px; height: 52px; flex-shrink: 0; border-radius: 8px; background-color: var(--accent-soft); color: var(--accent); }
 .dxf-file-type svg { display: block; width: 22px; height: 22px; }
 .dxf-badge svg { display: block; width: 100%; height: 100%; }
+.dxf-md { white-space: normal; }
+.dxf-md > :first-child { margin-top: 0; }
+.dxf-md p { margin: 0.15em 0; }
+.dxf-md h1 { font-size: 1.4em; font-weight: 700; line-height: 1.25; margin: 0.4em 0 0.15em; }
+.dxf-md h2 { font-size: 1.2em; font-weight: 700; line-height: 1.3; margin: 0.35em 0 0.1em; }
+.dxf-md h3 { font-size: 1.05em; font-weight: 700; margin: 0.3em 0 0.1em; }
+.dxf-md ul { list-style: disc; padding-left: 1.4em; margin: 0.15em 0; }
+.dxf-md ol { list-style: decimal; padding-left: 1.6em; margin: 0.15em 0; }
+.dxf-md blockquote { border-left: 3px solid var(--border-strong); padding-left: 0.6em; margin: 0.2em 0; color: var(--text-muted); }
+.dxf-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; background-color: var(--panel2); border-radius: 4px; padding: 0.05em 0.3em; }
+.dxf-md pre { background-color: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 0.5em 0.7em; margin: 0.25em 0; overflow-x: auto; }
+.dxf-md pre code { background-color: transparent; padding: 0; white-space: pre; }
+.dxf-md hr { border: 0; border-top: 1px solid var(--border); margin: 0.5em 0; }
 .dxf-file-type > span:last-child { font-size: 9px; font-weight: 700; letter-spacing: 0.04em; }
 .dxf-file-info { flex: 1 1 110px; min-width: 0; }
 .dxf-file-name { color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }

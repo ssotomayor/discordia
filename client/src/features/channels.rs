@@ -810,10 +810,35 @@ fn ChannelMenuPopover(
                                                 read_only: !ch_ro.read_only,
                                                 position: ch_ro.position,
                                                 slowmode_secs: ch_ro.slowmode_secs,
+                                                markdown: None,
                                             });
                                             on_close.call(());
                                         },
                                         if ch.read_only { {crate::i18n::text("🔓 Make writable", &[])} } else { {crate::i18n::text("🔒 Make read-only", &[])} }
+                                    }
+                                    {
+                                        let gw_md = gateway.clone();
+                                        let ch_md = ch.clone();
+                                        rsx! {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                title: crate::i18n::text("Headings, lists, quotes, code and links render in this channel; bold, italic and underline work everywhere", &[]),
+                                                onclick: move |_| {
+                                                    gw_md.send(ClientMessage::UpdateChannel {
+                                                        divider: None,
+                                                        channel_id: ch_md.id,
+                                                        name: ch_md.name.clone(),
+                                                        topic: ch_md.topic.clone(),
+                                                        read_only: ch_md.read_only,
+                                                        position: ch_md.position,
+                                                        slowmode_secs: ch_md.slowmode_secs,
+                                                        markdown: Some(!ch_md.markdown),
+                                                    });
+                                                    on_close.call(());
+                                                },
+                                                if ch.markdown { {crate::i18n::text("Turn off markdown", &[])} } else { {crate::i18n::text("Allow markdown", &[])} }
+                                            }
+                                        }
                                     }
                                 }
                                 button {
@@ -842,6 +867,7 @@ fn ChannelMenuPopover(
                                             read_only: ch2.read_only,
                                             position: ch2.position,
                                             slowmode_secs: ch2.slowmode_secs,
+                                            markdown: None,
                                         });
                                     }
                                     on_close.call(());
@@ -1871,6 +1897,7 @@ mod tests {
             position,
             access: None,
             slowmode_secs: 0,
+            markdown: false,
         }
     }
 

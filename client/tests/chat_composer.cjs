@@ -30,6 +30,7 @@ function fixture() {
     setStartAfter(node) { operations.push(['caret-after', node]); },
     setStart() {},
     setEnd() {},
+    setEndBefore() {},
     cloneContents() { return { childNodes: before }; },
   };
   const selection = {
@@ -142,6 +143,19 @@ function fixture() {
   f.event('input');
   assert.equal(f.messages.at(-1).text, '');
   assert.equal(f.el.innerHTML, '');
+}
+
+{
+  const f = fixture();
+  assert.equal(f.event('keydown', { key: 'b', ctrlKey: true }), true);
+  assert.equal(f.event('keydown', { key: 'I', metaKey: true }), true);
+  assert.equal(f.event('keydown', { key: 'u', ctrlKey: true }), true);
+  assert.deepEqual(f.inserted.map(n => n.nodeValue), ['**', '**', '*', '*', '__', '__']);
+  assert.equal(f.commands.length, 0, 'the browser\'s own bold never runs: it is lost on send');
+  assert.equal(f.messages.filter(m => m.k === 'input').length, 3);
+  assert.equal(f.event('keydown', { key: 'b', ctrlKey: true, shiftKey: true }), false);
+  assert.equal(f.event('keydown', { key: 'b', ctrlKey: true, target: {} }), false);
+  assert.equal(f.inserted.length, 6);
 }
 
 console.log('Chat composer tests passed');

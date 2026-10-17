@@ -630,13 +630,46 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 .can(gid, crate::protocol::Permission::ManageMessages)
         });
     let pinned = message.pinned;
-    let can_delete = {
-        let s = state.read();
-        let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
-        is_author
-            || guild_id
-                .map(|gid| s.can(gid, crate::protocol::Permission::ManageMessages))
-                .unwrap_or(false)
+    let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
+    let can_delete = is_author
+        || guild_id.is_some_and(|gid| {
+            state
+                .read()
+                .can(gid, crate::protocol::Permission::ManageMessages)
+        });
+    // A DM lives on Nostr relays, which hold no edits.
+    let can_edit = is_author && guild_id.is_some();
+    let mut editing = use_signal(|| None::<String>);
+    let has_media = message.image.is_some() || message.attachment.is_some();
+    let edit_pending = state.read().pending_edits.contains(&message_id);
+    let edited = message.edited_at.map(|t| {
+        t.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    });
+    let save_edit = {
+        let original = message.content.clone();
+        let gateway = gateway.clone();
+        use_callback(move |_: ()| {
+            let Some(draft) = editing() else { return };
+            let text = draft.trim().to_string();
+            if text == original.trim() {
+                editing.set(None);
+                return;
+            }
+            if text.is_empty() && !has_media {
+                return;
+            }
+            state
+                .write()
+                .edit_locally(channel_id, message_id, text.clone());
+            gateway.send(ClientMessage::EditMessage {
+                channel_id,
+                message_id,
+                content: text,
+            });
+            editing.set(None);
+        })
     };
 
     let delivery_mark = delivery.map(|delivery| {
@@ -731,9 +764,59 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
                     }
                 }
-                if has_text {
+                if let Some(draft) = editing() {
+                    div { class: "mt-0.5 flex flex-col gap-1",
+                        textarea {
+                            class: "w-full resize-none bg-[var(--panel2)] border border-[var(--border-strong)] focus:border-[var(--accent)] rounded-lg px-2.5 py-1.5 text-sm text-[var(--text)] outline-none leading-relaxed",
+                            rows: "{draft.lines().count().clamp(1, 8)}",
+                            maxlength: 2000,
+                            value: "{draft}",
+                            aria_label: crate::i18n::text("Edit message", &[]),
+                            oninput: move |e| editing.set(Some(e.value())),
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter && !e.modifiers().shift() {
+                                    e.prevent_default();
+                                    save_edit.call(());
+                                } else if e.key() == Key::Escape {
+                                    e.prevent_default();
+                                    editing.set(None);
+                                }
+                            },
+                            onmounted: move |e| async move {
+                                let _ = e.set_focus(true).await;
+                            },
+                        }
+                        div { class: "flex items-center gap-2 text-[10px] text-[var(--text-dim)]",
+                            span { class: "flex-1", {crate::i18n::text("Enter save · Shift+Enter new line · Esc cancel", &[])} }
+                            button {
+                                class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                                onclick: move |_| editing.set(None),
+                                {crate::i18n::text("Cancel", &[])}
+                            }
+                            button {
+                                class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                                onclick: move |_| save_edit.call(()),
+                                {crate::i18n::text("Save", &[])}
+                            }
+                        }
+                    }
+                } else if has_text {
                     div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
                         MessageContent { content: message.content.clone(), channel_id, message_id }
+                        if let Some(when) = edited.clone() {
+                            span {
+                                class: "ml-1 text-[10px] text-[var(--text-dim)] select-none",
+                                title: crate::i18n::text("Edited {0}", std::slice::from_ref(&when)),
+                                {crate::i18n::text("(edited)", &[])}
+                            }
+                        }
+                        if edit_pending {
+                            span {
+                                class: "ml-1 inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]",
+                                title: crate::i18n::text("Saving…", &[]),
+                                dangerous_inner_html: crate::features::icons::CLOCK,
+                            }
+                        }
                         if let Some(mark) = delivery_mark.clone() {
                             span { class: "ml-1.5", {mark} }
                         }
@@ -838,6 +921,21 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             }
                         },
                         "↩"
+                    }
+                    if can_edit {
+                        button {
+                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
+                            title: crate::i18n::text("Edit message", &[]),
+                            onclick: {
+                                let body = message.content.clone();
+                                move |_| {
+                                    show_react.set(false);
+                                    confirm_delete.set(false);
+                                    editing.set(Some(body.clone()));
+                                }
+                            },
+                            "✎"
+                        }
                     }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
@@ -1232,67 +1330,22 @@ fn UnicodeEmojiText(text: String, size: f64) -> Element {
 #[component]
 fn MessageContent(content: String, channel_id: Id, message_id: Id) -> Element {
     let state = use_app_state();
-    let guild_id = state
+    let (guild_id, markdown) = state
         .read()
         .channels
         .iter()
         .find(|c| c.id == channel_id)
-        .map(|c| c.guild_id);
+        .map(|c| (Some(c.guild_id), c.markdown))
+        .unwrap_or_default();
     let extra: Vec<(String, String)> = state
         .read()
         .dm_emoji
         .get(&message_id)
         .cloned()
         .unwrap_or_default();
-    let lines: Vec<&str> = content.split('\n').collect();
-    let last = lines.len().saturating_sub(1);
     rsx! {
-        for (li, line) in lines.iter().enumerate() {
-            {
-                let words: Vec<&str> = line.split(' ').collect();
-                let lastw = words.len().saturating_sub(1);
-                rsx! {
-                    for (wi, word) in words.iter().enumerate() {
-                        {
-                            let w = word.to_string();
-                            let trailing = if wi < lastw { " " } else { "" };
-                            if is_url(&w) {
-                                let href = w.clone();
-                                rsx! {
-                                    span {
-                                        span {
-                                            class: "text-[var(--accent)] underline cursor-pointer hover:text-[var(--accent-strong)]",
-                                            onclick: move |_| crate::app::open_external(&href),
-                                            "{w}"
-                                        }
-                                        "{trailing}"
-                                    }
-                                }
-                            } else if w.starts_with('@') && w.len() > 1 {
-                                rsx! {
-                                    span {
-                                        span { class: "text-[var(--accent)] bg-[var(--accent-soft)] rounded px-0.5", "{w}" }
-                                        "{trailing}"
-                                    }
-                                }
-                            } else if crate::emoji::needs_rendering(&w) {
-                                rsx! { span { EmojiText { text: w.clone(), guild_id, extra: extra.clone() } "{trailing}" } }
-                            } else {
-                                rsx! { span { "{w}{trailing}" } }
-                            }
-                        }
-                    }
-                    if li < last {
-                        br {}
-                    }
-                }
-            }
-        }
+        super::markup::Markup { content, markdown, guild_id, extra }
     }
-}
-
-fn is_url(w: &str) -> bool {
-    w.starts_with("http://") || w.starts_with("https://")
 }
 
 // Document listeners survive a composer rebuilt when a channel locks or unlocks.
@@ -1384,6 +1437,23 @@ return (async function () {
     saved = r.cloneRange();
     report();
   };
+  // Marks, not <b>: the browser's own bold is lost when the field is serialized.
+  const wrap = (mark) => {
+    const el = find();
+    const r = el && caretIn(el);
+    if (!r) return;
+    const tail = document.createTextNode(mark), head = document.createTextNode(mark);
+    const end = r.cloneRange(); end.collapse(false); end.insertNode(tail);
+    const start = r.cloneRange(); start.collapse(true); start.insertNode(head);
+    const inside = document.createRange();
+    inside.setStartAfter(head); inside.setEndBefore(tail);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(inside);
+    saved = inside.cloneRange();
+    report();
+  };
+  const MARKS = { b: '**', i: '*', u: '__' };
   const api = {
     insertText: (text, replaceToken) => insert([document.createTextNode(text)], replaceToken),
     insertEmoji: (code, url, replaceToken, space) => {
@@ -1413,6 +1483,8 @@ return (async function () {
   const onInput = (e) => { if (within(e)) report(); };
   const onKey = (e) => {
     if (!within(e) || e.isComposing) return;
+    const mark = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && MARKS[e.key.toLowerCase()];
+    if (mark) { e.preventDefault(); wrap(mark); return; }
     if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey) document.execCommand('insertLineBreak');
@@ -1803,6 +1875,16 @@ fn Composer(
     });
 
     let is_dm = state.read().dm_of(channel_id).is_some();
+    let markdown = state
+        .read()
+        .channels
+        .iter()
+        .any(|c| c.id == channel_id && c.markdown);
+    let shortcut = if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
+    };
     let file_guild = state
         .read()
         .channels
@@ -2389,10 +2471,23 @@ fn Composer(
                         }
                     }
                 }
-                div { class: "flex gap-3.5 pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
+                div {
+                    class: "flex flex-wrap pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
+                    style: "column-gap: 0.875rem; row-gap: 0.125rem;",
                     span { {crate::i18n::text("Enter send", &[])} }
                     span { {crate::i18n::text("Shift+Enter new line", &[])} }
                     span { {crate::i18n::text(":name for emoji", &[])} }
+                    span {
+                        title: crate::i18n::text("Or type **bold**, *italic* and __underline__", &[]),
+                        {crate::i18n::text("{0}B bold · {0}I italic · {0}U underline", &[shortcut.to_string()])}
+                    }
+                    if markdown {
+                        span {
+                            class: "text-[var(--accent)]",
+                            title: crate::i18n::text("Headings, lists, quotes, code and links render here", &[]),
+                            {crate::i18n::text("Markdown on", &[])}
+                        }
+                    }
                     if file_request().is_some() {
                         span { class: "text-[var(--accent)]", {crate::i18n::text("Uploading file…", &[])} }
                     }

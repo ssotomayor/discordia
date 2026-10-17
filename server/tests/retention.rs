@@ -51,6 +51,7 @@ fn channel(guild_id: Id) -> Channel {
         topic: None,
         read_only: false,
         slowmode_secs: 0,
+        markdown: false,
         position: 0,
         access: None,
     }
@@ -59,6 +60,7 @@ fn channel(guild_id: Id) -> Channel {
 fn message(channel_id: Id, at_ms: i64, body: &str) -> Message {
     Message {
         author_bot: false,
+        edited_at: None,
         image_metadata: None,
         attachment: None,
         pinned: false,

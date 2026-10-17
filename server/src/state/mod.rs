@@ -299,6 +299,7 @@ impl AppState {
             topic: None,
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 0,
             access: None,
         };
@@ -311,6 +312,7 @@ impl AppState {
             topic: None,
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 1,
             access: None,
         };
@@ -954,6 +956,7 @@ impl AppState {
                 topic: None,
                 read_only: *read_only,
                 slowmode_secs: 0,
+                markdown: false,
                 position: pos as u32,
                 access: None,
             });
@@ -2135,6 +2138,7 @@ impl AppState {
                 .filter(|t| !t.is_empty() && !kind.is_divider()),
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: next_pos,
             access: None,
         };
@@ -2191,6 +2195,7 @@ impl AppState {
         position: u32,
         slowmode_secs: u32,
         divider: Option<crate::protocol::DividerStyle>,
+        markdown: Option<bool>,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
         let _write = self.durable_writes.lock().await;
@@ -2213,6 +2218,9 @@ impl AppState {
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
             channel.slowmode_secs = slowmode_secs.min(21_600);
             channel.position = position;
+            if let Some(on) = markdown {
+                channel.markdown = on && channel.kind == crate::protocol::ChannelKind::Text;
+            }
             if channel.kind.is_divider() {
                 channel.topic = None;
                 channel.divider = divider.unwrap_or(channel.divider);
@@ -2574,6 +2582,68 @@ impl AppState {
             .unwrap_or(false)
     }
 
+    /// Who still writes in a read-only channel. A bot's roles never apply, so its install decides.
+    pub fn writes_when_read_only(&self, guild_id: Id, pubkey: &str, is_bot: bool) -> bool {
+        let may =
+            |p: &Permission| *p == Permission::ManageMessages || *p == Permission::ManageChannels;
+        if is_bot {
+            self.bot_install(guild_id, pubkey).is_some_and(|i| {
+                i.has_permission(Permission::ManageMessages)
+                    || i.has_permission(Permission::ManageChannels)
+            })
+        } else {
+            self.effective_permissions(guild_id, pubkey).iter().any(may)
+        }
+    }
+
+    pub async fn edit_message(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+        content: &str,
+        by_pubkey: &str,
+        is_bot: bool,
+    ) -> Result<chrono::DateTime<chrono::Utc>, String> {
+        let channel = self
+            .channel(channel_id)
+            .filter(|c| {
+                self.is_guild_member(c.guild_id, by_pubkey) && self.can_see_channel(by_pubkey, c)
+            })
+            .ok_or("unknown channel")?;
+        if channel.read_only && !self.writes_when_read_only(channel.guild_id, by_pubkey, is_bot) {
+            return Err("this channel is read-only".into());
+        }
+        let content = content.trim();
+        if content.len() > 2000 {
+            return Err("message must be at most 2000 chars".into());
+        }
+        let author = self
+            .store
+            .message_author(channel_id, message_id)
+            .await
+            .map_err(|e| format!("store error: {e}"))?
+            .ok_or("unknown message")?;
+        if author != by_pubkey {
+            return Err("only the author can edit a message".into());
+        }
+        let now = chrono::Utc::now();
+        let edited = self
+            .store
+            .edit_message(
+                channel_id,
+                message_id,
+                by_pubkey,
+                content,
+                now.timestamp_millis(),
+            )
+            .await
+            .map_err(|e| format!("store error: {e}"))?;
+        if !edited {
+            return Err("a message needs text unless it has a picture or file".into());
+        }
+        Ok(now)
+    }
+
     pub async fn delete_message(
         &self,
         channel_id: Id,
@@ -2861,6 +2931,7 @@ impl AppState {
             id: Uuid::new_v4(),
             channel_id,
             author_bot: self.is_installed_bot(channel_id, &author.pubkey),
+            edited_at: None,
             author,
             content,
             image,

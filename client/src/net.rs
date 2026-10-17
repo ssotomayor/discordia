@@ -728,13 +728,13 @@ where
     let _dog = SessionWatchdog(watchdog(watch.clone(), "session".into()));
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
     let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
-    let mut route_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut host_route_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut last_received = tokio::time::Instant::now();
     let media_updates = state.peek().emoji_images.updates();
     loop {
         watch.finish("session");
         tokio::select! {
-            _ = route_tick.tick() => {
+            _ = host_route_tick.tick(), if host_monitor.is_some() => {
                 if let Some(monitor) = &host_monitor {
                     let connections = monitor.connections().into_iter()
                         .filter(|connection| connection.pubkey != params.identity.pubkey
@@ -744,19 +744,6 @@ where
                         info.connections = connections;
                     }
                 }
-                let report = {
-                    let s = state.peek();
-                    s.server_voice_channel().map(|channel_id| ClientMessage::ConnectionRouteReport {
-                        channel_id,
-                        gateway: s.gateway_route.clone().unwrap_or_else(|| match s.transport {
-                            Transport::Loopback => "local", Transport::Quic => "direct · IP unknown",
-                            Transport::QuicRelayed => "relay", Transport::Proxied => "proxied",
-                        }.into()),
-                        voice_send: s.voice_send_route.as_ref().map(|r| r.label()),
-                        voice_receive: s.voice_receive_route.as_ref().map(|r| r.label()),
-                    })
-                };
-                if let Some(report) = report { let _ = tx.send(report); }
             }
             _ = shutdown.wait_for(|requested| *requested) => {
                 close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
@@ -1374,6 +1361,7 @@ fn apply(
             operator,
             default_guild,
         } => {
+            s.pending_edits.clear();
             let recovering = s.status == ConnectionStatus::Reconnecting;
             let selected_guild = s.selected_guild;
             let selected_channel = s.selected_channel;
@@ -1955,6 +1943,12 @@ fn apply(
                 }
             }
         }
+        ServerMessage::MessageUpdate {
+            channel_id,
+            message_id,
+            content,
+            edited_at,
+        } => s.apply_message_edit(channel_id, message_id, content, edited_at),
         ServerMessage::MessageDelete {
             channel_id,
             message_id,
@@ -2582,6 +2576,7 @@ mod tests {
                         channel,
                         vec![crate::protocol::Message {
                             author_bot: false,
+                            edited_at: None,
                             image_metadata: None,
                             attachment: None,
                             pinned: false,
@@ -2696,6 +2691,7 @@ mod tests {
             channel,
             vec![crate::protocol::Message {
                 author_bot: false,
+                edited_at: None,
                 image_metadata: None,
                 attachment: None,
                 pinned: false,

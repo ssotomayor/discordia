@@ -31,6 +31,7 @@ async fn fresh_state() -> AppState {
 fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
     Message {
         author_bot: false,
+        edited_at: None,
         image_metadata: None,
         attachment: None,
         pinned: false,
@@ -294,6 +295,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
             topic: Some("t".repeat(1000)),
             read_only: false,
             slowmode_secs: 0,
+            markdown: false,
             position: 0,
             access: None,
         }],
