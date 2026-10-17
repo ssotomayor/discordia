@@ -238,6 +238,46 @@ async fn deleting_the_default_returns_newcomers_to_the_lobby() {
 }
 
 #[tokio::test]
+async fn an_operator_may_delete_the_lobby_once_another_guild_is_default() {
+    let operator_id = BotIdentity::generate();
+    let (url, _h) = spawn_with(&operator_id).await;
+    let (mut operator, guilds, ..) = arrive(&url, &operator_id, "Op").await;
+    let lobby = guilds[0].id;
+    let (mut member, ..) = arrive(&url, &BotIdentity::generate(), "Member").await;
+
+    let delete = async |bot: &mut Bot| {
+        bot.send(&ClientMessage::DeleteGuild { guild_id: lobby })
+            .await
+            .unwrap();
+        loop {
+            match next_timeout(bot).await {
+                ServerMessage::GuildDelete { guild_id } if guild_id == lobby => return Ok(()),
+                ServerMessage::Error { message } => return Err(message),
+                _ => continue,
+            }
+        }
+    };
+    let err = delete(&mut operator).await.unwrap_err();
+    assert!(err.contains("default"), "got: {err}");
+    set_default(&mut operator, Some(lobby)).await.unwrap();
+    let err = delete(&mut operator).await.unwrap_err();
+    assert!(
+        err.contains("default"),
+        "the default itself is not a way out; got: {err}"
+    );
+
+    let home = make_guild(&mut operator, "Home").await;
+    set_default(&mut operator, Some(home)).await.unwrap();
+    let err = delete(&mut member).await.unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+    delete(&mut operator).await.unwrap();
+
+    let (_, guilds, default_guild, _) = arrive(&url, &BotIdentity::generate(), "New").await;
+    assert_eq!(names(&guilds), ["Home"]);
+    assert_eq!(default_guild, Some(home));
+}
+
+#[tokio::test]
 async fn a_lockdown_defers_the_offer_until_it_lifts() {
     let operator_id = BotIdentity::generate();
     let (url, _h) = spawn_with(&operator_id).await;

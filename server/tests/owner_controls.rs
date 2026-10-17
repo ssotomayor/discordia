@@ -1515,7 +1515,10 @@ async fn operator_can_moderate_system_guild() {
         .await
         .unwrap();
     let err = next_error(&mut op).await;
-    assert!(err.contains("owner"), "delete should fail; got: {err}");
+    assert!(
+        err.contains("default"),
+        "delete should fail without another default; got: {err}"
+    );
 
     op.send(&ClientMessage::TransferOwnership {
         guild_id: lobby,

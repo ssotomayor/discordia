@@ -2600,7 +2600,17 @@ impl AppState {
             .get(&guild_id)
             .map(|g| g.owner_pubkey.clone())
             .ok_or_else(|| "unknown guild".to_string())?;
-        if owner.is_empty() || owner != by_pubkey {
+        if owner.is_empty() {
+            if !self.operators.contains(by_pubkey) {
+                return Err("only the owner can delete this guild".into());
+            }
+            // Without a default, newcomers land in the system guilds — removing one strands them.
+            if self.default_guild().is_none_or(|d| d == guild_id) {
+                return Err(
+                    "make another guild the server default before deleting a system guild".into(),
+                );
+            }
+        } else if owner != by_pubkey {
             return Err("only the owner can delete this guild".into());
         }
         durable(self.store.delete_guild(guild_id).await, "guild delete")?;

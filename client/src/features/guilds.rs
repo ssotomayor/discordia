@@ -267,6 +267,8 @@ pub fn GuildsSidebar() -> Element {
                                         && g.visibility == crate::protocol::GuildVisibility::Public
                                 });
                             let is_default = s.default_guild == Some(gid);
+                            let can_delete = is_owner
+                                && (!is_system || s.default_guild.is_some_and(|d| d != gid));
                             drop(s);
                             let gw_default = gateway.clone();
                             let gw_set = gateway.clone();
@@ -354,36 +356,36 @@ pub fn GuildsSidebar() -> Element {
                                                 {crate::i18n::text("Roles", &[])}
                                             }
                                         }
-                                        if !is_system {
-                                            if is_owner {
-                                                button {
-                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--warn)] hover:bg-[var(--warn)]/10 transition-colors",
-                                                    onclick: move |_| {
-                                                        if let Some(cur) = menu.write().as_mut() {
-                                                            cur.confirming = Some(ConfirmAction::Transfer);
-                                                        }
-                                                    },
-                                                    {crate::i18n::text("Transfer ownership", &[])}
-                                                }
-                                                button {
-                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
-                                                    onclick: move |_| {
-                                                        if let Some(cur) = menu.write().as_mut() {
-                                                            cur.confirming = Some(ConfirmAction::Delete);
-                                                        }
-                                                    },
-                                                    {crate::i18n::text("Delete guild", &[])}
-                                                }
-                                            } else {
-                                                button {
-                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
-                                                    onclick: move |_| {
-                                                        if let Some(cur) = menu.write().as_mut() {
-                                                            cur.confirming = Some(ConfirmAction::Leave);
-                                                        }
-                                                    },
-                                                    {crate::i18n::text("Leave guild", &[])}
-                                                }
+                                        if is_owner && !is_system {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--warn)] hover:bg-[var(--warn)]/10 transition-colors",
+                                                onclick: move |_| {
+                                                    if let Some(cur) = menu.write().as_mut() {
+                                                        cur.confirming = Some(ConfirmAction::Transfer);
+                                                    }
+                                                },
+                                                {crate::i18n::text("Transfer ownership", &[])}
+                                            }
+                                        }
+                                        if can_delete {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
+                                                onclick: move |_| {
+                                                    if let Some(cur) = menu.write().as_mut() {
+                                                        cur.confirming = Some(ConfirmAction::Delete);
+                                                    }
+                                                },
+                                                {crate::i18n::text("Delete guild", &[])}
+                                            }
+                                        } else if !is_owner && !is_system {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
+                                                onclick: move |_| {
+                                                    if let Some(cur) = menu.write().as_mut() {
+                                                        cur.confirming = Some(ConfirmAction::Leave);
+                                                    }
+                                                },
+                                                {crate::i18n::text("Leave guild", &[])}
                                             }
                                         }
                                     },
