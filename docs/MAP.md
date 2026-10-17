@@ -17,14 +17,14 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4936 |
+| `client/src/features/voice.rs` | 4853 |
 | `server/src/state/mod.rs` | 3470 |
 | `server/tests/owner_controls.rs` | 3157 |
 | `server/src/gateway/connection.rs` | 3582 |
-| `client/src/features/channels.rs` | 2181 |
+| `client/src/features/channels.rs` | 2121 |
 | `client/src/features/screenshare.rs` | 3478 |
 | `protocol/src/lib.rs` | 3348 |
-| `client/src/state.rs` | 2622 |
+| `client/src/state.rs` | 2693 |
 | `client/src/update.rs` | 1228 |
 | `client/src/net.rs` | 2765 |
 | `client/src/features/chat.rs` | 2449 |
@@ -63,6 +63,7 @@ that direction says a file is safe to open when it is not.
 | Social window | `client/src/features/social_window.rs`, `features/home.rs` | Home opens or focuses one native Social window with shared state, settings and the existing Nostr sender. Contacts and inline call controls occupy the left column; chat keeps its full-height composer on the right. Closing Social keeps calls active; leaving Home closes the window and server views dock call controls below the DM/channel list with bounded scrolling, leaving chat and members unobstructed. `CallAlert` belongs to the account owner, so opening Social does not repeat incoming-call sounds. Its shared `AppState` is ROOT-owned and dropped with the account (trap 32) |
 | Microphone test | `client/src/features/voice_mic_test.rs`, `features/settings_dialog.rs` | Microphone tab offers local playback and a meter without joining voice; reuses capture, DSP and output selection. Adjustments apply live; device/bypass changes restart capture. Closing settings, leaving the tab or starting a call stops the test; testing is disabled during calls |
 | Native echo cancellation | `client/src/echo.rs`, `features/voice.rs` | `Reference` resamples actual mixed playback into bounded 10 ms frames; `Echo` runs WebRTC APM before denoise, gate detection, AGC, manual trim and limiter |
+| Poor voice connections | `client/src/features/voice_network.rs`, `voice_network_tests.rs` | Guild voice samples RTCP uplink reports and sends bounded, track-scoped listener feedback on `discordia.voice-quality.v1` every 2 s. Recent loss/discards use a 5 s window; lifetime loss stays in a tooltip and concealment events remain cumulative. Adaptive voice falls to 24 kbit/s under sustained/severe loss and recovers 8 kbit/s per 20 s of healthy active feedback, never above the saved ceiling. Uplink loss temporarily caps native screen/camera bitrate; listener downlink loss does not throttle the publisher's video. No reconnect or preference rewrite. Ignored `listener_feedback_reduces_a_live_sender_without_reconnecting` starts the bundled SFU and checks feedback delivery, encoder bitrate and decoded audio |
 | Microphone and activity defaults | `client/src/settings.rs`, `features/account.rs` | AGC, noise cancellation, system processing bypass, game activity sharing and detection start enabled; Discord Rich Presence is unavailable on Windows. Missing saved fields use platform defaults, explicit disabled preferences remain disabled. System bypass is applied only on supported platforms |
 | Voice preferences on entry | `VoiceSession::join_message`, `net::apply`, `server::state::set_voice_channel` | Optional `JoinVoice.preferences` applies mute/deafen before the first broadcast; the client corrects legacy join echoes without briefly enabling audio |
 | Native voice regression tests | `client/src/features/voice_audio_tests.rs`, `voice_speech_tests.rs` | Gain, mute, deafen, room-tone AGC, buffering and resampling; opt-in human speech through the production worker exports WAV comparisons with noise and double talk |

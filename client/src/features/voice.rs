@@ -47,6 +47,8 @@ pub(crate) const SAMPLE_RATE: u32 = 48_000;
 pub mod direct;
 #[path = "voice_mic_test.rs"]
 pub mod mic_test;
+#[path = "voice_network.rs"]
+mod network;
 #[path = "voice_subscriptions.rs"]
 mod subscriptions;
 const CHANNELS: u32 = 1;
@@ -475,7 +477,7 @@ async fn service_loop(
             }
             VoiceCmd::SetVoiceBitrate { kbps } => {
                 let kbps = crate::settings::normalize_voice_bitrate(kbps);
-                eprintln!("[voice] SetVoiceBitrate kbps={kbps} (applies on next connect)");
+                eprintln!("[voice] SetVoiceBitrate ceiling={kbps}");
                 controls.bitrate_kbps.store(kbps, Ordering::Relaxed);
                 state.write().voice_bitrate_kbps = kbps;
             }
@@ -726,8 +728,7 @@ impl ActiveVoice {
         };
         let encrypted = mic_publication.encryption_type() != livekit::e2ee::EncryptionType::None;
         eprintln!(
-            "[voice] mic published: encrypted={encrypted}, red={} (opus in-band FEC unaffected)",
-            !encrypted
+            "[voice] mic published: encrypted={encrypted}, red=true (opus in-band FEC unaffected)"
         );
         crate::e2ee::place_new_voice_publication(&room);
 
@@ -883,7 +884,10 @@ impl ActiveVoice {
             false,
             &controls.watched_streams.borrow(),
         );
+        let network_feedback = Arc::new(Mutex::new(network::ListenerFeedback::default()));
         let event_task = tokio::spawn({
+            let network_feedback = network_feedback.clone();
+            let microphone_track = local_audio_for_mute.clone();
             let mixer_handle = mixer_handle.clone();
             let room = room.clone();
             let local = self_pubkey.clone().unwrap_or_default();
@@ -896,10 +900,24 @@ impl ActiveVoice {
                 {
                     while consumers.try_join_next().is_some() {}
                     match &ev {
+                        RoomEvent::DataReceived {
+                            payload,
+                            topic,
+                            participant: Some(participant),
+                            ..
+                        } if topic.as_deref() == Some(network::FEEDBACK_TOPIC) => {
+                            network_feedback.lock().receive(
+                                &participant.identity().0,
+                                &microphone_track.sid().to_string(),
+                                payload,
+                                Instant::now(),
+                            );
+                        }
                         RoomEvent::ParticipantConnected(p) => {
                             crate::dlog!("[voice] participant connected: {}", p.identity().0);
                         }
                         RoomEvent::ParticipantDisconnected(p) => {
+                            network_feedback.lock().remove(&p.identity().0);
                             crate::dlog!("[voice] participant left: {}", p.identity().0);
                             let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
                         }
@@ -1041,12 +1059,13 @@ impl ActiveVoice {
             }
         });
 
-        let stats_task = spawn_stats_task(
+        let stats_task = network::spawn_stats_task(
             state,
             room.clone(),
             local_audio_for_mute.clone(),
             self_pubkey.clone(),
-            controls.stats_polling.clone(),
+            controls.clone(),
+            network_feedback,
         );
 
         let active = Self {
@@ -1570,6 +1589,8 @@ impl ActiveVoice {
             s.screen_audio_joined = false;
             s.voice_quality.clear();
             s.voice_stats.clear();
+            s.voice_adaptive_bitrate = None;
+            s.voice_uplink_congested = false;
             s.voice_send_route = None;
             s.voice_receive_route = None;
         }
@@ -1640,6 +1661,8 @@ struct ScreenVideoRoom {
     sid: TrackSid,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     stats_task: Task,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    network_task: Task,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fatal_task: Task,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1857,6 +1880,7 @@ impl ScreenVideoRoom {
         let capture_metrics = capture.metrics();
         let stats_sid = publication.sid();
         let status_room = room.clone();
+        let network_task = network::spawn_video_budget(state, track.clone(), 300_000);
         let stats_task = dioxus::prelude::spawn(async move {
             let mut previous = None;
             let mut capture_previous = capture_metrics.snapshot();
@@ -2026,6 +2050,7 @@ impl ScreenVideoRoom {
         Ok(Self {
             room,
             stats_task,
+            network_task,
             fatal_task,
             state,
             _capture: capture,
@@ -2038,6 +2063,7 @@ impl ScreenVideoRoom {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             self.stats_task.cancel();
+            self.network_task.cancel();
             self.fatal_task.cancel();
             let mut state = self.state;
             state.write().screen_share_stats = None;
@@ -2699,141 +2725,15 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
     })
 }
 
-fn spawn_stats_task(
-    mut state: Signal<AppState>,
-    room: Arc<Room>,
-    local_audio: LocalAudioTrack,
-    self_pubkey: Option<String>,
-    enabled: Arc<AtomicBool>,
-) -> Task {
-    dioxus::prelude::spawn(async move {
-        let mut was_enabled = false;
-        let mut prev_out: Option<(u64, u64, Instant)> = None;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-            let mut routes =
-                match tokio::time::timeout(std::time::Duration::from_secs(2), room.get_stats())
-                    .await
-                {
-                    Ok(Ok(stats)) => crate::connection_routes::selected_media_routes(
-                        &stats.publisher_stats,
-                        &stats.subscriber_stats,
-                    ),
-                    _ => (None, None),
-                };
-            if state.peek().voice.phase != VoicePhase::Connected {
-                routes = (None, None);
-            }
-            if state.peek().voice_send_route != routes.0
-                || state.peek().voice_receive_route != routes.1
-            {
-                tracing::info!(
-                    send = ?routes.0.as_ref().map(|r| format!("{} {}", r.label(), r.endpoint)),
-                    receive = ?routes.1.as_ref().map(|r| format!("{} {}", r.label(), r.endpoint)),
-                    "voice route: selected media path changed"
-                );
-                let mut s = state.write();
-                s.voice_send_route = routes.0;
-                s.voice_receive_route = routes.1;
-            }
-
-            if !enabled.load(Ordering::Relaxed) {
-                if was_enabled {
-                    was_enabled = false;
-                    prev_out = None;
-                    if !state.peek().voice_stats.is_empty() {
-                        state.write().voice_stats.clear();
-                    }
-                }
-                continue;
-            }
-            was_enabled = true;
-
-            let mut next: HashMap<String, TrackStats> = HashMap::new();
-            for (identity, participant) in room.remote_participants() {
-                for publication in participant.track_publications().into_values() {
-                    if publication.source() != TrackSource::Microphone {
-                        continue;
-                    }
-                    let Some(RemoteTrack::Audio(audio)) = publication.track() else {
-                        continue;
-                    };
-                    let Ok(stats) = audio.get_stats().await else {
-                        continue;
-                    };
-                    if let Some(s) = stats.iter().find_map(|s| match s {
-                        RtcStats::InboundRtp(i) => Some(i),
-                        _ => None,
-                    }) {
-                        let st = inbound_stats(s);
-                        if let TrackStats::Inbound {
-                            loss_pct,
-                            jitter_ms,
-                            buffer_ms,
-                            concealment_events,
-                        } = &st
-                        {
-                            crate::dlog!(
-                                "stats in {} loss={:.2}% jitter={:.1}ms buf={:.1}ms conceal={} rx={} lost={}",
-                                crate::identity::truncate_pubkey(&identity.0),
-                                loss_pct,
-                                jitter_ms,
-                                buffer_ms,
-                                concealment_events,
-                                s.received.packets_received,
-                                s.received.packets_lost.max(0),
-                            );
-                        }
-                        next.insert(identity.0.clone(), st);
-                    }
-                }
-            }
-
-            if let Some(pk) = self_pubkey.clone()
-                && let Ok(stats) = local_audio.get_stats().await
-                && let Some(o) = stats.iter().find_map(|s| match s {
-                    RtcStats::OutboundRtp(o) => Some(o),
-                    _ => None,
-                })
-            {
-                let now = Instant::now();
-                let (packets, bytes) = (o.sent.packets_sent, o.sent.bytes_sent);
-                let rates = outbound_rates(prev_out, packets, bytes, now);
-                prev_out = Some((packets, bytes, now));
-                let target_kbps = (o.outbound.target_bitrate / 1000.0).round() as u32;
-                let bitrate_kbps = rates.map(|(_, kbit)| kbit);
-                let packets_per_sec = rates.map(|(pkt, _)| pkt);
-                crate::dlog!(
-                    "stats out bitrate={} pkt/s={} target={target_kbps}kbps sent={} bytes={}",
-                    bitrate_kbps.map_or("-".into(), |kbit| format!("{kbit:.0}kbps")),
-                    packets_per_sec.map_or("-".into(), |pkt| format!("{pkt:.0}")),
-                    packets,
-                    bytes,
-                );
-                next.insert(
-                    pk,
-                    TrackStats::Outbound {
-                        bitrate_kbps,
-                        packets_per_sec,
-                        target_kbps,
-                    },
-                );
-            }
-
-            if state.peek().voice_stats != next {
-                state.write().voice_stats = next;
-            }
-        }
-    })
-}
-
 fn inbound_stats(s: &livekit::webrtc::stats::InboundRtpStats) -> TrackStats {
     let received = s.received.packets_received;
     let lost = s.received.packets_lost.max(0) as u64;
     let total = received + lost;
     let emitted = s.inbound.jitter_buffer_emitted_count;
     TrackStats::Inbound {
+        recent_loss_pct: None,
+        late_pct: None,
+        concealed_pct: None,
         loss_pct: if total == 0 {
             0.0
         } else {
