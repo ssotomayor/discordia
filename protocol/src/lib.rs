@@ -242,9 +242,9 @@ pub struct GuildSummary {
 pub enum ChannelKind {
     Text,
     Voice,
-    /// A titled separator in the voice list: no messages, no call.
+    /// Drawn and ordered exactly as a `Divider`; it once separated a voice list of its own.
     Category,
-    /// The same in the text list.
+    /// A titled separator: no messages, no call.
     Divider,
 }
 
@@ -260,19 +260,6 @@ pub enum DividerStyle {
 }
 
 impl ChannelKind {
-    /// Voice channels and categories are one list, ordered and dragged together.
-    pub fn same_list(self, other: ChannelKind) -> bool {
-        self.in_voice_list() == other.in_voice_list()
-    }
-
-    pub fn in_voice_list(self) -> bool {
-        matches!(self, ChannelKind::Voice | ChannelKind::Category)
-    }
-
-    pub fn in_text_list(self) -> bool {
-        matches!(self, ChannelKind::Text | ChannelKind::Divider)
-    }
-
     pub fn is_divider(self) -> bool {
         matches!(self, ChannelKind::Category | ChannelKind::Divider)
     }

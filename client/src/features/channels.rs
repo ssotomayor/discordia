@@ -9,8 +9,7 @@ use crate::protocol::{
 use crate::state::DmInfo;
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
-/// `guild` is **every** channel in the guild, in draw order — `position` is
-/// assigned 0..n across kinds, so numbering each kind from 0 corrupts it.
+/// `guild` is **every** channel in the guild, in draw order.
 fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)> {
     if moved == target {
         return Vec::new();
@@ -21,9 +20,6 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     ) else {
         return Vec::new();
     };
-    if !guild[from].kind.same_list(guild[to].kind) {
-        return Vec::new();
-    }
 
     let mut order: Vec<&Channel> = guild.iter().collect();
     let dragged = order.remove(from);
@@ -77,7 +73,7 @@ enum Edge {
 fn drop_edge(guild: &[Channel], moved: Id, target: Id) -> Option<Edge> {
     let from = guild.iter().position(|c| c.id == moved)?;
     let to = guild.iter().position(|c| c.id == target)?;
-    if from == to || !guild[from].kind.same_list(guild[to].kind) {
+    if from == to {
         return None;
     }
     Some(if from < to { Edge::After } else { Edge::Before })
@@ -120,8 +116,6 @@ enum ChanMenuMode {
 
 const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden";
 const HEADER: &str = "h-12 px-3.5 flex items-center gap-2 border-b border-[var(--border)]";
-const SECTION_LABEL: &str =
-    "px-2 pt-3 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]";
 
 #[component]
 pub fn ChannelsColumn() -> Element {
@@ -193,15 +187,7 @@ pub fn ChannelsColumn() -> Element {
         .map(str::to_string);
     drop(snapshot);
 
-    let text_channels: Vec<&Channel> = channels.iter().filter(|c| c.kind.in_text_list()).collect();
-
-    let voice_channels: Vec<&Channel> =
-        channels.iter().filter(|c| c.kind.in_voice_list()).collect();
-    let guild_order: Vec<Channel> = text_channels
-        .iter()
-        .chain(voice_channels.iter())
-        .map(|c| (*c).clone())
-        .collect();
+    let guild_order = channels.clone();
 
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -377,13 +363,122 @@ pub fn ChannelsColumn() -> Element {
                     dragging.set(None);
                     drop_at.set(None);
                 },
-                if !text_channels.is_empty() {
-                    div {
-                        div { class: SECTION_LABEL, {crate::i18n::text("Text", &[])} }
-                        for channel in text_channels.iter() {
-                            {
-                                let ch = (*channel).clone();
-                                let cid = ch.id;
+                div {
+                    for channel in channels.iter() {
+                        {
+                            let ch = channel.clone();
+                            let cid = ch.id;
+                            let drop_group = guild_order.clone();
+                            let line = drop_at().filter(|(id, _)| *id == cid).map(|(_, edge)| edge);
+                            let dim = if dragging() == Some(cid) { "opacity-40" } else { "" };
+                            if ch.kind.is_divider() {
+                                let menu_ch = ch.clone();
+                                rsx! {
+                                    div {
+                                        key: "{cid}",
+                                        class: "relative mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none {dim}",
+                                        onpointerdown: move |e: PointerEvent| {
+                                            if can_manage_channels
+                                                && e.held_buttons().contains(
+                                                    dioxus::html::input_data::MouseButton::Primary,
+                                                )
+                                            {
+                                                dragging.set(Some(cid));
+                                                drop_at.set(None);
+                                            }
+                                        },
+                                        onpointerenter: move |_| {
+                                            let Some(moved) = dragging() else { return };
+                                            let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
+                                            if *drop_at.peek() != next {
+                                                drop_at.set(next);
+                                            }
+                                        },
+                                        oncontextmenu: move |e: MouseEvent| {
+                                            if !can_manage_channels {
+                                                return;
+                                            }
+                                            e.prevent_default();
+                                            let c = e.client_coordinates();
+                                            chan_menu.set(Some(ChanMenu {
+                                                channel: menu_ch.clone(),
+                                                x: c.x,
+                                                y: c.y,
+                                                mode: ChanMenuMode::Menu,
+                                            }));
+                                        },
+                                        if let Some(edge) = line {
+                                            DropLine { edge }
+                                        }
+                                        DividerLabel { name: ch.name.clone(), style: ch.divider, guild_id: ch.guild_id }
+                                    }
+                                }
+                            } else if ch.kind == ChannelKind::Voice {
+                                let in_this = self_voice.channel_id == Some(cid);
+                                let g_join = gateway.clone();
+                                let occupants: Vec<VoiceState> = voice_states
+                                    .iter()
+                                    .filter(|v| v.channel_id == Some(cid))
+                                    .cloned()
+                                    .collect();
+                                let ctx_ch = ch.clone();
+                                rsx! {
+                                    div {
+                                        key: "{cid}",
+                                        class: "relative {dim}",
+                                        onpointerdown: move |e: PointerEvent| {
+                                            if can_manage_channels
+                                                && e.held_buttons().contains(
+                                                    dioxus::html::input_data::MouseButton::Primary,
+                                                )
+                                            {
+                                                dragging.set(Some(cid));
+                                                drop_at.set(None);
+                                            }
+                                        },
+                                        onpointerenter: move |_| {
+                                            let Some(moved) = dragging() else { return };
+                                            let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
+                                            if *drop_at.peek() != next {
+                                                drop_at.set(next);
+                                            }
+                                        },
+                                        // Muting is the only item a plain member gets and it means
+                                        // nothing on a voice channel, so without this the menu
+                                        // opens empty for them.
+                                        oncontextmenu: move |e: MouseEvent| {
+                                            if !can_manage_channels {
+                                                return;
+                                            }
+                                            e.prevent_default();
+                                            let c = e.client_coordinates();
+                                            chan_menu.set(Some(ChanMenu {
+                                                channel: ctx_ch.clone(),
+                                                x: c.x,
+                                                y: c.y,
+                                                mode: ChanMenuMode::Menu,
+                                            }));
+                                        },
+                                        if let Some(edge) = line {
+                                            DropLine { edge }
+                                        }
+                                        VoiceChannelRow {
+                                            channel: ch.clone(),
+                                            connected: in_this,
+                                            occupants: occupants,
+                                            self_pubkey: self_user.as_ref().map(|u| u.pubkey.clone()),
+                                            on_join: move |_| {
+                                                if state.peek().dm_call.is_some() {
+                                                    state.write().error_toast = Some("End your DM call before joining a voice channel.".into());
+                                                    return;
+                                                }
+                                                tracing::debug!(channel_id = %cid, "join voice clicked");
+                                                g_join.send(state.read().voice.join_message(cid));
+                                            },
+                                        }
+                                    }
+                                }
+                            } else {
                                 let active = selected_channel == Some(cid);
                                 let cls = if active {
                                     "text-[var(--text)] font-medium bg-[var(--panel2)]"
@@ -392,52 +487,6 @@ pub fn ChannelsColumn() -> Element {
                                 };
                                 let g2 = gateway.clone();
                                 let ctx_ch = ch.clone();
-                                let drop_group = guild_order.clone();
-                                let line = drop_at().filter(|(id, _)| *id == cid).map(|(_, edge)| edge);
-                                let dim = if dragging() == Some(cid) { "opacity-40" } else { "" };
-                                if ch.kind == ChannelKind::Divider {
-                                    let menu_ch = ch.clone();
-                                    rsx! {
-                                        div {
-                                            key: "{cid}",
-                                            class: "relative mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none {dim}",
-                                            onpointerdown: move |e: PointerEvent| {
-                                                if can_manage_channels
-                                                    && e.held_buttons().contains(
-                                                        dioxus::html::input_data::MouseButton::Primary,
-                                                    )
-                                                {
-                                                    dragging.set(Some(cid));
-                                                    drop_at.set(None);
-                                                }
-                                            },
-                                            onpointerenter: move |_| {
-                                                let Some(moved) = dragging() else { return };
-                                                let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
-                                                if *drop_at.peek() != next {
-                                                    drop_at.set(next);
-                                                }
-                                            },
-                                            oncontextmenu: move |e: MouseEvent| {
-                                                if !can_manage_channels {
-                                                    return;
-                                                }
-                                                e.prevent_default();
-                                                let c = e.client_coordinates();
-                                                chan_menu.set(Some(ChanMenu {
-                                                    channel: menu_ch.clone(),
-                                                    x: c.x,
-                                                    y: c.y,
-                                                    mode: ChanMenuMode::Menu,
-                                                }));
-                                            },
-                                            if let Some(edge) = line {
-                                                DropLine { edge }
-                                            }
-                                            DividerLabel { name: ch.name.clone(), style: ch.divider, guild_id: ch.guild_id }
-                                        }
-                                    }
-                                } else {
                                 rsx! {
                                     button {
                                         key: "{cid}",
@@ -496,130 +545,6 @@ pub fn ChannelsColumn() -> Element {
                                         }
                                     }
                                 }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !voice_channels.is_empty() {
-                    div {
-                        div { class: SECTION_LABEL, {crate::i18n::text("Voice", &[])} }
-                        for channel in voice_channels.iter() {
-                            {
-                                let ch = (*channel).clone();
-                                let cid = ch.id;
-                                let in_this = self_voice.channel_id == Some(cid);
-                                let g_join = gateway.clone();
-                                let occupants: Vec<VoiceState> = voice_states
-                                    .iter()
-                                    .filter(|v| v.channel_id == Some(cid))
-                                    .cloned()
-                                    .collect();
-                                let ctx_ch = ch.clone();
-                                let drop_group = guild_order.clone();
-                                let line = drop_at().filter(|(id, _)| *id == cid).map(|(_, edge)| edge);
-                                let dim = if dragging() == Some(cid) { "opacity-40" } else { "" };
-                                if ch.kind == ChannelKind::Category {
-                                    let menu_ch = ch.clone();
-                                    rsx! {
-                                        div {
-                                            key: "{cid}",
-                                            class: "relative mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none {dim}",
-                                            onpointerdown: move |e: PointerEvent| {
-                                                if can_manage_channels
-                                                    && e.held_buttons().contains(
-                                                        dioxus::html::input_data::MouseButton::Primary,
-                                                    )
-                                                {
-                                                    dragging.set(Some(cid));
-                                                    drop_at.set(None);
-                                                }
-                                            },
-                                            onpointerenter: move |_| {
-                                                let Some(moved) = dragging() else { return };
-                                                let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
-                                                if *drop_at.peek() != next {
-                                                    drop_at.set(next);
-                                                }
-                                            },
-                                            oncontextmenu: move |e: MouseEvent| {
-                                                if !can_manage_channels {
-                                                    return;
-                                                }
-                                                e.prevent_default();
-                                                let c = e.client_coordinates();
-                                                chan_menu.set(Some(ChanMenu {
-                                                    channel: menu_ch.clone(),
-                                                    x: c.x,
-                                                    y: c.y,
-                                                    mode: ChanMenuMode::Menu,
-                                                }));
-                                            },
-                                            if let Some(edge) = line {
-                                                DropLine { edge }
-                                            }
-                                            DividerLabel { name: ch.name.clone(), style: ch.divider, guild_id: ch.guild_id }
-                                        }
-                                    }
-                                } else {
-                                rsx! {
-                                    div {
-                                        key: "{cid}",
-                                        class: "relative {dim}",
-                                        onpointerdown: move |e: PointerEvent| {
-                                            if can_manage_channels
-                                                && e.held_buttons().contains(
-                                                    dioxus::html::input_data::MouseButton::Primary,
-                                                )
-                                            {
-                                                dragging.set(Some(cid));
-                                                drop_at.set(None);
-                                            }
-                                        },
-                                        onpointerenter: move |_| {
-                                            let Some(moved) = dragging() else { return };
-                                            let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
-                                            if *drop_at.peek() != next {
-                                                drop_at.set(next);
-                                            }
-                                        },
-                                        // Muting is the only item a plain member gets and it means
-                                        // nothing on a voice channel, so without this the menu
-                                        // opens empty for them.
-                                        oncontextmenu: move |e: MouseEvent| {
-                                            if !can_manage_channels {
-                                                return;
-                                            }
-                                            e.prevent_default();
-                                            let c = e.client_coordinates();
-                                            chan_menu.set(Some(ChanMenu {
-                                                channel: ctx_ch.clone(),
-                                                x: c.x,
-                                                y: c.y,
-                                                mode: ChanMenuMode::Menu,
-                                            }));
-                                        },
-                                        if let Some(edge) = line {
-                                            DropLine { edge }
-                                        }
-                                        VoiceChannelRow {
-                                            channel: ch.clone(),
-                                            connected: in_this,
-                                            occupants: occupants,
-                                            self_pubkey: self_user.as_ref().map(|u| u.pubkey.clone()),
-                                            on_join: move |_| {
-                                                if state.peek().dm_call.is_some() {
-                                                    state.write().error_toast = Some("End your DM call before joining a voice channel.".into());
-                                                    return;
-                                                }
-                                                tracing::debug!(channel_id = %cid, "join voice clicked");
-                                                g_join.send(state.read().voice.join_message(cid));
-                                            },
-                                        }
-                                    }
-                                }
-                                }
                             }
                         }
                     }
@@ -656,23 +581,17 @@ pub fn ChannelsColumn() -> Element {
 fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
     let gateway = use_gateway();
     let mut name = use_signal(String::new);
-    // `Divider` here stands for either list's divider; `in_voice` picks which.
     let mut kind = use_signal(|| ChannelKind::Text);
-    let mut in_voice = use_signal(|| false);
     let style = use_signal(DividerStyle::default);
 
     let mut submit = move || {
         let n = name().trim().to_string();
         if !n.is_empty() {
-            let kind = match kind() {
-                ChannelKind::Divider if in_voice() => ChannelKind::Category,
-                k => k,
-            };
             gateway.send(ClientMessage::CreateChannel {
                 divider: style(),
                 guild_id,
                 name: n,
-                kind,
+                kind: kind(),
                 topic: None,
             });
         }
@@ -708,10 +627,6 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
                 }
             }
             if dividing {
-                div { class: "flex gap-1",
-                    ToggleChip { on: !in_voice(), onclick: move |_| in_voice.set(false), {crate::i18n::text("Text list", &[])} }
-                    ToggleChip { on: in_voice(), onclick: move |_| in_voice.set(true), {crate::i18n::text("Voice list", &[])} }
-                }
                 DividerStylePicker { style }
             }
         }
@@ -777,16 +692,11 @@ fn ChannelMenuPopover(
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let ch = menu.channel.clone();
-    let siblings: Vec<Channel> = guild_order
-        .iter()
-        .filter(|c| c.kind.same_list(ch.kind))
-        .cloned()
-        .collect();
-    let at = siblings.iter().position(|c| c.id == ch.id);
-    let move_up = at.filter(|i| *i > 0).map(|i| siblings[i - 1].id);
+    let at = guild_order.iter().position(|c| c.id == ch.id);
+    let move_up = at.filter(|i| *i > 0).map(|i| guild_order[i - 1].id);
     let move_down = at
-        .filter(|i| *i + 1 < siblings.len())
-        .map(|i| siblings[i + 1].id);
+        .filter(|i| *i + 1 < guild_order.len())
+        .map(|i| guild_order[i + 1].id);
     let mut name = use_signal(|| ch.name.clone());
     let mut topic = use_signal(|| ch.topic.clone().unwrap_or_default());
     let style = use_signal(|| ch.divider);
@@ -2032,32 +1942,27 @@ mod tests {
     }
 
     #[test]
-    fn a_category_moves_among_voice_channels_but_not_into_text() {
+    fn any_kind_can_be_dropped_among_any_other() {
         let guild = vec![
             kinded("general", 0, ChannelKind::Text),
             kinded("Lobby", 1, ChannelKind::Voice),
-            kinded("Games", 2, ChannelKind::Category),
+            kinded("Games", 2, ChannelKind::Divider),
             kinded("Raid", 3, ChannelKind::Voice),
         ];
-        let updates = reorder_positions(&guild, guild[2].id, guild[1].id);
+        let updates = reorder_positions(&guild, guild[3].id, guild[0].id);
         assert_eq!(
             applied(&guild, &updates),
-            ["general", "Games", "Lobby", "Raid"]
+            ["Raid", "general", "Lobby", "Games"]
         );
-        assert!(
-            reorder_positions(&guild, guild[2].id, guild[0].id).is_empty(),
-            "a separator belongs to the voice list"
+        let updates = reorder_positions(&guild, guild[2].id, guild[0].id);
+        assert_eq!(
+            applied(&guild, &updates),
+            ["Games", "general", "Lobby", "Raid"]
         );
-    }
-
-    #[test]
-    fn a_drop_across_kinds_does_nothing() {
-        let guild = vec![
-            kinded("general", 0, ChannelKind::Text),
-            kinded("Lobby", 1, ChannelKind::Voice),
-        ];
-        assert!(reorder_positions(&guild, guild[0].id, guild[1].id).is_empty());
-        assert!(reorder_positions(&guild, guild[1].id, guild[0].id).is_empty());
+        assert_eq!(
+            drop_edge(&guild, guild[0].id, guild[1].id),
+            Some(Edge::After)
+        );
     }
 
     #[test]
@@ -2081,20 +1986,6 @@ mod tests {
                 assert_eq!(edge, Some(expected), "{} onto {}", g[from].name, g[to].name);
             }
         }
-    }
-
-    #[test]
-    fn no_line_is_drawn_across_kinds() {
-        let guild = vec![
-            kinded("general", 0, ChannelKind::Text),
-            kinded("Lobby", 1, ChannelKind::Voice),
-            kinded("Games", 2, ChannelKind::Category),
-        ];
-        assert_eq!(drop_edge(&guild, guild[0].id, guild[1].id), None);
-        assert_eq!(
-            drop_edge(&guild, guild[2].id, guild[1].id),
-            Some(Edge::Before)
-        );
     }
 
     #[test]
