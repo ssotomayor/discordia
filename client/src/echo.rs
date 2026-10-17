@@ -41,6 +41,7 @@ impl Reference {
 pub struct Echo {
     apm: libwebrtc::native::apm::AudioProcessingModule,
     reference: AudioReceiver<i16>,
+    enabled: (bool, bool),
 }
 
 impl Echo {
@@ -48,10 +49,23 @@ impl Echo {
         Self {
             apm: libwebrtc::native::apm::AudioProcessingModule::new(true, false, true, false),
             reference,
+            enabled: (true, true),
+        }
+    }
+
+    pub fn configure(&mut self, echo: bool, high_pass: bool) {
+        if self.enabled != (echo, high_pass) {
+            self.apm =
+                libwebrtc::native::apm::AudioProcessingModule::new(echo, false, high_pass, false);
+            self.enabled = (echo, high_pass);
         }
     }
 
     pub fn process(&mut self, samples: &mut [f32; SAMPLES], delay_ms: i32) -> Result<(), String> {
+        if self.enabled == (false, false) {
+            while self.reference.try_recv().is_ok() {}
+            return Ok(());
+        }
         while let Ok(mut frame) = self.reference.try_recv() {
             if frame.is_fresh() {
                 self.apm

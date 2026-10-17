@@ -14,6 +14,7 @@ mod connection_routes;
 mod denoise;
 mod e2ee;
 mod echo;
+mod mic_profile;
 #[macro_use]
 mod devlog;
 mod emoji;

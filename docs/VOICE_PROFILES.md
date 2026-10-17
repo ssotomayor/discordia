@@ -1,7 +1,8 @@
 # Microphone profiles and guided calibration
 
-Design proposal, 2026-10-17. Branch: `feature/voice-profiles-calibration`.
-Base: `master` at `fb53365`. This document plans the feature; runtime behavior is unchanged.
+Design and implementation, 2026-10-17. Branch: `feature/voice-profiles-calibration`.
+Base: `master` at `fb53365`. Profiles, local calibration and before/after playback are
+implemented. Preset listening checks on target hardware remain a release validation requirement.
 
 ## Product decision
 
@@ -36,7 +37,7 @@ These sources do not provide a universal optimal sensitivity, suppression streng
 private implementation for each product. Candidate settings below are our proposed
 starting points, to be validated with listening tests.
 
-## Existing pipeline and gaps
+## Baseline before implementation
 
 | Existing code | Consequence |
 |---|---|
@@ -140,4 +141,28 @@ the existing microphone-test teardown checks. Include a fixed-input level-envelo
 regression for the earlier pumping symptom. Compare DSP output against the current
 pipeline, then test the applied configuration through a real local guild/DM call.
 Run formatting, translation coverage, both Clippy groups and the relevant client
-tests. Preset numbers become shipping defaults only after those listening checks.
+tests. Initial preset strengths are 15 dB (balanced) and 30 dB (noisy); the guided
+adjustment evaluates the candidate set above. These are starting values, with
+manual override and before/after listening, rather than universal optimal values.
+
+## Settings layout
+
+The dialog grows from 780 × 560 to 920 × 660 (about 18% per dimension), constrained
+by the viewport. Its sidebar stays fixed and each tab scrolls independently.
+Microphone order is input → output setup/profile → test/calibration → volume →
+collapsed advanced processing. Audio keeps output, app sounds, soundboard and
+network quality. Small helper text is at least 12 px; controls have consistent
+spacing and keyboard focus. New labels include Spanish and Portuguese.
+
+## Validation notes
+
+Windows visual review used the real settings components in an isolated window and
+preferences directory, without an account or microphone recording. Audio, microphone
+profiles and expanded advanced controls were inspected.
+
+The opt-in `recorded_speech_produces_a_bounded_stable_recommendation` test takes
+`DISCORDIA_MIC_AUDIT_WAV`: mono PCM WAV with 3 s quiet, 7 s normal speech, 3 s soft
+speech and 2 s quiet at 48 kHz. A controlled fixture built from the public
+[whisper.cpp JFK sample](https://github.com/ggml-org/whisper.cpp/blob/master/samples/jfk.wav)
+passed with fixed gain and retained soft speech. Its 16 kHz source validates speech
+handling, not full-band microphone fidelity. Real-device listening remains required.
