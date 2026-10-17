@@ -958,7 +958,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
-                        let sight_before = voice_sight(&ctx.state, guild_id);
+                        let sight_before = channel_sight(&ctx.state, guild_id);
                         match ctx.state.set_channel_access(channel_id, access, &u.pubkey).await {
                             Ok(channel) => {
                                 let detail = match &channel.access {
@@ -1738,7 +1738,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let sight_before = voice_sight(&ctx.state, guild_id);
+                        let sight_before = channel_sight(&ctx.state, guild_id);
                         match ctx.state.update_role(guild_id, role_id, &name, color, permissions, &u.pubkey).await {
                             Ok(_) => {
                                 apply_sight_change(&ctx, guild_id, &sight_before, None);
@@ -1764,7 +1764,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let sight_before = voice_sight(&ctx.state, guild_id);
+                        let sight_before = channel_sight(&ctx.state, guild_id);
                         match ctx.state.delete_role(guild_id, role_id, &u.pubkey).await {
                             Ok(changed_members) => {
                                 apply_sight_change(&ctx, guild_id, &sight_before, None);
@@ -1796,7 +1796,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let sight_before = voice_sight(&ctx.state, guild_id);
+                        let sight_before = channel_sight(&ctx.state, guild_id);
                         match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, true, &u.pubkey).await {
                             Ok(member) => {
                                 apply_sight_change(&ctx, guild_id, &sight_before, None);
@@ -1819,7 +1819,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let sight_before = voice_sight(&ctx.state, guild_id);
+                        let sight_before = channel_sight(&ctx.state, guild_id);
                         match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, false, &u.pubkey).await {
                             Ok(member) => {
                                 apply_sight_change(&ctx, guild_id, &sight_before, None);
@@ -2181,7 +2181,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
-                        let sight_before = voice_sight(&ctx.state, guild_id);
+                        let sight_before = channel_sight(&ctx.state, guild_id);
                         match ctx.state.transfer_ownership(guild_id, &new_owner_pubkey, &u.pubkey).await {
                             Ok(guild) => {
                                 apply_sight_change(&ctx, guild_id, &sight_before, None);
@@ -2868,12 +2868,12 @@ fn viewers_of(state: &crate::state::AppState, channel: &crate::protocol::Channel
 
 type Sight = std::collections::HashMap<Id, std::collections::HashSet<String>>;
 
-/// Who can see each voice channel, taken before a change so the change can go
-/// out as channels appearing and disappearing.
-fn voice_sight(state: &crate::state::AppState, guild_id: Id) -> Sight {
+/// Who can see each channel that can be hidden, taken before a change so the
+/// change can go out as channels appearing and disappearing.
+fn channel_sight(state: &crate::state::AppState, guild_id: Id) -> Sight {
     let members = state.guild_member_pubkeys(guild_id);
     state
-        .voice_channels_of(guild_id)
+        .hideable_channels_of(guild_id)
         .into_iter()
         .map(|c| {
             let seen = members
@@ -2896,7 +2896,7 @@ fn apply_sight_change(
 ) {
     let state = &ctx.state;
     let nobody = std::collections::HashSet::new();
-    for (cid, now) in voice_sight(state, guild_id) {
+    for (cid, now) in channel_sight(state, guild_id) {
         let Some(channel) = state.channel(cid) else {
             continue;
         };
@@ -2916,13 +2916,15 @@ fn apply_sight_change(
             for vs in &occupants {
                 state.deliver(gained.clone(), ServerMessage::VoiceStateUpdate(vs.clone()));
             }
-            state.deliver(
-                gained,
-                ServerMessage::ScreenShareState {
-                    channel_id: cid,
-                    sharers: state.screen_sharers_in(cid),
-                },
-            );
+            if channel.kind == crate::protocol::ChannelKind::Voice {
+                state.deliver(
+                    gained,
+                    ServerMessage::ScreenShareState {
+                        channel_id: cid,
+                        sharers: state.screen_sharers_in(cid),
+                    },
+                );
+            }
         }
         if !lost.is_empty() {
             if state.drop_from_channel_instances(cid, &lost) {

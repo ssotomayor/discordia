@@ -3041,10 +3041,10 @@ impl AppState {
         self.channels.get(&channel_id).map(|c| c.clone())
     }
 
-    pub fn voice_channels_of(&self, guild_id: Id) -> Vec<Channel> {
+    pub fn hideable_channels_of(&self, guild_id: Id) -> Vec<Channel> {
         self.channels
             .iter()
-            .filter(|c| c.guild_id == guild_id && c.kind == crate::protocol::ChannelKind::Voice)
+            .filter(|c| c.guild_id == guild_id && c.kind.can_be_hidden())
             .map(|c| c.clone())
             .collect()
     }
@@ -3091,8 +3091,8 @@ impl AppState {
         let _write = self.durable_writes.lock().await;
         let channel = self.channel(channel_id).ok_or("unknown channel")?;
         self.require_permission(channel.guild_id, by_pubkey, Permission::ManageChannels)?;
-        if channel.kind != crate::protocol::ChannelKind::Voice {
-            return Err("only voice channels can be hidden".into());
+        if !channel.kind.can_be_hidden() {
+            return Err("only voice channels and dividers can be hidden".into());
         }
         let access = access.map(crate::sanitize::access);
         let updated = {

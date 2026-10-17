@@ -411,6 +411,13 @@ pub fn ChannelsColumn() -> Element {
                                             DropLine { edge }
                                         }
                                         DividerLabel { name: ch.name.clone(), style: ch.divider, guild_id: ch.guild_id }
+                                        if ch.access.is_some() {
+                                            span {
+                                                class: "text-[10px] text-[var(--text-dim)]",
+                                                title: crate::i18n::text("Hidden from everyone but the roles and people allowed", &[]),
+                                                "🔒"
+                                            }
+                                        }
                                     }
                                 }
                             } else if ch.kind == ChannelKind::Voice {
@@ -736,7 +743,7 @@ fn ChannelMenuPopover(
                                 }
                                 }
                             }
-                            if can_manage && ch.kind == ChannelKind::Voice {
+                            if can_manage && ch.kind.can_be_hidden() {
                                 {
                                     let cid = ch.id;
                                     rsx! {

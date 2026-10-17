@@ -84,9 +84,10 @@ pub fn guild(g: &mut Guild) {
 pub fn channel(c: &mut Channel) {
     c.name = name_or("channel", &c.name, CHANNEL_NAME, "channel");
     c.topic = line(c.topic.take(), TOPIC);
-    c.access = match c.kind {
-        crate::protocol::ChannelKind::Voice => c.access.take().map(access),
-        _ => None,
+    c.access = if c.kind.can_be_hidden() {
+        c.access.take().map(access)
+    } else {
+        None
     };
     if !c.kind.is_divider() {
         c.divider = Default::default();
@@ -299,6 +300,30 @@ mod tests {
             "guild"
         );
         assert_eq!(name_or("guild", " Fine ", GUILD_NAME, "guild"), "Fine");
+    }
+
+    #[test]
+    fn a_divider_keeps_its_access_through_a_load_and_text_does_not() {
+        let with = |kind| {
+            let mut c = Channel {
+                divider: Default::default(),
+                id: uuid::Uuid::new_v4(),
+                guild_id: uuid::Uuid::new_v4(),
+                name: "staff".into(),
+                kind,
+                topic: None,
+                read_only: false,
+                slowmode_secs: 0,
+                position: 0,
+                access: Some(crate::protocol::ChannelAccess::default()),
+            };
+            channel(&mut c);
+            c.access.is_some()
+        };
+        assert!(with(crate::protocol::ChannelKind::Divider));
+        assert!(with(crate::protocol::ChannelKind::Category));
+        assert!(with(crate::protocol::ChannelKind::Voice));
+        assert!(!with(crate::protocol::ChannelKind::Text));
     }
 
     #[test]

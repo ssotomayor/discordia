@@ -314,3 +314,74 @@ async fn a_person_can_be_let_in_by_key_and_it_holds_across_a_fresh_connect() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn a_hidden_divider_goes_only_to_those_allowed() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, _) = connect_user(&url, &BotIdentity::generate(), "Owner").await;
+    let (guild_id, _, staff) = setup(&mut owner).await;
+    owner
+        .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
+            guild_id,
+            name: "Staff only".into(),
+            kind: ChannelKind::Divider,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    let divider = loop {
+        if let ServerMessage::ChannelCreate(ch) = next_timeout(&mut owner).await
+            && ch.kind == ChannelKind::Divider
+        {
+            break ch.id;
+        }
+    };
+
+    let staffer_id = BotIdentity::generate();
+    let (mut staffer, _) = connect_user(&url, &staffer_id, "Staffer").await;
+    join_guild(&mut staffer, guild_id).await;
+    let guest_id = BotIdentity::generate();
+    let (mut guest, _) = connect_user(&url, &guest_id, "Guest").await;
+    join_guild(&mut guest, guild_id).await;
+    set_role(&mut owner, guild_id, staff, staffer_id.pubkey(), true).await;
+
+    owner
+        .send(&ClientMessage::SetChannelAccess {
+            channel_id: divider,
+            access: Some(ChannelAccess {
+                roles: vec![staff],
+                users: vec![],
+            }),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelDelete { channel_id, .. } = next_timeout(&mut guest).await
+            && channel_id == divider
+        {
+            break;
+        }
+    }
+    loop {
+        match next_timeout(&mut staffer).await {
+            ServerMessage::ChannelUpdate(ch) if ch.id == divider => {
+                assert!(ch.access.is_some());
+                break;
+            }
+            ServerMessage::ChannelDelete { channel_id, .. } if channel_id == divider => {
+                panic!("the role that is allowed lost the divider")
+            }
+            _ => continue,
+        }
+    }
+    drop(staffer);
+    drop(guest);
+
+    let (_staffer, visible) = connect_user(&url, &staffer_id, "Staffer").await;
+    assert!(visible.contains(&divider));
+    let (_guest, visible) = connect_user(&url, &guest_id, "Guest").await;
+    assert!(!visible.contains(&divider), "never sent on connect either");
+
+    handle.abort();
+}

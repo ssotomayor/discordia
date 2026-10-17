@@ -263,6 +263,11 @@ impl ChannelKind {
     pub fn is_divider(self) -> bool {
         matches!(self, ChannelKind::Category | ChannelKind::Divider)
     }
+
+    /// Text is left out: hiding it would also have to gate its history, pins and search.
+    pub fn can_be_hidden(self) -> bool {
+        self == ChannelKind::Voice || self.is_divider()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,7 +283,7 @@ pub struct Channel {
     pub slowmode_secs: u32,
     #[serde(default)]
     pub position: u32,
-    /// `None` is everyone. Only voice channels carry one.
+    /// `None` is everyone. Only `ChannelKind::can_be_hidden` kinds carry one.
     #[serde(default)]
     pub access: Option<ChannelAccess>,
     #[serde(default)]
