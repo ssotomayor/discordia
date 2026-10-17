@@ -333,6 +333,7 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-file-card:focus-within { border-color: var(--accent); }
 .dxf-file-type { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 44px; height: 52px; flex-shrink: 0; border-radius: 8px; background-color: var(--accent-soft); color: var(--accent); }
 .dxf-file-type svg { display: block; width: 22px; height: 22px; }
+.dxf-badge svg { display: block; width: 100%; height: 100%; }
 .dxf-file-type > span:last-child { font-size: 9px; font-weight: 700; letter-spacing: 0.04em; }
 .dxf-file-info { flex: 1 1 110px; min-width: 0; }
 .dxf-file-name { color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }

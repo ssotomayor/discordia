@@ -682,21 +682,21 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
             }
             div { class: "flex flex-col min-w-0 flex-1",
                 span {
-                    class: "text-sm truncate flex items-center gap-1 {name_class}",
+                    class: "text-sm truncate flex items-center gap-1.5 {name_class}",
                     title: "{member.user.pubkey}",
                     span { class: "truncate", "{member.user.username}" }
                     if crown {
                         span {
-                            class: "block w-3 h-3 shrink-0",
-                            style: "color:var(--amber);",
+                            class: "dxf-badge block w-3 h-3 shrink-0",
+                            style: "color:var(--text-muted);",
                             title: crate::i18n::text("Guild owner", &[]),
                             dangerous_inner_html: crate::features::icons::CROWN,
                         }
                     }
                     if operator {
                         span {
-                            class: "block w-3 h-3 shrink-0",
-                            style: "color:#5b9cff;",
+                            class: "dxf-badge block w-3 h-3 shrink-0",
+                            style: "color:var(--text-muted);",
                             title: crate::i18n::text("Runs this server", &[]),
                             dangerous_inner_html: crate::features::icons::SCREEN,
                         }
