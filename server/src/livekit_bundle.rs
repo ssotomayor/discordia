@@ -668,10 +668,12 @@ async fn authenticated_ready(
 mod tests {
     use super::*;
 
+    // The wildcard, as livekit binds: with SO_REUSEADDR (std sets it) macOS hands a
+    // 127.0.0.1:0 bind a port another SFU already holds on every address.
     fn unused_ports() -> LivekitPorts {
-        let ws = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let ws = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let tcp = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let udp = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
         LivekitPorts {
             ws: ws.local_addr().unwrap().port(),
             tcp: tcp.local_addr().unwrap().port(),
