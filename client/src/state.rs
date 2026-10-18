@@ -118,7 +118,7 @@ pub enum TrackStats {
     Inbound {
         loss_pct: f32,
         recent_loss_pct: Option<f32>,
-        late_pct: Option<f32>,
+        discarded_packets: Option<u64>,
         concealed_pct: Option<f32>,
         jitter_ms: f32,
         buffer_ms: f32,

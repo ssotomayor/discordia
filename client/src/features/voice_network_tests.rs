@@ -27,7 +27,7 @@ fn recent_reception_distinguishes_loss_late_packets_and_concealment() {
     stats.inbound.concealed_samples += 24_000;
     let recent = window.sample(&stats, now + Duration::from_secs(8)).unwrap();
     assert_eq!(recent.loss_pct, 4.0);
-    assert_eq!(recent.late_pct, 2.0);
+    assert_eq!(recent.discarded_packets, 5);
     assert_eq!(recent.concealed_pct, 10.0);
     stats.stream.ssrc = 99;
     assert!(

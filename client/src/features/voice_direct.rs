@@ -8,6 +8,7 @@ pub struct Audio {
     gate_stats: Arc<GateStats>,
     muted: Arc<AtomicBool>,
     input: (Option<String>, bool),
+    output: Option<String>,
     retry_at: Option<std::time::Instant>,
     pub microphone_error: Option<String>,
     playback: PlaybackMixer,
@@ -81,6 +82,7 @@ impl Audio {
             gate_stats,
             muted,
             input,
+            output: state.peek().selected_output_device.clone(),
             retry_at: None,
             microphone_error,
             playback,
@@ -182,6 +184,12 @@ impl Audio {
         self.muted.store(!transmitting, Ordering::Relaxed);
         self.track.set_enabled(transmitting);
 
+        let output = state.peek().selected_output_device.clone();
+        if self.output != output {
+            self.playback.drop_stream();
+            self.output = output;
+            self.output_retry_at = None;
+        }
         if !self.playback.is_open()
             && self
                 .output_retry_at

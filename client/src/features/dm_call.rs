@@ -572,11 +572,40 @@ impl Actor {
         {
             let previous_error = audio.microphone_error.clone();
             audio.update(self.state);
+            if let Some(connection) = &s.connection
+                && let Err(error) =
+                    sync_voice_bitrate(connection, self.state.peek().voice_bitrate_kbps)
+            {
+                tracing::debug!(%error, "DM voice bitrate update will retry");
+            }
             if previous_error != audio.microphone_error {
                 self.update_view();
             }
         }
     }
+}
+
+fn sync_voice_bitrate(connection: &PeerConnection, kbps: u32) -> Result<(), String> {
+    let bitrate = u64::from(crate::settings::normalize_voice_bitrate(kbps)) * 1000;
+    for sender in connection.senders() {
+        let mut parameters = sender.parameters();
+        if parameters.encodings.is_empty()
+            || parameters
+                .encodings
+                .iter()
+                .all(|encoding| encoding.max_bitrate == Some(bitrate))
+        {
+            continue;
+        }
+        for encoding in &mut parameters.encodings {
+            encoding.max_bitrate = Some(bitrate);
+            encoding.priority = libwebrtc::rtp_parameters::Priority::High;
+        }
+        sender
+            .set_parameters(parameters)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]

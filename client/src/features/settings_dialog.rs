@@ -145,6 +145,7 @@ pub fn SettingsDialog() -> Element {
                                             }
                                             button {
                                                 class: "{cls}",
+                                                aria_label: "{label}",
                                                 onclick: move |_| settings_tab.set(t),
                                                 if selected {
                                                     span {
@@ -176,6 +177,8 @@ pub fn SettingsDialog() -> Element {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
                                 style: "color: var(--text); background: var(--panel-solid);",
                                 disabled: "{reconnecting}",
+                                aria_label: crate::i18n::text("Output", &[]),
+                                value: selected_output_device.clone().unwrap_or_default(),
                                 onchange: move |e| {
                                     let val = e.value();
                                     let val_cloned = val.clone();
@@ -252,6 +255,8 @@ pub fn SettingsDialog() -> Element {
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 style: "color: var(--text); background: var(--panel-solid);",
+                                aria_label: crate::i18n::text("Camera", &[]),
+                                value: selected_camera_id.clone().unwrap_or_default(),
                                 onchange: move |e| {
                                     let val = e.value();
                                     let mut next = settings.read().clone();
@@ -291,6 +296,8 @@ pub fn SettingsDialog() -> Element {
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 style: "color: var(--text); background: var(--panel-solid);",
+                                aria_label: crate::i18n::text("Screen share", &[]),
+                                value: "{screenshare_quality}",
                                 onchange: move |e| {
                                     let mut next = settings.read().clone();
                                     next.screenshare_quality = e.value();
@@ -307,13 +314,14 @@ pub fn SettingsDialog() -> Element {
                                 }
                             }
                             span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                "{screenshare_hint}"
+                                {crate::i18n::label(screenshare_hint)}
                             }
                             label { class: "flex items-center gap-2 cursor-pointer select-none mt-1.5",
                                 input {
                                     r#type: "checkbox",
                                     class: "accent-[var(--accent)]",
                                     checked: screenshare_audio,
+                                    aria_label: crate::i18n::text("Share computer sound", &[]),
                                     onchange: move |e| {
                                         let mut next = settings.read().clone();
                                         next.screenshare_audio = e.checked();
@@ -329,6 +337,7 @@ pub fn SettingsDialog() -> Element {
                             label { class: "flex items-center gap-2 cursor-pointer mt-2",
                                 input { r#type: "checkbox", class: "accent-[var(--accent)]",
                                     checked: settings.read().screenshare_adaptive_quality,
+                                    aria_label: crate::i18n::text("Adaptive quality for viewers", &[]),
                                     onchange: move |e| {
                                         let mut next = settings.read().clone();
                                         next.screenshare_adaptive_quality = e.checked();
@@ -353,6 +362,7 @@ pub fn SettingsDialog() -> Element {
                                     r#type: "checkbox",
                                     class: "accent-[var(--accent)]",
                                     checked: settings.read().publish_global_level,
+                                    aria_label: crate::i18n::text("Publish my overall level to Nostr", &[]),
                                     onchange: move |e| {
                                         let mut next = settings.read().clone();
                                         next.publish_global_level = e.checked();
@@ -376,6 +386,7 @@ pub fn SettingsDialog() -> Element {
                                     r#type: "checkbox",
                                     class: "accent-[var(--accent)]",
                                     checked: settings.read().share_activity,
+                                    aria_label: crate::i18n::text("Share what I am playing", &[]),
                                     onchange: move |e| {
                                         let mut next = settings.read().clone();
                                         next.share_activity = e.checked();
@@ -396,6 +407,7 @@ pub fn SettingsDialog() -> Element {
                                         r#type: "checkbox",
                                         class: "accent-[var(--accent)]",
                                         checked: settings.read().detect_games,
+                                            aria_label: crate::i18n::text("Detect running games", &[]),
                                         onchange: move |e| {
                                             let mut next = settings.read().clone();
                                             next.detect_games = e.checked();
@@ -418,7 +430,7 @@ pub fn SettingsDialog() -> Element {
                                             let s = state.read();
                                             s.self_user.as_ref().and_then(|user| s.activity_of(&user.pubkey))
                                                 .map(crate::features::profiles::activity_line)
-                                                .unwrap_or_else(|| "No game detected yet. Open a game and wait up to 15 seconds.".into())
+                                                .unwrap_or_else(|| crate::i18n::text("No game detected yet. Open a game and wait up to 15 seconds.", &[]))
                                         }
                                     }
                                 }
@@ -428,6 +440,7 @@ pub fn SettingsDialog() -> Element {
                                         class: "accent-[var(--accent)]",
                                         disabled: !crate::presence::ipc::discord_compatible_supported(),
                                         checked: settings.read().discord_rpc_socket && crate::presence::ipc::discord_compatible_supported(),
+                                        aria_label: crate::i18n::text("Accept Discord Rich Presence", &[]),
                                         onchange: move |e| {
                                             let mut next = settings.read().clone();
                                             next.discord_rpc_socket = e.checked();
@@ -459,6 +472,7 @@ pub fn SettingsDialog() -> Element {
                                     r#type: "checkbox",
                                     class: "accent-[var(--accent)]",
                                     checked: show_stats(),
+                                    aria_label: crate::i18n::text("Connection stats", &[]),
                                     onchange: move |e| show_stats.set(e.checked()),
                                 }
                                 span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Connection stats", &[])} }
@@ -492,16 +506,19 @@ fn GameDetectionOverrides() -> Element {
                 input {
                     class: "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs",
                     placeholder: crate::i18n::text("Executable, e.g. game.exe", &[]), value: "{executable}", maxlength: 240,
+                    aria_label: crate::i18n::text("Executable, e.g. game.exe", &[]),
                     oninput: move |e| executable.set(e.value()),
                 }
                 input {
                     class: "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs",
                     placeholder: crate::i18n::text("Game name", &[]), value: "{title}", maxlength: 80,
+                    aria_label: crate::i18n::text("Game name", &[]),
                     oninput: move |e| title.set(e.value()),
                 }
                 button {
                     class: "rounded border border-[var(--border)] px-2 py-1 text-xs hover:text-[var(--accent)] disabled:opacity-40",
                     disabled: executable.read().trim().is_empty() || title.read().trim().is_empty(),
+                    aria_label: crate::i18n::text("Add game", &[]),
                     onclick: move |_| {
                         let mut next = settings.read().clone();
                         let result = crate::presence::detect::set_override(&mut next.detect_extra, &executable.read(), &title.read());
@@ -527,6 +544,7 @@ fn GameDetectionOverrides() -> Element {
                     span { class: "min-w-0 flex-1 truncate", "{name} · {exe}" }
                     button {
                         class: "text-[var(--text-muted)] hover:text-[var(--danger)]",
+                        aria_label: crate::i18n::text("Remove", &[]),
                         onclick: move |_| {
                             let mut next = settings.read().clone();
                             next.detect_extra.retain(|(key, _)| key != &exe);
