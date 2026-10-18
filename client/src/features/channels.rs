@@ -1183,16 +1183,25 @@ pub(crate) fn ConnectionStats() -> Element {
                 }
             }
             for (name, st) in rows.iter() {
-                div { key: "{name}", class: "flex items-baseline gap-1.5 text-[10px] font-mono py-0.5",
+                div { key: "{name}", class: "flex flex-wrap items-baseline gap-1.5 text-[10px] font-mono py-0.5",
                     span { class: "truncate flex-1 text-[var(--text-muted)]", "{name}" }
                     match st {
-                        crate::state::TrackStats::Inbound { loss_pct, recent_loss_pct, late_pct, concealed_pct, jitter_ms, buffer_ms, concealment_events } => rsx! {
+                        crate::state::TrackStats::Inbound { loss_pct, recent_loss_pct, discarded_packets, concealed_pct, jitter_ms, buffer_ms, concealment_events } => rsx! {
                             span {
                                 class: if recent_loss_pct.is_some_and(|v| v >= 1.0) { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
                                 title: crate::i18n::text("Packet loss over the last 5 seconds. Lifetime loss: {0}%.", &[format!("{loss_pct:.1}")]),
                                 {crate::i18n::text("{0}% loss", &[recent_loss_pct.map_or("—".into(), |v| format!("{v:.1}"))])}
                             }
-                            span { class: "text-[var(--text-dim)]", title: crate::i18n::text("Packets discarded before playback over the last 5 seconds", &[]), {crate::i18n::text("{0}% late", &[late_pct.map_or("—".into(), |v| format!("{v:.1}"))])} }
+                            span {
+                                class: "text-[var(--text-dim)]",
+                                title: crate::i18n::text("Discarded audio blocks over the last 5 seconds, including unused RED redundancy. This is not a percentage of lost voice.", &[]),
+                                {crate::i18n::text("{0} discarded", &[discarded_packets.map_or("—".into(), |v| v.to_string())])}
+                            }
+                            span {
+                                class: if concealed_pct.is_some_and(|v| v >= 1.0) { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
+                                title: crate::i18n::text("Audio concealed over the last 5 seconds: {0}%. Total concealment events: {1}.", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}")), concealment_events.to_string()]),
+                                {crate::i18n::text("{0}% concealed", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}"))])}
+                            }
                             span { class: "text-[var(--text-dim)]", title: crate::i18n::text("Network jitter", &[]), {crate::i18n::text("{0}ms jit", &[format!("{0:.0}" , jitter_ms)])} }
                             span {
                                 class: "text-[var(--text-dim)]",

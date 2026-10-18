@@ -39,8 +39,14 @@ struct Reception {
 #[derive(Clone, Copy)]
 pub(super) struct RecentReception {
     pub loss_pct: f32,
-    pub late_pct: f32,
+    pub discarded_packets: u64,
     pub concealed_pct: f32,
+}
+
+impl RecentReception {
+    fn needs_diagnostics(self, display: bool) -> bool {
+        self.loss_pct > 0.0 || self.concealed_pct >= 1.0 || (display && self.discarded_packets > 0)
+    }
 }
 
 #[derive(Default)]
@@ -90,8 +96,8 @@ impl ReceiveWindow {
         let samples = current.samples - previous.samples;
         Some(RecentReception {
             loss_pct: 100.0 * lost as f32 / total as f32,
-            late_pct: (100.0 * (current.discarded - previous.discarded) as f32 / total as f32)
-                .min(100.0),
+            // NetEq also counts redundant RED blocks, so RTP packets are not a valid denominator.
+            discarded_packets: current.discarded - previous.discarded,
             concealed_pct: if samples == 0 {
                 0.0
             } else {
@@ -302,7 +308,7 @@ pub(super) fn spawn_stats_task(
                 live.insert(sid.clone());
                 let window = windows.entry(sid.clone()).or_default();
                 let recent = window.sample(inbound, now);
-                if let Some(recent) = recent.filter(|r| r.loss_pct > 0.0)
+                if let Some(recent) = recent.filter(|r| r.needs_diagnostics(display))
                     && window
                         .logged_at
                         .is_none_or(|at| now.duration_since(at) >= LOSS_LOG_EVERY)
@@ -312,7 +318,12 @@ pub(super) fn spawn_stats_task(
                     tracing::info!(
                         from = %crate::identity::truncate_pubkey(&identity.0),
                         loss_pct = recent.loss_pct,
+                        discarded_recent = recent.discarded_packets,
                         concealed_pct = recent.concealed_pct,
+                        packets_received = inbound.received.packets_received,
+                        packets_discarded = i.packets_discarded,
+                        concealment_events = i.concealment_events,
+                        jitter_ms = inbound.received.jitter * 1000.0,
                         fec_received = i.fec_packets_received,
                         fec_used = i.fec_packets_received.saturating_sub(i.fec_packets_discarded),
                         nacks = i.nack_count,
@@ -332,13 +343,13 @@ pub(super) fn spawn_stats_task(
                     let mut view = inbound_stats(inbound);
                     if let TrackStats::Inbound {
                         recent_loss_pct,
-                        late_pct,
+                        discarded_packets,
                         concealed_pct,
                         ..
                     } = &mut view
                     {
                         *recent_loss_pct = recent.map(|r| r.loss_pct);
-                        *late_pct = recent.map(|r| r.late_pct);
+                        *discarded_packets = recent.map(|r| r.discarded_packets);
                         *concealed_pct = recent.map(|r| r.concealed_pct);
                     }
                     next.insert(identity.0.clone(), view);

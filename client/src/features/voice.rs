@@ -422,15 +422,8 @@ async fn service_loop(
             }
             VoiceCmd::SetDevices { input, output } => {
                 eprintln!("[voice] SetDevices input={:?} output={:?}", input, output);
-                {
-                    let mut s = state.write();
-                    if let Some(i) = input.clone() {
-                        s.selected_input_device = Some(i);
-                    }
-                    if let Some(o) = output.clone() {
-                        s.selected_output_device = Some(o);
-                    }
-                }
+                // The UI already owns the latest selection, including System default.
+                // A queued command must not restore an older device over it.
                 restart_session(
                     &mut session,
                     &last_connect,
@@ -2635,7 +2628,7 @@ fn inbound_stats(s: &livekit::webrtc::stats::InboundRtpStats) -> TrackStats {
     let emitted = s.inbound.jitter_buffer_emitted_count;
     TrackStats::Inbound {
         recent_loss_pct: None,
-        late_pct: None,
+        discarded_packets: None,
         concealed_pct: None,
         loss_pct: if total == 0 {
             0.0

@@ -53,7 +53,7 @@ pub(super) fn MicrophoneSettings() -> Element {
         fieldset { disabled, class: "min-w-0 mb-4",
             label { class: "block text-[13px] text-[var(--text-muted)]",
                 {crate::i18n::text("Input", &[])}
-                select { class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{selected_input}",
+                select { class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{selected_input}", aria_label: crate::i18n::text("Input", &[]),
                     onchange: move |e| {
                         let value = e.value(); let input = (!value.is_empty()).then_some(value);
                         let mut next = settings.peek().clone(); next.selected_input_device = input.clone();
@@ -72,7 +72,7 @@ pub(super) fn MicrophoneSettings() -> Element {
                 span { class: "text-[13px] font-semibold text-[var(--text)]", {crate::i18n::text("Voice profile", &[])} }
                 label { class: "flex items-center gap-2 text-[12px] text-[var(--text-muted)]",
                     {crate::i18n::text("Listening with", &[])}
-                    select { class: "bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1", value: if config.processing.headphones { "headphones" } else { "speakers" },
+                    select { class: "bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1", aria_label: crate::i18n::text("Listening with", &[]), value: if config.processing.headphones { "headphones" } else { "speakers" },
                         onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.headphones = e.value() == "headphones"; next.processing.echo = !next.processing.headphones; commit(next); },
                         option { value: "headphones", {crate::i18n::text("Headphones", &[])} }
                         option { value: "speakers", {crate::i18n::text("Speakers", &[])} }
@@ -81,10 +81,11 @@ pub(super) fn MicrophoneSettings() -> Element {
             }
             div { class: "dxf-mic-profiles", role: "group", aria_label: crate::i18n::text("Voice profile", &[]),
                 for profile in Profile::ALL {
-                    button { class: "dxf-mic-profile", r#type: "button", "aria-pressed": config.processing.profile == profile,
+                    button { class: "dxf-mic-profile", r#type: "button", aria_label: crate::i18n::label(profile.label()), "aria-pressed": config.processing.profile == profile,
                         onclick: move |_| {
                             let mut next = Config::from_state(&state.peek()).preset(profile);
-                            if let Ok(context) = crate::features::voice::microphone_context(&state.peek())
+                            if profile != Profile::Custom
+                                && let Ok(context) = crate::features::voice::microphone_context(&state.peek())
                                 && let Some(saved) = settings.peek().mic_calibrations.iter().rev().find(|saved| saved.version == 1 && saved.context == context && saved.config.processing.profile == profile)
                             { next = saved.config; }
                             commit(next);
@@ -112,7 +113,7 @@ pub(super) fn MicrophoneSettings() -> Element {
                 div { class: "dxf-settings-control",
                     label { r#for: "mic-volume", {crate::i18n::text("Microphone Volume", &[])} }
                     output { "for": "mic-volume", "{config.volume}%" }
-                    input { id: "mic-volume", r#type: "range", min: "0", max: "200", value: "{config.volume}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.volume = e.value().parse().unwrap_or(config.volume); slide(next); }, onchange: persist }
+                    input { id: "mic-volume", aria_label: crate::i18n::text("Microphone Volume", &[]), r#type: "range", min: "0", max: "200", value: "{config.volume}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.volume = e.value().parse().unwrap_or(config.volume); slide(next); }, onchange: persist }
                 }
             VoiceQualitySettings {}
             details { class: "dxf-mic-advanced",
@@ -120,24 +121,24 @@ pub(super) fn MicrophoneSettings() -> Element {
                 div { class: "dxf-settings-control",
                     label { r#for: "mic-sensitivity", {crate::i18n::text("Sensitivity", &[])} }
                     output { "for": "mic-sensitivity", "{crate::features::voice::peak_to_db_label(config.threshold)}" }
-                    input { id: "mic-sensitivity", r#type: "range", min: "0", max: "100", value: "{crate::features::voice::peak_to_meter_pct(config.threshold)}", disabled: !config.processing.gate,
+                    input { id: "mic-sensitivity", aria_label: crate::i18n::text("Sensitivity", &[]), r#type: "range", min: "0", max: "100", value: "{crate::features::voice::peak_to_meter_pct(config.threshold)}", disabled: !config.processing.gate,
                         oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.threshold = crate::features::voice::meter_pct_to_peak(e.value().parse().unwrap_or(40)); slide(next); }, onchange: persist }
                 }
-                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.gate, onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.gate = e.checked(); manual(next); } } {crate::i18n::text("Transmit only when I speak", &[])} }
-                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.agc, onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.agc = e.checked(); manual(next); } } {crate::i18n::text("Automatic gain control", &[])} }
-                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.denoise, onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.denoise = e.checked(); manual(next); } } {crate::i18n::text("Noise cancellation", &[])} }
+                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.gate, aria_label: crate::i18n::text("Transmit only when I speak", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.gate = e.checked(); manual(next); } } {crate::i18n::text("Transmit only when I speak", &[])} }
+                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.agc, aria_label: crate::i18n::text("Automatic gain control", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.agc = e.checked(); manual(next); } } {crate::i18n::text("Automatic gain control", &[])} }
+                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.denoise, aria_label: crate::i18n::text("Noise cancellation", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.denoise = e.checked(); manual(next); } } {crate::i18n::text("Noise cancellation", &[])} }
                 if config.denoise {
                     div { class: "dxf-settings-control",
                         label { r#for: "mic-suppression", {crate::i18n::text("Suppression strength", &[])} }
                         output { "for": "mic-suppression", {crate::i18n::text("{0} dB max", &[config.suppression.to_string()])} }
-                        input { id: "mic-suppression", r#type: "range", min: "6", max: "60", value: "{config.suppression}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.suppression = e.value().parse().unwrap_or(config.suppression); slide(next); }, onchange: persist }
+                        input { id: "mic-suppression", aria_label: crate::i18n::text("Suppression strength", &[]), r#type: "range", min: "6", max: "60", value: "{config.suppression}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.suppression = e.value().parse().unwrap_or(config.suppression); slide(next); }, onchange: persist }
                     }
                     p { class: "text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Lower keeps more of your voice, and more of the room with it.", &[])} }
                 }
-                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.echo, onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.echo = e.checked(); manual(next); } } {crate::i18n::text("Echo cancellation", &[])} }
-                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.high_pass, onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.high_pass = e.checked(); manual(next); } } {crate::i18n::text("Reduce low-frequency rumble", &[])} }
+                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.echo, aria_label: crate::i18n::text("Echo cancellation", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.echo = e.checked(); manual(next); } } {crate::i18n::text("Echo cancellation", &[])} }
+                label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.high_pass, aria_label: crate::i18n::text("Reduce low-frequency rumble", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.high_pass = e.checked(); manual(next); } } {crate::i18n::text("Reduce low-frequency rumble", &[])} }
                 if crate::rawmic::supported() {
-                    label { class: "dxf-settings-check", input { r#type: "checkbox", checked: state.read().bypass_system_audio_processing,
+                    label { class: "dxf-settings-check", input { r#type: "checkbox", checked: state.read().bypass_system_audio_processing, aria_label: crate::i18n::text("Bypass system audio processing", &[]),
                         onchange: move |e| {
                             let enabled = e.checked(); let mut next = settings.peek().clone(); next.bypass_system_audio_processing = enabled;
                             settings.set(next.clone()); crate::settings::save(&next); state.write().bypass_system_audio_processing = enabled;
@@ -159,7 +160,7 @@ fn VoiceQualitySettings() -> Element {
     rsx! {
         div { class: "mt-4 rounded-lg border border-[var(--border)] p-3",
             label { class: "block text-[13px] font-semibold text-[var(--text)]", {crate::i18n::text("Voice quality", &[])}
-                select { class: "w-full mt-2 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{bitrate}",
+                select { class: "w-full mt-2 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{bitrate}", aria_label: crate::i18n::text("Voice quality", &[]),
                     onchange: move |e| {
                         let kbps = crate::settings::normalize_voice_bitrate(e.value().parse().unwrap_or(48));
                         let mut next = settings.peek().clone(); next.voice_bitrate_kbps = kbps; settings.set(next.clone()); crate::settings::save(&next);

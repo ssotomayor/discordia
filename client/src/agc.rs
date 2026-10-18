@@ -75,13 +75,7 @@ impl Agc {
             };
         }
 
-        // Ahead of the ramp, not on it: a transient arrives inside one hop and
-        // 40 dB/s would still be lowering the gain long after it clipped.
-        let peak = hop.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        if peak * self.gain > CEILING {
-            self.gain = CEILING / peak;
-        }
-
+        // Limiting a transient must not overwrite the speech gain and duck subsequent words.
         self.hold(hop);
     }
 }
