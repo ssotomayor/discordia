@@ -10,6 +10,13 @@ pub enum CropShape {
 }
 
 impl CropShape {
+    pub(super) fn input_limit(self) -> usize {
+        match self {
+            Self::Square => crate::image_edit::MAX_AVATAR_INPUT_BYTES,
+            Self::Banner => crate::image_edit::MAX_BANNER_INPUT_BYTES,
+        }
+    }
+
     fn aspect(self) -> f64 {
         match self {
             CropShape::Square => 1.0,
@@ -63,11 +70,13 @@ pub fn ImageEditor(
         use_future(move || {
             let src = src.clone();
             async move {
-                let result = tokio::task::spawn_blocking(move || crate::image_edit::decode(&src))
-                    .await
-                    .map_err(|e| format!("Couldn't process that image: {e}"))
-                    .and_then(|result| result)
-                    .map(Arc::new);
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::image_edit::decode(&src, shape.input_limit())
+                })
+                .await
+                .map_err(|e| format!("Couldn't process that image: {e}"))
+                .and_then(|result| result)
+                .map(Arc::new);
                 if let Ok(image) = &result {
                     zoom.set(
                         (vp_w / f64::from(image.pixels.width()))

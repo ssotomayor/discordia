@@ -490,7 +490,7 @@ pub fn GuildSettingsDialog(
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
                                         {crate::i18n::text("Icon: square works best. Banner: wide (about 4:1). ", &[])}
-                                        {crate::features::profiles::IMAGE_HELP}
+                                        {crate::i18n::label(crate::features::profiles::IMAGE_HELP)}
                                     }
                                     if let Some(note) = upload_note() {
                                         div { class: "text-[10px] text-[var(--warn)] mt-1", "{note}" }
@@ -872,7 +872,7 @@ fn ImagePickButton(
                                     file.content_type(),
                                 );
                                 if let Err(msg) =
-                                    crate::features::profiles::check_image(&bytes, &mime)
+                                    crate::features::profiles::check_image(&bytes, &mime, shape.input_limit())
                                 {
                                     onpicked.call((None, Some(msg)));
                                     return;

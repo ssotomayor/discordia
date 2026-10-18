@@ -3,7 +3,8 @@ use std::io::Cursor;
 use base64::Engine as _;
 use image::{AnimationDecoder, ImageDecoder, ImageReader, RgbaImage};
 
-const MAX_INPUT_BYTES: usize = 15_000_000;
+pub(crate) const MAX_AVATAR_INPUT_BYTES: usize = 8_000_000;
+pub(crate) const MAX_BANNER_INPUT_BYTES: usize = 10_000_000;
 const MAX_PIXELS: u64 = 16_000_000;
 const MAX_GIF_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
 
@@ -22,18 +23,18 @@ impl DecodedImage {
     }
 }
 
-pub fn decode(src: &str) -> Result<DecodedImage, String> {
+pub fn decode(src: &str, max_input_bytes: usize) -> Result<DecodedImage, String> {
     let (header, payload) = src.split_once(',').ok_or("Invalid image data.")?;
     if !header.starts_with("data:image/") || !header.ends_with(";base64") {
         return Err("Expected an embedded image.".into());
     }
-    if payload.len() > MAX_INPUT_BYTES.div_ceil(3) * 4 {
+    if payload.len() > max_input_bytes.div_ceil(3) * 4 {
         return Err("That image is too large to edit.".into());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload)
         .map_err(|_| "Invalid image data.")?;
-    if bytes.len() > MAX_INPUT_BYTES {
+    if bytes.len() > max_input_bytes {
         return Err("That image is too large to edit.".into());
     }
     let original_bytes = bytes.len();
@@ -327,14 +328,15 @@ mod tests {
     fn local_gif_works_for_profile_community_logo_and_banner() {
         let path = std::path::PathBuf::from(std::env::var("DISCORDIA_TEST_GIF").unwrap());
         let input = std::fs::read(&path).unwrap();
-        crate::features::profiles::check_image(&input, "image/gif").unwrap();
+        crate::features::profiles::check_image(&input, "image/gif", MAX_AVATAR_INPUT_BYTES)
+            .unwrap();
         let source = data_url("image/gif", &input);
         assert!(
             crate::features::profiles::embed_image(source.clone())
                 .1
                 .is_none()
         );
-        let image = decode(&source).unwrap();
+        let image = decode(&source, MAX_AVATAR_INPUT_BYTES).unwrap();
         assert!(image.is_animated());
         println!(
             "Input: {} bytes, {}x{}",
@@ -399,7 +401,7 @@ mod tests {
     fn an_uncropped_small_gif_keeps_its_original_compression_and_loop_count() {
         assert!(OPTIMIZED_GIF.len() < 1_000_000);
         let source = data_url("image/gif", OPTIMIZED_GIF);
-        let image = decode(&source).unwrap();
+        let image = decode(&source, MAX_AVATAR_INPUT_BYTES).unwrap();
         assert!(image.is_animated());
         assert_eq!(
             crop_image(&image, [0.0, 0.0, 384.0, 384.0], (512, 512), false).unwrap(),
@@ -411,7 +413,11 @@ mod tests {
 
     #[test]
     fn a_small_optimized_gif_fits_after_cropping_without_losing_frames_or_timing() {
-        let image = decode(&data_url("image/gif", OPTIMIZED_GIF)).unwrap();
+        let image = decode(
+            &data_url("image/gif", OPTIMIZED_GIF),
+            MAX_AVATAR_INPUT_BYTES,
+        )
+        .unwrap();
         let rect = [16.0, 16.0, 352.0, 352.0];
         assert!(
             encode_gif(&image.gif_bytes, rect, (352, 352), image.repeat)
@@ -445,7 +451,11 @@ mod tests {
 
     #[test]
     fn animated_banner_crop_does_not_upscale_the_original() {
-        let image = decode(&data_url("image/gif", OPTIMIZED_GIF)).unwrap();
+        let image = decode(
+            &data_url("image/gif", OPTIMIZED_GIF),
+            MAX_AVATAR_INPUT_BYTES,
+        )
+        .unwrap();
         let result = crop_image(&image, [0.0, 128.0, 384.0, 128.0], (1024, 341), true).unwrap();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(result.split_once(',').unwrap().1)
@@ -505,7 +515,7 @@ mod tests {
         }
         assert!(input.len() < MAX_GIF_BYTES);
         let source = data_url("image/gif", &input);
-        let image = decode(&source).unwrap();
+        let image = decode(&source, MAX_AVATAR_INPUT_BYTES).unwrap();
         assert!(
             u64::from(image.pixels.width()) * u64::from(image.pixels.height()) * 181 > 32_000_000
         );
@@ -559,7 +569,7 @@ mod tests {
                 encoder.encode_frame(image::Frame::new(pixels)).unwrap();
             }
         }
-        let image = decode(&data_url("image/gif", &input)).unwrap();
+        let image = decode(&data_url("image/gif", &input), MAX_AVATAR_INPUT_BYTES).unwrap();
         let result = crop_image(&image, [1.0, 1.0, 6.0, 6.0], (512, 512), false).unwrap();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(result.split_once(',').unwrap().1)
@@ -603,7 +613,7 @@ mod tests {
             }
         }
         let source = data_url("image/gif", &input);
-        let decoded = decode(&source).unwrap();
+        let decoded = decode(&source, MAX_AVATAR_INPUT_BYTES).unwrap();
         assert_eq!(decoded.preview, source);
         for (size, expected) in [((32, 32), (4, 4)), ((96, 32), (4, 1))] {
             let cropped = crop_image(&decoded, [0.0, 0.0, 4.0, 4.0], size, true).unwrap();
@@ -681,8 +691,8 @@ mod tests {
 
     #[test]
     fn decode_rejects_corrupt_data_and_crop_rejects_invalid_coordinates() {
-        assert!(decode("data:image/png;base64,broken").is_err());
-        assert!(decode("https://example.com/avatar.png").is_err());
+        assert!(decode("data:image/png;base64,broken", MAX_AVATAR_INPUT_BYTES).is_err());
+        assert!(decode("https://example.com/avatar.png", MAX_AVATAR_INPUT_BYTES).is_err());
         let pixels = RgbaImage::new(4, 4);
         assert!(crop(&pixels, [f64::NAN, 0.0, 4.0, 4.0], (512, 512), false).is_err());
         assert!(crop(&pixels, [3.0, 0.0, 4.0, 4.0], (512, 512), false).is_err());
@@ -691,7 +701,7 @@ mod tests {
     #[test]
     fn decode_prepares_a_stable_preview() {
         let pixels = RgbaImage::from_pixel(8, 6, image::Rgba([25, 50, 75, 255]));
-        let decoded = decode(&png_url(&pixels).unwrap()).unwrap();
+        let decoded = decode(&png_url(&pixels).unwrap(), MAX_AVATAR_INPUT_BYTES).unwrap();
         assert_eq!(decoded.pixels, pixels);
         assert_eq!(pixels_from_url(&decoded.preview).into_rgba8(), pixels);
     }
@@ -699,7 +709,7 @@ mod tests {
     #[test]
     fn preview_is_bounded_without_reducing_crop_resolution() {
         let pixels = RgbaImage::from_pixel(2048, 1024, image::Rgba([25, 50, 75, 255]));
-        let decoded = decode(&png_url(&pixels).unwrap()).unwrap();
+        let decoded = decode(&png_url(&pixels).unwrap(), MAX_AVATAR_INPUT_BYTES).unwrap();
         assert_eq!(decoded.pixels.dimensions(), (2048, 1024));
         let preview = pixels_from_url(&decoded.preview);
         assert_eq!((preview.width(), preview.height()), (1024, 512));
@@ -721,7 +731,7 @@ mod tests {
             } else {
                 image.write_to(&mut bytes, format).unwrap();
             }
-            let decoded = decode(&data_url(mime, bytes.get_ref())).unwrap();
+            let decoded = decode(&data_url(mime, bytes.get_ref()), MAX_AVATAR_INPUT_BYTES).unwrap();
             assert_eq!(decoded.pixels.dimensions(), (8, 6), "{mime}");
         }
     }
@@ -740,7 +750,7 @@ mod tests {
         let mut oriented = vec![0xff, 0xd8, 0xff, 0xe1, 0, 34];
         oriented.extend_from_slice(&exif);
         oriented.extend_from_slice(&bytes.get_ref()[2..]);
-        let decoded = decode(&data_url("image/jpeg", &oriented)).unwrap();
+        let decoded = decode(&data_url("image/jpeg", &oriented), MAX_AVATAR_INPUT_BYTES).unwrap();
         assert_eq!(decoded.pixels.dimensions(), (6, 8));
         let preview = pixels_from_url(&decoded.preview);
         assert_eq!((preview.width(), preview.height()), (6, 8));
