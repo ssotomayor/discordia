@@ -24,6 +24,7 @@ pub mod icons;
 pub mod identity_setup;
 pub mod image_editor;
 pub mod integrations;
+mod invite;
 pub mod leveling;
 pub mod markup;
 pub mod members;
