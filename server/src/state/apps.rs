@@ -1,6 +1,9 @@
 use super::{AppState, durable};
 use crate::auth::{VerifiedManifest, verify_manifest_event};
-use crate::protocol::{AppManifest, BotInstall, GuildActivity, Id, Permission, bundle_blob};
+use crate::protocol::{
+    AppManifest, BotInstall, GuildActivity, Id, Member, Permission, User, bundle_blob,
+};
+use crate::store::Seat;
 
 /// A throwaway key costs nothing, so manifests from bots no guild installed
 /// are capped rather than kept without end.
@@ -10,7 +13,7 @@ pub enum ManifestOutcome {
     /// Older than or equal to what this host already holds.
     Stale,
     Recorded {
-        changed: Vec<Id>,
+        changed: Vec<(Id, Seat)>,
     },
 }
 
@@ -62,7 +65,8 @@ impl AppState {
         let mut changed = Vec::new();
         for install in self.bot_guilds(bot_pubkey) {
             if let Some(next) = apply_newer(install, &v.manifest) {
-                changed.push(next);
+                let seat = self.seat_for(&next);
+                changed.push((next, seat));
             }
         }
         durable(
@@ -73,11 +77,13 @@ impl AppState {
         )?;
         self.app_manifests
             .insert(bot_pubkey.to_string(), (v.manifest.version, v.event));
-        let ids = changed.iter().map(|i| i.guild_id).collect();
-        for install in changed {
+        let mut seats = Vec::new();
+        for (install, seat) in changed {
+            self.apply_seat(&install, &seat);
+            seats.push((install.guild_id, seat));
             self.put_install(install);
         }
-        Ok(ManifestOutcome::Recorded { changed: ids })
+        Ok(ManifestOutcome::Recorded { changed: seats })
     }
 
     pub async fn approve_app_update(
@@ -85,7 +91,7 @@ impl AppState {
         guild_id: Id,
         bot_pubkey: &str,
         by_pubkey: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Seat, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let mut install = self
@@ -98,9 +104,61 @@ impl AppState {
         install.permissions = pending.permissions.clone();
         install.intents = pending.intents.clone();
         install.app = Some(pending);
-        durable(self.store.upsert_bot_install(&install).await, "app update")?;
+        let seat = self.seat_for(&install);
+        durable(
+            self.store.update_bot_install(&install, &seat).await,
+            "app update",
+        )?;
+        self.apply_seat(&install, &seat);
         self.put_install(install);
-        Ok(())
+        Ok(seat)
+    }
+
+    /// The member row this install should have. A person's row under the same
+    /// key is never taken away; only a bot's.
+    pub(super) fn seat_for(&self, install: &BotInstall) -> Seat {
+        let current = self
+            .members
+            .get(&install.guild_id)
+            .and_then(|g| g.get(&install.bot_pubkey).map(|m| m.clone()));
+        match (install.seated(), current) {
+            (true, Some(m)) if m.bot && m.user.username == install.name => Seat::Unchanged,
+            (true, Some(mut m)) => {
+                m.bot = true;
+                m.user.username = install.name.clone();
+                Seat::Taken(m)
+            }
+            (true, None) => Seat::Taken(Member {
+                user: User {
+                    pubkey: install.bot_pubkey.clone(),
+                    username: install.name.clone(),
+                },
+                guild_id: install.guild_id,
+                online: false,
+                bot: true,
+                roles: Vec::new(),
+                xp: 0,
+            }),
+            (false, Some(m)) if m.bot => Seat::Vacated,
+            (false, _) => Seat::Unchanged,
+        }
+    }
+
+    pub(super) fn apply_seat(&self, install: &BotInstall, seat: &Seat) {
+        match seat {
+            Seat::Unchanged => {}
+            Seat::Taken(member) => {
+                self.members
+                    .entry(install.guild_id)
+                    .or_default()
+                    .insert(install.bot_pubkey.clone(), member.clone());
+            }
+            Seat::Vacated => {
+                if let Some(g) = self.members.get(&install.guild_id) {
+                    g.remove(&install.bot_pubkey);
+                }
+            }
+        }
     }
 
     pub fn upload_bundle(

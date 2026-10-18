@@ -245,6 +245,11 @@ impl AppState {
             state.invite_by_guild.insert(gid, code);
         }
         for i in loaded.bot_installs {
+            // Rows from before activity-only apps went unseated.
+            if let crate::store::Seat::Vacated = state.seat_for(&i) {
+                state.store.delete_member(i.guild_id, &i.bot_pubkey).await?;
+                state.apply_seat(&i, &crate::store::Seat::Vacated);
+            }
             state
                 .bot_installs
                 .entry(i.bot_pubkey.clone())
@@ -3257,7 +3262,7 @@ impl AppState {
         intents: Vec<Intent>,
         manifest: Option<String>,
         by_pubkey: &str,
-    ) -> Result<(BotInstall, Member), String> {
+    ) -> Result<(BotInstall, crate::store::Seat), String> {
         let app = match manifest {
             Some(event) => Some(self.verified_manifest_for(bot_pubkey, &event)?),
             None => None,
@@ -3317,40 +3322,14 @@ impl AppState {
             app: app.as_ref().map(|a| a.manifest.clone()),
             pending: None,
         };
-        let member = {
-            let guild_members = self.members.entry(guild_id).or_default();
-            if let Some(mut existing) = guild_members.get(bot_pubkey).map(|m| m.clone()) {
-                existing.bot = true;
-                existing.user.username = name;
-                existing.clone()
-            } else {
-                Member {
-                    user: User {
-                        pubkey: bot_pubkey.to_string(),
-                        username: name,
-                    },
-                    guild_id,
-                    online: false,
-                    bot: true,
-                    roles: Vec::new(),
-                    xp: 0,
-                }
-            }
-        };
-        durable(
-            self.store.install_bot(&install, &member).await,
-            "bot install",
-        )?;
+        let seat = self.seat_for(&install);
+        durable(self.store.install_bot(&install, &seat).await, "bot install")?;
         self.bot_installs
             .entry(bot_pubkey.to_string())
             .or_default()
             .insert(guild_id, install.clone());
-
-        self.members
-            .entry(guild_id)
-            .or_default()
-            .insert(bot_pubkey.to_string(), member.clone());
-        Ok((install, member))
+        self.apply_seat(&install, &seat);
+        Ok((install, seat))
     }
 
     pub async fn uninstall_bot(

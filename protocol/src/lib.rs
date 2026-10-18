@@ -1418,6 +1418,14 @@ pub struct AppManifest {
 }
 
 impl AppManifest {
+    /// Only a page to play in: nothing to say in chat, nothing to read there.
+    pub fn activity_only(&self) -> bool {
+        self.activity.is_some()
+            && self.commands.is_empty()
+            && self.intents.is_empty()
+            && self.permissions.is_empty()
+    }
+
     /// Anything a guild has not yet approved. A new bundle hash alone is not:
     /// the bundle runs with the capabilities it was given, and no more.
     pub fn widens(&self, newer: &AppManifest) -> bool {
@@ -1514,6 +1522,12 @@ impl BotInstall {
 
     pub fn has_intent(&self, i: Intent) -> bool {
         self.intents.contains(&i)
+    }
+
+    /// Whether the app sits among the guild's members. One that is only an
+    /// activity does not: it is listed with the activities instead.
+    pub fn seated(&self) -> bool {
+        !self.app.as_ref().is_some_and(AppManifest::activity_only)
     }
 }
 
