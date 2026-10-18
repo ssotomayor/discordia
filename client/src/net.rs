@@ -232,6 +232,7 @@ async fn resolve_session(
             {
                 addrs.push(relay);
             }
+            state.write().resolved_share = Some(crate::protocol::format_quic_share(&key, &addrs));
             Ok((Dial::Quic { key, addrs }, None))
         }
     }

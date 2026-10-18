@@ -10,7 +10,11 @@ pub fn can_invite(state: &AppState, guild_id: Id) -> bool {
 
 /// What a friend types into "Add a server" to reach this one, best first. A
 /// loopback URL only works on the machine that dialled it, so it is never offered.
-pub fn server_addresses(mode: &SessionMode, host: Option<&HostInfo>) -> Vec<String> {
+pub fn server_addresses(
+    mode: &SessionMode,
+    host: Option<&HostInfo>,
+    resolved_share: Option<&str>,
+) -> Vec<String> {
     match mode {
         SessionMode::Remote { server_url } => {
             let url = server_url.trim();
@@ -19,7 +23,9 @@ pub fn server_addresses(mode: &SessionMode, host: Option<&HostInfo>) -> Vec<Stri
                 .into_iter()
                 .collect()
         }
-        SessionMode::ByCode { code, .. } => vec![code.trim().to_string()],
+        SessionMode::ByCode { code, .. } => std::iter::once(code.trim().to_string())
+            .chain(resolved_share.map(str::to_string))
+            .collect(),
         SessionMode::SelfHost { .. } => host
             .map(|h| h.shortcode.iter().chain(h.share.iter()).cloned().collect())
             .unwrap_or_default(),
@@ -62,7 +68,7 @@ pub fn InviteDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
     let code = s.invites.get(&guild_id).cloned();
     let addresses = mode
         .as_ref()
-        .map(|m| server_addresses(m, s.host_info.as_ref()))
+        .map(|m| server_addresses(m, s.host_info.as_ref(), s.resolved_share.as_deref()))
         .unwrap_or_default();
     let self_hosted = matches!(mode, Some(SessionMode::SelfHost { .. }));
     drop(s);
@@ -198,11 +204,11 @@ mod tests {
     #[test]
     fn a_remote_server_offers_the_address_it_was_dialled_at() {
         assert_eq!(
-            server_addresses(&remote(" wss://app.discordia.world "), None),
+            server_addresses(&remote(" wss://app.discordia.world "), None, None),
             vec!["wss://app.discordia.world".to_string()]
         );
         assert_eq!(
-            server_addresses(&remote("quic://abc@203.0.113.7:9001"), None),
+            server_addresses(&remote("quic://abc@203.0.113.7:9001"), None, None),
             vec!["quic://abc@203.0.113.7:9001".to_string()]
         );
     }
@@ -214,19 +220,29 @@ mod tests {
             "ws://localhost:9000",
             "ws://[::1]:9000",
         ] {
-            assert!(server_addresses(&remote(url), None).is_empty(), "{url}");
+            assert!(
+                server_addresses(&remote(url), None, None).is_empty(),
+                "{url}"
+            );
         }
     }
 
     #[test]
-    fn a_code_is_offered_as_the_code() {
+    fn a_code_is_offered_with_the_quic_address_it_resolved_to() {
         let mode = SessionMode::ByCode {
             rendezvous_url: "ws://rendezvous.discordia.world:7700".into(),
             code: "purple-fox-42".into(),
         };
         assert_eq!(
-            server_addresses(&mode, None),
+            server_addresses(&mode, None, None),
             vec!["purple-fox-42".to_string()]
+        );
+        assert_eq!(
+            server_addresses(&mode, None, Some("quic://abc@203.0.113.7:9001")),
+            vec![
+                "purple-fox-42".to_string(),
+                "quic://abc@203.0.113.7:9001".to_string()
+            ]
         );
     }
 }

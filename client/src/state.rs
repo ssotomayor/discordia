@@ -376,6 +376,9 @@ pub struct AppState {
     /// join code, to register a self-host, or to relay the connection. A
     /// `Remote` dial to a plain address uses none, and this stays `None`.
     pub rendezvous_url: Option<String>,
+    /// The `quic://` a join code resolved to, so an invite can carry an address
+    /// that works without the friend knowing this rendezvous.
+    pub resolved_share: Option<String>,
     /// Never persisted and never merged into `profiles`: it is only true while
     /// the person holds a socket, and the server clears it when they drop.
     pub activities: HashMap<String, crate::protocol::Activity>,
@@ -558,6 +561,7 @@ impl AppState {
             global_xp: HashMap::new(),
             server_origin: None,
             rendezvous_url: None,
+            resolved_share: None,
             activities: HashMap::new(),
             profile_card: None,
             image_viewer: None,
@@ -731,6 +735,7 @@ impl AppState {
         self.server_origin = None;
         self.sfu_tunnel_url = None;
         self.rendezvous_url = None;
+        self.resolved_share = None;
         self.host_info = None;
         self.transport = Transport::Loopback;
         self.gateway_route = None;
