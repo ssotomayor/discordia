@@ -22,6 +22,14 @@ pub struct InviteRow {
     pub created_by: String,
 }
 
+/// What an install change does to the bot's member row.
+#[derive(Debug, Clone)]
+pub enum Seat {
+    Unchanged,
+    Taken(Member),
+    Vacated,
+}
+
 #[derive(Default)]
 pub struct LoadedState {
     pub users: Vec<User>,
@@ -95,11 +103,36 @@ impl Store {
         tx.commit().await
     }
 
-    pub async fn install_bot(&self, install: &BotInstall, member: &Member) -> Result<()> {
+    pub async fn install_bot(&self, install: &BotInstall, seat: &Seat) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        Self::write_bot_install(&mut *tx, install).await?;
-        Self::write_member(&mut *tx, member).await?;
+        Self::write_install_and_seat(&mut tx, install, seat).await?;
         tx.commit().await
+    }
+
+    pub async fn update_bot_install(&self, install: &BotInstall, seat: &Seat) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::write_install_and_seat(&mut tx, install, seat).await?;
+        tx.commit().await
+    }
+
+    async fn write_install_and_seat(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        install: &BotInstall,
+        seat: &Seat,
+    ) -> Result<()> {
+        Self::write_bot_install(&mut **tx, install).await?;
+        match seat {
+            Seat::Unchanged => {}
+            Seat::Taken(member) => Self::write_member(&mut **tx, member).await?,
+            Seat::Vacated => {
+                sqlx::query("DELETE FROM members WHERE guild_id = ? AND pubkey = ?")
+                    .bind(install.guild_id.to_string())
+                    .bind(&install.bot_pubkey)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn uninstall_bot(&self, guild_id: Id, pubkey: &str) -> Result<()> {
@@ -1109,7 +1142,7 @@ impl Store {
         bot_pubkey: &str,
         version: u64,
         event: &str,
-        installs: &[BotInstall],
+        installs: &[(BotInstall, Seat)],
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -1121,8 +1154,8 @@ impl Store {
         .bind(event)
         .execute(&mut *tx)
         .await?;
-        for i in installs {
-            Self::write_bot_install(&mut *tx, i).await?;
+        for (i, seat) in installs {
+            Self::write_install_and_seat(&mut tx, i, seat).await?;
         }
         tx.commit().await
     }

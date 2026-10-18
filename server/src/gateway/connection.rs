@@ -1022,10 +1022,10 @@ pub(crate) async fn handle_connection_with_route<S>(
                         match ctx.state.install_bot(
                             guild_id, &bot_pubkey, &name, permissions, intents, manifest, &u.pubkey,
                         ).await {
-                            Ok((install, member)) => {
+                            Ok((install, seat)) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot installed");
+                                announce_seat(&ctx.state, guild_id, &bot_pubkey, seat);
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                ctx.state.deliver(targets.clone(), ServerMessage::MemberJoin(member));
                                 if let Some(set) = ctx.state.commands_of(&bot_pubkey) {
                                     ctx.state.deliver(targets, ServerMessage::BotCommands(set));
                                 }
@@ -1091,7 +1091,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                         match ctx.state.register_manifest(&u.pubkey, &event).await {
                             Ok(crate::state::ManifestOutcome::Recorded { changed }) => {
                                 tracing::info!(bot = %u.pubkey, guilds = changed.len(), "app manifest recorded");
-                                for guild_id in changed {
+                                for (guild_id, seat) in changed {
+                                    announce_seat(&ctx.state, guild_id, &u.pubkey, seat);
                                     share_guild_apps(&ctx.state, guild_id);
                                 }
                                 ask_for_bundles(&ctx.state, &u.pubkey);
@@ -1110,8 +1111,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         };
                         match ctx.state.approve_app_update(guild_id, &bot_pubkey, &u.pubkey).await {
-                            Ok(()) => {
+                            Ok(seat) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "app update approved");
+                                announce_seat(&ctx.state, guild_id, &bot_pubkey, seat);
                                 share_guild_apps(&ctx.state, guild_id);
                                 ask_for_bundles(&ctx.state, &bot_pubkey);
                             }
@@ -3168,6 +3170,28 @@ fn ask_for_bundles(state: &crate::state::AppState, bot_pubkey: &str) {
 }
 
 /// Managers see the installs, everyone sees the activities they can open.
+fn announce_seat(
+    state: &crate::state::AppState,
+    guild_id: crate::protocol::Id,
+    bot_pubkey: &str,
+    seat: crate::store::Seat,
+) {
+    let targets = state.guild_member_pubkeys(guild_id);
+    match seat {
+        crate::store::Seat::Unchanged => {}
+        crate::store::Seat::Taken(member) => {
+            state.deliver(targets, ServerMessage::MemberJoin(member))
+        }
+        crate::store::Seat::Vacated => state.deliver(
+            targets,
+            ServerMessage::MemberRemove {
+                guild_id,
+                user_pubkey: bot_pubkey.to_string(),
+            },
+        ),
+    }
+}
+
 fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
     let (curators, lists) = state.guild_blocklists(guild_id);
     state.deliver(

@@ -439,6 +439,154 @@ async fn an_apps_bot_is_the_backend_of_its_own_activity() {
     w.handle.abort();
 }
 
+async fn ready_members(url: &str, id: &BotIdentity) -> Vec<String> {
+    let mut b = Bot::connect_as_user(url, id, "Again").await.unwrap();
+    loop {
+        if let ServerMessage::Ready { members, .. } = next_timeout(&mut b).await {
+            return members.into_iter().map(|m| m.user.pubkey).collect();
+        }
+    }
+}
+
+async fn seat_change(b: &mut Bot, app: &str) -> bool {
+    loop {
+        match next_timeout(b).await {
+            ServerMessage::MemberJoin(m) if m.user.pubkey == app => {
+                assert!(m.bot);
+                return true;
+            }
+            ServerMessage::MemberRemove { user_pubkey, .. } if user_pubkey == app => return false,
+            ServerMessage::Error { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_activity_only_app_plays_without_a_seat_among_the_members() {
+    use base64::Engine;
+    use discordia_server::protocol::{ActivityCapability, ActivityManifest, AppManifest, Intent};
+    use sha2::Digest;
+
+    let (url, handle) = spawn_gateway().await;
+    let alice_id = BotIdentity::generate();
+    let mut alice = Bot::connect_as_user(&url, &alice_id, "Alice")
+        .await
+        .unwrap();
+    while !matches!(next_timeout(&mut alice).await, ServerMessage::Ready { .. }) {}
+    alice
+        .send(&ClientMessage::CreateGuild {
+            name: "Games".into(),
+            template: None,
+        })
+        .await
+        .unwrap();
+    let (gid, text) = loop {
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(&mut alice).await
+        {
+            let text = channels
+                .iter()
+                .find(|c| c.kind == ChannelKind::Text)
+                .unwrap()
+                .id;
+            break (guild.id, text);
+        }
+    };
+    let page = b"<!doctype html><p>wizards</p>";
+    let app = BotIdentity::generate();
+    let key = app.pubkey().to_string();
+    let mut manifest = AppManifest {
+        name: "Wizards".into(),
+        description: String::new(),
+        icon: "🧙".into(),
+        version: 1,
+        permissions: Vec::new(),
+        intents: Vec::new(),
+        commands: Vec::new(),
+        activity: Some(ActivityManifest {
+            sha256: hex::encode(sha2::Sha256::digest(page)),
+            capabilities: vec![ActivityCapability::Instance],
+            max_players: 2,
+            url: None,
+        }),
+    };
+    alice
+        .send(&ClientMessage::InstallBot {
+            guild_id: gid,
+            bot_pubkey: key.clone(),
+            name: String::new(),
+            permissions: Vec::new(),
+            intents: Vec::new(),
+            manifest: Some(app.sign_manifest(&manifest)),
+        })
+        .await
+        .unwrap();
+    alice
+        .send(&ClientMessage::UploadActivityBundle {
+            guild_id: gid,
+            bot_pubkey: key.clone(),
+            data_url: format!(
+                "data:{};base64,{}",
+                discordia_server::protocol::BUNDLE_MIME,
+                base64::engine::general_purpose::STANDARD.encode(page)
+            ),
+        })
+        .await
+        .unwrap();
+    let mut bot = Bot::connect(&url, &app, "Wizards").await.unwrap();
+    while !matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {}
+    assert!(!ready_members(&url, &alice_id).await.contains(&key));
+
+    alice
+        .send(&ClientMessage::ActivityStart {
+            channel_id: text,
+            app: key.clone(),
+        })
+        .await
+        .unwrap();
+    let started = loop {
+        match next_timeout(&mut alice).await {
+            ServerMessage::ActivityStarted { instance } => break instance,
+            ServerMessage::MemberJoin(m) if m.user.pubkey == key => {
+                panic!("an activity-only app took a seat")
+            }
+            ServerMessage::Error { message } => panic!("{message}"),
+            _ => {}
+        }
+    };
+    assert_eq!(instances(&mut bot).await[0].id, started.id);
+    bot.activity_send(started.id, None, "{\"turn\":1}")
+        .await
+        .unwrap();
+    assert_eq!(
+        event(&mut alice).await,
+        (key.clone(), "{\"turn\":1}".into())
+    );
+
+    // Reading chat makes it a bot like any other, and dropping that unseats it again.
+    manifest.version = 2;
+    manifest.intents = vec![Intent::GuildMessages];
+    bot.register_manifest(&app, &manifest).await.unwrap();
+    alice
+        .send(&ClientMessage::ApproveAppUpdate {
+            guild_id: gid,
+            bot_pubkey: key.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(seat_change(&mut alice, &key).await);
+    assert!(ready_members(&url, &alice_id).await.contains(&key));
+    manifest.version = 3;
+    manifest.intents.clear();
+    bot.register_manifest(&app, &manifest).await.unwrap();
+    assert!(!seat_change(&mut alice, &key).await);
+    assert!(!ready_members(&url, &alice_id).await.contains(&key));
+
+    handle.abort();
+}
+
 #[tokio::test]
 async fn a_kicked_member_leaves_the_game_and_cannot_rejoin() {
     let mut w = world().await;
