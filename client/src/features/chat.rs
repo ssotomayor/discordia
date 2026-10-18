@@ -368,6 +368,10 @@ pub fn ChatView() -> Element {
                         EmojiText { text: topic, guild_id: channel_guild, compact: true }
                     }
                 }
+                if !is_dm {
+                    div { class: "flex-1" }
+                    crate::features::activities::OpenActivities {}
+                }
                 if !is_dm && state.read().server_chat_tools {
                     for channel_id in selected_channel.into_iter() {
                         super::chat_tools::ChatTools { key: "{channel_id}", channel_id }

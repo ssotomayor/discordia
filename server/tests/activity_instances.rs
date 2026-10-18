@@ -495,3 +495,50 @@ async fn a_kicked_member_leaves_the_game_and_cannot_rejoin() {
 
     w.handle.abort();
 }
+
+async fn guild_instances(b: &mut Bot) -> Vec<ActivityInstance> {
+    loop {
+        match next_timeout(b).await {
+            ServerMessage::GuildActivityInstances { instances, .. } => return instances,
+            ServerMessage::Error { message } => panic!("unexpected error: {message}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_member_finds_every_game_in_the_guild_and_an_outsider_none() {
+    let mut w = world().await;
+    w.alice
+        .0
+        .send(&ClientMessage::ActivityStart {
+            channel_id: w.text,
+            app: "builtin:rps".into(),
+        })
+        .await
+        .unwrap();
+    let started = loop {
+        if let ServerMessage::ActivityStarted { instance } = next_timeout(&mut w.alice.0).await {
+            break instance;
+        }
+    };
+    w.bob
+        .0
+        .send(&ClientMessage::FetchGuildActivityInstances {
+            guild_id: w.guild_id,
+        })
+        .await
+        .unwrap();
+    assert_eq!(guild_instances(&mut w.bob.0).await, vec![started]);
+
+    let (outsider, _) = &mut user(&w.url, "Outsider").await;
+    outsider
+        .send(&ClientMessage::FetchGuildActivityInstances {
+            guild_id: w.guild_id,
+        })
+        .await
+        .unwrap();
+    assert!(guild_instances(outsider).await.is_empty());
+
+    w.handle.abort();
+}
