@@ -39,29 +39,46 @@ pub fn selected_media_route(stats: &[RtcStats]) -> Option<MediaRoute> {
             Some(&c.remote_candidate)
         }
         _ => None,
-    })?;
+    });
     if pair.state != Some(livekit::webrtc::stats::IceCandidatePairState::Succeeded) {
         return None;
     }
-    let local_relay = stats.iter().any(|s| {
-        matches!(s,
-        RtcStats::LocalCandidate(c) if c.rtc.id == pair.local_candidate_id
-            && c.local_candidate.candidate_type == Some(IceCandidateType::Relay))
+    let local = stats.iter().find_map(|s| match s {
+        RtcStats::LocalCandidate(c) if c.rtc.id == pair.local_candidate_id => {
+            Some(&c.local_candidate)
+        }
+        _ => None,
     });
-    let family = match remote.address.parse::<std::net::IpAddr>() {
-        Ok(ip) if ip.is_loopback() => "local",
-        Ok(ip) if ip.is_ipv6() && ip.to_canonical().is_ipv4() => "IPv4",
-        Ok(ip) if ip.is_ipv6() => "IPv6",
-        Ok(_) => "IPv4",
-        Err(_) => "IP unknown",
+    // libwebrtc omits a peer-reflexive remote's address, and sometimes the remote itself;
+    // both ends of a pair share a family.
+    let address = [remote, local]
+        .into_iter()
+        .flatten()
+        .find_map(|c| c.address.parse::<std::net::IpAddr>().ok());
+    let family = match address {
+        Some(ip) if ip.is_loopback() => "local",
+        Some(ip) if ip.is_ipv6() && ip.to_canonical().is_ipv4() => "IPv4",
+        Some(ip) if ip.is_ipv6() => "IPv6",
+        Some(_) => "IPv4",
+        None => "IP unknown",
     };
+    let protocol = [remote, local]
+        .into_iter()
+        .flatten()
+        .map(|c| c.protocol.clone())
+        .find(|p| !p.is_empty())
+        .unwrap_or_default();
     Some(MediaRoute {
         family,
-        relayed: local_relay || remote.candidate_type == Some(IceCandidateType::Relay),
-        protocol: remote.protocol.clone(),
-        endpoint: match remote.address.parse::<std::net::IpAddr>() {
-            Ok(ip) => std::net::SocketAddr::new(ip, remote.port.try_into().ok()?).to_string(),
-            Err(_) => remote.address.clone(),
+        relayed: [remote, local]
+            .into_iter()
+            .flatten()
+            .any(|c| c.candidate_type == Some(IceCandidateType::Relay)),
+        protocol,
+        endpoint: match remote.map(|c| (c.address.parse::<std::net::IpAddr>(), c)) {
+            Some((Ok(ip), c)) => std::net::SocketAddr::new(ip, c.port.try_into().ok()?).to_string(),
+            Some((Err(_), c)) => c.address.clone(),
+            None => String::new(),
         },
     })
 }
@@ -121,5 +138,21 @@ mod tests {
         assert_eq!(route.label(), "IPv4 · TURN relay · TCP");
         assert_eq!(route.endpoint, "203.0.113.9:7882");
         assert!(selected_media_route(&stats[1..]).is_none());
+    }
+
+    #[test]
+    fn a_peer_reflexive_remote_without_an_address_or_stats_takes_the_local_family() {
+        let stats: Vec<RtcStats> = serde_json::from_value(serde_json::json!([
+            {"type":"transport", "selectedCandidatePairId":"selected"},
+            {"type":"candidate-pair", "id":"selected", "remoteCandidateId":"remote", "localCandidateId":"local", "state":"succeeded"},
+            {"type":"remote-candidate", "id":"remote", "candidateType":"prflx"},
+            {"type":"local-candidate", "id":"local", "address":"192.168.1.20", "port":50000, "protocol":"udp", "candidateType":"host"}
+        ])).unwrap();
+        let route = selected_media_route(&stats).unwrap();
+        assert_eq!(route.label(), "IPv4 · UDP");
+        assert!(!route.relayed);
+        let unlisted = selected_media_route(&[&stats[..2], &stats[3..]].concat()).unwrap();
+        assert_eq!(unlisted.label(), "IPv4 · UDP");
+        assert_eq!(unlisted.endpoint, "");
     }
 }

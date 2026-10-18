@@ -286,9 +286,18 @@ async fn alternate_endpoint_delivers_audio(
             restarted.elapsed()
         );
     }
-    let published = publisher.get_stats().await.unwrap();
-    let send_route = connection_routes::selected_media_route(&published.publisher_stats)
-        .expect("publisher must have a selected audio route");
+    let send_route = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let published = publisher.get_stats().await.unwrap();
+            if let Some(route) = connection_routes::selected_media_route(&published.publisher_stats)
+            {
+                break route;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("publisher must have a selected audio route");
     let receive_route = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let received = listener.get_stats().await.unwrap();
@@ -306,9 +315,12 @@ async fn alternate_endpoint_delivers_audio(
     .await
     .expect("listener must have a selected audio route");
     for route in [send_route, receive_route] {
-        assert!(!route.relayed);
-        assert_ne!(route.family, "IP unknown");
-        assert!(matches!(route.protocol.as_str(), "udp" | "tcp"));
+        assert!(!route.relayed, "{route:?}");
+        assert_ne!(route.family, "IP unknown", "{route:?}");
+        assert!(
+            matches!(route.protocol.as_str(), "udp" | "tcp"),
+            "{route:?}"
+        );
     }
     feeder.stop().await;
     listener.close().await.unwrap();
