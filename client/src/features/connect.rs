@@ -389,7 +389,7 @@ pub fn ConnectForm(
                                                         value: "{url}",
                                                         selected: url == publish_target,
                                                         style: "color: var(--text); background: var(--panel-solid);",
-                                                        "{url}"
+                                                        {crate::settings::rendezvous_label(&url)}
                                                     }
                                                 }
                                             }
@@ -572,7 +572,7 @@ fn RendezvousList() -> Element {
                     div {
                         key: "{url}",
                         class: "flex items-center gap-2 rounded-[10px] border border-[var(--edge-strong)] bg-[var(--panel2)] pl-3.5 pr-2 py-1",
-                        span { class: "flex-1 min-w-0 truncate font-mono text-[12.5px] text-[var(--text)]", title: "{url}", "{url}" }
+                        span { class: "flex-1 min-w-0 truncate font-mono text-[12.5px] text-[var(--text)]", title: "{url}", {crate::settings::rendezvous_label(&url)} }
                         // The last one stays: without a rendezvous there is no list and no code.
                         if removable {
                             button {
@@ -1205,10 +1205,6 @@ fn listed_key(rendezvous: &str, code: &str) -> String {
     format!("{rendezvous} {code}")
 }
 
-fn rendezvous_label(url: &str) -> &str {
-    url.split_once("://").map_or(url, |(_, rest)| rest)
-}
-
 async fn discover(rendezvous: &str) -> Result<Vec<DiscoverEntry>, String> {
     let url = format!("{}/discover", ws_to_http(rendezvous));
     reqwest::Client::new()
@@ -1280,7 +1276,10 @@ fn BrowseTab(
             let name = h.entry.name.as_ref().unwrap_or(&h.entry.shortcode);
             Some(GlobePin {
                 code: h.key(),
-                label: format!("{name} \u{b7} {}", rendezvous_label(&h.rendezvous)),
+                label: format!(
+                    "{name} \u{b7} {}",
+                    crate::settings::rendezvous_label(&h.rendezvous)
+                ),
                 lat: p.lat,
                 lon: p.lon,
                 fresh: h.entry.idle_secs < HOST_STALE_AFTER_SECS,
@@ -1348,7 +1347,7 @@ fn BrowseTab(
                     class: "text-[11px] text-[var(--text-dim)] truncate",
                     title: crate::i18n::message(&(e).to_string()),
                     span { class: "text-[var(--danger)]", {crate::i18n::text("Unreachable: ", &[])} }
-                    span { class: "font-mono", "{rendezvous_label(&url)}" }
+                    span { class: "font-mono", "{crate::settings::rendezvous_label(&url)}" }
                 }
             }
             div { class: "rounded-xl bg-[var(--panel)] border border-[var(--edge-strong)] overflow-hidden",
@@ -1420,7 +1419,7 @@ fn HostRow(
     };
     let mark = initials(&title);
     let where_ = entry.location.map(describe);
-    let via = rendezvous_label(&host.rendezvous);
+    let via = crate::settings::rendezvous_label(&host.rendezvous);
     let for_pick = host.clone();
     let for_enter = host.clone();
     rsx! {
@@ -1451,7 +1450,7 @@ fn HostRow(
                         title: crate::i18n::text("Listed by {0}", &[(host . rendezvous).to_string()]),
                         if direct { {crate::i18n::text("{0} · direct", std::slice::from_ref(&(fresh_label)))} } else { {crate::i18n::text("{0} · relayed", std::slice::from_ref(&(fresh_label)))} }
                         if let Some(w) = where_ { " \u{b7} {w}" }
-                        span { style: "text-transform: none; letter-spacing: normal;", {crate::i18n::text(" · via {0}", &[(via).to_string()])} }
+                        span { style: "text-transform: none; letter-spacing: normal;", {crate::i18n::text(" · via {0}", std::slice::from_ref(&via))} }
                     }
                     if let Some(d) = entry.description.clone() {
                         span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{d}" }

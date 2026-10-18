@@ -269,6 +269,20 @@ pub fn default_rendezvous_port(secure: bool) -> u16 {
     }
 }
 
+/// How a rendezvous is shown: the host, and the port only when it is not the default,
+/// so two rendezvous on one host still read differently.
+pub fn rendezvous_label(url: &str) -> String {
+    let Some(parts) = split_rendezvous(url) else {
+        return url.to_string();
+    };
+    match parts.port {
+        Some(port) if port != default_rendezvous_port(parts.secure.unwrap_or(false)) => {
+            format!("{}:{port}", parts.host)
+        }
+        _ => parts.host,
+    }
+}
+
 /// What someone typed or pasted, split into the parts they left out or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RendezvousParts {
@@ -841,5 +855,20 @@ mod tests {
             let loaded = parse(&file(serde_json::to_value(settings).unwrap())).unwrap();
             assert_eq!(loaded.screenshare_codec, codec);
         }
+    }
+
+    #[test]
+    fn a_rendezvous_reads_as_its_host_unless_its_port_is_unusual() {
+        assert_eq!(
+            rendezvous_label("ws://rendezvous.discordia.world:7700"),
+            "rendezvous.discordia.world"
+        );
+        assert_eq!(rendezvous_label("wss://r.example"), "r.example");
+        assert_eq!(rendezvous_label("wss://r.example:7700"), "r.example:7700");
+        assert_eq!(
+            rendezvous_label("ws://192.168.0.61:7800"),
+            "192.168.0.61:7800"
+        );
+        assert_eq!(rendezvous_label("ws://[::1]:7700"), "[::1]");
     }
 }
