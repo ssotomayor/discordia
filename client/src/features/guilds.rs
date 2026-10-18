@@ -249,6 +249,7 @@ pub fn GuildsSidebar() -> Element {
                             let gid = m.guild_id;
                             let is_owner = s.is_owner(gid);
                             let can_manage = s.can(gid, Permission::ManageGuild);
+                            let can_invite = super::invite::can_invite(&s, gid);
                             let can_roles = s.can(gid, Permission::ManageRoles);
                             let is_system = s
                                 .guilds
@@ -277,6 +278,17 @@ pub fn GuildsSidebar() -> Element {
                             rsx! {
                                 match m.confirming {
                                     None => rsx! {
+                                        if can_invite {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--accent)] hover:bg-white/[0.04] transition-colors",
+                                                onclick: move |_| {
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Invite(gid));
+                                                    menu.set(None);
+                                                },
+                                                {crate::i18n::text("Invite people", &[])}
+                                            }
+                                        }
                                         if can_manage {
                                             div { class: "flex items-center gap-2 px-3 py-1.5",
                                                 span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("Guild accent", &[])} }

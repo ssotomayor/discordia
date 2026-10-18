@@ -212,6 +212,7 @@ pub enum GuildDialog {
     Settings(Id),
     Integrations(Id),
     Roles(Id),
+    Invite(Id),
     AddGuild,
 }
 /// The guild is not in `guilds` yet — we have not joined — so the name is

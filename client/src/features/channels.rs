@@ -180,6 +180,7 @@ pub fn ChannelsColumn() -> Element {
     let can_manage_channels = selected_guild
         .map(|gid| snapshot.can(gid, Permission::ManageChannels))
         .unwrap_or(false);
+    let invite_guild = selected_guild.filter(|gid| super::invite::can_invite(&snapshot, *gid));
     let guild_banner = guild
         .as_ref()
         .and_then(|g| g.banner.as_deref())
@@ -216,6 +217,14 @@ pub fn ChannelsColumn() -> Element {
                         {crate::i18n::text("Direct Messages", &[])}
                     } else {
                         {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No guild".into())}
+                    }
+                }
+                if !dm_mode && let Some(gid) = invite_guild {
+                    button {
+                        class: "w-6 h-6 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        title: crate::i18n::text("Invite people", &[]),
+                        onclick: move |_| state.write().guild_dialog = Some(crate::state::GuildDialog::Invite(gid)),
+                        span { class: "block w-4 h-4", dangerous_inner_html: super::icons::USER_PLUS }
                     }
                 }
                 if !dm_mode && can_manage_channels {

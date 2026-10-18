@@ -285,6 +285,87 @@ async fn manage_guild_role_unlocks_accent() {
 }
 
 #[tokio::test]
+async fn create_invites_alone_hands_out_the_guilds_code() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Inviting").await;
+
+    let (mut member, _) = connect_user(&url, &member_id, "Member").await;
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    while !matches!(
+        next_timeout(&mut member).await,
+        ServerMessage::GuildJoined { .. }
+    ) {}
+
+    let ask = ClientMessage::CreateInvite {
+        guild_id,
+        rotate: false,
+        expires_in_secs: None,
+        max_uses: None,
+    };
+    member.send(&ask).await.unwrap();
+    let err = next_error(&mut member).await;
+    assert!(err.contains("permission"), "got: {err}");
+
+    owner
+        .send(&ClientMessage::CreateRole {
+            guild_id,
+            name: "Greeter".into(),
+            color: None,
+            permissions: vec![Permission::CreateInvite],
+        })
+        .await
+        .unwrap();
+    let role_id = loop {
+        if let ServerMessage::GuildRoles { roles, .. } = next_timeout(&mut owner).await {
+            break roles[0].id;
+        }
+    };
+    owner
+        .send(&ClientMessage::AssignRole {
+            guild_id,
+            role_id,
+            user_pubkey: member_id.pubkey().to_string(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut member).await
+            && m.user.pubkey == member_id.pubkey()
+            && m.roles.contains(&role_id)
+        {
+            break;
+        }
+    }
+
+    owner.send(&ask).await.unwrap();
+    let owners = loop {
+        if let ServerMessage::GuildInvite { code, .. } = next_timeout(&mut owner).await {
+            break code;
+        }
+    };
+    member.send(&ask).await.unwrap();
+    let members = loop {
+        if let ServerMessage::GuildInvite { code, .. } = next_timeout(&mut member).await {
+            break code;
+        }
+    };
+    assert_eq!(members, owners, "the same code, not a rotated one");
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn role_escalation_blocked() {
     let (url, handle) = spawn_gateway().await;
 

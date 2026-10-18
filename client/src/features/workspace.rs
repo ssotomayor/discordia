@@ -353,6 +353,7 @@ pub fn WorkspaceView(
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     provide_context(params.identity.clone());
+    provide_context(params.mode.clone());
     let rail = super::server_rail::use_server_rail(&params, state);
     provide_context(rail);
     let popouts = super::stream_viewer::use_popouts(state);
@@ -1323,6 +1324,9 @@ fn GuildDialogHost() -> Element {
         None => rsx! { Fragment {} },
         Some(crate::state::GuildDialog::Settings(gid)) => rsx! {
             crate::features::guild_settings::GuildSettingsDialog { guild_id: gid, on_close: close }
+        },
+        Some(crate::state::GuildDialog::Invite(gid)) => rsx! {
+            super::invite::InviteDialog { guild_id: gid, on_close: close }
         },
         Some(crate::state::GuildDialog::Integrations(gid)) => rsx! {
             crate::features::integrations::IntegrationsDialog { guild_id: gid, on_close: close }
