@@ -909,7 +909,7 @@ mod tests {
             stdout.read_to_string(&mut blocked_log).await.unwrap();
         }
         child.kill().await.unwrap();
-        fs::remove_dir_all(dir).unwrap();
+        remove_scratch(&dir);
         assert!(ready.is_ok(), "{ready:?}");
         assert!(
             wrong.is_err(),
@@ -992,7 +992,7 @@ mod tests {
         .await
         .unwrap();
         assert!(child.try_wait().unwrap().is_some());
-        fs::remove_dir_all(dir).unwrap();
+        remove_scratch(&dir);
         assert!(ready.is_ok(), "{ready:?}; {logs}");
         assert!(consoles.status.success(), "{consoles:?}");
         assert_eq!(String::from_utf8_lossy(&consoles.stdout).trim(), "0");
@@ -1081,12 +1081,25 @@ mod tests {
             .arg("--version")
             .output()
             .unwrap();
-        fs::remove_dir_all(dir).unwrap();
+        remove_scratch(&dir);
         assert!(result.status.success(), "{result:?}");
         assert!(
             String::from_utf8_lossy(&result.stdout).contains("livekit"),
             "{result:?}"
         );
+    }
+
+    /// Windows keeps a just-exited executable open for a moment (Defender scans a fresh
+    /// image), so cleanup retries, then leaves the folder rather than failing the test.
+    fn remove_scratch(dir: &Path) {
+        for _ in 0..50 {
+            match fs::remove_dir_all(dir) {
+                Ok(()) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        eprintln!("could not remove {}", dir.display());
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -1431,7 +1444,7 @@ mod tests {
             .unwrap()
             .unwrap();
         drop(sfu);
-        fs::remove_dir_all(dir).unwrap();
+        remove_scratch(&dir);
     }
 
     #[test]
