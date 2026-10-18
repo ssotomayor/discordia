@@ -180,6 +180,15 @@ pub(super) fn spawn_stats_task(
         let mut applied_ssrc = None;
         let mut prev_out = None;
         let mut latest_uplink_problem = None;
+        // Counters are cumulative as libwebrtc reports them; the reader takes the deltas.
+        let mut send_csv = crate::voice_record::Csv::new(
+            "net-send",
+            "ssrc,packets_sent,bytes_sent,resent,nacks,target_kbps,upstream_loss_pct",
+        );
+        let mut recv_csv = crate::voice_record::Csv::new(
+            "net-recv",
+            "from,ssrc,packets_received,packets_lost,discarded,jitter_ms,jb_delay_s,jb_target_delay_s,jb_min_delay_s,jb_emitted,total_samples,concealed,silent_concealed,concealment_events,inserted_decel,removed_accel,audio_level,total_audio_energy,fec_received,fec_discarded,nacks,resent",
+        );
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let connected = state.peek().voice.phase == VoicePhase::Connected;
@@ -251,6 +260,20 @@ pub(super) fn spawn_stats_task(
                 }
             }
             let upstream_loss = uplink.sample(&stats);
+            if let Some(out) = out {
+                send_csv.row(|| {
+                    format!(
+                        "{},{},{},{},{},{:.0},{}",
+                        out.stream.ssrc,
+                        out.sent.packets_sent,
+                        out.sent.bytes_sent,
+                        out.outbound.retransmitted_packets_sent,
+                        out.outbound.nack_count,
+                        out.outbound.target_bitrate / 1000.0,
+                        upstream_loss.map(|l| format!("{l:.2}")).unwrap_or_default(),
+                    )
+                });
+            }
             if let (Some(loss), Some(out)) = (upstream_loss.filter(|l| *l > 0.0), out) {
                 tracing::info!(
                     loss_pct = loss,
@@ -306,6 +329,34 @@ pub(super) fn spawn_stats_task(
                     continue;
                 };
                 live.insert(sid.clone());
+                recv_csv.row(|| {
+                    let i = &inbound.inbound;
+                    format!(
+                        "{},{},{},{},{},{:.1},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{:.4},{:.4},{},{},{},{}",
+                        crate::identity::truncate_pubkey(&identity.0),
+                        inbound.stream.ssrc,
+                        inbound.received.packets_received,
+                        inbound.received.packets_lost,
+                        i.packets_discarded,
+                        inbound.received.jitter * 1000.0,
+                        i.jitter_buffer_delay,
+                        i.jitter_buffer_target_delay,
+                        i.jitter_buffer_minimum_delay,
+                        i.jitter_buffer_emitted_count,
+                        i.total_samples_received,
+                        i.concealed_samples,
+                        i.silent_concealed_samples,
+                        i.concealment_events,
+                        i.inserted_samples_for_deceleration,
+                        i.removed_samples_for_acceleration,
+                        i.audio_level,
+                        i.total_audio_energy,
+                        i.fec_packets_received,
+                        i.fec_packets_discarded,
+                        i.nack_count,
+                        i.retransmitted_packets_received,
+                    )
+                });
                 let window = windows.entry(sid.clone()).or_default();
                 let recent = window.sample(inbound, now);
                 if let Some(recent) = recent.filter(|r| r.needs_diagnostics(display))

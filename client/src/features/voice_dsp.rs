@@ -17,6 +17,9 @@ pub(super) struct Processed {
     pub peak: i32,
     pub action: GateAction,
     pub model_loaded: bool,
+    pub echoed_dbfs: f32,
+    pub denoised_dbfs: f32,
+    pub agc_gain_db: f32,
 }
 
 impl Processor {
@@ -51,6 +54,7 @@ impl Processor {
             self.echo_error_reported = true;
         }
         let pre = peak_fixed(&samples);
+        let echoed_dbfs = crate::voice_record::rms_dbfs(&samples);
         if muted {
             self.gate.silence();
             return Ok(Processed {
@@ -60,6 +64,9 @@ impl Processor {
                 peak: pre,
                 action: GateAction::Drop,
                 model_loaded: false,
+                echoed_dbfs,
+                denoised_dbfs: echoed_dbfs,
+                agc_gain_db: 0.0,
             });
         }
         let mut model_loaded = false;
@@ -80,6 +87,7 @@ impl Processor {
             self.suppression = None;
         }
         let gate_peak = peak_fixed(&samples);
+        let denoised_dbfs = crate::voice_record::rms_dbfs(&samples);
         if config.agc {
             if gate_peak > config.threshold as i32 {
                 self.agc.process(&mut samples);
@@ -116,6 +124,13 @@ impl Processor {
             peak,
             action,
             model_loaded,
+            echoed_dbfs,
+            denoised_dbfs,
+            agc_gain_db: if config.agc {
+                20.0 * self.agc.gain().log10()
+            } else {
+                0.0
+            },
         })
     }
 }

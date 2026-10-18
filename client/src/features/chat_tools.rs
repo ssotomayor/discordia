@@ -538,7 +538,10 @@ fn download_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String>
 }
 
 fn open_download_folder(path: &std::path::Path) -> Result<(), String> {
-    let folder = download_folder(path)?;
+    open_folder(&download_folder(path)?)
+}
+
+pub(crate) fn open_folder(folder: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStrExt;

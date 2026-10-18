@@ -47,6 +47,10 @@ impl Agc {
         }
     }
 
+    pub fn gain(&self) -> f32 {
+        self.gain
+    }
+
     pub fn reset(&mut self) {
         self.gain = 1.0;
     }

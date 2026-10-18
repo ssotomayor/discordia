@@ -481,9 +481,64 @@ pub fn SettingsDialog() -> Element {
                                 crate::features::channels::ConnectionStats {}
                             }
                         }
+                        CallRecording {}
                         }
                         }
                     }
+            }
+        }
+    }
+}
+
+/// Not saved: a recorder left on would keep recording calls after a restart.
+#[component]
+fn CallRecording() -> Element {
+    let mut folder = use_signal(crate::voice_record::folder);
+    let mut error = use_signal(|| None::<String>);
+    rsx! {
+        div { class: "mt-4",
+            label { class: "flex items-center gap-2 cursor-pointer select-none",
+                input {
+                    r#type: "checkbox",
+                    class: "accent-[var(--accent)]",
+                    checked: folder.read().is_some(),
+                    aria_label: crate::i18n::text("Record calls", &[]),
+                    onchange: move |e| {
+                        if e.checked() {
+                            match crate::voice_record::start(None) {
+                                Ok(dir) => {
+                                    folder.set(Some(dir));
+                                    error.set(None);
+                                }
+                                Err(message) => error.set(Some(message)),
+                            }
+                        } else {
+                            crate::voice_record::stop();
+                            folder.set(None);
+                        }
+                    },
+                }
+                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Record calls", &[])} }
+            }
+            p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
+                {crate::i18n::text("Saves your microphone before and after processing, every voice you hear, and network figures to a folder on this computer, until you turn it off or quit. Tell the people in the call.", &[])}
+            }
+            if let Some(dir) = folder() {
+                div { class: "mt-1 ml-5 flex items-center gap-2 text-[11px]",
+                    span { class: "min-w-0 flex-1 truncate text-[var(--text-muted)]", title: "{dir.display()}", "{dir.display()}" }
+                    button {
+                        class: "rounded border border-[var(--border)] px-2 py-0.5 hover:text-[var(--accent)]",
+                        onclick: move |_| {
+                            if let Err(message) = super::chat_tools::open_folder(&dir) {
+                                error.set(Some(message));
+                            }
+                        },
+                        {crate::i18n::text("Open folder", &[])}
+                    }
+                }
+            }
+            if let Some(message) = error() {
+                p { class: "mt-1 ml-5 text-[11px] text-[var(--danger)]", "{message}" }
             }
         }
     }

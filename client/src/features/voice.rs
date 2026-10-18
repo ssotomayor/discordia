@@ -2293,12 +2293,23 @@ fn denoise_gate_loop(
     reference_rx: crate::audio_queue::AudioReceiver<i16>,
 ) {
     let mut processor = dsp::Processor::new(reference_rx);
+    let mut raw_wav = crate::voice_record::Wav::new("mic-raw", SAMPLE_RATE);
+    let mut sent_wav = crate::voice_record::Wav::new("mic-sent", SAMPLE_RATE);
+    let mut dsp_csv = crate::voice_record::Csv::new(
+        "mic-dsp",
+        "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,sent_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms",
+    );
     while let Some(packet) = frame_rx.blocking_recv() {
         if !packet.is_fresh() {
             processor.silence();
+            raw_wav.write(&packet.samples);
+            sent_wav.write(&[0.0; FRAME_SAMPLES]);
+            dsp_csv.row(|| "-120,-120,-120,0,-120,Stale,,,,,,".into());
             continue;
         }
+        raw_wav.write(&packet.samples);
         let config = controls.mic_config();
+        let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
         let result = processor.process(
             packet.samples,
             config,
@@ -2337,6 +2348,32 @@ fn denoise_gate_loop(
         );
         let open = matches!(processed.action, GateAction::Pass | GateAction::RampIn);
         meter.open.store(open, Ordering::Relaxed);
+        let sent = processed.action != GateAction::Drop;
+        sent_wav.write(if sent {
+            &processed.samples
+        } else {
+            &[0.0; FRAME_SAMPLES]
+        });
+        dsp_csv.row(|| {
+            format!(
+                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{}",
+                processed.echoed_dbfs,
+                processed.denoised_dbfs,
+                processed.agc_gain_db,
+                if sent {
+                    crate::voice_record::rms_dbfs(&processed.samples)
+                } else {
+                    -120.0
+                },
+                processed.action,
+                config.threshold,
+                config.agc,
+                config.denoise,
+                config.suppression,
+                config.volume,
+                packet.captured.elapsed().as_millis(),
+            )
+        });
         if processed.action == GateAction::Drop {
             stats.dropped.fetch_add(1, Ordering::Relaxed);
             continue;
@@ -2526,7 +2563,9 @@ async fn soundboard_loop(
                 r.process_into(&frame, &mut resampled);
                 mixer.push(local, &resampled, cap);
             }
-            None => mixer.push(local, &frame, cap),
+            None => {
+                mixer.push(local, &frame, cap);
+            }
         }
     }
     mixer.remove_track(local);
@@ -3232,6 +3271,7 @@ struct TrackBuf {
     identity: String,
     gain: f32,
     kind: TrackKind,
+    starved: u64,
 }
 
 #[derive(Clone)]
@@ -3289,19 +3329,21 @@ impl PlaybackHandle {
                 identity,
                 gain,
                 kind,
+                starved: 0,
             },
         );
         id
     }
 
-    fn push(&self, id: u64, samples: &[f32], cap: usize) {
+    /// Returns the track's buffered samples, its starved-sample count and its gain.
+    fn push(&self, id: u64, samples: &[f32], cap: usize) -> Option<(usize, u64, f32)> {
         let mut t = self.tracks.lock();
-        if let Some(track) = t.buffers.get_mut(&id) {
-            track.samples.extend(samples);
-            while track.samples.len() > cap {
-                track.samples.pop_front();
-            }
+        let track = t.buffers.get_mut(&id)?;
+        track.samples.extend(samples);
+        while track.samples.len() > cap {
+            track.samples.pop_front();
         }
+        Some((track.samples.len(), track.starved, track.gain))
     }
 
     fn remove_track(&self, id: u64) {
@@ -3379,6 +3421,9 @@ fn next_playback_sample(
 ) -> f32 {
     let mut total = 0.0;
     for track in tracks.buffers.values_mut() {
+        if track.samples.is_empty() {
+            track.starved += 1;
+        }
         total += track.gain * pop_drift_compensated(&mut track.samples, counter, overrun, underrun);
     }
     mix(total)
@@ -3653,6 +3698,13 @@ async fn consume_remote_track(
     let track_id = handle.add_track(identity, kind);
     let _cleanup = RemotePlaybackGuard(handle.clone(), track_id);
     let mut cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
+    let record_name = format!("recv-{who}-{kind:?}");
+    let mut recv_wav = crate::voice_record::Wav::new(&record_name, SAMPLE_RATE);
+    let mut recv_csv = crate::voice_record::Csv::new(
+        &record_name,
+        "samples,rate,rms_dbfs,peak,gap_ms,mixer_ms,mixer_starved_samples,gain",
+    );
+    let mut arrived: Option<Instant> = None;
     while let Some(frame) = stream.next().await {
         // The output stream can be reopened at a different native rate mid-call.
         let current = handle.rate();
@@ -3680,16 +3732,30 @@ async fn consume_remote_track(
         if frame_peak > peak_recent {
             peak_recent = frame_peak;
         }
-        {
-            f32_buf.clear();
-            f32_buf.extend(frame.data.iter().map(|s| *s as f32 / i16::MAX as f32));
-            match resampler.as_mut() {
-                Some(r) => {
-                    r.process_into(&f32_buf, &mut resampled_buf);
-                    handle.push(track_id, &resampled_buf, cap);
-                }
-                None => handle.push(track_id, &f32_buf, cap),
+        f32_buf.clear();
+        f32_buf.extend(frame.data.iter().map(|s| *s as f32 / i16::MAX as f32));
+        let mixer = match resampler.as_mut() {
+            Some(r) => {
+                r.process_into(&f32_buf, &mut resampled_buf);
+                handle.push(track_id, &resampled_buf, cap)
             }
+            None => handle.push(track_id, &f32_buf, cap),
+        };
+        if recv_csv.is_on() {
+            recv_wav.write_i16(&frame.data);
+            let now = Instant::now();
+            let gap = arrived.map_or(0, |at| now.duration_since(at).as_millis());
+            arrived = Some(now);
+            let (depth, starved, gain) = mixer.unwrap_or_default();
+            recv_csv.row(|| {
+                format!(
+                    "{},{},{:.1},{frame_peak},{gap},{},{starved},{gain:.2}",
+                    frame.data.len(),
+                    frame.sample_rate,
+                    crate::voice_record::rms_dbfs(&f32_buf),
+                    depth as u64 * 1000 / u64::from(rate.max(1)),
+                )
+            });
         }
         if frames.is_multiple_of(500) {
             eprintln!(

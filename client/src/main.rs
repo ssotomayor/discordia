@@ -56,6 +56,7 @@ mod tzgeo;
 mod ui_size;
 mod update;
 mod version;
+mod voice_record;
 #[cfg(target_os = "windows")]
 mod webview2;
 mod xp_ledger;
@@ -196,6 +197,7 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
 fn main() {
     identity::migrate_legacy_config_dir();
     init_logging();
+    voice_record::start_from_env();
 
     #[cfg(target_os = "windows")]
     init_windows_identity();

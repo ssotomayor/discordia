@@ -86,6 +86,7 @@ peer's IP, and a proxy makes every host the same peer.
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
+| `DISCORDIA_VOICE_RECORD` | off | a directory: start Diagnostics → *Record calls* at launch, writing there instead of `<config dir>/voice-recordings` |
 
 Guild migration: `cargo run -p discordia-server -- export --guild <uuid> f.json`
 then `import f.json` on the target. Fresh ids, pubkeys preserved.

@@ -230,6 +230,7 @@ fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
                 identity: identity.into(),
                 gain: 1.0,
                 kind,
+                starved: 0,
             },
         );
     }
@@ -270,6 +271,7 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
             identity: "alice#video".into(),
             gain: 1.0,
             kind: TrackKind::Stream,
+            starved: 0,
         },
     );
     state.stream_muted.insert("alice".into());
