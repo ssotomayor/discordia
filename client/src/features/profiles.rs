@@ -85,19 +85,18 @@ pub fn status_color(status: &str) -> &'static str {
     }
 }
 
-pub(crate) const MAX_UPLOAD_BYTES: usize = 15_000_000;
 pub(crate) const EMBED_MAX_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
 
-pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP, up to 2 MiB once cropped.";
+pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP. Originals: avatars up to 8 MB, banners up to 10 MB. Up to 2 MiB once cropped.";
 
-pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
+pub(crate) fn check_image(bytes: &[u8], mime: &str, max_bytes: usize) -> Result<(), String> {
     if bytes.is_empty() {
         return Err("That file is empty.".into());
     }
     if !mime.starts_with("image/") {
         return Err(format!("That's a {mime} file, not an image. {IMAGE_HELP}"));
     }
-    if bytes.len() > MAX_UPLOAD_BYTES {
+    if bytes.len() > max_bytes {
         return Err(format!(
             "That image is {:.1} MB — too big to upload. {IMAGE_HELP}",
             bytes.len() as f64 / 1_000_000.0
@@ -623,7 +622,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                                 Ok(bytes) => {
                                                     let mime = image_mime(file.content_type());
 
-                                                    if let Err(msg) = check_image(&bytes, &mime) {
+                                                    if let Err(msg) = check_image(&bytes, &mime, crate::image_edit::MAX_AVATAR_INPUT_BYTES) {
 
                                                         err.set(Some(msg));
 
@@ -676,7 +675,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                                 Ok(bytes) => {
                                                     let mime = image_mime(file.content_type());
 
-                                                    if let Err(msg) = check_image(&bytes, &mime) {
+                                                    if let Err(msg) = check_image(&bytes, &mime, crate::image_edit::MAX_BANNER_INPUT_BYTES) {
 
                                                         err.set(Some(msg));
 
@@ -770,7 +769,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
 
                     SavedEmojiSection {}
 
-                    div { class: "mt-2 text-[10px] text-[var(--text-dim)]", {IMAGE_HELP} }
+                    div { class: "mt-2 text-[10px] text-[var(--text-dim)]", {crate::i18n::label(IMAGE_HELP)} }
                     if let Some(e) = err() {
                         div { class: "mt-2 text-[10px] text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
                     }

@@ -734,7 +734,7 @@
   "Output": ["Salida","Saída"],
   "Overview": ["General","Visão geral"],
   "Owner-only": ["Solo el propietario","Só o dono"],
-  "PNG, JPEG, GIF or WebP, up to 2 MiB once cropped.": ["PNG, JPEG, GIF o WebP, hasta 2 MiB después de recortar.","PNG, JPEG, GIF ou WebP, até 2 MiB após recortar."],
+  "PNG, JPEG, GIF or WebP. Originals: avatars up to 8 MB, banners up to 10 MB. Up to 2 MiB once cropped.": ["PNG, JPEG, GIF o WebP. Originales: avatares hasta 8 MB y banners hasta 10 MB. Hasta 2 MiB después de recortar.","PNG, JPEG, GIF ou WebP. Originais: avatares até 8 MB e banners até 10 MB. Até 2 MiB após recortar."],
   "PRIVATE VOICE CALL": ["LLAMADA DE VOZ PRIVADA","CHAMADA DE VOZ PRIVADA"],
   "Packets a second — around 50 while you're transmitting, near zero while silence is held back": ["Paquetes por segundo: unos 50 al transmitir y casi cero cuando se omite el silencio","Pacotes por segundo: cerca de 50 ao transmitir e quase zero quando o silêncio é suprimido"],
   "Packets that never arrived": ["Paquetes que nunca llegaron","Pacotes que nunca chegaram"],
