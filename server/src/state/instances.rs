@@ -31,6 +31,22 @@ impl AppState {
         out
     }
 
+    pub fn instances_visible_in_guild(&self, guild_id: Id, pubkey: &str) -> Vec<ActivityInstance> {
+        if !self.is_guild_member(guild_id, pubkey) {
+            return Vec::new();
+        }
+        let all: Vec<ActivityInstance> = self.activity_instances.lock().values().cloned().collect();
+        let mut out: Vec<ActivityInstance> = all
+            .into_iter()
+            .filter(|i| {
+                self.channel(i.channel_id)
+                    .is_some_and(|c| c.guild_id == guild_id && self.can_see_channel(pubkey, &c))
+            })
+            .collect();
+        out.sort_by_key(|i| i.id);
+        out
+    }
+
     pub fn instance(&self, id: Id) -> Option<ActivityInstance> {
         self.activity_instances.lock().get(&id).cloned()
     }

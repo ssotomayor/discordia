@@ -1314,6 +1314,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                             let _ = send(&mut ws_tx, &ServerMessage::ActivityInstances { channel_id, instances }).await;
                         }
                     }
+                    ClientMessage::FetchGuildActivityInstances { guild_id } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        let instances = ctx.state.instances_visible_in_guild(guild_id, &u.pubkey);
+                        let _ = send(&mut ws_tx, &ServerMessage::GuildActivityInstances { guild_id, instances }).await;
+                    }
                     ClientMessage::FetchAppManifest { bot_pubkey } => {
                         if user.is_none() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {

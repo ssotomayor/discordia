@@ -1,4 +1,9 @@
 {
+  "Open": ["Abrir","Abrir"],
+  "Open activities": ["Actividades abiertas","Atividades abertas"],
+  "Activities running in this community": ["Actividades en curso en esta comunidad","Atividades em andamento nesta comunidade"],
+  "Hosted by {0}": ["Anfitrión: {0}","Anfitrião: {0}"],
+  "Nothing is running right now.": ["No hay nada en curso ahora.","Nada em andamento agora."],
   "Repeat adjustment": ["Repetir ajuste","Repetir ajuste"],
   "Voice profile": ["Perfil de voz","Perfil de voz"],
   "Natural": ["Natural","Natural"],
@@ -1321,7 +1326,7 @@
   "{0}% loss": ["{0}% de pérdida","{0}% de perda"],
   "{0}'s screen": ["Pantalla de {0}","Tela de {0}"],
   "{0}. A copy of the folder opens nowhere else.": ["{0}. Una copia de la carpeta no se puede abrir en otro equipo.","{0}. Uma cópia da pasta não pode ser aberta em outro computador."],
-  "{0}/{1} playing": ["{0}/{1} reproduciendo","{0}/{1} reproduzindo"],
+  "{0}/{1} playing": ["{0}/{1} jugando","{0}/{1} jogando"],
   "{0}ms buf": ["{0}ms búfer","{0}ms buffer"],
   "{0}ms jit": ["{0}ms variación","{0}ms variação"],
   "{0}p": ["{0}p","{0}p"],

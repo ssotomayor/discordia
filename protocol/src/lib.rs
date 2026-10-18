@@ -2139,6 +2139,10 @@ pub enum ClientMessage {
     FetchActivityInstances {
         channel_id: Id,
     },
+    /// Every instance in the guild's channels this member can see.
+    FetchGuildActivityInstances {
+        guild_id: Id,
+    },
     UninstallBot {
         guild_id: Id,
         bot_pubkey: String,
@@ -2632,6 +2636,12 @@ pub enum ServerMessage {
     /// Every instance running in a channel, to everyone who can see it.
     ActivityInstances {
         channel_id: Id,
+        instances: Vec<ActivityInstance>,
+    },
+    /// The reply to `FetchGuildActivityInstances`: it replaces what the client
+    /// held for every channel of that guild, so a game that ended is dropped.
+    GuildActivityInstances {
+        guild_id: Id,
         instances: Vec<ActivityInstance>,
     },
     /// To the socket that sent `ActivityStart`, so it binds its window to the

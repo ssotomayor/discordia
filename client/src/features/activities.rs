@@ -12,19 +12,35 @@ use crate::protocol::{
 };
 use crate::state::{AppState, ConnectionStatus, GatewayTx, use_app_state, use_gateway};
 
+/// The whole guild, not the open channel: a game started elsewhere must still
+/// be joinable, and pushes keep every visible channel current after this.
 fn use_activity_instance_watch(state: Signal<AppState>, gateway: GatewayTx) {
     // Replies mutate AppState; subscribing to it directly would request another reply.
-    let channel = use_memo(move || {
+    let guild = use_memo(move || {
         let s = state.read();
         (s.status == ConnectionStatus::Ready && !s.dm_mode)
-            .then_some(s.selected_channel)
+            .then_some(s.selected_guild)
             .flatten()
     });
     use_effect(move || {
-        if let Some(channel_id) = channel() {
-            gateway.send(ClientMessage::FetchActivityInstances { channel_id });
+        if let Some(guild_id) = guild() {
+            gateway.send(ClientMessage::FetchGuildActivityInstances { guild_id });
         }
     });
+}
+
+pub fn open_in_guild(state: &AppState) -> Vec<(ActivityInstance, Activity)> {
+    let Some(guild) = state.selected_guild else {
+        return Vec::new();
+    };
+    state
+        .channels
+        .iter()
+        .filter(|c| c.guild_id == guild)
+        .filter_map(|c| state.activity_instances.get(&c.id))
+        .flatten()
+        .filter_map(|i| activity_of(state, &i.app).map(|a| (i.clone(), a)))
+        .collect()
 }
 
 pub struct BuiltinDef {
@@ -182,6 +198,14 @@ thread_local! {
     static INBOX: std::cell::RefCell<Option<Coroutine<HostCmd>>> = const { std::cell::RefCell::new(None) };
 }
 
+pub fn request_join(instance_id: Id, role: ActivityRole) {
+    INBOX.with(|i| {
+        if let Some(co) = i.borrow().as_ref() {
+            co.send(HostCmd::Join(instance_id, role));
+        }
+    });
+}
+
 /// From `net::apply`: the host loop owns what an instance's frames mean.
 pub fn inbound(msg: Inbound) {
     INBOX.with(|i| {
@@ -262,6 +286,7 @@ enum HostCmd {
     Window(u64, FromActivity),
     Inbound(Inbound),
     Sync(Option<ActivityInstance>),
+    Join(Id, ActivityRole),
 }
 
 /// What a commitment binds: the round, the value and a nonce only the
@@ -544,6 +569,30 @@ pub fn ActivityHost() -> Element {
                             }));
                         }
                     }
+                    HostCmd::Join(instance_id, role) => {
+                        if session
+                            .as_ref()
+                            .is_some_and(|s| s.instance == Some(instance_id))
+                            && activity_window::is_open(WINDOW_KEY)
+                        {
+                            activity_window::focus(WINDOW_KEY);
+                            continue;
+                        }
+                        let found = {
+                            let s = state.peek();
+                            find_instance(&s, instance_id)
+                                .and_then(|i| activity_of(&s, &i.app).map(|a| (i.channel_id, a)))
+                        };
+                        let Some((channel, activity)) = found else {
+                            continue;
+                        };
+                        consenting.set(Some(Pending {
+                            activity,
+                            channel: Some(channel),
+                            mode: Mode::Join(instance_id, role),
+                        }));
+                        picker_open.set(true);
+                    }
                     HostCmd::Sync(found) => {
                         let Some(s) = session.as_mut() else { continue };
                         match found {
@@ -709,15 +758,7 @@ pub fn ActivityHost() -> Element {
     rsx! {
         div { class: "fixed bottom-3 left-3 z-40 flex flex-col items-start gap-1.5",
             for instance in running.iter().filter(|i| Some(i.id) != my_instance).cloned() {
-                InstanceCard {
-                    key: "{instance.id}",
-                    instance,
-                    on_join: move |(activity, instance_id, role): (Activity, Id, ActivityRole)| {
-                        let channel = state.peek().selected_channel;
-                        consenting.set(Some(Pending { activity, channel, mode: Mode::Join(instance_id, role) }));
-                        picker_open.set(true);
-                    },
-                }
+                InstanceCard { key: "{instance.id}", instance }
             }
             button {
                 class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
@@ -792,10 +833,7 @@ pub fn ActivityHost() -> Element {
 }
 
 #[component]
-fn InstanceCard(
-    instance: ActivityInstance,
-    on_join: EventHandler<(Activity, Id, ActivityRole)>,
-) -> Element {
+fn InstanceCard(instance: ActivityInstance) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let activity = activity_of(&state.read(), &instance.app);
@@ -816,7 +854,6 @@ fn InstanceCard(
     let players = instance.players();
     let watching = instance.participants.len() - players;
     let full = players >= instance.max_players as usize;
-    let (play, watch) = (activity.clone(), activity.clone());
     let id = instance.id;
     rsx! {
         div { class: "dxf-pop-in flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] px-2.5 py-1.5 shadow-lg max-w-xs",
@@ -831,14 +868,170 @@ fn InstanceCard(
             if !full {
                 button {
                     class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                    onclick: move |_| on_join.call((play.clone(), id, ActivityRole::Player)),
+                    onclick: move |_| request_join(id, ActivityRole::Player),
                     {crate::i18n::text("Join", &[])}
                 }
             }
             button {
                 class: "rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                onclick: move |_| on_join.call((watch.clone(), id, ActivityRole::Spectator)),
+                onclick: move |_| request_join(id, ActivityRole::Spectator),
                 {crate::i18n::text("Watch", &[])}
+            }
+        }
+    }
+}
+
+/// The chat header's list of what is running in the guild: a card can be
+/// missed, or gone with a channel switch, and this stays until the game ends.
+#[component]
+pub fn OpenActivities() -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut open = use_signal(|| false);
+    let unresolved = use_memo(move || {
+        let s = state.read();
+        let guild = s.selected_guild?;
+        s.channels
+            .iter()
+            .filter(|c| c.guild_id == guild)
+            .filter_map(|c| s.activity_instances.get(&c.id))
+            .flatten()
+            .any(|i| activity_of(&s, &i.app).is_none())
+            .then_some(guild)
+    });
+    use_effect(move || {
+        if let Some(guild_id) = unresolved() {
+            gateway.send(ClientMessage::FetchGuildActivities { guild_id });
+        }
+    });
+
+    let s = state.read();
+    let running = open_in_guild(&s);
+    let me = s
+        .self_user
+        .as_ref()
+        .map(|u| u.pubkey.clone())
+        .unwrap_or_default();
+    let rows: Vec<_> = running
+        .iter()
+        .map(|(instance, activity)| {
+            let channel = s
+                .channels
+                .iter()
+                .find(|c| c.id == instance.channel_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            let host = instance
+                .host()
+                .map(|h| s.display_name(h))
+                .unwrap_or_default();
+            (instance.clone(), activity.clone(), channel, host)
+        })
+        .collect();
+    drop(s);
+    let count = rows.len();
+
+    rsx! {
+        if count > 0 {
+            button {
+                r#type: "button",
+                class: if open() {
+                    "h-8 px-2.5 flex items-center gap-2 shrink-0 rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[11px] text-[var(--accent)] transition-colors"
+                } else {
+                    "h-8 px-2.5 flex items-center gap-2 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                },
+                title: crate::i18n::text("Activities running in this community", &[]),
+                aria_pressed: open(),
+                onclick: move |_| open.set(!open()),
+                span { class: "w-2 h-2 rounded-full bg-[var(--accent)]" }
+                {crate::i18n::text("Activities", &[])}
+                span { class: "min-w-5 h-5 px-1.5 flex items-center justify-center rounded-md bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]",
+                    "{count}"
+                }
+            }
+        }
+        if open() {
+            div { class: "fixed inset-0 z-20", onclick: move |_| open.set(false) }
+            // Anchored to the chat pane like `ChatTools`' panels (trap 22).
+            div {
+                class: "dxf-pop-in absolute z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
+                style: "top: 3.25rem; right: 0.75rem; width: min(24rem, calc(100% - 1.5rem)); max-height: 70%;",
+                div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",
+                    span { class: "text-[11px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("Open activities", &[])} }
+                    button {
+                        r#type: "button",
+                        class: "w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                        title: crate::i18n::text("Close", &[]),
+                        onclick: move |_| open.set(false),
+                        span { class: "block w-4 h-4", dangerous_inner_html: super::icons::CLOSE }
+                    }
+                }
+                div { class: "flex-1 min-h-0 overflow-y-auto p-2 flex flex-col",
+                    if rows.is_empty() {
+                        p { class: "py-4 text-center text-[var(--text-dim)]", {crate::i18n::text("Nothing is running right now.", &[])} }
+                    }
+                    for (instance, activity, channel, host) in rows {
+                        OpenActivityRow { key: "{instance.id}", mine: instance.role_of(&me), instance, activity, channel, host,
+                            on_pick: move |_| open.set(false) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn OpenActivityRow(
+    instance: ActivityInstance,
+    activity: Activity,
+    channel: String,
+    host: String,
+    mine: Option<ActivityRole>,
+    on_pick: EventHandler<()>,
+) -> Element {
+    let players = instance.players();
+    let watching = instance.participants.len() - players;
+    let full = players >= instance.max_players as usize;
+    let id = instance.id;
+    let pick = move |role: ActivityRole| {
+        request_join(id, role);
+        on_pick.call(());
+    };
+    rsx! {
+        div { class: "flex items-center gap-2.5 px-2 py-2 rounded hover:bg-white/[0.03]",
+            span { class: "w-9 h-9 rounded-md border border-[var(--border)] flex items-center justify-center text-lg shrink-0",
+                "{activity.icon}"
+            }
+            div { class: "flex-1 min-w-0",
+                div { class: "text-sm text-[var(--text)] truncate", "{activity.name}" }
+                div { class: "text-[10px] text-[var(--text-dim)] truncate",
+                    "# {channel} · "
+                    {crate::i18n::text("Hosted by {0}", &[host.clone()])}
+                }
+                div { class: "text-[10px] text-[var(--text-dim)]",
+                    {crate::i18n::text("{0}/{1} playing", &[players.to_string(), instance.max_players.to_string()])}
+                    if watching > 0 { {crate::i18n::text(" · {0} watching", &[watching.to_string()])} }
+                }
+            }
+            if let Some(role) = mine {
+                button {
+                    class: "shrink-0 rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| pick(role),
+                    {crate::i18n::text("Open", &[])}
+                }
+            } else {
+                if !full {
+                    button {
+                        class: "shrink-0 rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                        onclick: move |_| pick(ActivityRole::Player),
+                        {crate::i18n::text("Join", &[])}
+                    }
+                }
+                button {
+                    class: "shrink-0 rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| pick(ActivityRole::Spectator),
+                    {crate::i18n::text("Watch", &[])}
+                }
             }
         }
     }
@@ -1247,7 +1440,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn activity_watch_does_not_refetch_on_replies_or_voice_updates() {
+    async fn activity_watch_fetches_per_guild_not_per_reply_or_channel() {
         use std::{cell::RefCell, rc::Rc};
 
         type Export = Rc<RefCell<Option<Signal<AppState>>>>;
@@ -1266,15 +1459,17 @@ mod tests {
         dom.render_immediate_to_vec();
         assert!(rx.try_recv().is_err());
         let mut state = exported.borrow().unwrap();
+        let guild = Id::new_v4();
         let channel = Id::new_v4();
         {
             let mut s = state.write();
             s.status = ConnectionStatus::Ready;
+            s.selected_guild = Some(guild);
             s.selected_channel = Some(channel);
         }
         dom.render_immediate_to_vec();
         assert!(
-            matches!(rx.try_recv().unwrap(), ClientMessage::FetchActivityInstances { channel_id } if channel_id == channel)
+            matches!(rx.try_recv().unwrap(), ClientMessage::FetchGuildActivityInstances { guild_id } if guild_id == guild)
         );
         for i in 0..400 {
             {
@@ -1284,24 +1479,71 @@ mod tests {
             }
             dom.render_immediate_to_vec();
         }
-        assert!(rx.try_recv().is_err());
+        state.write().selected_channel = Some(Id::new_v4());
+        dom.render_immediate_to_vec();
+        assert!(rx.try_recv().is_err(), "pushes keep the guild current");
         state.write().status = ConnectionStatus::Reconnecting;
         dom.render_immediate_to_vec();
         assert!(rx.try_recv().is_err());
         state.write().status = ConnectionStatus::Ready;
         dom.render_immediate_to_vec();
         assert!(
-            matches!(rx.try_recv().unwrap(), ClientMessage::FetchActivityInstances { channel_id } if channel_id == channel)
+            matches!(rx.try_recv().unwrap(), ClientMessage::FetchGuildActivityInstances { guild_id } if guild_id == guild)
         );
         let next = Id::new_v4();
-        state.write().selected_channel = Some(next);
+        state.write().selected_guild = Some(next);
         dom.render_immediate_to_vec();
         assert!(
-            matches!(rx.try_recv().unwrap(), ClientMessage::FetchActivityInstances { channel_id } if channel_id == next)
+            matches!(rx.try_recv().unwrap(), ClientMessage::FetchGuildActivityInstances { guild_id } if guild_id == next)
         );
         state.write().dm_mode = true;
         dom.render_immediate_to_vec();
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn open_in_guild_lists_every_channel_of_the_selected_guild_only() {
+        use crate::protocol::{ActivityParticipant, Channel, ChannelKind};
+        let (guild, other) = (Id::new_v4(), Id::new_v4());
+        let channel = |guild_id: Id| Channel {
+            id: Id::new_v4(),
+            guild_id,
+            name: "c".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            read_only: false,
+            slowmode_secs: 0,
+            position: 0,
+            access: None,
+            divider: Default::default(),
+            markdown: false,
+        };
+        let (a, b, c) = (channel(guild), channel(guild), channel(other));
+        let instance = |channel_id: Id| ActivityInstance {
+            id: Id::new_v4(),
+            channel_id,
+            app: "builtin:rps".into(),
+            max_players: 2,
+            participants: vec![ActivityParticipant {
+                pubkey: "host".into(),
+                role: ActivityRole::Player,
+            }],
+        };
+        let mut s = AppState::empty();
+        s.selected_guild = Some(guild);
+        s.selected_channel = Some(a.id);
+        for ch in [&a, &b, &c] {
+            s.activity_instances.insert(ch.id, vec![instance(ch.id)]);
+        }
+        s.channels = vec![a.clone(), b.clone(), c];
+        let mut found: Vec<Id> = open_in_guild(&s)
+            .iter()
+            .map(|(i, _)| i.channel_id)
+            .collect();
+        found.sort();
+        let mut want = vec![a.id, b.id];
+        want.sort();
+        assert_eq!(found, want, "a game in another channel is still listed");
     }
 
     fn session(instance: Id) -> Session {
@@ -1441,7 +1683,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unrelated_state_changes_do_not_refetch_the_channels_activities() {
+    async fn unrelated_state_changes_do_not_refetch_the_guilds_activities() {
         #[derive(Clone)]
         struct Props(tokio::sync::mpsc::UnboundedSender<ClientMessage>);
         impl PartialEq for Props {
@@ -1454,6 +1696,7 @@ mod tests {
             let mut state = use_context_provider(|| {
                 let mut s = AppState::empty();
                 s.status = ConnectionStatus::Ready;
+                s.selected_guild = Some(Id::new_v4());
                 s.selected_channel = Some(Id::new_v4());
                 Signal::new(s)
             });
@@ -1479,13 +1722,13 @@ mod tests {
         }
         let mut fetches = 0;
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, ClientMessage::FetchActivityInstances { .. }) {
+            if matches!(msg, ClientMessage::FetchGuildActivityInstances { .. }) {
                 fetches += 1;
             }
         }
         assert_eq!(
             fetches, 1,
-            "one fetch per channel selected, not one per state change"
+            "one fetch per guild selected, not one per state change"
         );
     }
 

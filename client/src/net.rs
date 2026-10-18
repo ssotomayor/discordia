@@ -1740,6 +1740,26 @@ fn apply(
         } => {
             s.activity_instances.insert(channel_id, instances);
         }
+        ServerMessage::GuildActivityInstances {
+            guild_id,
+            instances,
+        } => {
+            let guild_channels: Vec<Id> = s
+                .channels
+                .iter()
+                .filter(|c| c.guild_id == guild_id)
+                .map(|c| c.id)
+                .collect();
+            for channel_id in guild_channels {
+                s.activity_instances.remove(&channel_id);
+            }
+            for instance in instances {
+                s.activity_instances
+                    .entry(instance.channel_id)
+                    .or_default()
+                    .push(instance);
+            }
+        }
         ServerMessage::ActivityStarted { instance } => {
             s.activity_instances
                 .entry(instance.channel_id)
