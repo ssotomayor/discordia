@@ -2378,8 +2378,10 @@ fn Composer(
                 onsubmit: move |e| { e.prevent_default(); submit(); },
                 // A minimum, not a height: lines past the first must push the row up, not spill over the messages.
                 div {
-                    class: "border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex py-1 pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
-                    style: "min-height: 3rem; align-items: flex-end;",
+                    class: "border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
+                    // One line of the field is 32px like the buttons, so at 3rem every
+                    // item is centred, and as it grows they stay level with its last line.
+                    style: "min-height: 3rem; align-items: flex-end; padding-top: 7px; padding-bottom: 7px;",
 
                     div { class: "relative shrink-0",
                         button {
@@ -2434,7 +2436,8 @@ fn Composer(
                     // here renders into it.
                     div {
                         id: "{composer_id}",
-                        class: "dxf-composer flex-1 min-w-0 py-2 text-[14px] text-[var(--text)]",
+                        class: "dxf-composer flex-1 min-w-0 text-[14px] text-[var(--text)]",
+                        style: "padding-top: 5.5px; padding-bottom: 5.5px;",
                         contenteditable: "true",
                         "data-placeholder": crate::i18n::text("Message {0}", &[composer_label.clone()]),
                         role: "textbox",
@@ -2469,7 +2472,7 @@ fn Composer(
                     // permanently greyed one is a control that never does anything.
                     if !draft().trim().is_empty() || pending_image().is_some() || pending_file().is_some() {
                         button {
-                            class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg transition-all",
+                            class: "dxf-cta shrink-0 h-8 text-xs font-semibold uppercase tracking-wider px-4 rounded-lg transition-all",
                             r#type: "submit",
                             {crate::i18n::text("Send", &[])}
                         }
