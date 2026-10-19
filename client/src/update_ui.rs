@@ -238,10 +238,27 @@ pub fn UpdateBanner() -> Element {
     };
     rsx! {
         section { class: "dxf-update-banner", role: "status", "aria-live": "polite",
-            span { class: "dxf-update-icon", "aria-hidden": "true", dangerous_inner_html: crate::features::icons::DOWNLOAD }
+            UpdateStatusIcon { kind: "available" }
             div { class: "dxf-update-banner-copy", strong { {crate::i18n::label(title)} } p { {crate::i18n::label(detail)} } }
             button { class: "dxf-update-primary", onclick: move |_| updates.open(), {crate::i18n::text("View update", &[])} }
             button { class: "dxf-update-dismiss", aria_label: crate::i18n::text("Dismiss update notice", &[]), onclick: move |_| updates.state.write().dismissed = true, "×" }
+        }
+    }
+}
+
+#[component]
+fn UpdateStatusIcon(kind: &'static str) -> Element {
+    rsx! {
+        span { class: "dxf-update-icon", "data-state": kind, "aria-hidden": "true",
+            svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                match kind {
+                    "success" => rsx! { path { d: "M5 12l4 4L19 6" } },
+                    "error" => rsx! { path { d: "M12 7v6M12 17h.01" } circle { cx: "12", cy: "12", r: "9" } },
+                    "busy" => rsx! { path { d: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" } },
+                    "local" => rsx! { path { d: "M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" } },
+                    _ => rsx! { path { d: "M12 3v12m-5-5 5 5 5-5M3 15v5h18v-5" } },
+                }
+            }
         }
     }
 }
@@ -260,6 +277,7 @@ pub fn UpdatePanel() -> Element {
         Phase::Failed(_) => "Update failed",
         _ if state.offer.is_some() => "A new version is available",
         _ if state.check == Check::Searching => "Checking for updates…",
+        _ if matches!(state.check, Check::Failed(_)) => "Could not check for updates",
         _ if state.check == Check::Current => "You're up to date",
         _ if state.check == Check::Local => "Local build",
         _ => "Keep Discordia up to date",
@@ -274,12 +292,25 @@ pub fn UpdatePanel() -> Element {
             "This is a local build. Automatic updates are available in published releases."
         }
         _ if state.offer.is_some() => "Download now and restart when it suits you.",
+        _ if state.check == Check::Current => "You're using the latest available version.",
+        _ if matches!(state.check, Check::Failed(_)) => "Check your connection and try again.",
         _ => "Check for a new version whenever you want.",
+    };
+    let kind = match &state.phase {
+        Phase::Failed(_) => "error",
+        Phase::Downloading | Phase::Leaving(_) | Phase::Installing => "busy",
+        Phase::Ready(_) | Phase::Finished | Phase::Opened => "success",
+        _ if state.check == Check::Searching => "busy",
+        _ if matches!(state.check, Check::Failed(_)) => "error",
+        _ if state.offer.is_some() => "available",
+        _ if state.check == Check::Current => "success",
+        _ if state.check == Check::Local => "local",
+        _ => "available",
     };
     let checked = state
         .checked
-        .and_then(|time| SystemTime::now().duration_since(time).ok())
-        .map(|elapsed| elapsed.as_secs() / 60);
+        .map(chrono::DateTime::<chrono::Local>::from)
+        .map(|time| time.format("%Y-%m-%d · %H:%M").to_string());
     let (got, total) = state.progress;
     let pct = total
         .filter(|total| *total > 0)
@@ -288,14 +319,15 @@ pub fn UpdatePanel() -> Element {
         style { {include_str!("../assets/updates.css")} }
         section { class: "dxf-updates",
             h3 { {crate::i18n::text("Updates", &[])} }
-            p { class: "dxf-update-intro", {crate::i18n::text("Check for a new version whenever you want.", &[])} }
-            p { class: "dxf-update-version", {crate::i18n::text("Installed version: {0}", &[crate::version::VERSION.to_string()])} }
-            div { class: "dxf-update-card", role: "status", "aria-live": "polite",
-                div { class: "dxf-update-card-heading",
-                    span { class: "dxf-update-icon", "aria-hidden": "true", dangerous_inner_html: crate::features::icons::DOWNLOAD }
+            div { class: "dxf-update-card",
+                div { class: "dxf-update-card-heading", role: "status", "aria-live": "polite",
+                    UpdateStatusIcon { kind }
                     div { h4 { {crate::i18n::label(title)} } p { {crate::i18n::label(detail)} } }
                 }
-                if let Some(offer) = &state.offer { p { class: "dxf-update-version", "{offer.tag}" } }
+                div { class: "dxf-update-versions",
+                    span { {crate::i18n::text("Installed version: {0}", &[crate::version::VERSION.to_string()])} }
+                    if let Some(offer) = &state.offer { span { {crate::i18n::text("Available version: {0}", std::slice::from_ref(&offer.tag))} } }
+                }
                 if state.phase == Phase::Downloading {
                     if let Some(pct) = pct {
                         progress { max: "100", value: "{pct}", aria_label: crate::i18n::text("Update download progress", &[]) }
@@ -306,7 +338,8 @@ pub fn UpdatePanel() -> Element {
                     }
                 }
                 if let Phase::Failed(message) = &state.phase { p { class: "dxf-update-error", role: "alert", {crate::i18n::message(message)} } }
-                div { class: "dxf-update-actions",
+                if state.offer.is_some() {
+                  div { class: "dxf-update-actions",
                     if let Phase::Ready(_) = &state.phase {
                         button { class: "dxf-update-primary", disabled: state.in_call, onclick: move |_| updates.request_install(), {crate::i18n::text("Restart and update", &[])} }
                     } else if matches!(state.phase, Phase::Offered | Phase::Failed(_)) && state.offer.as_ref().is_some_and(|offer| offer.download.is_some()) {
@@ -315,21 +348,23 @@ pub fn UpdatePanel() -> Element {
                     if let Some(offer) = state.offer.clone() {
                         button { class: "dxf-update-secondary", onclick: move |_| crate::app::open_external(&offer.url), {crate::i18n::text("View release notes", &[])} }
                     }
+                  }
                 }
                 if matches!(state.phase, Phase::Ready(_)) && state.in_call { p { {crate::i18n::text("Finish your call before restarting. The download is ready.", &[])} } }
-            }
-            div { class: "dxf-update-check",
-                button { class: "dxf-update-secondary", disabled: !state.can_check(), onclick: move |_| updates.check(),
-                    if state.check == Check::Searching { {crate::i18n::text("Checking for updates…", &[])} }
-                    else { {crate::i18n::text("Check for updates", &[])} }
-                }
                 if let Check::Failed(message) = &state.check {
                     p { class: "dxf-update-error", role: "alert", {crate::i18n::text("Could not check for updates. Try again.", &[])} }
                     details { summary { {crate::i18n::text("Details", &[])} } {crate::i18n::message(message)} }
                 }
-                if let Some(minutes) = checked {
-                    if minutes == 0 { p { {crate::i18n::text("Last checked: just now", &[])} } }
-                    else { p { {crate::i18n::text("Last checked: {0} minutes ago", &[minutes.to_string()])} } }
+                div { class: "dxf-update-footer",
+                    if let Some(checked) = checked {
+                        p { {crate::i18n::text("Last checked: {0}", &[checked])} }
+                    } else {
+                        p { {crate::i18n::text("No checks yet", &[])} }
+                    }
+                    button { class: "dxf-update-secondary", disabled: !state.can_check(), onclick: move |_| updates.check(),
+                        if state.check == Check::Searching { {crate::i18n::text("Checking for updates…", &[])} }
+                        else { {crate::i18n::text("Check for updates", &[])} }
+                    }
                 }
             }
         }

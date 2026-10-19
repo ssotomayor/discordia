@@ -1,4 +1,10 @@
 {
+  "Could not check for updates": ["No se pudieron buscar actualizaciones", "Não foi possível buscar atualizações"],
+  "You're using the latest available version.": ["Tienes la última versión disponible.", "Você está usando a versão mais recente disponível."],
+  "Check your connection and try again.": ["Revisa tu conexión e inténtalo de nuevo.", "Verifique sua conexão e tente novamente."],
+  "Available version: {0}": ["Versión disponible: {0}", "Versão disponível: {0}"],
+  "Last checked: {0}": ["Última comprobación: {0}", "Última verificação: {0}"],
+  "No checks yet": ["Aún no se buscaron actualizaciones", "Nenhuma verificação realizada"],
   "Installed — restarting Discordia.": ["Instalada: reiniciando Discordia.", "Instalada: reiniciando o Discordia."],
   "Verified — finish in the installer window.": ["Verificada: termina en la ventana del instalador.", "Verificada: conclua na janela do instalador."],
   "Details": ["Detalles", "Detalhes"],
