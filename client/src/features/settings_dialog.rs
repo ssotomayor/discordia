@@ -18,6 +18,7 @@ pub enum SettingsTab {
     Video,
     Activity,
     Diagnostics,
+    Updates,
 }
 
 /// The empty group label means "same group as the row above" — the heading is
@@ -53,6 +54,12 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
         "Diagnostics",
         crate::features::icons::ACTIVITY,
     ),
+    (
+        "",
+        SettingsTab::Updates,
+        "Updates",
+        crate::features::icons::DOWNLOAD,
+    ),
 ];
 
 #[component]
@@ -63,6 +70,21 @@ pub fn SettingsDialog() -> Element {
 
     let mut show_stats = use_signal(|| false);
     let mut settings_tab = use_signal(|| SettingsTab::Audio);
+    let updates = try_consume_context::<crate::update::Updates>();
+    let mut update_request = use_signal(|| {
+        updates
+            .map(|updates| *updates.open_request.peek())
+            .unwrap_or(0)
+    });
+    use_effect(move || {
+        if let Some(updates) = updates {
+            let request = *updates.open_request.read();
+            if request != *update_request.peek() {
+                update_request.set(request);
+                settings_tab.set(SettingsTab::Updates);
+            }
+        }
+    });
 
     if !state.read().audio_settings {
         return rsx! { Fragment {} };
@@ -143,6 +165,7 @@ pub fn SettingsDialog() -> Element {
                             h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
                             div { class: "mt-4", crate::i18n::LanguageSelector {} }
                         }
+                        if settings_tab() == SettingsTab::Updates { crate::update::UpdatePanel {} }
                         if settings_tab() == SettingsTab::Audio {
                             super::settings_microphone::MicrophoneSettings {}
                         }

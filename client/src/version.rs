@@ -90,39 +90,36 @@ fn newest_release(releases: Vec<Release>, mine: u64) -> Option<Update> {
         })
 }
 
-pub async fn check_for_update() -> Option<Update> {
-    let mine = is_release().then(|| release_number(VERSION))??;
-    let url = releases_url().or_else(|| {
-        eprintln!(
-            "[update] no update check: {:?} is not a github.com/owner/name repository",
-            env!("CARGO_PKG_REPOSITORY")
-        );
-        None
-    })?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckResult {
+    Available(Update),
+    Current,
+    Local,
+}
 
+pub async fn check_for_update() -> Result<CheckResult, String> {
+    let Some(mine) = is_release().then(|| release_number(VERSION)).flatten() else {
+        return Ok(CheckResult::Local);
+    };
+    let url = releases_url().ok_or_else(|| "Update repository is unavailable.".to_string())?;
     let client = reqwest::Client::builder()
         .timeout(CHECK_TIMEOUT)
         .build()
-        .inspect_err(|e| eprintln!("[update] could not build the http client: {e}"))
-        .ok()?;
-    let res = client
+        .map_err(|error| error.to_string())?;
+    let response = client
         .get(&url)
         .header("User-Agent", format!("Discordia/{VERSION}"))
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .inspect_err(|e| eprintln!("[update] request to {url} failed: {e}"))
-        .ok()?;
-    if !res.status().is_success() {
-        eprintln!("[update] {url} answered {}", res.status());
-        return None;
-    }
-    let releases = res
-        .json()
-        .await
-        .inspect_err(|e| eprintln!("[update] could not read the releases listing: {e}"))
-        .ok()?;
-    newest_release(releases, mine)
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    let releases = response.json().await.map_err(|error| error.to_string())?;
+    Ok(match newest_release(releases, mine) {
+        Some(update) => CheckResult::Available(update),
+        None => CheckResult::Current,
+    })
 }
 
 pub fn is_release() -> bool {

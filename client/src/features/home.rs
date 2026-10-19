@@ -20,6 +20,11 @@ pub fn HomeView(
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         GatewayTx(tx)
     }));
+    let voice = use_hook(move || {
+        crate::features::voice::VoiceTx(crate::features::voice::spawn_voice_service(state))
+    });
+    provide_context(voice.clone());
+    use_hook(move || voice.send(crate::features::voice::VoiceCmd::ListDevices));
 
     let (social, open_social) = super::social_window::use_social_window(state);
     use_effect(move || {
@@ -37,6 +42,7 @@ pub fn HomeView(
             if !social() { crate::features::chat::ImageViewer {} }
             if !social() { crate::features::dm_call::CallPanel {} }
             crate::features::workspace::ErrorToast {}
+            crate::features::settings_dialog::SettingsDialog {}
             if !social() { crate::features::profiles::ProfileCard {} }
             TopBar { identity: identity.clone(), social, open_social, on_rename, on_sign_out }
             div { class: "flex-1 flex min-h-0",
@@ -136,6 +142,7 @@ fn TopBar(
         "border-[var(--border-strong)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--accent)]"
     };
     let mut open = use_signal(|| false);
+    let updates = try_consume_context::<crate::update::Updates>();
     let npub = identity.npub();
     let short = format!("{}…{}", &npub[..9.min(npub.len())], &npub[npub.len() - 3..]);
 
@@ -170,6 +177,9 @@ fn TopBar(
                 div { class: "flex-1" }
                 div { class: "dxf-no-drag flex items-center gap-3 shrink-0",
                     onmousedown: move |e| e.stop_propagation(),
+                    if let Some(updates) = updates {
+                        button { class: "dxf-update-secondary", onclick: move |_| updates.open(), {crate::i18n::text("Updates", &[])} }
+                    }
                     button {
                         class: "flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
                         onclick: move |_| {

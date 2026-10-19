@@ -74,8 +74,50 @@ pub fn AccountView(
         crate::nostr::service::spawn_nostr(identity.clone(), relays, state)
     });
     provide_context(state);
-    provide_context(nostr);
+    provide_context(nostr.clone());
     provide_context(identity.clone());
+    let updates = try_consume_context::<crate::update::Updates>();
+    let mut update_request = use_signal(|| {
+        updates
+            .map(|updates| *updates.open_request.peek())
+            .unwrap_or(0)
+    });
+    use_drop(move || {
+        if let Some(mut updates) = updates {
+            updates.state.write().in_call = false;
+        }
+    });
+    let quitting = try_consume_context::<crate::app::QuitRequest>();
+    let quit_nostr = nostr.clone();
+    use_effect(move || {
+        if quitting.is_some_and(|request| (request.0)()) && state.read().dm_call.is_some() {
+            quit_nostr.send(crate::nostr::service::NostrCmd::Call(
+                super::dm_call::Action::End,
+            ));
+        }
+    });
+    use_effect(move || {
+        if let Some(mut updates) = updates {
+            let current = state.read();
+            let in_call = current.dm_call.is_some()
+                || matches!(
+                    current.voice.phase,
+                    crate::state::VoicePhase::Connecting | crate::state::VoicePhase::Connected
+                );
+            if updates.state.peek().in_call != in_call {
+                updates.state.write().in_call = in_call;
+            }
+        }
+    });
+    use_effect(move || {
+        if let Some(updates) = updates {
+            let request = *updates.open_request.read();
+            if request != *update_request.peek() {
+                update_request.set(request);
+                state.write().audio_settings = true;
+            }
+        }
+    });
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_dm_standing_persistence(state);
