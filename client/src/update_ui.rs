@@ -248,16 +248,17 @@ pub fn UpdateBanner() -> Element {
 
 #[component]
 fn UpdateStatusIcon(kind: &'static str) -> Element {
+    let path = match kind {
+        "success" => "M5 12l4 4L19 6",
+        "error" => "M12 7v6M12 17h.01M21 12a9 9 0 1 1-18 0a9 9 0 0 1 18 0",
+        "busy" => "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
+        "local" => "M12 11v6M12 7h.01",
+        _ => "M12 3v12m-5-5 5 5 5-5M3 15v5h18v-5",
+    };
     rsx! {
         span { class: "dxf-update-icon", "data-state": kind, "aria-hidden": "true",
             svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
-                match kind {
-                    "success" => rsx! { path { d: "M5 12l4 4L19 6" } },
-                    "error" => rsx! { path { d: "M12 7v6M12 17h.01" } circle { cx: "12", cy: "12", r: "9" } },
-                    "busy" => rsx! { path { d: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" } },
-                    "local" => rsx! { path { d: "M12 11v6M12 7h.01" } },
-                    _ => rsx! { path { d: "M12 3v12m-5-5 5 5 5-5M3 15v5h18v-5" } },
-                }
+                path { d: path }
             }
         }
     }
