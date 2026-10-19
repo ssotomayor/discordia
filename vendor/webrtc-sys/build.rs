@@ -58,6 +58,7 @@ fn main() {
         "src/apm.rs",
         "src/audio_mixer.rs",
         "src/packet_trailer.rs",
+        "src/voice_audio_encoder.rs",
     ];
 
     if is_desktop {
@@ -98,6 +99,7 @@ fn main() {
         "src/global_task_queue.cpp",
         "src/prohibit_libsrtp_initialization.cpp",
         "src/apm.cpp",
+        "src/voice_audio_encoder.cpp",
         "src/audio_mixer.cpp",
         "src/av1_bitstream.cpp",
         "src/packet_trailer.cpp",

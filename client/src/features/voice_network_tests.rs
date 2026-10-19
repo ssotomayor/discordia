@@ -273,3 +273,34 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
 
 #[path = "../../../vendor/livekit/src/room/track/network_bitrate.rs"]
 mod video_budget;
+
+/// Opus FEC carries the frame before, so only a packet after speech has one;
+/// Opus's own voice detector calls a few faded syllable tails silence.
+#[test]
+fn every_packet_after_speech_carries_fec_before_any_loss_is_reported() {
+    let pcm: Vec<i16> = crate::agc::tests::speech(6.0, -20.0, 1)
+        .iter()
+        .map(|s| (s * i16::MAX as f32) as i16)
+        .collect();
+    let frames = pcm.as_chunks::<960>().0;
+    let after_speech = frames
+        .windows(2)
+        .filter(|pair| pair[0].iter().any(|s| s.unsigned_abs() > 64))
+        .count() as u32;
+    for bitrate in [32_000, 64_000, 96_000] {
+        let probe = webrtc_sys::voice_audio_encoder::ffi::probe_voice_encoder(&pcm, false, bitrate);
+        assert!(probe.voice_encoder);
+        assert_eq!(probe.packets as usize, frames.len());
+        assert!(
+            probe.with_fec * 100 >= after_speech * 97,
+            "{bitrate} bps: FEC in {} packets, {after_speech} follow speech",
+            probe.with_fec
+        );
+    }
+    let stream = webrtc_sys::voice_audio_encoder::ffi::probe_voice_encoder(&pcm, true, 64_000);
+    assert!(
+        !stream.voice_encoder,
+        "stereo stream audio keeps libwebrtc's encoder"
+    );
+    assert_eq!(stream.with_fec, 0);
+}

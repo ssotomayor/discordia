@@ -30,6 +30,13 @@ and the decisions taken deliberately.
 - Windows uses Windows Graphics Capture through Rust; system audio excludes Discordia but includes other applications.
 - Stream audio is subscribed on publication, not on watch.
 - Every Windows activation leaks its 12-byte blob, deliberately.
+- Voice Opus always expects 30% loss and ignores measured loss. Every packet
+  after speech spends part of its bitrate on the FEC copy of the frame before,
+  even on a clean line; in exchange, a lost packet is recoverable from the
+  first one, with no wait for a loss report.
+- No Opus DRED. Our libwebrtc build has it compiled out, and its long
+  redundancy is wasted behind a jitter buffer of about 100 ms. RED and FEC
+  already cover short bursts.
 - The Windows blob's lifetime rule is an observation, not a contract.
 - Two advisories are ignored in `.cargo/audit.toml`, each with its reason
   written beside it: `rsa` arrives through `jsonwebtoken` and never runs an RSA

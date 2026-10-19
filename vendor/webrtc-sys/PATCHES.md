@@ -15,6 +15,7 @@ Source: [LiveKit Rust SDK](https://github.com/livekit/rust-sdks), crates.io rele
 | `src/camera_capture.{cpp,rs}`, `include/livekit/camera_capture.h`, `src/lib.rs` | Preserve native camera format enumeration and selection used by setup and publication. |
 | `src/peer_connection.{cpp,rs}`, `include/livekit/peer_connection.h` | Preserve structured removal errors across CXX for reliable teardown. |
 | `src/apm.{cpp,rs}`, `include/livekit/apm.h` | `create_gain_controller`: an APM running only AGC2 adaptive digital, with its headroom, gain limits, rate and noise ceiling set by the caller. |
+| `src/voice_audio_encoder.{cpp,rs}`, `include/livekit/voice_audio_encoder.h`, `src/peer_connection_factory.cpp`, `build.rs`, `src/lib.rs` | The audio encoder factory makes mono Opus a `VoiceAudioEncoder` built on `WebRtcOpus_*`, with expected loss fixed at 30%; other formats use the builtin factory. `probe_voice_encoder` encodes through the factory for tests. |
 
 `webrtc-sys-build` 0.3.19 selects the matching `webrtc-89d790b` artifact. Headers,
 bindings and libraries must move together; `LK_CUSTOM_WEBRTC` overrides require

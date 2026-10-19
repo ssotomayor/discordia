@@ -42,6 +42,7 @@
 #include "livekit/rtp_parameters.h"
 #include "livekit/video_decoder_factory.h"
 #include "livekit/video_encoder_factory.h"
+#include "livekit/voice_audio_encoder.h"
 #include "livekit/webrtc.h"
 #include "rtc_base/thread.h"
 #include "webrtc-sys/src/peer_connection.rs.h"
@@ -190,7 +191,7 @@ PeerConnectionFactory::PeerConnectionFactory(
       std::move(std::make_unique<livekit_ffi::VideoEncoderFactory>());
   dependencies.video_decoder_factory =
       std::move(std::make_unique<livekit_ffi::VideoDecoderFactory>());
-  dependencies.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
+  dependencies.audio_encoder_factory = CreateVoiceAudioEncoderFactory();
   dependencies.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
   dependencies.audio_processing_builder = std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
 
