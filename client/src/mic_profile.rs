@@ -72,6 +72,33 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn from_settings(s: &crate::settings::ClientSettings) -> Self {
+        Self {
+            processing: s.mic_processing,
+            threshold: s.mic_sensitivity,
+            volume: s.mic_volume,
+            agc: s.auto_gain_control,
+            denoise: s.noise_cancellation,
+            suppression: s.denoise_atten_lim_db,
+        }
+        .normalized()
+    }
+
+    pub fn select_profile(
+        self,
+        profile: Profile,
+        settings: &crate::settings::ClientSettings,
+    ) -> Self {
+        if profile != Profile::Custom || self.processing.profile == Profile::Custom {
+            return self.preset(profile);
+        }
+        settings
+            .mic_custom_config
+            .unwrap_or_else(|| Self::from_settings(&crate::settings::ClientSettings::default()))
+            .preset(Profile::Custom)
+            .normalized()
+    }
+
     pub fn from_state(s: &crate::state::AppState) -> Self {
         Self {
             processing: s.mic_processing,
@@ -136,6 +163,10 @@ impl Config {
 
     pub fn apply_settings(self, s: &mut crate::settings::ClientSettings) {
         let c = self.normalized();
+        // A preset replaces active values, so retain the manual configuration before leaving it.
+        if s.mic_processing.profile == Profile::Custom && c.processing.profile != Profile::Custom {
+            s.mic_custom_config = Some(Self::from_settings(s));
+        }
         s.mic_processing = c.processing;
         s.mic_sensitivity = c.threshold;
         s.mic_volume = c.volume;
@@ -175,6 +206,86 @@ pub fn remember(saved: &mut Vec<Calibration>, calibration: Calibration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_configuration_survives_profile_switches_and_restart() {
+        let mut settings = crate::settings::ClientSettings {
+            selected_input_device: Some("my microphone".into()),
+            voice_bitrate_kbps: 64,
+            ..Default::default()
+        };
+        let custom = Config {
+            processing: Processing {
+                profile: Profile::Custom,
+                echo: false,
+                high_pass: false,
+                gate: true,
+                headphones: true,
+            },
+            threshold: 31,
+            volume: 117,
+            agc: false,
+            denoise: true,
+            suppression: 42,
+        };
+        custom.apply_settings(&mut settings);
+        for profile in [Profile::Natural, Profile::Balanced, Profile::Noisy] {
+            let next = Config::from_settings(&settings).select_profile(profile, &settings);
+            next.apply_settings(&mut settings);
+            assert_eq!(settings.mic_custom_config, Some(custom));
+        }
+        let json = serde_json::to_string(&settings).unwrap();
+        let mut restored: crate::settings::ClientSettings = serde_json::from_str(&json).unwrap();
+        let next = Config::from_settings(&restored).select_profile(Profile::Custom, &restored);
+        next.apply_settings(&mut restored);
+        assert_eq!(Config::from_settings(&restored), custom);
+        assert_eq!(
+            restored.selected_input_device.as_deref(),
+            Some("my microphone")
+        );
+        assert_eq!(restored.voice_bitrate_kbps, 64);
+        let mut state = crate::state::AppState::empty();
+        next.apply_state(&mut state);
+        assert_eq!(Config::from_state(&state), custom);
+
+        let mut edited = next;
+        edited.volume = 83;
+        edited.suppression = 18;
+        edited.processing.echo = true;
+        edited.apply_settings(&mut restored);
+        let preset = edited.select_profile(Profile::Natural, &restored);
+        preset.apply_settings(&mut restored);
+        assert_eq!(preset.select_profile(Profile::Custom, &restored), edited);
+    }
+
+    #[test]
+    fn legacy_custom_values_are_saved_before_the_first_preset() {
+        let mut json = serde_json::to_value(crate::settings::ClientSettings::default()).unwrap();
+        json.as_object_mut().unwrap().remove("mic_custom_config");
+        json["mic_volume"] = 87.into();
+        json["mic_sensitivity"] = 44.into();
+        json["denoise_atten_lim_db"] = 36.into();
+        let mut settings: crate::settings::ClientSettings = serde_json::from_value(json).unwrap();
+        let original = Config::from_settings(&settings);
+        assert_eq!(
+            original.select_profile(Profile::Custom, &settings),
+            original
+        );
+        let preset = original.select_profile(Profile::Balanced, &settings);
+        preset.apply_settings(&mut settings);
+        assert_eq!(preset.select_profile(Profile::Custom, &settings), original);
+    }
+
+    #[test]
+    fn missing_manual_history_uses_defaults_instead_of_copying_the_active_preset() {
+        let settings = crate::settings::ClientSettings::default();
+        let mut preset = Config::from_settings(&settings).preset(Profile::Noisy);
+        preset.volume = 64;
+        assert_eq!(
+            preset.select_profile(Profile::Custom, &settings),
+            Config::from_settings(&settings)
+        );
+    }
 
     #[test]
     fn legacy_processing_preserves_the_existing_pipeline() {

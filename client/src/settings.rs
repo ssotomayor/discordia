@@ -109,6 +109,8 @@ pub struct ClientSettings {
     pub mic_processing: crate::mic_profile::Processing,
     #[serde(default)]
     pub mic_calibrations: Vec<crate::mic_profile::Calibration>,
+    #[serde(default)]
+    pub mic_custom_config: Option<crate::mic_profile::Config>,
     #[serde(default = "default_enabled")]
     pub auto_gain_control: bool,
     #[serde(default = "default_enabled")]
@@ -377,6 +379,7 @@ impl Default for ClientSettings {
             mic_volume: default_mic_volume(),
             mic_processing: Default::default(),
             mic_calibrations: Vec::new(),
+            mic_custom_config: None,
             auto_gain_control: default_enabled(),
             noise_cancellation: default_enabled(),
             bypass_system_audio_processing: default_enabled(),

@@ -124,7 +124,7 @@ pub(super) fn MicrophoneSettings() -> Element {
                 for profile in Profile::ALL {
                     button { class: "dxf-mic-profile", r#type: "button", aria_label: crate::i18n::label(profile.label()), "aria-pressed": config.processing.profile == profile,
                         onclick: move |_| {
-                            let mut next = Config::from_state(&state.peek()).preset(profile);
+                            let mut next = Config::from_state(&state.peek()).select_profile(profile, &settings.peek());
                             if profile != Profile::Custom
                                 && let Ok(context) = crate::features::voice::microphone_context(&state.peek())
                                 && let Some(saved) = settings.peek().mic_calibrations.iter().rev().find(|saved| saved.version == 1 && saved.context == context && saved.config.processing.profile == profile)
