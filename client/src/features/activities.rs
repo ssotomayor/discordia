@@ -89,6 +89,13 @@ pub struct Activity {
 }
 
 impl Activity {
+    fn display_name(&self) -> &str {
+        match self.source {
+            Source::Builtin(_) => crate::i18n::label(&self.name),
+            Source::App { .. } => &self.name,
+        }
+    }
+
     /// The `app` an instance names: `builtin:<id>` or the app's key.
     pub fn key(&self) -> String {
         match &self.source {
@@ -132,12 +139,17 @@ impl Activity {
     /// cannot paint over who made it.
     fn title(&self) -> String {
         match &self.source {
-            Source::Builtin(_) => format!("{} {} — activity", self.icon, self.name),
-            Source::App { bot_pubkey, .. } => format!(
-                "{} {} — third-party activity by {}",
-                self.icon,
-                self.name,
-                truncate_pubkey(&npub_of(bot_pubkey))
+            Source::Builtin(_) => crate::i18n::text(
+                "{0} {1} — activity",
+                &[self.icon.clone(), self.display_name().to_owned()],
+            ),
+            Source::App { bot_pubkey, .. } => crate::i18n::text(
+                "{0} {1} — third-party activity by {2}",
+                &[
+                    self.icon.clone(),
+                    self.name.clone(),
+                    truncate_pubkey(&npub_of(bot_pubkey)),
+                ],
             ),
         }
     }
@@ -179,10 +191,26 @@ pub fn bundle_host(sha256_hex: &str) -> String {
 }
 
 fn builtin_bundle(id: &str) -> Option<(String, Bundle)> {
+    builtin_bundle_in(id, crate::i18n::current())
+}
+
+fn builtin_bundle_in(id: &str, language: crate::i18n::Language) -> Option<(String, Bundle)> {
     use sha2::{Digest, Sha256};
     let def = BUILTINS.iter().find(|d| d.id == id)?;
-    let sha = hex::encode(Sha256::digest(def.html.as_bytes()));
-    Some((sha, Bundle::single_page(def.html)))
+    let translations = BUILTIN_MESSAGES
+        .iter()
+        .map(|key| (*key, crate::i18n::translate(language, key, &[])))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let dictionary = serde_json::to_string(&translations)
+        .ok()?
+        .replace('<', "\\u003c");
+    let init = format!(
+        "const translations = {dictionary}; document.documentElement.lang = '{}';",
+        language.tag()
+    );
+    let html = def.html.replace("/* BUILTIN_TRANSLATIONS */", &init);
+    let sha = hex::encode(Sha256::digest(html.as_bytes()));
+    Some((sha, Bundle::single_page(&html)))
 }
 
 pub enum Inbound {
@@ -1003,7 +1031,7 @@ fn OpenActivityRow(
                 "{activity.icon}"
             }
             div { class: "flex-1 min-w-0",
-                div { class: "text-sm text-[var(--text)] truncate", "{activity.name}" }
+                div { class: "text-sm text-[var(--text)] truncate", {activity.display_name()} }
                 div { class: "text-[10px] text-[var(--text-dim)] truncate",
                     "# {channel} · "
                     {crate::i18n::text("Hosted by {0}", &[host.clone()])}
@@ -1049,11 +1077,11 @@ fn ActivityRow(activity: Activity, on_pick: EventHandler<Activity>) -> Element {
                 "{activity.icon}"
             }
             div { class: "flex-1 min-w-0",
-                div { class: "text-sm text-[var(--text)] truncate", "{activity.name}" }
+                div { class: "text-sm text-[var(--text)] truncate", {activity.display_name()} }
                 div { class: "text-[10px] text-[var(--text-dim)]",
                     if third_party { {crate::i18n::text("Installed app · ", &[])} } else { {crate::i18n::text("Built in · ", &[])} }
                     if activity.max_players > 1 { {crate::i18n::text("up to {0} players · ", &[(activity . max_players).to_string()])} }
-                    {crate::i18n::plural("{0} permission", "{0} permission(s)", activity . caps . len ())}
+                    {crate::i18n::plural("{0} permission", "{0} permissions", activity . caps . len ())}
                 }
             }
         }
@@ -1076,7 +1104,7 @@ fn ConsentPanel(
             div { class: "flex items-center gap-2 mb-2",
                 span { class: "text-lg", "{activity.icon}" }
                 div { class: "min-w-0",
-                    div { class: "text-sm text-[var(--text)] font-medium truncate", "{activity.name}" }
+                    div { class: "text-sm text-[var(--text)] font-medium truncate", {activity.display_name()} }
                     if let Some(author) = &author {
                         div { class: "font-mono text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Third-party · {0}", std::slice::from_ref(author))} }
                     }
@@ -1224,6 +1252,30 @@ fn text_carries_key(text: &str) -> bool {
     false
 }
 
+const BUILTIN_MESSAGES: &[&str] = &[
+    "Roll",
+    "Share to chat",
+    "Shared!",
+    "Denied",
+    "Hi, {0}",
+    "shares go to #{0}",
+    "Connecting…",
+    "someone",
+    "Waiting for a second player…",
+    "Watching round {0}",
+    "Round {0} — pick one",
+    "{0} watching",
+    "{0} didn't reveal — round to {1}",
+    "draw",
+    "{0} wins the round",
+    "You picked {0} — waiting for {1}",
+    "{0} has picked",
+    "{0}'s move didn't match their commitment — round to {1}",
+    "nobody",
+    "{0} left — round to {1}",
+    "This game has ended.",
+];
+
 const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><style>
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     background:#15110d; color:#e8e2da; height:100vh; display:flex; flex-direction:column;
@@ -1245,6 +1297,9 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
   </div>
   <div class="who" id="where"></div>
   <script>
+
+    /* BUILTIN_TRANSLATIONS */
+    const tr = (key, ...args) => (translations[key] || key).replace(/\{(\d+)\}/g, (token, i) => args[i] === undefined ? token : String(args[i]));
     const dxf = {
       getUser: function () { return discordia.call('user.get'); },
       getChannel: function () { return discordia.call('channel.get'); },
@@ -1256,15 +1311,17 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     const shareBtn = document.getElementById('share');
     const whoEl = document.getElementById('who');
     const whereEl = document.getElementById('where');
+    rollBtn.textContent = tr('Roll');
+    shareBtn.textContent = tr('Share to chat');
     const faces = ['⚀','⚁','⚂','⚃','⚄','⚅'];
     let last = 0;
 
-    dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
+    dxf.getUser().then(function (u) { whoEl.textContent = tr('Hi, {0}', u.username); })
        .catch(function () { whoEl.textContent = ''; });
 
     function showWhere() {
       dxf.getChannel()
-         .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })
+         .then(function (c) { whereEl.textContent = c && c.name ? tr('shares go to #{0}', c.name) : ''; })
          .catch(function () { whereEl.textContent = ''; });
     }
     showWhere();
@@ -1283,8 +1340,8 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
       if (!last) return;
       shareBtn.disabled = true;
       dxf.sendMessage('🎲 rolled a ' + last + '!')
-         .then(function () { showWhere(); shareBtn.textContent = 'Shared!'; setTimeout(function(){ shareBtn.textContent='Share to chat'; shareBtn.disabled=false; }, 1200); })
-         .catch(function (err) { shareBtn.textContent = 'Denied'; });
+         .then(function () { showWhere(); shareBtn.textContent = tr('Shared!'); setTimeout(function(){ shareBtn.textContent=tr('Share to chat'); shareBtn.disabled=false; }, 1200); })
+         .catch(function (err) { shareBtn.textContent = tr('Denied'); });
     });
   </script>
 </body></html>"##;
@@ -1311,15 +1368,19 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
   </div>
   <div class="who" id="who"></div>
   <script>
+
+    /* BUILTIN_TRANSLATIONS */
+    const tr = (key, ...args) => (translations[key] || key).replace(/\{(\d+)\}/g, (token, i) => args[i] === undefined ? token : String(args[i]));
     const FACE = { rock: '✊', paper: '✋', scissors: '✌️' };
     const BEATS = { rock: 'scissors', paper: 'rock', scissors: 'paper' };
     const REVEAL_WITHIN_MS = 15000;
     let info = null, round = 1, score = {}, mine = null;
     let committed = {}, revealed = {}, revealing = false, deadline = null, settled = false;
     const $ = (id) => document.getElementById(id);
+    $('status').textContent = tr('Connecting…');
 
     function players() { return info ? info.participants.filter(p => p.role === 'player') : []; }
-    function nameOf(k) { const p = info && info.participants.find(p => p.pubkey === k); return p ? p.name : 'someone'; }
+    function nameOf(k) { const p = info && info.participants.find(p => p.pubkey === k); return p ? p.name : tr('someone'); }
     function amPlayer() { return players().some(p => p.pubkey === info.me); }
     function opponent() { const o = players().find(p => p.pubkey !== info.me); return o && o.pubkey; }
 
@@ -1333,11 +1394,11 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
       });
       $('picks').style.display = amPlayer() ? 'flex' : 'none';
       if (message) { $('status').textContent = message; }
-      else if (waiting) { $('status').textContent = 'Waiting for a second player…'; }
-      else if (!amPlayer()) { $('status').textContent = 'Watching round ' + round; }
-      else if (!mine) { $('status').textContent = 'Round ' + round + ' — pick one'; }
+      else if (waiting) { $('status').textContent = tr('Waiting for a second player…'); }
+      else if (!amPlayer()) { $('status').textContent = tr('Watching round {0}', round); }
+      else if (!mine) { $('status').textContent = tr('Round {0} — pick one', round); }
       const watchers = info ? info.participants.length - ps.length : 0;
-      $('who').textContent = watchers ? watchers + ' watching' : '';
+      $('who').textContent = watchers ? tr('{0} watching', watchers) : '';
     }
     function escape(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
 
@@ -1366,7 +1427,7 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
       deadline = setTimeout(() => {
         const missing = players().find(p => !revealed[p.pubkey]);
         const other = missing && players().find(p => p.pubkey !== missing.pubkey);
-        if (missing) award(other && other.pubkey, nameOf(missing.pubkey) + " didn't reveal — round to " + nameOf(other.pubkey));
+        if (missing) award(other && other.pubkey, tr("{0} didn't reveal — round to {1}", nameOf(missing.pubkey), nameOf(other.pubkey)));
       }, REVEAL_WITHIN_MS);
       maybeResolve();
     }
@@ -1376,15 +1437,15 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
       if (!a || !b || !revealed[a.pubkey] || !revealed[b.pubkey]) return;
       const pa = revealed[a.pubkey], pb = revealed[b.pubkey];
       const shown = FACE[pa] + ' vs ' + FACE[pb] + ' — ';
-      if (pa === pb) award(null, shown + 'draw');
-      else if (BEATS[pa] === pb) award(a.pubkey, shown + nameOf(a.pubkey) + ' wins the round');
-      else award(b.pubkey, shown + nameOf(b.pubkey) + ' wins the round');
+      if (pa === pb) award(null, shown + tr('draw'));
+      else if (BEATS[pa] === pb) award(a.pubkey, shown + tr('{0} wins the round', nameOf(a.pubkey)));
+      else award(b.pubkey, shown + tr('{0} wins the round', nameOf(b.pubkey)));
     }
 
     document.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
       if (mine || !amPlayer()) return;
       mine = b.dataset.pick;
-      render('You picked ' + FACE[mine] + ' — waiting for ' + nameOf(opponent()));
+      render(tr('You picked {0} — waiting for {1}', FACE[mine], nameOf(opponent())));
       discordia.call('instance.commit', { round: String(round), value: mine })
         .then(() => { committed[info.me] = true; maybeReveal(); })
         .catch(() => { mine = null; render(); });
@@ -1393,14 +1454,14 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
     discordia.on('instance.commit', (e) => {
       if (e.round !== String(round)) return;
       committed[e.from] = true;
-      if (!amPlayer()) render(nameOf(e.from) + ' has picked');
+      if (!amPlayer()) render(tr('{0} has picked', nameOf(e.from)));
       maybeReveal();
     });
     discordia.on('instance.reveal', (e) => {
       if (e.round !== String(round)) return;
       if (!e.valid || !FACE[e.value]) {
         const other = players().find(p => p.pubkey !== e.from);
-        award(other && other.pubkey, nameOf(e.from) + "'s move didn't match their commitment — round to " + nameOf(other && other.pubkey));
+        award(other && other.pubkey, tr("{0}'s move didn't match their commitment — round to {1}", nameOf(e.from), nameOf(other && other.pubkey)));
         return;
       }
       revealed[e.from] = e.value;
@@ -1423,7 +1484,7 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
         }
         if (gone.length && Object.keys(committed).length && !settled) {
           const stayer = players()[0];
-          award(stayer && stayer.pubkey, gone[0].name + ' left — round to ' + (stayer ? stayer.name : 'nobody'));
+          award(stayer && stayer.pubkey, tr('{0} left — round to {1}', gone[0].name, stayer ? stayer.name : tr('nobody')));
           return;
         }
       }
@@ -1431,13 +1492,61 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
     });
 
     discordia.call('instance.info').then((i) => { info = i; render(); })
-      .catch((e) => { $('status').textContent = 'This game has ended.'; });
+      .catch((e) => { $('status').textContent = tr('This game has ended.'); });
   </script>
 </body></html>"##;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localized_builtin_bundles_have_distinct_cache_keys() {
+        let mut hashes = std::collections::HashSet::new();
+        for id in ["dice", "rps"] {
+            for language in [
+                crate::i18n::Language::English,
+                crate::i18n::Language::Spanish,
+                crate::i18n::Language::Portuguese,
+            ] {
+                let (hash, bundle) = builtin_bundle_in(id, language).unwrap();
+                assert!(hashes.insert(hash));
+                let html = std::str::from_utf8(&bundle.files["index.html"].bytes).unwrap();
+                assert!(!html.contains("/* BUILTIN_TRANSLATIONS */"));
+                assert!(html.contains(&format!(
+                    "document.documentElement.lang = '{}'",
+                    language.tag()
+                )));
+                assert!(html.contains(&crate::i18n::translate(language, "Share to chat", &[])));
+            }
+        }
+    }
+
+    #[test]
+    fn activity_names_translate_only_for_builtins() {
+        fn probe() -> Element {
+            let (language, expected) = use_context::<(crate::i18n::Language, &'static str)>();
+            let locale = use_signal(|| language);
+            use_context_provider(|| crate::i18n::Locale(locale));
+            let mut activity = Activity::from_builtin(&BUILTINS[0]);
+            assert_eq!(activity.display_name(), expected);
+            activity.source = Source::App {
+                bot_pubkey: String::new(),
+                sha256: String::new(),
+            };
+            assert_eq!(activity.display_name(), "Dice Roller");
+            rsx! {}
+        }
+        for case in [
+            (crate::i18n::Language::English, "Dice Roller"),
+            (crate::i18n::Language::Spanish, "Lanzador de dados"),
+            (crate::i18n::Language::Portuguese, "Lançador de dados"),
+        ] {
+            VirtualDom::new(probe)
+                .with_root_context(case)
+                .rebuild_in_place();
+        }
+    }
 
     #[tokio::test]
     async fn activity_watch_fetches_per_guild_not_per_reply_or_channel() {
