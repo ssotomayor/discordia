@@ -145,11 +145,12 @@ fn TopBar(
     let mut open = use_signal(|| false);
     let npub = identity.npub();
     let short = format!("{}…{}", &npub[..9.min(npub.len())], &npub[npub.len() - 3..]);
+    let settings_top = if cfg!(target_os = "macos") { 16 } else { 8 };
 
     rsx! {
         div { class: "relative shrink-0 z-50",
             div {
-                class: "dxf-drag-region relative z-50 h-[58px] px-5 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
+                class: "dxf-drag-region relative z-50 h-[58px] pl-5 pr-2 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
                 onclick: move |_| open.set(false),
                 if !cfg!(target_os = "windows") {
@@ -178,6 +179,7 @@ fn TopBar(
                 }
                 div { class: "flex-1" }
                 div { class: "dxf-no-drag flex items-center gap-3 shrink-0",
+                    style: "padding-right: 44px;",
                     onmousedown: move |e| e.stop_propagation(),
                     button {
                         class: "flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
@@ -219,6 +221,19 @@ fn TopBar(
                             }
                         }
                     }
+                }
+                button {
+                    class: "dxf-no-drag w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                    style: "position: absolute; top: {settings_top}px; right: 8px;",
+                    title: crate::i18n::text("Settings", &[]),
+                    aria_label: crate::i18n::text("Settings", &[]),
+                    onmousedown: move |e| e.stop_propagation(),
+                    onclick: move |_| {
+                        open.set(false);
+                        let mut app = state;
+                        app.write().audio_settings = true;
+                    },
+                    span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
                 }
             }
             if open() {
