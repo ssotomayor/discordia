@@ -21,6 +21,18 @@ namespace {
 // 1275 bytes per Opus frame, and a packet holds at most 120 ms of them.
 constexpr size_t kMaxEncodedBytes = 6 * 1275;
 
+std::optional<webrtc::AudioEncoderOpusConfig> VoiceConfig(
+    const webrtc::SdpAudioFormat& format) {
+  if (!absl::EqualsIgnoreCase(format.name, "opus")) {
+    return std::nullopt;
+  }
+  auto config = webrtc::AudioEncoderOpus::SdpToConfig(format);
+  if (!config || config->num_channels != 1 || !config->IsOk()) {
+    return std::nullopt;
+  }
+  return config;
+}
+
 class VoiceAudioEncoderFactory : public webrtc::AudioEncoderFactory {
  public:
   VoiceAudioEncoderFactory()
@@ -39,12 +51,8 @@ class VoiceAudioEncoderFactory : public webrtc::AudioEncoderFactory {
       const webrtc::Environment& env,
       const webrtc::SdpAudioFormat& format,
       Options options) override {
-    if (absl::EqualsIgnoreCase(format.name, "opus")) {
-      auto config = webrtc::AudioEncoderOpus::SdpToConfig(format);
-      if (config && config->num_channels == 1 && config->IsOk()) {
-        return std::make_unique<VoiceAudioEncoder>(*config,
-                                                   options.payload_type);
-      }
+    if (auto config = VoiceConfig(format)) {
+      return std::make_unique<VoiceAudioEncoder>(*config, options.payload_type);
     }
     return builtin_->Create(env, format, options);
   }
@@ -276,8 +284,8 @@ VoiceEncoderProbe probe_voice_encoder(rust::Slice<const int16_t> pcm,
   encoder->OnReceivedUplinkPacketLossFraction(0.0f);
 
   VoiceEncoderProbe probe{};
-  probe.voice_encoder =
-      dynamic_cast<VoiceAudioEncoder*>(encoder.get()) != nullptr;
+  // libwebrtc has no RTTI, and MSVC throws on a dynamic_cast of its encoder.
+  probe.voice_encoder = VoiceConfig(format).has_value();
   std::vector<int16_t> interleaved;
   webrtc::Buffer packet;
   uint32_t timestamp = 0;
