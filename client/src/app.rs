@@ -664,6 +664,8 @@ pub fn App() -> Element {
         use_hook(move || Signal::new_in_scope(settings.peek().language.resolve(), ScopeId::ROOT));
     use_drop(move || locale.manually_drop());
     use_context_provider(|| crate::i18n::Locale(locale));
+    let updates = crate::update::use_updates();
+    let mut update_exit = use_signal(|| false);
     let quit_window = dioxus::desktop::use_window();
     let close_to_tray = use_signal(|| false);
     let close_window = quit_window.clone();
@@ -685,7 +687,28 @@ pub fn App() -> Element {
         }
     });
     use_effect(move || {
+        let phase = updates.state.read().phase.clone();
+        if matches!(phase, crate::update::UpdatePhase::Leaving(_)) {
+            update_exit.set(true);
+            if !*quitting.peek() {
+                quitting.set(true);
+            }
+        }
+        if *update_exit.peek()
+            && matches!(
+                phase,
+                crate::update::UpdatePhase::Failed(_) | crate::update::UpdatePhase::Opened
+            )
+        {
+            update_exit.set(false);
+            quitting.set(false);
+            return;
+        }
         if quitting() && session.read().is_none() {
+            if *update_exit.peek() && updates.prevents_close() {
+                updates.install_after_disconnect();
+                return;
+            }
             quit_window.set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowCloses);
             quit_window.close();
         }
@@ -785,15 +808,15 @@ pub fn App() -> Element {
     }
 
     let mut identity = use_signal(|| Identity::load().ok().flatten());
-    let mut error = use_signal(|| None::<String>);
-    let last_session = use_signal(|| session::load().ok().flatten());
-
-    let mut update = use_signal(|| None::<crate::version::Update>);
-    let mut update_check = use_future(move || async move {
-        if let Some(found) = crate::version::check_for_update().await {
-            update.set(Some(found));
+    let mut update_dialog = use_signal(|| false);
+    use_effect(move || {
+        let request = *updates.open_request.read();
+        if request > 0 && identity.peek().is_none() {
+            update_dialog.set(true);
         }
     });
+    let mut error = use_signal(|| None::<String>);
+    let last_session = use_signal(|| session::load().ok().flatten());
 
     let appearance = settings.read();
     let theme = appearance.theme.clone();
@@ -817,11 +840,12 @@ pub fn App() -> Element {
 
     rsx! {
         AppHead {}
+        style { {include_str!("../assets/updates.css")} }
         style { "{size_css}" }
 
         div {
             class: "dxf-ui h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
-            style: "{root_style}",
+            style: "{root_style}; display:flex; flex-direction:column;",
             if !pattern_class.is_empty() {
                 div { class: "{pattern_class}" }
             }
@@ -829,15 +853,18 @@ pub fn App() -> Element {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }
             }
-            if session.read().is_none() {
-                div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
-                    crate::version::VersionLabel {}
-                    if let Some(u) = update() {
-                        crate::update::UpdateNotice { update: u }
+            crate::update::UpdateBanner {}
+            if identity.read().is_none() && update_dialog() {
+                div { class: "fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-6",
+                    onclick: move |_| update_dialog.set(false),
+                    div { class: "dxf-update-dialog", role: "dialog", aria_modal: "true", aria_label: crate::i18n::text("Updates", &[]),
+                        onclick: move |event: MouseEvent| event.stop_propagation(),
+                        button { class: "dxf-update-dismiss", aria_label: crate::i18n::text("Close", &[]), onclick: move |_| update_dialog.set(false), "×" }
+                        crate::update::UpdatePanel {}
                     }
                 }
             }
-            div { class: "app-shell", style: "{shell}",
+            div { class: "app-shell", style: "{shell}; flex:1; min-height:0; height:auto;",
             match (identity.read().clone(), session.read().clone()) {
                 (None, _) => rsx! {
                     IdentitySetupView {
@@ -872,14 +899,14 @@ pub fn App() -> Element {
                             session.set(None);
                             identity.set(None);
                             if !quitting() {
-                                update_check.restart();
+                                updates.check();
                             }
                         },
                         on_disconnect: move |reason: String| {
                             error.set(if reason.is_empty() { None } else { Some(reason) });
                             session.set(None);
                             if !quitting() {
-                                update_check.restart();
+                                updates.check();
                             }
                         },
                     }
