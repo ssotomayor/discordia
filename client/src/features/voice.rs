@@ -1520,6 +1520,7 @@ impl ActiveVoice {
                 }
             }
         }
+        publish_audio_devices(state, self.mic.as_ref(), &self.playback);
         self.refresh_device_error(state);
     }
 
@@ -2762,6 +2763,24 @@ enum MicBackend {
     },
 }
 
+fn publish_audio_devices(
+    mut state: Signal<AppState>,
+    mic: Option<&MicCapture>,
+    playback: &PlaybackMixer,
+) {
+    let input = mic.and_then(|mic| match &mic._backend {
+        #[cfg(target_os = "windows")]
+        MicBackend::Raw { _capture } => Some(_capture.device_name.clone()),
+        _ => mic.device_name.clone(),
+    });
+    let output = playback.device_name().map(str::to_owned);
+    if state.peek().active_input_device != input || state.peek().active_output_device != output {
+        let mut current = state.write();
+        current.active_input_device = input;
+        current.active_output_device = output;
+    }
+}
+
 impl MicCapture {
     fn start(
         frame_tx: crate::audio_queue::AudioSender<f32>,
@@ -2774,6 +2793,7 @@ impl MicCapture {
         let frames_pushed = Arc::new(AtomicU64::new(0));
         let selected = state.read().selected_input_device.clone();
         state.write().mic_bypass_error = None;
+        state.write().active_input_device = None;
 
         let (backend, device_name) = match Self::maybe_raw(
             &frame_tx,
@@ -2793,6 +2813,9 @@ impl MicCapture {
             }
         };
 
+        if let Some(name) = &device_name {
+            state.write().active_input_device = Some(name.clone());
+        }
         let heartbeat = Self::spawn_heartbeat(raw_peak, frames_pushed, gate_stats);
         Ok(Self {
             _backend: backend,
@@ -2859,7 +2882,10 @@ impl MicCapture {
         });
 
         match crate::rawmic::Capture::start(selected.clone(), fatal_tx, sink) {
-            Ok(capture) => Some(MicBackend::Raw { _capture: capture }),
+            Ok(capture) => {
+                state.write().active_input_device = Some(capture.device_name.clone());
+                Some(MicBackend::Raw { _capture: capture })
+            }
             Err(e) => {
                 eprintln!("[voice] mic: raw capture unavailable ({e}); using the ordinary path");
                 state.write().mic_bypass_error = Some(e);
@@ -3512,6 +3538,7 @@ impl PlaybackMixer {
         faults: &UnboundedSender<AudioFault>,
     ) -> Result<(), String> {
         let host = cpal::default_host();
+        state.write().active_output_device = None;
         let selected = state.read().selected_output_device.clone();
         let device = pick_device(
             selected.as_deref(),
@@ -3650,6 +3677,7 @@ impl PlaybackMixer {
         self.handle
             .device_rate
             .store(device_rate, Ordering::Relaxed);
+        state.write().active_output_device = Some(device_name.clone());
         self.device_name = Some(device_name);
         self.stream = Some(stream);
         Ok(())

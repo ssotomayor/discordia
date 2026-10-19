@@ -9,14 +9,12 @@
 
 use dioxus::prelude::*;
 
-use crate::features::voice::use_voice_tx;
-use crate::state::{VoicePhase, use_app_state};
+use crate::state::use_app_state;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
     Audio,
-    Mic,
     Video,
     Activity,
     Diagnostics,
@@ -34,14 +32,8 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
     (
         "Voice",
         SettingsTab::Audio,
-        "Audio",
+        "Voice and audio",
         crate::features::icons::SPEAKER,
-    ),
-    (
-        "",
-        SettingsTab::Mic,
-        "Microphone",
-        crate::features::icons::MIC,
     ),
     (
         "Picture",
@@ -66,10 +58,8 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
 #[component]
 pub fn SettingsDialog() -> Element {
     let mut state = use_app_state();
-    let voice = use_voice_tx();
     let gw_camera = crate::state::use_gateway();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let persist_settings = move |_: FormEvent| crate::settings::save(&settings.read());
 
     let mut show_stats = use_signal(|| false);
     let mut settings_tab = use_signal(|| SettingsTab::Audio);
@@ -79,20 +69,6 @@ pub fn SettingsDialog() -> Element {
     }
 
     let selected_camera_id = settings.read().camera_device_id.clone();
-    let v_for_output_change = voice.clone();
-
-    let voice_phase = state.read().voice.phase;
-    let dm_phase = state.read().dm_call.as_ref().map(|call| call.phase);
-    let reconnecting = voice_phase == VoicePhase::Connecting
-        || matches!(
-            dm_phase,
-            Some(
-                crate::features::dm_call::Phase::Connecting
-                    | crate::features::dm_call::Phase::Reconnecting
-            )
-        );
-    let available_output_devices = state.read().available_output_devices.clone();
-    let selected_output_device = state.read().selected_output_device.clone();
     let available_cameras = state.read().available_cameras.clone();
 
     let screenshare_quality = settings.read().screenshare_quality.clone();
@@ -146,6 +122,7 @@ pub fn SettingsDialog() -> Element {
                                             button {
                                                 class: "{cls}",
                                                 aria_label: "{label}",
+                                                aria_current: if selected { Some("page") } else { None },
                                                 onclick: move |_| settings_tab.set(t),
                                                 if selected {
                                                     span {
@@ -167,82 +144,6 @@ pub fn SettingsDialog() -> Element {
                             div { class: "mt-4", crate::i18n::LanguageSelector {} }
                         }
                         if settings_tab() == SettingsTab::Audio {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Audio", &[])} }
-                        p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            {crate::i18n::text("Choose your output device and adjust app sounds and soundboard volume independently.", &[])}
-                        }
-                        div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Output", &[])} }
-                            select {
-                                class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
-                                style: "color: var(--text); background: var(--panel-solid);",
-                                disabled: "{reconnecting}",
-                                aria_label: crate::i18n::text("Output", &[]),
-                                value: selected_output_device.clone().unwrap_or_default(),
-                                onchange: move |e| {
-                                    let val = e.value();
-                                    let val_cloned = val.clone();
-                                    let mut next = settings.read().clone();
-                                    if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
-                                    let mic = (next.selected_output_device != settings.peek().selected_output_device)
-                                        .then(|| crate::mic_profile::Config::from_state(&state.peek()).for_new_output());
-                                    if let Some(config) = mic { config.apply_settings(&mut next); }
-                                    settings.set(next.clone());
-                                    crate::settings::save(&next);
-
-                                    let mut s = state.write();
-                                    s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
-                                    let v = v_for_output_change.clone();
-                                    if let Some(config) = mic { config.apply_state(&mut s); v.send(crate::features::voice::VoiceCmd::ApplyMicrophone { config }); }
-                                    v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
-                                },
-                                option { value: "", {crate::i18n::text("System default", &[])} }
-                                for dev in available_output_devices.iter() {
-                                    option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
-                                }
-                            }
-                        }
-                        div { class: "mt-4 mb-3 rounded-lg border border-[var(--border)] p-3",
-                            span { class: "text-[12px] font-semibold text-[var(--text)]", {crate::i18n::text("App sounds", &[])} }
-                            p { class: "mt-1 text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Messages, incoming and outgoing calls, and interface notifications.", &[])} }
-                            div { class: "flex items-center gap-2 mt-1",
-                                input {
-                                    r#type: "range",
-                                    min: "0",
-                                    max: "100",
-                                    value: "{settings.read().sfx_volume}",
-                                    class: "flex-1 accent-[var(--accent)]",
-                                    title: crate::i18n::text("App sounds volume", &[]),
-                                    aria_label: crate::i18n::text("App sounds volume", &[]),
-                                    oninput: move |e| {
-                                        let val: u8 = e.value().parse().unwrap_or(70).min(100);
-                                        let mut next = settings.read().clone();
-                                        next.sfx_volume = val;
-                                        settings.set(next);
-                                    },
-                                    onchange: persist_settings,
-                                }
-                                span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
-                            }
-                            button {
-                                class: "mt-2 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)]",
-                                onclick: move |_| {
-                                    let saved = settings.read();
-                                    crate::native_sounds::configure(saved.sfx_volume, saved.selected_output_device.clone());
-                                    crate::native_sounds::play("call-connected");
-                                },
-                                {crate::i18n::text("Test app sound", &[])}
-                            }
-                        }
-                        div { class: "mb-3 rounded-lg border border-[var(--border)] p-3",
-                            span { class: "text-[12px] font-semibold text-[var(--text)]", {crate::i18n::text("Soundboard volume", &[])} }
-                            div { class: "mt-1", crate::features::soundboard::SoundboardVolume {} }
-                            div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
-                                {crate::i18n::text("Soundboard playback only. App notifications and call sounds use the separate control above. Muting someone also mutes their soundboard.", &[])}
-                            }
-                        }
-                        }
-                        if settings_tab() == SettingsTab::Mic {
                             super::settings_microphone::MicrophoneSettings {}
                         }
                         if settings_tab() == SettingsTab::Video {

@@ -203,6 +203,7 @@ impl Audio {
                 }
             }
         }
+        publish_audio_devices(state, self.mic.as_ref(), &self.playback);
     }
 }
 

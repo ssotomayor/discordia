@@ -58,7 +58,7 @@ impl MicrophoneTest {
         })
     }
 
-    fn update(&mut self, state: &AppState) -> Result<(u32, bool), String> {
+    fn update(&mut self, state: &AppState) -> Result<(u32, bool, u32, u32), String> {
         if self.faults.try_recv().is_ok() {
             return Err(
                 "The microphone test stopped because an audio device became unavailable.".into(),
@@ -73,6 +73,11 @@ impl MicrophoneTest {
                 .swap(0, Ordering::Relaxed)
                 .clamp(0, 1000) as u32,
             self.meter.open.load(Ordering::Relaxed),
+            self.meter
+                .peak_pre
+                .swap(0, Ordering::Relaxed)
+                .clamp(0, 1000) as u32,
+            self.meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32,
         ))
     }
 }

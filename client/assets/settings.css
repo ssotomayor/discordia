@@ -1,7 +1,7 @@
-.dxf-settings { width: 920px; height: 660px; max-width: 100%; max-height: 100%; }
+.dxf-settings { width: 1080px; height: 800px; max-width: 100%; max-height: 100%; }
 .dxf-settings-nav { width: 184px; }
-.dxf-settings-content { padding: 24px; font-size: 13px; line-height: 1.5; }
-.dxf-settings-content h3 { font-size: 20px; font-weight: 700; color: var(--text); }
+.dxf-settings-content { padding: 20px 28px; font-size: 14px; line-height: 1.5; }
+.dxf-settings-content h3 { font-size: 26px; font-weight: 700; color: var(--text); }
 .dxf-settings-content [class*="text-[9px]"] { font-size: 10px; }
 .dxf-settings-content [class*="text-[10px]"], .dxf-settings-content [class*="text-[11px]"] { font-size: 12px; line-height: 1.5; }
 .dxf-settings-content select { min-height: 38px; border-radius: 8px; max-width: 100%; }
@@ -13,14 +13,64 @@
 .dxf-settings-content :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .dxf-settings-content fieldset:disabled { opacity: .6; }
 .dxf-mic-profiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
-.dxf-mic-profile { padding: 10px 6px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 12px; line-height: 1.3; }
+.dxf-mic-profile { padding: 9px 6px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); font-size: 14px; line-height: 1.3; }
 .dxf-mic-profile[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
 .dxf-mic-profile:hover { border-color: var(--accent); }
-.dxf-mic-advanced { border-top: 1px solid var(--border); padding-top: 14px; }
-.dxf-mic-advanced summary { cursor: pointer; color: var(--text-muted); font-size: 13px; padding-bottom: 12px; }
+.dxf-mic-advanced, .dxf-audio-sounds { border: 1px solid var(--border); border-radius: 9px; margin-top: 16px; padding: 14px 16px; }
+.dxf-mic-advanced summary, .dxf-audio-sounds summary { cursor: pointer; color: var(--text); font-size: 14px; font-weight: 500; }
 .dxf-settings-control { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 12px 0; color: var(--text-muted); }
 .dxf-settings-control output { font-size: 12px; color: var(--text-dim); }
 .dxf-settings-control input { grid-column: 1 / -1; width: 100%; }
 .dxf-settings-check { display: flex; align-items: center; gap: 10px; min-height: 38px; color: var(--text-muted); cursor: pointer; }
 @media (max-width: 720px) { .dxf-settings-nav { width: 150px; } .dxf-settings-content { padding: 16px; } .dxf-mic-profiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 480px) { .dxf-settings-nav { width: 116px; } .dxf-settings-nav button { height: auto; min-height: 40px; font-size: 12px; } .dxf-settings-content { padding: 12px; } }
+
+.dxf-mic-device-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.dxf-mic-device-note { font-size: 12px; color: var(--text-dim); margin: 6px 0; }
+.dxf-mic-device-grid > div { min-width: 0; }
+.dxf-device-label { display: block; font-size: 14px; font-weight: 500; color: var(--text); }
+.dxf-mic-check { --mic-status-color: var(--text-dim); min-height: 226px; margin-bottom: 16px; padding: 18px; border: 1px solid color-mix(in srgb, var(--text) 25%, var(--border)); border-radius: 10px; background-color: var(--panel2); }
+.dxf-mic-check[data-tone="good"] { --mic-status-color: #72c986; }
+.dxf-mic-check[data-tone="warning"] { --mic-status-color: var(--accent); }
+.dxf-mic-status { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.dxf-mic-status h4 { font-size: 24px; font-weight: 600; line-height: 1.3; color: var(--text); margin: 0; }
+.dxf-mic-status-dot { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: var(--panel-solid); border-radius: 50%; background-color: var(--mic-status-color); flex-shrink: 0; }
+.dxf-mic-status-dot svg { width: 20px; height: 20px; }
+.dxf-mic-check[data-tone="warning"] h4 { color: var(--mic-status-color); }
+.dxf-mic-status-detail { color: var(--text-muted); font-size: 14px; line-height: 1.5; min-height: 42px; margin: 6px 0 0; }
+.dxf-mic-meter { position: relative; height: 15px; border-radius: 4px; overflow: visible; background-image: linear-gradient(to right, #72c986 0%, #72c986 70%, #e7b85b 88%, #e27b74 100%); margin: 10px 0 16px; }
+.dxf-mic-meter-fill { height: 100%; margin-left: auto; background-color: color-mix(in srgb, var(--text) 13%, var(--panel2)); transition: width 100ms linear; }
+.dxf-mic-meter-segments { position: absolute; inset: 0; background-image: repeating-linear-gradient(to right, transparent 0, transparent calc(3.3333% - 3px), var(--panel2) calc(3.3333% - 3px), var(--panel2) 3.3333%); }
+.dxf-mic-meter-marker { position: absolute; top: -4px; bottom: -4px; width: 3px; transform: translateX(-3px); background-color: var(--text); }
+.dxf-mic-check[data-active="false"] .dxf-mic-meter { opacity: .5; }
+.dxf-mic-help-action { margin-bottom: 8px; padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--accent); font-size: 12px; }
+.dxf-mic-private-note { flex: 1; min-width: 180px; margin: 0; font-size: 12px; color: var(--text-dim); }
+.dxf-mic-eyebrow { color: var(--text-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.dxf-mic-test-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+.dxf-mic-main-controls { display: grid; gap: 14px; }
+.dxf-mic-volume-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(120px, 1fr) 48px; align-items: center; gap: 12px; }
+.dxf-mic-volume-row label { font-weight: 600; color: var(--text); }
+.dxf-mic-volume-row p { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.dxf-mic-volume-row input { grid-column: 2; grid-row: 1; width: 100%; }
+.dxf-mic-volume-row output { grid-column: 3; grid-row: 1; text-align: right; color: var(--text); }
+.dxf-voice-quality-row { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 18px; }
+.dxf-voice-quality-row select { margin-top: 0; }
+.dxf-voice-quality select { font-weight: 400; }
+.dxf-mic-test-button, .dxf-mic-adjust-button { padding: 10px 18px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-weight: 500; color: var(--text); }
+.dxf-mic-test-button { border-color: var(--text-dim); }
+.dxf-mic-adjust-button { background-color: var(--accent); border-color: var(--accent); color: #17130c; }
+.dxf-mic-test-button:disabled, .dxf-mic-adjust-button:disabled { opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .dxf-mic-meter-fill { transition: none; } }
+
+@media (max-width: 720px) { .dxf-mic-device-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
+@media (max-width: 720px) { .dxf-mic-main-controls { grid-template-columns: minmax(0, 1fr); gap: 16px; } .dxf-mic-test-actions { justify-content: flex-start; } .dxf-mic-private-note { flex-basis: 100%; } }
+.dxf-mic-profile-description { color: var(--text-dim); font-size: 12px; line-height: 1.5; margin-top: 6px; }
+.dxf-mic-advanced > label:first-of-type { margin: 12px 0; }
+.dxf-audio-sounds-note { font-size: 12px; color: var(--text-muted); margin: 4px 0 12px; }
+.dxf-audio-sound-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.2fr); align-items: center; gap: 18px; margin: 7px 0; color: var(--text); }
+.dxf-audio-sound-row input { width: 100%; }
+.dxf-audio-sound-row output { min-width: 36px; text-align: right; font-size: 12px; }
+.dxf-audio-preview-sound { color: var(--text-muted); font-size: 12px; text-decoration: underline; margin-top: 4px; }
+.dxf-settings-nav button[aria-current="page"] { background-color: var(--accent); color: #17130c; }
+.dxf-settings-nav button[aria-current="page"] > span:first-child { display: none; }
+@media (max-width: 720px) { .dxf-mic-volume-row { grid-template-columns: minmax(0, 1fr) 48px; } .dxf-mic-volume-row > div { grid-column: 1 / -1; } .dxf-mic-volume-row input { grid-row: 2; grid-column: 1; } .dxf-mic-volume-row output { grid-row: 2; grid-column: 2; } .dxf-audio-sound-row { grid-template-columns: minmax(0, 1fr); gap: 3px; } .dxf-voice-quality-row { grid-template-columns: minmax(0, 1fr); gap: 6px; } }

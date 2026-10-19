@@ -1,4 +1,5 @@
 use super::*;
+use crate::features::settings_mic_status::{Levels, Status};
 use crate::mic_profile::{Calibration, Config, Context};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -163,7 +164,10 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
     let voice = use_voice_tx();
     let mut mode = use_signal(Mode::default);
     let mut elapsed = use_signal(|| 0_u64);
-    let mut level = use_signal(|| (0_u32, false));
+    let mut level = use_signal(|| (0_u32, false, 0_u32, 0_u32));
+    let mut status = use_signal(Status::default);
+    let gateway = crate::state::use_gateway();
+    use_drop(move || state.write().mic_test_active = false);
     let mut error = use_signal(|| None::<String>);
     let mut prepared = use_signal(|| None::<Arc<Prepared>>);
     use_future(move || async move {
@@ -173,6 +177,8 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
         let mut player: Option<Player> = None;
         let mut playing = Mode::Idle;
         let mut context_checked = Instant::now();
+        let mut feedback = Levels::default();
+        let mut feedback_context = None;
         loop {
             if (!state.peek().audio_settings || in_call(&state.peek()))
                 && *mode.peek() != Mode::Idle
@@ -262,12 +268,84 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 error.set(Some(message));
                 mode.set(Mode::Idle);
             }
+            let monitoring = monitor.is_some() && *mode.peek() == Mode::Monitor;
+            let capturing = monitoring || recording.is_some();
+            if state.peek().mic_test_active != capturing {
+                state.write().mic_test_active = capturing;
+            }
+            let current = state.peek();
+            let connected = current.voice.phase == VoicePhase::Connected
+                || current
+                    .dm_call
+                    .as_ref()
+                    .is_some_and(|c| c.phase == crate::features::dm_call::Phase::Connected);
+            let context = (
+                devices(&current),
+                Config::from_state(&current),
+                monitoring,
+                connected,
+            );
+            if feedback_context.as_ref() != Some(&context) {
+                feedback = Levels::default();
+                feedback_context = Some(context);
+            }
+            let next = if (monitoring || connected) && current.mic_volume == 0 {
+                Status::ZeroVolume
+            } else if connected && current.voice.deafened {
+                Status::Deafened
+            } else if connected && current.voice.muted {
+                Status::Muted
+            } else if error.peek().is_some()
+                || (connected
+                    && (current.active_input_device.is_none()
+                        || current
+                            .dm_call
+                            .as_ref()
+                            .is_some_and(|c| c.microphone_error.is_some())))
+            {
+                Status::Unavailable
+            } else if monitoring {
+                feedback.sample(
+                    Instant::now(),
+                    level.peek().2,
+                    if level.peek().1 { level.peek().3 } else { 0 },
+                )
+            } else if connected {
+                feedback.sample(
+                    Instant::now(),
+                    current.mic_level_pre,
+                    if current.voice.speaking {
+                        current.mic_level
+                    } else {
+                        0
+                    },
+                )
+            } else {
+                Status::Idle
+            };
+            drop(current);
+            if *status.peek() != next {
+                status.set(next);
+            }
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
     });
     let busy = in_call(&state.read());
     let selected = mode();
     let adjusting = !matches!(selected, Mode::Idle | Mode::Monitor);
+    let meter_level = if (!busy && selected != Mode::Monitor)
+        || matches!(
+            status(),
+            Status::Muted | Status::Deafened | Status::Unavailable
+        ) {
+        0
+    } else if selected == Mode::Monitor {
+        peak_to_meter_pct(level().3)
+    } else {
+        peak_to_meter_pct(state.read().mic_level)
+    };
+    let hidden_meter = 100 - meter_level;
+    let status_voice = voice.clone();
     let progress = elapsed().min(calibration::SECONDS);
     let instruction = if progress < 3 {
         "Stay quiet while we measure the room."
@@ -279,19 +357,25 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
         "Stay quiet again."
     };
     rsx! {
-        section { class: "mb-4 rounded-lg border border-[var(--border)] p-3",
-            div { class: "flex items-center justify-between gap-2 flex-wrap",
-                span { class: "text-[13px] font-semibold text-[var(--text)]", {crate::i18n::text("Test and adjust", &[])} }
-                div { class: "flex gap-2",
-                    button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)] disabled:opacity-60", disabled: busy || adjusting,
-                        onclick: move |_| { error.set(None); mode.set(if mode() == Mode::Monitor { Mode::Idle } else { Mode::Monitor }); },
-                        if selected == Mode::Monitor { {crate::i18n::text("Stop test", &[])} } else { {crate::i18n::text("Test microphone", &[])} }
+        section { class: "dxf-mic-check",
+            "data-active": selected == Mode::Monitor || busy,
+            "data-tone": status().tone(),
+            div { class: "dxf-mic-eyebrow", {crate::i18n::text(if busy { "Call microphone" } else if selected == Mode::Monitor { "Local test in progress" } else { "Test and adjust" }, &[])} }
+            if !adjusting {
+                div { class: "dxf-mic-status", role: "status", "aria-live": "polite",
+                    span { class: "dxf-mic-status-dot", "aria-hidden": "true",
+                        if status().tone() == "warning" { "!" }
+                        else if matches!(status(), Status::Muted | Status::Deafened) { span { dangerous_inner_html: crate::features::icons::MIC_OFF } }
                     }
-                    button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)] disabled:opacity-60", disabled: busy || adjusting,
-                        onclick: move |_| { error.set(None); mode.set(Mode::Record); },
-                        {crate::i18n::text("Adjust my microphone", &[])}
-                    }
+                    h4 { {crate::i18n::label(status().title())} }
                 }
+                p { class: "dxf-mic-status-detail", {crate::i18n::label(status().detail())} }
+                    div { class: "dxf-mic-meter", role: "meter", aria_label: crate::i18n::text("Microphone level", &[]), "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": meter_level,
+                        div { class: "dxf-mic-meter-fill", style: "width: {hidden_meter}%;" }
+                        div { class: "dxf-mic-meter-segments", "aria-hidden": "true" }
+                        if meter_level > 0 { div { class: "dxf-mic-meter-marker", style: "left: {meter_level}%;", "aria-hidden": "true" } }
+                    }
+
             }
             if busy { p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Leave your voice call to test the microphone.", &[])} } }
             else if selected == Mode::Record {
@@ -329,16 +413,37 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                     if matches!(selected, Mode::Before | Mode::After) { {crate::i18n::text("Playing your sample. Tap the same button to stop.", &[])} }
                     else { {crate::i18n::text("Compare both samples before applying. Listen for clear, steady speech.", &[])} }
                 }
-            } else if selected == Mode::Monitor {
-                div { class: "w-full h-2 mt-2 rounded-full overflow-hidden", style: "background-color: var(--bg2);",
-                    div { class: "h-full rounded-full", style: "width: {peak_to_meter_pct(level().0)}%; background-color: var(--accent);" }
-                }
-                p { class: "mt-1 text-[11px] text-[var(--text-dim)]", role: "status",
-                    if level().1 { {crate::i18n::text("Playing your voice back", &[])} } else { {crate::i18n::text("Below threshold — not transmitting", &[])} }
-                }
-            } else {
-                p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Use headphones for playback. Adjustment takes 15 seconds, stays on this PC and changes nothing until you apply it.", &[])} }
             }
+                div { class: "dxf-mic-test-actions",
+                    if !adjusting && !busy {
+                        p { class: "dxf-mic-private-note", {crate::i18n::text(if selected == Mode::Monitor { "Only you hear this test. Use headphones to avoid feedback." } else { "Only you hear the test. The 15-second adjustment applies after you confirm." }, &[])} }
+                    }
+                    button { class: "dxf-mic-test-button", disabled: busy || adjusting,
+                        onclick: move |_| { error.set(None); mode.set(if mode() == Mode::Monitor { Mode::Idle } else { Mode::Monitor }); },
+                        if selected == Mode::Monitor { {crate::i18n::text("Stop test", &[])} } else { {crate::i18n::text("Test microphone", &[])} }
+                    }
+                if !adjusting && status().action().is_some() {
+                if let Some(action) = status().action() {
+                    button { class: "dxf-mic-adjust-button", r#type: "button", onclick: move |_| {
+                        match status() {
+                            Status::Muted | Status::Deafened => {
+                                { let mut s = state.write(); s.voice.muted = false; s.voice.deafened = false; }
+                                gateway.send(crate::protocol::ClientMessage::SetVoiceMute { muted: false, deafened: false });
+                                status_voice.send(VoiceCmd::SetDeafen { deafened: false });
+                                status_voice.send(VoiceCmd::SetMute { muted: false });
+                            }
+                            Status::ZeroVolume | Status::OutputHigh => { let _ = document::eval("document.getElementById('mic-volume')?.scrollIntoView({block:'center'}); document.getElementById('mic-volume')?.focus();"); }
+                            _ => { let _ = document::eval("document.getElementById('mic-input')?.scrollIntoView({block:'center'}); document.getElementById('mic-input')?.focus();"); }
+                        }
+                    }, {crate::i18n::label(action)} }
+                }
+                } else {
+                    button { class: "dxf-mic-adjust-button", disabled: busy || adjusting,
+                        onclick: move |_| { error.set(None); mode.set(Mode::Record); },
+                        {crate::i18n::text("Adjust my microphone", &[])}
+                    }
+                }
+                }
             if adjusting { button { class: "mt-2 rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text-muted)]", onclick: move |_| mode.set(Mode::Idle), {crate::i18n::text("Keep my settings", &[])} } }
             if let Some(message) = error() { p { class: "mt-2 text-[12px]", style: "color: var(--danger);", role: "alert", {crate::i18n::message(&message)} } }
         }
