@@ -125,7 +125,9 @@ Candidate suppression values are experimental, not equivalents of Discord/Krisp 
 Natural retains resampling, mono voice transport and an overload limiter; the UI
 must describe those limits rather than promise lossless studio capture. Existing
 external suppression favors Natural or a low-processing recommendation.
-Manual changes switch to Personalizado. A profile click must not overwrite mute,
+Manual changes switch to Personalizado. Leaving it snapshots the manual DSP/volume
+configuration separately from the active preset; returning restores that snapshot,
+including after a restart. Legacy Custom values are captured on the first switch. A profile click must not overwrite mute,
 deafen, input/output selection, network bitrate, or camera settings.
 
 ## Implementation sequence and acceptance
