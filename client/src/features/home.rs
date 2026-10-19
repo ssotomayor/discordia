@@ -156,6 +156,7 @@ fn TopBar(
                     span { class: "dxf-display dxf-wordmark text-[17px] font-semibold tracking-tight hidden min-[900px]:inline",
                         {crate::i18n::text("Discordia", &[])}
                     }
+                    span { class: "text-xs text-[var(--text-dim)]", {crate::version::VERSION} }
                 }
                 span {
                     class: "flex items-center gap-2 shrink-0 pl-2.5 pr-3 py-1.5 rounded-full border",
