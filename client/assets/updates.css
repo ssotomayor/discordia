@@ -1,9 +1,7 @@
 .dxf-update-banner{position:relative;z-index:40;flex-shrink:0;display:flex;align-items:center;gap:16px;margin:10px 14px 0;padding:14px 18px;border:1px solid var(--accent);border-radius:12px;background-color:color-mix(in srgb,var(--accent) 12%,var(--panel-solid));color:var(--text)}
-.dxf-update-icon{display:grid;place-items:center;width:44px;height:44px;flex-shrink:0;border-radius:12px;background-color:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
-.dxf-update-icon[data-state="success"]{color:var(--success);background-color:color-mix(in srgb,var(--success) 12%,transparent)}
-.dxf-update-icon[data-state="error"]{color:var(--danger);background-color:color-mix(in srgb,var(--danger) 12%,transparent)}
-.dxf-update-icon[data-state="local"]{color:var(--text-muted);background-color:var(--bg)}
-.dxf-update-icon svg{display:block;width:24px;height:24px}.dxf-update-icon[data-state="busy"] svg{animation:dxf-update-spin 2s linear infinite}
+.dxf-update-icon{display:grid;place-items:center;width:48px;height:48px;flex-shrink:0;border-radius:50%;background-color:var(--accent);color:#17130c}
+.dxf-update-icon[data-state="error"]{background-color:var(--danger)}
+.dxf-update-icon svg{display:block;width:26px;height:26px}.dxf-update-icon[data-state="busy"] svg{animation:dxf-update-spin 2s linear infinite}
 @keyframes dxf-update-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.dxf-update-icon[data-state="busy"] svg{animation:none}}
 .dxf-update-banner-copy{flex:1;min-width:0}.dxf-update-banner strong{font-size:16px}.dxf-update-banner p{font-size:13px;color:var(--text-muted);margin-top:3px}
