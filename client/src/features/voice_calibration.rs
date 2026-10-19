@@ -118,7 +118,7 @@ fn render(
         if cancel.load(Ordering::Relaxed) {
             return Err("Microphone adjustment cancelled.".into());
         }
-        let processed = processor.process(frame.samples, config, 0, false)?;
+        let processed = processor.process(frame.samples, config, 0, false);
         metrics.push(
             frame.at,
             if processed.action == GateAction::Drop {

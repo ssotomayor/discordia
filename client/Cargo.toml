@@ -81,6 +81,7 @@ zeroize = "1"
 unicode-segmentation = "1.13.3"
 rfd = { version = "0.17", default-features = false }
 arboard = { version = "3", default-features = false, features = ["image-data"] }
+nnnoiseless = { version = "0.5.2", default-features = false }
 
 [features]
 default = ["desktop"]

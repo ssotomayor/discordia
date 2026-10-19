@@ -92,6 +92,20 @@ opt-level = 3
 [profile.dev.package.salsa20]
 opt-level = 3
 
+# The denoiser's CPU guard times every hop; unoptimised RNNoise would trip it
+# in dev builds and fall back for reasons no release build has.
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+
+[profile.dev.package.easyfft]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
 [profile.release-lto]
 inherits = "release"
 lto = "thin"

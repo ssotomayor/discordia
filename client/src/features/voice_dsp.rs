@@ -4,6 +4,7 @@ use crate::mic_profile::Config;
 pub(super) struct Processor {
     denoiser: Option<crate::denoise::Denoiser>,
     suppression: Option<u32>,
+    vad: crate::denoise::Vad,
     agc: Option<crate::agc::Agc>,
     agc_error_reported: bool,
     gate: GateState,
@@ -18,6 +19,9 @@ pub(super) struct Processed {
     pub peak: i32,
     pub action: GateAction,
     pub model_loaded: bool,
+    pub engine: Option<crate::denoise::Engine>,
+    pub speech: f32,
+    pub lsnr_db: Option<f32>,
     pub echoed_dbfs: f32,
     pub denoised_dbfs: f32,
     pub agc_gain_db: f32,
@@ -28,6 +32,7 @@ impl Processor {
         Self {
             denoiser: None,
             suppression: None,
+            vad: crate::denoise::Vad::new(),
             agc: None,
             agc_error_reported: false,
             gate: GateState::default(),
@@ -46,7 +51,7 @@ impl Processor {
         config: Config,
         delay: i32,
         muted: bool,
-    ) -> Result<Processed, String> {
+    ) -> Processed {
         self.echo
             .configure(config.processing.echo, config.processing.high_pass);
         if let Err(error) = self.echo.process(&mut samples, delay)
@@ -59,31 +64,34 @@ impl Processor {
         let echoed_dbfs = crate::voice_record::rms_dbfs(&samples);
         if muted {
             self.gate.silence();
-            return Ok(Processed {
+            return Processed {
                 samples,
                 pre,
                 gate_peak: pre,
                 peak: pre,
                 action: GateAction::Drop,
                 model_loaded: false,
+                engine: None,
+                speech: 0.0,
+                lsnr_db: None,
                 echoed_dbfs,
                 denoised_dbfs: echoed_dbfs,
                 agc_gain_db: 0.0,
-            });
+            };
         }
+        let speech = self.vad.speech(&samples);
         let mut model_loaded = false;
+        let mut lsnr_db = None;
         if config.denoise {
-            if self.denoiser.is_none() {
-                self.denoiser = Some(crate::denoise::Denoiser::new()?);
+            let denoiser = self.denoiser.get_or_insert_with(|| {
                 model_loaded = true;
+                crate::denoise::Denoiser::new()
+            });
+            if self.suppression != Some(config.suppression) {
+                denoiser.set_atten_lim(config.suppression as f32);
+                self.suppression = Some(config.suppression);
             }
-            if let Some(denoiser) = &mut self.denoiser {
-                if self.suppression != Some(config.suppression) {
-                    denoiser.set_atten_lim(config.suppression as f32);
-                    self.suppression = Some(config.suppression);
-                }
-                denoiser.process_hop(&mut samples);
-            }
+            lsnr_db = denoiser.process_hop(&mut samples).lsnr_db;
         } else {
             self.denoiser = None;
             self.suppression = None;
@@ -121,17 +129,23 @@ impl Processor {
             GateAction::RampOut => ramp(&mut samples, false),
             _ => {}
         }
-        Ok(Processed {
+        Processed {
             samples,
             pre,
             gate_peak,
             peak,
             action,
             model_loaded,
+            engine: self
+                .denoiser
+                .as_ref()
+                .and_then(crate::denoise::Denoiser::engine),
+            speech,
+            lsnr_db,
             echoed_dbfs,
             denoised_dbfs,
             agc_gain_db: self.agc.as_ref().map_or(0.0, crate::agc::Agc::gain_db),
-        })
+        }
     }
 }
 
@@ -148,9 +162,7 @@ mod tests {
         let mut config = config.preset(crate::mic_profile::Profile::Natural);
         for volume in [50, 100, 200] {
             config.volume = volume;
-            let normal = processor
-                .process([0.05; FRAME_SAMPLES], config, 0, false)
-                .unwrap();
+            let normal = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
             let expected = 0.05 * f32::from(volume) / 100.0;
             assert!(
                 normal
@@ -161,7 +173,7 @@ mod tests {
             let mut peak = [0.1; FRAME_SAMPLES];
             peak[0] = 0.9;
             peak[1] = -0.45;
-            let limited = processor.process(peak, config, 0, false).unwrap();
+            let limited = processor.process(peak, config, 0, false);
             assert!(
                 limited
                     .samples
@@ -169,9 +181,7 @@ mod tests {
                     .all(|sample| sample.abs() <= 0.980_001)
             );
             assert!((limited.samples[0] / limited.samples[1] + 2.0).abs() < 1e-6);
-            let after = processor
-                .process([0.05; FRAME_SAMPLES], config, 0, false)
-                .unwrap();
+            let after = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
             assert!(
                 after
                     .samples
@@ -191,9 +201,7 @@ mod tests {
         for _ in 0..2 {
             let (_, reference) = crate::audio_queue::channel();
             let mut processor = Processor::new(reference);
-            let output = processor
-                .process([0.9; FRAME_SAMPLES], config, 0, false)
-                .unwrap();
+            let output = processor.process([0.9; FRAME_SAMPLES], config, 0, false);
             assert!((output.samples[0] - 0.98).abs() < 1e-6);
             processed.push(output.samples);
         }
@@ -242,17 +250,17 @@ mod tests {
         let mut config = config.preset(crate::mic_profile::Profile::Natural);
         let samples = std::array::from_fn(|i| if i % 2 == 0 { 0.0003 } else { -0.0003 });
         for _ in 0..500 {
-            let result = processor.process(samples, config, 0, false).unwrap();
+            let result = processor.process(samples, config, 0, false);
             assert_eq!(result.samples, samples);
             assert_eq!(result.action, GateAction::Pass);
         }
         assert_eq!(
-            processor.process(samples, config, 0, true).unwrap().action,
+            processor.process(samples, config, 0, true).action,
             GateAction::Drop
         );
         config.volume = 0;
         assert_eq!(
-            processor.process(samples, config, 0, false).unwrap().action,
+            processor.process(samples, config, 0, false).action,
             GateAction::Drop
         );
     }

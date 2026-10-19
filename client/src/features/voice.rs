@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -78,6 +78,9 @@ const GATE_CLOSE_RATIO_PCT: i32 = 50;
 const GATE_ENVELOPE_DECAY_PCT: i32 = 75;
 
 const GATE_RAMP_SAMPLES: usize = 120;
+
+/// Krisp VAD's activation threshold in Discord (`vadKrispActivationThreshold`).
+const SPEECH_PROBABILITY: f32 = 0.5;
 
 const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -189,6 +192,9 @@ struct GateStats {
     peak_after: AtomicI32,
     threshold: AtomicI32,
     atten_lim_applied: AtomicU32,
+    /// 0 off, 1 DeepFilterNet, 2 RNNoise.
+    engine: AtomicU8,
+    speaking: AtomicU64,
 }
 
 pub const DENOISE_ATTEN_LIM_DB_MIN: u32 = 6;
@@ -2298,33 +2304,25 @@ fn denoise_gate_loop(
     let mut sent_wav = crate::voice_record::Wav::new("mic-sent", SAMPLE_RATE);
     let mut dsp_csv = crate::voice_record::Csv::new(
         "mic-dsp",
-        "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,sent_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms",
+        "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,sent_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db",
     );
     while let Some(packet) = frame_rx.blocking_recv() {
         if !packet.is_fresh() {
             processor.silence();
             raw_wav.write(&packet.samples);
             sent_wav.write(&[0.0; FRAME_SAMPLES]);
-            dsp_csv.row(|| "-120,-120,-120,0,-120,Stale,,,,,,".into());
+            dsp_csv.row(|| "-120,-120,-120,0,-120,Stale,,,,,,,,,".into());
             continue;
         }
         raw_wav.write(&packet.samples);
         let config = controls.mic_config();
         let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
-        let result = processor.process(
+        let processed = processor.process(
             packet.samples,
             config,
             50 + packet.captured.elapsed().as_millis().min(450) as i32,
             muted.load(Ordering::Relaxed),
         );
-        let processed = match result {
-            Ok(processed) => processed,
-            Err(error) => {
-                tracing::warn!(%error, "microphone processing unavailable; disabling noise reduction");
-                controls.denoise.store(false, Ordering::Relaxed);
-                continue;
-            }
-        };
         if processed.model_loaded {
             while frame_rx.try_recv().is_ok() {}
         }
@@ -2340,13 +2338,24 @@ fn denoise_gate_loop(
             .threshold
             .store(config.threshold as i32, Ordering::Relaxed);
         stats.atten_lim_applied.store(
-            if config.denoise {
+            if processed.engine.is_some() {
                 config.suppression
             } else {
                 0
             },
             Ordering::Relaxed,
         );
+        stats.engine.store(
+            match processed.engine {
+                None => 0,
+                Some(crate::denoise::Engine::DeepFilterNet) => 1,
+                Some(crate::denoise::Engine::RNNoise) => 2,
+            },
+            Ordering::Relaxed,
+        );
+        if processed.speech > SPEECH_PROBABILITY {
+            stats.speaking.fetch_add(1, Ordering::Relaxed);
+        }
         let open = matches!(processed.action, GateAction::Pass | GateAction::RampIn);
         meter.open.store(open, Ordering::Relaxed);
         let sent = processed.action != GateAction::Drop;
@@ -2357,7 +2366,7 @@ fn denoise_gate_loop(
         });
         dsp_csv.row(|| {
             format!(
-                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{}",
+                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{},{},{:.2},{}",
                 processed.echoed_dbfs,
                 processed.denoised_dbfs,
                 processed.agc_gain_db,
@@ -2373,6 +2382,13 @@ fn denoise_gate_loop(
                 config.suppression,
                 config.volume,
                 packet.captured.elapsed().as_millis(),
+                processed
+                    .engine
+                    .map_or("off", crate::denoise::Engine::label),
+                processed.speech,
+                processed
+                    .lsnr_db
+                    .map_or(String::new(), |db| format!("{db:.1}")),
             )
         });
         if processed.action == GateAction::Drop {
@@ -3074,12 +3090,18 @@ impl MicCapture {
                 let after = gate_stats.peak_after.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
                 let passed = gate_stats.passed.swap(0, Ordering::Relaxed);
                 let dropped = gate_stats.dropped.swap(0, Ordering::Relaxed);
+                let speaking = gate_stats.speaking.swap(0, Ordering::Relaxed);
                 crate::dlog!(
-                    "mic 2s raw={p:.4} after={after:.4} thr={:.4} passed={passed} dropped={dropped}{}",
+                    "mic 2s raw={p:.4} after={after:.4} thr={:.4} passed={passed} dropped={dropped} speech={}%{}",
                     gate_stats.threshold.load(Ordering::Relaxed) as f32 / 1_000.0,
-                    match gate_stats.atten_lim_applied.load(Ordering::Relaxed) {
-                        0 => String::new(),
-                        db => format!(" atten={db}dB"),
+                    speaking * 100 / (passed + dropped).max(1),
+                    match (
+                        gate_stats.engine.load(Ordering::Relaxed),
+                        gate_stats.atten_lim_applied.load(Ordering::Relaxed),
+                    ) {
+                        (1, db) => format!(" nc=DeepFilterNet atten={db}dB"),
+                        (2, db) => format!(" nc=RNNoise atten={db}dB"),
+                        _ => String::new(),
                     },
                 );
                 prev_frames = f;
