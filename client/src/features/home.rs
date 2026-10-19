@@ -47,7 +47,7 @@ pub fn HomeView(
             TopBar { identity: identity.clone(), social, open_social, on_rename, on_sign_out }
             div { class: "flex-1 flex min-h-0",
                 div { class: "flex-1 min-w-0 flex flex-col",
-                    div { class: "w-full max-w-[588px] mx-auto flex-1 min-h-0 flex flex-col",
+                    div { class: "w-full mx-auto flex-1 min-h-0 flex flex-col", style: "max-width: 705.6px;",
                         div { class: "px-7 pt-5 shrink-0",
                             h2 { class: "dxf-display text-xl font-semibold tracking-tight text-[var(--text)]",
                                 {crate::i18n::text("Go to a server", &[])}
