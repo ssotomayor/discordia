@@ -49,6 +49,7 @@ unsafe impl Send for SendHandle {}
 unsafe impl Sync for SendHandle {}
 
 pub struct Capture {
+    pub device_name: String,
     shutdown: SendHandle,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -72,14 +73,15 @@ impl Capture {
             .map_err(|e| format!("create shutdown event: {e}"))?;
         let shutdown = SendHandle(shutdown);
 
-        let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = std_mpsc::channel::<Result<String, String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-rawmic-win".into())
             .spawn(move || run(device, fatal, sink, shutdown, ready_tx, bypass))
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(device_name)) => Ok(Self {
+                device_name,
                 shutdown,
                 thread: Some(thread),
             }),
@@ -118,7 +120,7 @@ fn run(
     fatal: UnboundedSender<String>,
     sink: SinkBuilder,
     shutdown: SendHandle,
-    ready: std_mpsc::Sender<Result<(), String>>,
+    ready: std_mpsc::Sender<Result<String, String>>,
     bypass: bool,
 ) {
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -129,7 +131,7 @@ fn run(
 
     let started = match setup(device, bypass) {
         Ok(s) => {
-            let _ = ready.send(Ok(()));
+            let _ = ready.send(Ok(s.device_name.clone()));
             s
         }
         Err(e) => {
@@ -160,6 +162,7 @@ enum Sample {
 }
 
 struct Started {
+    device_name: String,
     client: IAudioClient,
     capture: IAudioCaptureClient,
     event: SendHandle,
@@ -237,6 +240,7 @@ fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
     );
 
     Ok(Started {
+        device_name: name,
         client,
         capture,
         event,

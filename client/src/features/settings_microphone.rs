@@ -47,37 +47,78 @@ pub(super) fn MicrophoneSettings() -> Element {
             )
         });
     let disabled = exclusive() || reconnecting;
+    let (active, input_used, output_used, fallback) = {
+        let current = state.read();
+        let active = current.mic_test_active
+            || current.voice.phase == crate::state::VoicePhase::Connected
+            || current
+                .dm_call
+                .as_ref()
+                .is_some_and(|c| c.phase == crate::features::dm_call::Phase::Connected);
+        let input = current.active_input_device.clone().filter(|_| active);
+        let output = current.active_output_device.clone().filter(|_| active);
+        let fallback = input
+            .as_ref()
+            .filter(|actual| {
+                current
+                    .selected_input_device
+                    .as_ref()
+                    .is_some_and(|wanted| wanted != *actual)
+            })
+            .cloned();
+        (
+            active,
+            input,
+            output
+                .or_else(|| current.selected_output_device.clone())
+                .unwrap_or_else(|| crate::i18n::text("System default", &[])),
+            fallback,
+        )
+    };
+
     rsx! {
-        h3 { {crate::i18n::text("Microphone", &[])} }
-        p { class: "mt-1 mb-4 text-[13px] text-[var(--text-dim)]", {crate::i18n::text("Choose a voice profile, then test it or let us adjust it to your room.", &[])} }
+        h3 { {crate::i18n::text("Voice and audio", &[])} }
+        p { class: "mt-1 mb-4 text-[13px] text-[var(--text-dim)]", {crate::i18n::text("Choose your devices, check your voice and make yourself heard.", &[])} }
         fieldset { disabled, class: "min-w-0 mb-4",
-            label { class: "block text-[13px] text-[var(--text-muted)]",
-                {crate::i18n::text("Input", &[])}
-                select { class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{selected_input}", aria_label: crate::i18n::text("Input", &[]),
-                    onchange: move |e| {
-                        let value = e.value(); let input = (!value.is_empty()).then_some(value);
-                        let mut next = settings.peek().clone(); next.selected_input_device = input.clone();
-                        let mut mic = Config::from_state(&state.peek()); mic.processing.profile = Profile::Custom;
-                        mic.apply_settings(&mut next);
-                        settings.set(next.clone()); crate::settings::save(&next);
-                        { let mut current = state.write(); current.selected_input_device = input.clone(); mic.apply_state(&mut current); }
-                        v_devices.send(VoiceCmd::ApplyMicrophone { config: mic });
-                        v_devices.send(VoiceCmd::SetDevices { input, output: None });
-                    },
-                    option { value: "", {crate::i18n::text("System default", &[])} }
-                    for device in inputs { option { value: "{device}", "{device}" } }
+            div { class: "dxf-mic-device-grid",
+                div {
+                    label { class: "dxf-device-label",
+                        {crate::i18n::text("Microphone", &[])}
+                        select { class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{selected_input}", id: "mic-input", aria_label: crate::i18n::text("Microphone", &[]),
+                            onchange: move |e| {
+                                let value = e.value(); let input = (!value.is_empty()).then_some(value);
+                                let mut next = settings.peek().clone(); next.selected_input_device = input.clone();
+                                let mut mic = Config::from_state(&state.peek()); mic.processing.profile = Profile::Custom;
+                                mic.apply_settings(&mut next);
+                                settings.set(next.clone()); crate::settings::save(&next);
+                                { let mut current = state.write(); current.selected_input_device = input.clone(); mic.apply_state(&mut current); }
+                                v_devices.send(VoiceCmd::ApplyMicrophone { config: mic });
+                                v_devices.send(VoiceCmd::SetDevices { input, output: None });
+                            },
+                            option { value: "", {crate::i18n::text("System default", &[])} }
+                            if !selected_input.is_empty() && !inputs.contains(&selected_input) {
+                                option { value: "{selected_input}", {crate::i18n::text("{0} (unavailable)", std::slice::from_ref(&selected_input))} }
+                            }
+                            for device in inputs { option { value: "{device}", "{device}" } }
+                        }
+                    }
+                    p { class: "dxf-mic-device-note",
+                        if active { {crate::i18n::text("In use: {0}", &[input_used.unwrap_or_else(|| crate::i18n::text("Unavailable", &[]))])} }
+                        else { {crate::i18n::text("Start a test to see which microphone is in use.", &[])} }
+                    }
                 }
+                div {
+                    super::settings_audio::OutputDevice { disabled }
+                    p { class: "dxf-mic-device-note", if active { {crate::i18n::text("In use: {0}", &[output_used])} } else { {crate::i18n::text("What you hear", &[])} } }
+
+                }
+            }
+            if let Some(device) = fallback {
+                p { class: "dxf-mic-device-note", style: "color: var(--accent);", {crate::i18n::text("Selected microphone unavailable. Using {0}.", &[device])} }
             }
             div { class: "mt-4 flex items-center justify-between gap-2 flex-wrap",
                 span { class: "text-[13px] font-semibold text-[var(--text)]", {crate::i18n::text("Voice profile", &[])} }
-                label { class: "flex items-center gap-2 text-[12px] text-[var(--text-muted)]",
-                    {crate::i18n::text("Listening with", &[])}
-                    select { class: "bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1", aria_label: crate::i18n::text("Listening with", &[]), value: if config.processing.headphones { "headphones" } else { "speakers" },
-                        onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.headphones = e.value() == "headphones"; next.processing.echo = !next.processing.headphones; commit(next); },
-                        option { value: "headphones", {crate::i18n::text("Headphones", &[])} }
-                        option { value: "speakers", {crate::i18n::text("Speakers", &[])} }
-                    }
-                }
+
             }
             div { class: "dxf-mic-profiles", role: "group", aria_label: crate::i18n::text("Voice profile", &[]),
                 for profile in Profile::ALL {
@@ -94,30 +135,33 @@ pub(super) fn MicrophoneSettings() -> Element {
                     }
                 }
             }
-            p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::label(config.processing.profile.description())} }
+            p { class: "dxf-mic-profile-description", {crate::i18n::label(config.processing.profile.description())} }
             if !config.processing.headphones && config.processing.echo { p { class: "mt-1 text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Echo cancellation is enabled for speakers. Use headphones for the most natural voice.", &[])} } }
-        }
-        if state.read().voice.phase == crate::state::VoicePhase::Connected
-            || state.read().dm_call.as_ref().is_some_and(|call| call.phase == crate::features::dm_call::Phase::Connected && call.microphone_error.is_none())
-        {
-            div { class: "mb-4",
-                div { class: "flex items-center justify-between text-[12px] text-[var(--text-muted)]",
-                    span { {crate::i18n::text("Level", &[])} }
-                    span { "{crate::features::voice::peak_to_db_label(state.read().mic_gate_level)}" }
-                }
-                progress { class: "w-full mt-1", max: "100", value: "{crate::features::voice::peak_to_meter_pct(state.read().mic_gate_level)}", aria_label: crate::i18n::text("Level", &[]) }
-            }
         }
         crate::features::voice::mic_test::MicrophoneTestPanel { exclusive }
         fieldset { disabled, class: "min-w-0",
-                div { class: "dxf-settings-control",
-                    label { r#for: "mic-volume", {crate::i18n::text("Microphone Volume", &[])} }
+            div { class: "dxf-mic-main-controls",
+                div { class: "dxf-mic-volume-row",
+                    div {
+                        label { r#for: "mic-volume", {crate::i18n::text("Microphone Volume", &[])} }
+                        p { {crate::i18n::text("Changes how loud your voice sounds to others.", &[])} }
+                    }
                     output { "for": "mic-volume", "{config.volume}%" }
                     input { id: "mic-volume", aria_label: crate::i18n::text("Microphone Volume", &[]), r#type: "range", min: "0", max: "200", value: "{config.volume}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.volume = e.value().parse().unwrap_or(config.volume); slide(next); }, onchange: persist }
                 }
+
             VoiceQualitySettings {}
+            }
             details { class: "dxf-mic-advanced",
                 summary { {crate::i18n::text("Advanced voice settings", &[])} }
+                label { class: "flex items-center gap-2 text-[12px] text-[var(--text-muted)]",
+                    {crate::i18n::text("Listening with", &[])}
+                    select { class: "bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1", aria_label: crate::i18n::text("Listening with", &[]), value: if config.processing.headphones { "headphones" } else { "speakers" },
+                        onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.headphones = e.value() == "headphones"; next.processing.echo = !next.processing.headphones; commit(next); },
+                        option { value: "headphones", {crate::i18n::text("Headphones", &[])} }
+                        option { value: "speakers", {crate::i18n::text("Speakers", &[])} }
+                    }
+                }
                 div { class: "dxf-settings-control",
                     label { r#for: "mic-sensitivity", {crate::i18n::text("Sensitivity", &[])} }
                     output { "for": "mic-sensitivity", "{crate::features::voice::peak_to_db_label(config.threshold)}" }
@@ -148,6 +192,7 @@ pub(super) fn MicrophoneSettings() -> Element {
                 }
             }
         }
+        fieldset { disabled, class: "min-w-0", super::settings_audio::AppSounds {} }
     }
 }
 
@@ -158,9 +203,9 @@ fn VoiceQualitySettings() -> Element {
     let voice = use_voice_tx();
     let bitrate = state.read().voice_bitrate_kbps;
     rsx! {
-        div { class: "mt-4 rounded-lg border border-[var(--border)] p-3",
-            label { class: "block text-[13px] font-semibold text-[var(--text)]", {crate::i18n::text("Voice quality", &[])}
-                select { class: "w-full mt-2 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{bitrate}", aria_label: crate::i18n::text("Voice quality", &[]),
+        div { class: "dxf-voice-quality",
+            label { class: "dxf-voice-quality-row", {crate::i18n::text("Voice quality", &[])}
+                select { class: "w-full mt-2 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm", value: "{bitrate}", aria_label: crate::i18n::text("Voice quality", &[]), title: crate::i18n::text("Higher sounds better on low voices and background music, and costs more upload.", &[]),
                     onchange: move |e| {
                         let kbps = crate::settings::normalize_voice_bitrate(e.value().parse().unwrap_or(48));
                         let mut next = settings.peek().clone(); next.voice_bitrate_kbps = kbps; settings.set(next.clone()); crate::settings::save(&next);
@@ -171,7 +216,7 @@ fn VoiceQualitySettings() -> Element {
                     option { value: "64", {crate::i18n::text("Maximum — 64 kbit/s", &[])} }
                 }
             }
-            p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Higher sounds better on low voices and background music, and costs more upload.", &[])} }
+
         }
     }
 }
