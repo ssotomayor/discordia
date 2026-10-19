@@ -74,8 +74,6 @@ pub fn HomeView(
     }
 }
 
-/// Brand on the left, who you are on the right, and the relay line between
-/// them — the one reading that says the talking half is actually working.
 #[component]
 fn TopBar(
     identity: Identity,
@@ -154,10 +152,12 @@ fn TopBar(
                 class: "dxf-drag-region relative z-50 h-[58px] px-5 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
                 onclick: move |_| open.set(false),
-                div { class: "flex items-center gap-2.5 shrink-0",
-                    crate::app::DiscordiaLogo { class: "w-6 h-6 shrink-0" }
-                    span { class: "dxf-display dxf-wordmark text-[17px] font-semibold tracking-tight hidden min-[900px]:inline",
-                        {crate::i18n::text("Discordia", &[])}
+                if !cfg!(target_os = "windows") {
+                    div { class: "flex items-center gap-2.5 shrink-0",
+                        crate::app::DiscordiaLogo { class: "w-6 h-6 shrink-0" }
+                        span { class: "dxf-display dxf-wordmark text-[17px] font-semibold tracking-tight hidden min-[900px]:inline",
+                            {crate::i18n::text("Discordia", &[])}
+                        }
                     }
                 }
                 span {
