@@ -1041,6 +1041,7 @@ async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
 fn report(label: &str, m: &Metrics) {
     println!("--- {label} ---");
     println!("frames decoded     : {}", m.frames);
+    println!("inbound bytes      : {}", m.in_bytes);
     println!("samples analysed   : {}", m.samples);
     println!(
         "effective rate     : {:.0} Hz/ch (nominal {SAMPLE_RATE})",
