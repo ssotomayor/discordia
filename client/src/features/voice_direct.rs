@@ -247,6 +247,9 @@ pub(super) fn update_controls(controls: &AudioControls, state: &AppState) {
         .deafened
         .store(state.voice.deafened, Ordering::Relaxed);
     controls.apply_mic(crate::mic_profile::Config::from_state(state));
+    controls
+        .denoise_retry
+        .store(state.denoise_retry, Ordering::Relaxed);
     let mut gains = controls.gains.lock();
     gains.clear();
     for peer in state.user_volumes.keys().chain(state.user_muted.iter()) {

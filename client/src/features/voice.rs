@@ -100,6 +100,7 @@ struct AudioControls {
     agc: Arc<AtomicBool>,
     denoise: Arc<AtomicBool>,
     atten_lim_db: Arc<AtomicU32>,
+    denoise_retry: Arc<AtomicU32>,
     bitrate_kbps: Arc<AtomicU32>,
     stats_polling: Arc<AtomicBool>,
     deafened: Arc<AtomicBool>,
@@ -159,6 +160,7 @@ impl AudioControls {
             agc: Arc::new(AtomicBool::new(s.auto_gain_control)),
             denoise: Arc::new(AtomicBool::new(s.noise_cancellation)),
             atten_lim_db: Arc::new(AtomicU32::new(s.denoise_atten_lim_db)),
+            denoise_retry: Arc::new(AtomicU32::new(s.denoise_retry)),
             bitrate_kbps: Arc::new(AtomicU32::new(s.voice_bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
             deafened: Arc::new(AtomicBool::new(s.voice.deafened)),
@@ -183,6 +185,8 @@ struct MicMeter {
     peak_pre: AtomicI32,
     gate_peak: AtomicI32,
     open: AtomicBool,
+    /// 0 none, 1 lighter, 2 off.
+    denoise_fallback: AtomicU8,
 }
 
 #[derive(Default)]
@@ -204,6 +208,7 @@ pub enum VoiceCmd {
     ApplyMicrophone {
         config: crate::mic_profile::Config,
     },
+    RetryNoiseCancellation,
     Connect {
         livekit_url: String,
         alternate_urls: Vec<String>,
@@ -470,6 +475,11 @@ async fn service_loop(
             VoiceCmd::ApplyMicrophone { config } => {
                 config.apply_state(&mut state.write());
                 controls.apply_mic(config);
+            }
+            VoiceCmd::RetryNoiseCancellation => {
+                controls
+                    .denoise_retry
+                    .store(state.peek().denoise_retry, Ordering::Relaxed);
             }
             VoiceCmd::SetVoiceBitrate { kbps } => {
                 let kbps = crate::settings::normalize_voice_bitrate(kbps);
@@ -2300,6 +2310,7 @@ fn denoise_gate_loop(
     reference_rx: crate::audio_queue::AudioReceiver<i16>,
 ) {
     let mut processor = dsp::Processor::new(reference_rx);
+    let mut retry = controls.denoise_retry.load(Ordering::Relaxed);
     let mut raw_wav = crate::voice_record::Wav::new("mic-raw", SAMPLE_RATE);
     let mut sent_wav = crate::voice_record::Wav::new("mic-sent", SAMPLE_RATE);
     let mut dsp_csv = crate::voice_record::Csv::new(
@@ -2316,6 +2327,11 @@ fn denoise_gate_loop(
         }
         raw_wav.write(&packet.samples);
         let config = controls.mic_config();
+        let asked = controls.denoise_retry.load(Ordering::Relaxed);
+        if asked != retry {
+            retry = asked;
+            processor.retry_denoise();
+        }
         let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
         let processed = processor.process(
             packet.samples,
@@ -2326,6 +2342,14 @@ fn denoise_gate_loop(
         if processed.model_loaded {
             while frame_rx.try_recv().is_ok() {}
         }
+        meter.denoise_fallback.store(
+            match processor.denoise_fallback() {
+                None => 0,
+                Some(crate::denoise::Fallback::Lighter) => 1,
+                Some(crate::denoise::Fallback::Off) => 2,
+            },
+            Ordering::Relaxed,
+        );
         meter.bump_peak_pre(processed.pre);
         meter
             .gate_peak
@@ -2643,6 +2667,14 @@ impl MicMeter {
     fn bump_peak(&self, value: i32) {
         self.peak.fetch_max(value, Ordering::Relaxed);
     }
+
+    fn denoise_fallback(&self) -> Option<crate::denoise::Fallback> {
+        match self.denoise_fallback.load(Ordering::Relaxed) {
+            1 => Some(crate::denoise::Fallback::Lighter),
+            2 => Some(crate::denoise::Fallback::Off),
+            _ => None,
+        }
+    }
 }
 
 fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
@@ -2651,6 +2683,7 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
         let mut last_level = u32::MAX;
         let mut last_level_pre = u32::MAX;
         let mut last_gate_level = u32::MAX;
+        let mut last_fallback = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             let level = meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
@@ -2672,6 +2705,11 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
             if speaking != last_speaking {
                 last_speaking = speaking;
                 state.write().voice.speaking = speaking;
+            }
+            let fallback = meter.denoise_fallback();
+            if fallback != last_fallback {
+                last_fallback = fallback;
+                state.write().denoise_fallback = fallback;
             }
         }
     })

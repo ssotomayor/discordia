@@ -45,6 +45,17 @@ impl Processor {
         self.gate.silence();
     }
 
+    pub fn denoise_fallback(&self) -> Option<crate::denoise::Fallback> {
+        self.denoiser
+            .as_ref()
+            .and_then(crate::denoise::Denoiser::fallback)
+    }
+
+    pub fn retry_denoise(&mut self) {
+        self.denoiser = None;
+        self.suppression = None;
+    }
+
     pub fn process(
         &mut self,
         mut samples: [f32; FRAME_SAMPLES],
@@ -239,6 +250,31 @@ mod tests {
             controls.apply_mic(natural);
         }
         read.join().unwrap();
+    }
+
+    #[test]
+    fn a_stopped_denoiser_stays_stopped_until_retried() {
+        let (_, reference) = crate::audio_queue::channel();
+        let mut processor = Processor::new(reference);
+        let config = Config::from_state(&AppState::empty());
+        assert!(config.denoise);
+        processor.denoiser = Some(crate::denoise::Denoiser::stopped());
+        let hop = [0.01; FRAME_SAMPLES];
+        for _ in 0..3 {
+            let processed = processor.process(hop, config, 0, false);
+            assert_eq!(processed.engine, None);
+            assert_eq!(
+                processor.denoise_fallback(),
+                Some(crate::denoise::Fallback::Off)
+            );
+        }
+        processor.retry_denoise();
+        let processed = processor.process(hop, config, 0, false);
+        assert_eq!(
+            processed.engine,
+            Some(crate::denoise::Engine::DeepFilterNet)
+        );
+        assert_eq!(processor.denoise_fallback(), None);
     }
 
     #[test]

@@ -80,6 +80,10 @@ impl MicrophoneTest {
             self.meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32,
         ))
     }
+
+    fn denoise_fallback(&self) -> Option<crate::denoise::Fallback> {
+        self.meter.denoise_fallback()
+    }
 }
 
 impl Drop for MicrophoneTest {

@@ -34,6 +34,12 @@ impl Engine {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fallback {
+    Lighter,
+    Off,
+}
+
 /// Steps down from DeepFilterNet to RNNoise, then to nothing, when a model
 /// cannot keep up or keeps failing — Krisp's CPU and failure thresholds.
 pub struct Denoiser {
@@ -82,10 +88,26 @@ impl Denoiser {
         }
     }
 
+    #[cfg(test)]
+    pub fn stopped() -> Self {
+        Self {
+            model: None,
+            ..Self::light()
+        }
+    }
+
     pub fn engine(&self) -> Option<Engine> {
         match self.model.as_ref()? {
             Model::Deep(_) => Some(Engine::DeepFilterNet),
             Model::Light(_) => Some(Engine::RNNoise),
+        }
+    }
+
+    pub fn fallback(&self) -> Option<Fallback> {
+        match self.model {
+            Some(Model::Deep(_)) => None,
+            Some(Model::Light(_)) => Some(Fallback::Lighter),
+            None => Some(Fallback::Off),
         }
     }
 
@@ -366,6 +388,7 @@ mod tests {
             steps,
             [Some(Engine::DeepFilterNet), Some(Engine::RNNoise), None]
         );
+        assert_eq!(denoiser.fallback(), Some(Fallback::Off));
         let mut untouched = hop.clone();
         denoiser.process_hop(&mut untouched);
         assert_eq!(untouched, hop);

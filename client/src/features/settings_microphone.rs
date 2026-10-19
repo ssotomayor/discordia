@@ -32,6 +32,7 @@ pub(super) fn MicrophoneSettings() -> Element {
     };
     let v_devices = use_voice_tx();
     let v_bypass = use_voice_tx();
+    let v_retry = use_voice_tx();
     let inputs = state.read().available_input_devices.clone();
     let selected_input = state
         .read()
@@ -178,6 +179,23 @@ pub(super) fn MicrophoneSettings() -> Element {
                         input { id: "mic-suppression", aria_label: crate::i18n::text("Suppression strength", &[]), r#type: "range", min: "6", max: "60", value: "{config.suppression}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.suppression = e.value().parse().unwrap_or(config.suppression); slide(next); }, onchange: persist }
                     }
                     p { class: "text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Lower keeps more of your voice, and more of the room with it.", &[])} }
+                    if let Some(fallback) = state.read().denoise_fallback {
+                        div { class: "flex items-center justify-between gap-3 text-[12px]", role: "status",
+                            span { style: "color: var(--warn);",
+                                match fallback {
+                                    crate::denoise::Fallback::Lighter => crate::i18n::text("Noise cancellation is using a lighter filter because the full one couldn't run smoothly.", &[]),
+                                    crate::denoise::Fallback::Off => crate::i18n::text("Noise cancellation paused because no filter could run smoothly.", &[]),
+                                }
+                            }
+                            button { class: "shrink-0 px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]", r#type: "button",
+                                onclick: move |_| {
+                                    { let mut s = state.write(); s.denoise_fallback = None; s.denoise_retry = s.denoise_retry.wrapping_add(1); }
+                                    v_retry.send(VoiceCmd::RetryNoiseCancellation);
+                                },
+                                {crate::i18n::text("Retry", &[])}
+                            }
+                        }
+                    }
                 }
                 label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.echo, aria_label: crate::i18n::text("Echo cancellation", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.echo = e.checked(); manual(next); } } {crate::i18n::text("Echo cancellation", &[])} }
                 label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.processing.high_pass, aria_label: crate::i18n::text("Reduce low-frequency rumble", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.processing.high_pass = e.checked(); manual(next); } } {crate::i18n::text("Reduce low-frequency rumble", &[])} }

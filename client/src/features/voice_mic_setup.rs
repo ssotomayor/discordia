@@ -286,6 +286,8 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                     if let Some(test) = &mut monitor {
                         let next = test.update(&state.peek())?;
                         if *level.peek() != next { level.set(next); }
+                        let fallback = test.denoise_fallback();
+                        if state.peek().denoise_fallback != fallback { state.write().denoise_fallback = fallback; }
                     }
                 } else if selected == Mode::Record {
                     if recording.is_none() { prepared.set(None); recording = Some(Recording::start(state)?); elapsed.set(0); }
