@@ -88,15 +88,21 @@ active call settings while evaluating. Measure each candidate's gate-stage resid
 noise and quiet-speech peaks; replay candidates with their corresponding gate/gain.
 
 Propose a gate between high-percentile noise and low-percentile quiet speech, with
-room for the existing hysteresis. If that interval collapses after integer
-quantization, ask for repositioning/repeat instead of forcing a threshold.
+room for the existing hysteresis. Do not force a threshold when that interval
+collapses after integer quantization.
 Estimate fixed gain toward roughly -20 to -18 dBFS speech RMS, keeping peaks below
--3 dBFS and within the existing 50–200% practical adjustment range. If that cannot
-be achieved, explain the input-level issue instead of exceeding the available gain.
+-3 dBFS and within the usable 1–200% microphone volume range (0% is mute).
+Quiet inputs that need more than 200% receive a limited-gain warning.
 
 Choose the least suppression that reduces measured room noise while preserving
 quiet speech. Energy metrics are diagnostic, not an intelligibility score:
 human before/after listening is required to judge muffling and lost consonants.
+If no candidate meets the preferred 24 dB separation, offer a labelled residual-noise
+preview only with at least 6 dB separation and preserved soft speech. Prefer lighter
+processing unless residual noise improves by 20%; disable an unsafe gate and mark
+the profile Custom. If soft speech cannot be measured but normal speech is usable,
+offer only a labelled Natural volume preview with suppression/gate off.
+Silence, clipping, gaps and insufficient normal speech still fail.
 Offer **Escuchar actual**, **Escuchar recomendado**, **Aplicar**, **Repetir**,
 **Conservar mis ajustes**. Compare the same phrase; any comparison loudness matching
 uses one constant gain per clip, never dynamic normalization that could hide pumping.

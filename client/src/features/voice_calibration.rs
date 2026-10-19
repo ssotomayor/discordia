@@ -13,6 +13,8 @@ pub(super) struct Analysis {
     pub current: Vec<f32>,
     pub recommended: Vec<f32>,
     pub limited_gain: bool,
+    pub background_noise: bool,
+    pub soft_speech_unmeasured: bool,
 }
 
 pub(super) fn context(state: &AppState) -> Result<Context, String> {
@@ -127,13 +129,20 @@ fn render(
     Ok((output, metrics))
 }
 
-fn recommendation(metrics: &mut Metrics, base: Config, profile: Profile) -> Option<(Config, bool)> {
+fn recommendation(
+    metrics: &mut Metrics,
+    base: Config,
+    profile: Profile,
+    allow_background: bool,
+) -> Option<(Config, bool, f32)> {
     let speech = percentile(&mut metrics.speech_rms, 0.6);
     let noise_rms = percentile(&mut metrics.noise_rms, 0.95);
-    if speech < 0.001 || noise_rms > speech * 0.06 {
+    let noise_ratio = noise_rms / speech.max(0.001);
+    if speech < 0.001 || noise_ratio > if allow_background { 0.5 } else { 0.06 } {
         return None;
     }
     let mut config = base;
+    config.processing.profile = profile;
     if config.processing.gate {
         let noise_peak = percentile(&mut metrics.noise_peaks, 0.95);
         let soft_peak = percentile(&mut metrics.soft_peaks, 0.35);
@@ -141,18 +150,20 @@ fn recommendation(metrics: &mut Metrics, base: Config, profile: Profile) -> Opti
         let lower = (noise_peak * 1000.0).round() as u32 * 2 + 2;
         let upper = (soft_peak * 1000.0 / 1.4).floor() as u32;
         if lower > upper || upper == 0 {
-            return None;
+            if !allow_background {
+                return None;
+            }
+            // An unsafe gate clips quiet words; an open gate leaves audible noise for preview instead.
+            config.processing.gate = false;
+            config.processing.profile = Profile::Custom;
+        } else {
+            config.threshold = lower.clamp(1, 1000);
         }
-        config.threshold = lower.clamp(1, 1000);
     }
     let peak = percentile(&mut metrics.peaks, 0.99).max(0.001);
     let gain = (0.1 / speech).min(0.70 / peak);
-    if gain < 0.5 {
-        return None;
-    }
-    config.volume = (gain.clamp(0.5, 2.0) * 100.0).round() as u16;
-    config.processing.profile = profile;
-    Some((config, gain > 2.0))
+    config.volume = (gain.clamp(0.01, 2.0) * 100.0).round() as u16;
+    Some((config, gain > 2.0, noise_ratio))
 }
 
 pub(super) fn analyze(
@@ -216,13 +227,11 @@ pub(super) fn analyze(
         .copied()
         .filter(|peak| *peak > soft_floor)
         .collect();
-    if voiced_soft.len() < 40 {
-        return Err(
-            "Not enough soft speech was detected. Speak softly without whispering during seconds 10 to 13, then repeat.".into(),
-        );
-    }
+    let soft_speech_unmeasured = voiced_soft.len() < 40;
     let raw_soft = percentile(&mut voiced_soft, 0.35);
     let (before, _) = render(&input, current, &cancel)?;
+    let mut fallback: Option<(Config, bool, f32)> = None;
+    let mut preserved_soft_speech = false;
     for (profile, suppression) in [
         (Profile::Natural, 0),
         (Profile::Balanced, 12),
@@ -249,18 +258,71 @@ pub(super) fn analyze(
             .zip(&raw.soft_peaks)
             .filter_map(|(processed, original)| (*original > soft_floor).then_some(*processed))
             .collect();
+        if soft_speech_unmeasured {
+            // Without measurable soft speech, only an unfiltered, open-gate preview can preserve it.
+            if profile == Profile::Natural
+                && let Some((config, limited_gain, noise_ratio)) =
+                    recommendation(&mut metrics, candidate, profile, true)
+            {
+                let (recommended, _) = render(&input, config, &cancel)?;
+                return Ok(Analysis {
+                    config,
+                    current: before,
+                    recommended,
+                    limited_gain,
+                    background_noise: noise_ratio > 0.06,
+                    soft_speech_unmeasured: true,
+                });
+            }
+            return Err("Not enough soft speech was detected. Speak softly without whispering during seconds 10 to 13, then repeat.".into());
+        }
         if percentile(&mut metrics.soft_peaks, 0.35) < raw_soft * 0.45 {
+            tracing::info!(
+                ?profile,
+                suppression,
+                reason = "quiet speech attenuated",
+                "microphone calibration candidate rejected"
+            );
             continue;
         }
-        if let Some((config, limited_gain)) = recommendation(&mut metrics, candidate, profile) {
+        preserved_soft_speech = true;
+        if let Some((config, limited_gain, _)) =
+            recommendation(&mut metrics, candidate, profile, false)
+        {
             let (recommended, _) = render(&input, config, &cancel)?;
             return Ok(Analysis {
                 config,
                 current: before,
                 recommended,
                 limited_gain,
+                background_noise: false,
+                soft_speech_unmeasured: false,
             });
         }
+        if let Some(option) = recommendation(&mut metrics, candidate, profile, true) {
+            // Keep lighter processing unless another candidate provides a meaningful noise improvement.
+            if fallback
+                .as_ref()
+                .is_none_or(|previous| option.2 < previous.2 * 0.8)
+            {
+                fallback = Some(option);
+            }
+        }
+    }
+    if let Some((config, limited_gain, _)) = fallback {
+        tracing::info!(profile = ?config.processing.profile, volume = config.volume, gate = config.processing.gate, "microphone calibration offers a preview with residual background noise");
+        let (recommended, _) = render(&input, config, &cancel)?;
+        return Ok(Analysis {
+            config,
+            current: before,
+            recommended,
+            limited_gain,
+            background_noise: true,
+            soft_speech_unmeasured: false,
+        });
+    }
+    if !preserved_soft_speech {
+        return Err("Processing reduced quiet speech too much. Check your microphone's own noise reduction and repeat.".into());
     }
     Err("Noise and quiet speech overlap too much. Reposition the microphone and repeat.".into())
 }
@@ -397,16 +459,27 @@ mod tests {
     }
 
     #[test]
-    fn missing_soft_speech_has_its_own_guidance() {
-        let message = analyze(
-            recording(0.0001, 0.07, 0.0001),
-            Config::from_state(&AppState::empty()),
+    fn unmeasurable_soft_speech_still_allows_a_conservative_volume_preview() {
+        let mut current = Config::from_state(&AppState::empty());
+        current.processing.headphones = true;
+        let result = analyze(
+            recording(0.01, 0.07, 0.01),
+            current,
             Arc::new(AtomicBool::new(false)),
         )
-        .err()
         .unwrap();
-        assert!(message.contains("soft speech"));
-        assert!(message.contains("10 to 13"));
+        assert!(result.soft_speech_unmeasured);
+        assert!(result.background_noise);
+        assert_eq!(result.config.processing.profile, Profile::Natural);
+        assert!(!result.config.processing.gate);
+        assert!(!result.config.denoise);
+        assert!(!result.config.agc);
+        assert_eq!(current.volume, 100);
+        assert!(
+            result.recommended[10 * SAMPLE_RATE as usize..13 * SAMPLE_RATE as usize]
+                .iter()
+                .all(|sample| sample.abs() >= 0.01)
+        );
     }
 
     #[test]
@@ -432,9 +505,67 @@ mod tests {
         metrics.speech_rms = vec![0.1; 700];
         metrics.soft_peaks = vec![0.02; 300];
         metrics.peaks = vec![0.15; 1000];
-        let (recommended, _) = recommendation(&mut metrics, config, Profile::Balanced).unwrap();
+        let (recommended, _, _) =
+            recommendation(&mut metrics, config, Profile::Balanced, false).unwrap();
         assert!(recommended.threshold / 2 > 1);
         metrics.soft_peaks.fill(0.001);
-        assert!(recommendation(&mut metrics, config, Profile::Balanced).is_none());
+        assert!(recommendation(&mut metrics, config, Profile::Balanced, false).is_none());
+    }
+
+    #[test]
+    fn strong_unclipped_speech_can_use_the_full_volume_control_range() {
+        let mut current = Config::from_state(&AppState::empty());
+        current.processing.headphones = true;
+        let result = analyze(
+            recording(0.0001, 0.4, 0.12),
+            current,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(result.config.volume, 25);
+        assert!(!result.background_noise);
+        assert!(
+            result
+                .recommended
+                .iter()
+                .all(|sample| sample.abs() <= 0.101)
+        );
+    }
+
+    #[test]
+    fn usable_speech_with_background_noise_gets_an_honest_preview() {
+        let mut current = Config::from_state(&AppState::empty());
+        current.processing.headphones = true;
+        let result = analyze(
+            recording(0.01, 0.07, 0.03),
+            current,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert!(result.background_noise);
+        assert!(!result.config.agc);
+        assert_eq!(current.volume, 100);
+        assert!(
+            result.recommended[10 * SAMPLE_RATE as usize..13 * SAMPLE_RATE as usize]
+                .iter()
+                .any(|s| s.abs() >= 0.02)
+        );
+    }
+
+    #[test]
+    fn fallback_preserves_soft_words_when_a_safe_gate_cannot_be_found() {
+        let config = Config::from_state(&AppState::empty()).preset(Profile::Balanced);
+        let mut metrics = Metrics::new();
+        metrics.noise_rms = vec![0.001; 250];
+        metrics.noise_peaks = vec![0.009; 250];
+        metrics.speech_rms = vec![0.1; 700];
+        metrics.soft_peaks = vec![0.02; 300];
+        metrics.peaks = vec![0.15; 1000];
+        assert!(recommendation(&mut metrics, config, Profile::Balanced, false).is_none());
+        let (recommended, _, _) =
+            recommendation(&mut metrics, config, Profile::Balanced, true).unwrap();
+        assert!(!recommended.processing.gate);
+        assert_eq!(recommended.processing.profile, Profile::Custom);
+        assert!(recommended.denoise);
     }
 }
