@@ -216,7 +216,7 @@ pub fn ChannelsColumn() -> Element {
                     if dm_mode {
                         {crate::i18n::text("Direct Messages", &[])}
                     } else {
-                        {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No guild".into())}
+                        {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| crate::i18n::text("No guild", &[]))}
                     }
                 }
                 if !dm_mode && let Some(gid) = invite_guild {
@@ -1258,10 +1258,11 @@ fn ScreenShareStatsRow(
     direction: &'static str,
     native_screen_share: bool,
 ) -> Element {
+    let direction_label = crate::i18n::label(direction);
     let Some(stats) = stats else {
         return rsx! {
             div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] text-[var(--text-dim)]",
-                span { class: "text-[var(--text-muted)]", {crate::i18n::text("Screen share {0}: ", &[(direction).to_string()])} }
+                span { class: "text-[var(--text-muted)]", {crate::i18n::text("Screen share {0}: ", &[direction_label.to_owned()])} }
                 if direction == "outbound" && native_screen_share {
                     {crate::i18n::text("Waiting for native capture stats.", &[])}
                 } else if direction == "inbound" {
@@ -1293,16 +1294,17 @@ fn ScreenShareStatsRow(
     let implementation = stats
         .codec_implementation
         .as_deref()
-        .unwrap_or("not reported");
+        .unwrap_or_else(|| crate::i18n::label("not reported"));
     let power_efficient = match stats.power_efficient {
-        Some(true) => "yes",
-        Some(false) => "no",
-        None => "not reported",
+        Some(true) => crate::i18n::label("yes"),
+        Some(false) => crate::i18n::label("no"),
+        None => crate::i18n::label("not reported"),
     };
     let limitation = stats
         .quality_limitation_reason
         .as_deref()
-        .unwrap_or("not reported");
+        .map(crate::i18n::label)
+        .unwrap_or_else(|| crate::i18n::label("not reported"));
     let frames = stats
         .frames
         .map(|v| v.to_string())
@@ -1318,54 +1320,70 @@ fn ScreenShareStatsRow(
     let bitrate = rate_or_dash(
         stats.bitrate_kbps,
         if stats.outbound {
-            "kbit/s out"
+            crate::i18n::label("kbit/s out")
         } else {
-            "kbit/s in"
+            crate::i18n::label("kbit/s in")
         },
     );
-    let codec_path_label = format!(
-        "{} {implementation}",
-        if stats.outbound { "encoder" } else { "decoder" }
-    );
-    let efficiency_label = format!("power-efficient {power_efficient}");
-    let frames_label = format!(
-        "{frames} frames {}",
-        if stats.outbound { "encoded" } else { "decoded" }
-    );
-    let packets_label = format!(
-        "{packets} packets {} / {lost} lost",
-        if stats.outbound { "sent" } else { "received" }
-    );
-    let capture_label = format!("capture {capture_size} @ {capture_fps} fps");
-    let encoded_label = format!(
-        "{} {encoded_size} @ {encoded_fps} fps",
+    let codec_path_label = crate::i18n::text(
         if stats.outbound {
-            "encoded"
+            "encoder {0}"
         } else {
-            "received"
-        }
+            "decoder {0}"
+        },
+        &[implementation.to_owned()],
+    );
+    let efficiency_label = crate::i18n::text("power-efficient {0}", &[power_efficient.to_owned()]);
+    let frames_label = crate::i18n::text(
+        if stats.outbound {
+            "{0} frames encoded"
+        } else {
+            "{0} frames decoded"
+        },
+        &[frames],
+    );
+    let packets_label = crate::i18n::text(
+        if stats.outbound {
+            "{0} packets sent / {1} lost"
+        } else {
+            "{0} packets received / {1} lost"
+        },
+        &[packets, lost],
+    );
+    let capture_label = crate::i18n::text("capture {0} @ {1} fps", &[capture_size, capture_fps]);
+    let encoded_label = crate::i18n::text(
+        if stats.outbound {
+            "encoded {0} @ {1} fps"
+        } else {
+            "received {0} @ {1} fps"
+        },
+        &[encoded_size, encoded_fps],
     );
     let target_bitrate = stats
         .target_bitrate_kbps
-        .map(|target| format!("target {target} kbit/s"));
-    let jitter = stats.jitter_ms.map(|v| format!("{v:.1} ms jitter"));
+        .map(|v| crate::i18n::text("target {0} kbit/s", &[v.to_string()]));
+    let jitter = stats
+        .jitter_ms
+        .map(|v| crate::i18n::text("{0} ms jitter", &[format!("{v:.1}")]));
     let processing = stats
         .capture_processing_ms
-        .map(|v| format!("capture processing {v:.1} ms/frame"));
-    let encoding = stats.encode_ms.map(|v| format!("encode {v:.1} ms/frame"));
+        .map(|v| crate::i18n::text("capture processing {0} ms/frame", &[format!("{v:.1}")]));
+    let encoding = stats
+        .encode_ms
+        .map(|v| crate::i18n::text("encode {0} ms/frame", &[format!("{v:.1}")]));
     let callbacks = stats
         .capture_callbacks_fps
-        .map(|v| format!("source callbacks {v:.1} fps"));
+        .map(|v| crate::i18n::text("source callbacks {0} fps", &[format!("{v:.1}")]));
     let paced_out = stats
         .capture_paced_out
-        .map(|v| format!("capture pacing skipped {v} total"));
+        .map(|v| crate::i18n::text("capture pacing skipped {0} total", &[v.to_string()]));
     let adapter_dropped = stats
         .adapter_dropped_frames
-        .map(|v| format!("WebRTC adapter dropped {v} total"));
+        .map(|v| crate::i18n::text("WebRTC adapter dropped {0} total", &[v.to_string()]));
 
     rsx! {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] font-mono",
-            div { class: "text-[var(--text-muted)] mb-0.5", {crate::i18n::text("Screen share {0}", &[(direction).to_string()])} }
+            div { class: "text-[var(--text-muted)] mb-0.5", {crate::i18n::text("Screen share {0}", &[direction_label.to_owned()])} }
             div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[var(--text-dim)]",
                 if stats.outbound { span { "{capture_label}" } }
                 if let Some(processing) = processing { span { "{processing}" } }
@@ -1590,7 +1608,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let (voice_where, voice_sub) = {
         let s = state.read();
         let ch = voice_channel_id.and_then(|cid| s.channels.iter().find(|c| c.id == cid));
-        let where_name = ch.map(|c| c.name.clone()).unwrap_or_else(|| "voice".into());
+        let where_name = ch
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| crate::i18n::text("Voice", &[]));
         let guild = ch
             .and_then(|c| s.guilds.iter().find(|g| g.id == c.guild_id))
             .map(|g| g.name.clone())
@@ -1603,13 +1623,16 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     .count()
             })
             .unwrap_or(0);
-        (where_name, format!("{guild} · {n} connected"))
+        (
+            where_name,
+            crate::i18n::text("{0} · {1} connected", &[guild, n.to_string()]),
+        )
     };
 
     let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
     let (dot_color, phase_text) = match self_voice.phase {
         VoicePhase::Idle => ("var(--text-dim)", "voice idle"),
-        VoicePhase::Connecting => ("var(--warn)", "connecting…"),
+        VoicePhase::Connecting => ("var(--warn)", "Connecting…"),
         VoicePhase::Connected => ("var(--success)", "voice connected"),
         VoicePhase::Error => ("var(--danger)", "voice error"),
     };
@@ -1617,7 +1640,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
 
     let muted = self_voice.muted;
     let deafened = self_voice.deafened;
-    let mute_label = if muted { "unmute" } else { "mute" };
+    let mute_label = if muted { "Unmute mic" } else { "Mute mic" };
     let g_for_mute = gateway.clone();
     let v_for_mute = voice.clone();
     let g_for_deafen = gateway.clone();
@@ -1653,7 +1676,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         span {
                             class: "w-2 h-2 rounded-full shrink-0",
                             style: "background-color:{dot_color};",
-                            title: "{phase_text}",
+                            title: crate::i18n::label(phase_text),
                         }
                         span {
                             class: "text-[12.5px] font-semibold truncate",
@@ -1688,7 +1711,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         } else {
                             "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                         },
-                        title: mute_label,
+                        title: crate::i18n::label(mute_label),
                         onclick: move |_| {
                             let new_muted = !muted || deafened;
                             state.write().voice.muted = new_muted;

@@ -542,7 +542,7 @@ fn GuildIcon(
             span {
                 class: "dxf-tip",
                 style: "left: {tip_at().0}px; top: {tip_at().1}px;",
-                "{name}{hint}"
+                "{name}" {crate::i18n::label(hint)}
             }
             button {
                 class: "w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",

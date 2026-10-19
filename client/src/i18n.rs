@@ -329,6 +329,44 @@ mod tests {
             "Unknown error from a new server"
         );
         assert_eq!(capture("Hello {0} / {0}", "Hello Ana / Bob"), None);
+        assert_eq!(
+            message_in(Language::Portuguese, "Could not release the camera preview"),
+            "Não foi possível liberar a prévia da câmera"
+        );
+    }
+
+    #[test]
+    fn diagnostic_arguments_and_permission_plurals_translate_in_each_language() {
+        for (language, expected, permission) in [
+            (
+                Language::English,
+                "sent / {0} packets received / 2 lost",
+                "2 permissions",
+            ),
+            (
+                Language::Spanish,
+                "sent / {0} paquetes recibidos / 2 perdidos",
+                "2 permisos",
+            ),
+            (
+                Language::Portuguese,
+                "sent / {0} pacotes recebidos / 2 perdidos",
+                "2 permissões",
+            ),
+        ] {
+            assert_eq!(
+                translate(
+                    language,
+                    "{0} packets received / {1} lost",
+                    &["sent / {0}".into(), "2".into()]
+                ),
+                expected
+            );
+            assert_eq!(
+                translate(language, "{0} permissions", &["2".into()]),
+                permission
+            );
+        }
     }
 
     #[test]
