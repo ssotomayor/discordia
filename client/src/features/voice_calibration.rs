@@ -18,7 +18,7 @@ pub(super) struct Analysis {
     pub recommended: Vec<f32>,
     pub limited_gain: bool,
     pub background_noise: bool,
-    pub soft_speech_unmeasured: bool,
+    pub keep_current: bool,
 }
 
 pub(super) fn context(state: &AppState) -> Result<Context, String> {
@@ -121,7 +121,11 @@ fn render(
         let processed = processor.process(frame.samples, config, 0, false)?;
         metrics.push(
             frame.at,
-            &processed.samples,
+            if processed.action == GateAction::Drop {
+                &[0.0; FRAME_SAMPLES]
+            } else {
+                &processed.samples
+            },
             processed.gate_peak as f32 / 1000.0,
         );
         if processed.action == GateAction::Drop {
@@ -133,11 +137,43 @@ fn render(
     Ok((output, metrics))
 }
 
+fn checked_preview(
+    input: &[Hop],
+    config: Config,
+    noise_budget: f32,
+    cancel: &AtomicBool,
+) -> Result<Option<Vec<f32>>, String> {
+    let (samples, mut metrics) = render(input, config, cancel)?;
+    let noise = percentile(&mut metrics.noise_rms, 0.95);
+    if noise > noise_budget {
+        tracing::info!(
+            ?config,
+            noise,
+            noise_budget,
+            "microphone candidate increases audible background noise"
+        );
+        return Ok(None);
+    }
+    Ok(Some(samples))
+}
+
+fn keep_current(config: Config, samples: Vec<f32>) -> Analysis {
+    Analysis {
+        config,
+        current: samples,
+        recommended: Vec::new(),
+        limited_gain: false,
+        background_noise: false,
+        keep_current: true,
+    }
+}
+
 fn recommendation(
     metrics: &mut Metrics,
     base: Config,
     profile: Profile,
     allow_background: bool,
+    noise_budget: f32,
 ) -> Option<(Config, bool, f32)> {
     let speech = percentile(&mut metrics.speech_rms, 0.6);
     let noise_rms = percentile(&mut metrics.noise_rms, 0.95);
@@ -154,20 +190,18 @@ fn recommendation(
         let lower = (noise_peak * 1000.0).round() as u32 * 2 + 2;
         let upper = (soft_peak * 1000.0 / 1.4).floor() as u32;
         if lower > upper || upper == 0 {
-            if !allow_background {
-                return None;
-            }
-            // An unsafe gate clips quiet words; an open gate leaves audible noise for preview instead.
-            config.processing.gate = false;
-            config.processing.profile = Profile::Custom;
-        } else {
-            config.threshold = lower.clamp(1, 1000);
+            return None;
         }
+        config.threshold = lower.clamp(1, 1000);
     }
     let peak = percentile(&mut metrics.peaks, 0.99).max(0.001);
-    let gain = (0.1 / speech).min(0.70 / peak);
+    let wanted_gain = (0.1 / speech).min(0.70 / peak);
+    let gain = wanted_gain.min(noise_budget / noise_rms.max(1e-9));
+    if speech * gain < speech.min(0.02) {
+        return None;
+    }
     config.volume = (gain.clamp(0.01, 2.0) * 100.0).round() as u16;
-    Some((config, gain > 2.0, noise_ratio))
+    Some((config, wanted_gain > 2.0 || gain < wanted_gain, noise_ratio))
 }
 
 pub(super) fn analyze(
@@ -233,19 +267,29 @@ pub(super) fn analyze(
         .collect();
     let soft_speech_unmeasured = voiced_soft.len() < 40;
     let raw_soft = percentile(&mut voiced_soft, 0.35);
-    let (before, _) = render(&input, current, &cancel)?;
-    let mut fallback: Option<(Config, bool, f32)> = None;
-    let mut preserved_soft_speech = false;
+    let (before, mut before_metrics) = render(&input, current, &cancel)?;
+    // A louder voice must not disguise a louder room; compare actual output after gate and gain.
+    let noise_budget = percentile(&mut before_metrics.noise_rms, 0.95).clamp(0.0003, 0.006);
+    if soft_speech_unmeasured {
+        return Ok(keep_current(current, before));
+    }
+    let mut fallback: Option<(Config, bool, f32, Vec<f32>)> = None;
     for (profile, suppression) in [
         (Profile::Natural, 0),
         (Profile::Balanced, 12),
         (Profile::Balanced, 18),
         (Profile::Noisy, 24),
         (Profile::Noisy, 30),
+        (Profile::Custom, current.suppression),
     ] {
         let mut candidate = current.preset(profile);
+        candidate.agc = false;
         candidate.volume = 100;
         candidate.suppression = suppression.max(6);
+        // Noisy rooms need suppression and a safe speech gate, even when a raw profile sounds louder.
+        if raw_noise > 0.0003 && (!candidate.denoise || !candidate.processing.gate) {
+            continue;
+        }
         let mut measuring = candidate;
         measuring.processing.gate = false;
         let (_, mut metrics) = render(&input, measuring, &cancel)?;
@@ -262,24 +306,6 @@ pub(super) fn analyze(
             .zip(&raw.soft_peaks)
             .filter_map(|(processed, original)| (*original > soft_floor).then_some(*processed))
             .collect();
-        if soft_speech_unmeasured {
-            // Without measurable soft speech, only an unfiltered, open-gate preview can preserve it.
-            if profile == Profile::Natural
-                && let Some((config, limited_gain, noise_ratio)) =
-                    recommendation(&mut metrics, candidate, profile, true)
-            {
-                let (recommended, _) = render(&input, config, &cancel)?;
-                return Ok(Analysis {
-                    config,
-                    current: before,
-                    recommended,
-                    limited_gain,
-                    background_noise: noise_ratio > 0.06,
-                    soft_speech_unmeasured: true,
-                });
-            }
-            return Err("Not enough soft speech was detected. Speak softly without whispering during the soft-voice reading, then repeat.".into());
-        }
         if percentile(&mut metrics.soft_peaks, 0.35) < raw_soft * 0.45 {
             tracing::info!(
                 ?profile,
@@ -289,46 +315,44 @@ pub(super) fn analyze(
             );
             continue;
         }
-        preserved_soft_speech = true;
         if let Some((config, limited_gain, _)) =
-            recommendation(&mut metrics, candidate, profile, false)
+            recommendation(&mut metrics, candidate, profile, false, noise_budget)
         {
-            let (recommended, _) = render(&input, config, &cancel)?;
+            let Some(recommended) = checked_preview(&input, config, noise_budget, &cancel)? else {
+                continue;
+            };
             return Ok(Analysis {
                 config,
                 current: before,
                 recommended,
                 limited_gain,
                 background_noise: false,
-                soft_speech_unmeasured: false,
+                keep_current: false,
             });
         }
-        if let Some(option) = recommendation(&mut metrics, candidate, profile, true) {
+        if let Some(option) = recommendation(&mut metrics, candidate, profile, true, noise_budget) {
             // Keep lighter processing unless another candidate provides a meaningful noise improvement.
             if fallback
                 .as_ref()
                 .is_none_or(|previous| option.2 < previous.2 * 0.8)
+                && let Some(samples) = checked_preview(&input, option.0, noise_budget, &cancel)?
             {
-                fallback = Some(option);
+                fallback = Some((option.0, option.1, option.2, samples));
             }
         }
     }
-    if let Some((config, limited_gain, _)) = fallback {
+    if let Some((config, limited_gain, _, recommended)) = fallback {
         tracing::info!(profile = ?config.processing.profile, volume = config.volume, gate = config.processing.gate, "microphone calibration offers a preview with residual background noise");
-        let (recommended, _) = render(&input, config, &cancel)?;
         return Ok(Analysis {
             config,
             current: before,
             recommended,
             limited_gain,
             background_noise: true,
-            soft_speech_unmeasured: false,
+            keep_current: false,
         });
     }
-    if !preserved_soft_speech {
-        return Err("Processing reduced quiet speech too much. Check your microphone's own noise reduction and repeat.".into());
-    }
-    Err("Noise and quiet speech overlap too much. Reposition the microphone and repeat.".into())
+    Ok(keep_current(current, before))
 }
 
 #[cfg(test)]
@@ -353,6 +377,14 @@ mod tests {
         current.processing.echo = false;
         current.processing.high_pass = false;
         let result = analyze(input, current, Arc::new(AtomicBool::new(false))).unwrap();
+        if result.keep_current {
+            assert_eq!(result.config, current);
+            assert!(result.recommended.is_empty());
+            println!(
+                "Recorded speech: existing settings retained; no safe noise reduction improvement"
+            );
+            return;
+        }
         println!(
             "Recorded speech: profile={:?}, volume={}%, threshold={}, suppression={}dB, fixed_gain={}",
             result.config.processing.profile,
@@ -466,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn unmeasurable_soft_speech_still_allows_a_conservative_volume_preview() {
+    fn unmeasurable_soft_speech_keeps_existing_noise_controls() {
         let mut current = Config::from_state(&AppState::empty());
         current.processing.headphones = true;
         let result = analyze(
@@ -475,19 +507,9 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
-        assert!(result.soft_speech_unmeasured);
-        assert!(result.background_noise);
-        assert_eq!(result.config.processing.profile, Profile::Natural);
-        assert!(!result.config.processing.gate);
-        assert!(!result.config.denoise);
-        assert!(!result.config.agc);
-        assert_eq!(current.volume, 100);
-        assert!(
-            result.recommended[(SOFT_START * SAMPLE_RATE as f32) as usize
-                ..(QUIET_START * SAMPLE_RATE as f32) as usize]
-                .iter()
-                .all(|sample| sample.abs() >= 0.01)
-        );
+        assert!(result.keep_current);
+        assert_eq!(result.config, current);
+        assert!(result.recommended.is_empty());
     }
 
     #[test]
@@ -515,7 +537,7 @@ mod tests {
             }
         }
         let result = analyze(input, current, Arc::new(AtomicBool::new(false))).unwrap();
-        assert!(!result.soft_speech_unmeasured);
+        assert!(!result.keep_current);
         assert!(!result.background_noise);
         assert_eq!(
             result.recommended.len(),
@@ -532,11 +554,26 @@ mod tests {
         metrics.speech_rms = vec![0.1; 700];
         metrics.soft_peaks = vec![0.02; 300];
         metrics.peaks = vec![0.15; 1000];
-        let (recommended, _, _) =
-            recommendation(&mut metrics, config, Profile::Balanced, false).unwrap();
+        let (recommended, _, _) = recommendation(
+            &mut metrics,
+            config,
+            Profile::Balanced,
+            false,
+            f32::INFINITY,
+        )
+        .unwrap();
         assert!(recommended.threshold / 2 > 1);
         metrics.soft_peaks.fill(0.001);
-        assert!(recommendation(&mut metrics, config, Profile::Balanced, false).is_none());
+        assert!(
+            recommendation(
+                &mut metrics,
+                config,
+                Profile::Balanced,
+                false,
+                f32::INFINITY
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -560,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn usable_speech_with_background_noise_gets_an_honest_preview() {
+    fn noisy_sample_never_falls_back_to_unfiltered_amplification() {
         let mut current = Config::from_state(&AppState::empty());
         current.processing.headphones = true;
         let result = analyze(
@@ -569,19 +606,13 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
-        assert!(result.background_noise);
-        assert!(!result.config.agc);
-        assert_eq!(current.volume, 100);
-        assert!(
-            result.recommended[(SOFT_START * SAMPLE_RATE as f32) as usize
-                ..(QUIET_START * SAMPLE_RATE as f32) as usize]
-                .iter()
-                .any(|s| s.abs() >= 0.02)
-        );
+        assert!(result.keep_current);
+        assert_eq!(result.config, current);
+        assert!(result.recommended.is_empty());
     }
 
     #[test]
-    fn fallback_preserves_soft_words_when_a_safe_gate_cannot_be_found() {
+    fn unsafe_gate_is_rejected_instead_of_leaving_background_noise_open() {
         let config = Config::from_state(&AppState::empty()).preset(Profile::Balanced);
         let mut metrics = Metrics::new();
         metrics.noise_rms = vec![0.001; 250];
@@ -589,11 +620,53 @@ mod tests {
         metrics.speech_rms = vec![0.1; 700];
         metrics.soft_peaks = vec![0.02; 300];
         metrics.peaks = vec![0.15; 1000];
-        assert!(recommendation(&mut metrics, config, Profile::Balanced, false).is_none());
-        let (recommended, _, _) =
-            recommendation(&mut metrics, config, Profile::Balanced, true).unwrap();
-        assert!(!recommended.processing.gate);
-        assert_eq!(recommended.processing.profile, Profile::Custom);
-        assert!(recommended.denoise);
+        assert!(
+            recommendation(
+                &mut metrics,
+                config,
+                Profile::Balanced,
+                false,
+                f32::INFINITY
+            )
+            .is_none()
+        );
+        assert!(
+            recommendation(&mut metrics, config, Profile::Balanced, true, f32::INFINITY).is_none()
+        );
+    }
+
+    #[test]
+    fn gain_target_cannot_double_background_noise_to_reach_200_percent() {
+        let config = Config::from_state(&AppState::empty()).preset(Profile::Natural);
+        let mut metrics = Metrics::new();
+        metrics.noise_rms = vec![0.002; 250];
+        metrics.speech_rms = vec![0.04; 600];
+        metrics.peaks = vec![0.1; 1200];
+        let (config, _, _) =
+            recommendation(&mut metrics, config, Profile::Natural, false, 0.002).unwrap();
+        assert_eq!(config.volume, 100);
+    }
+
+    #[test]
+    fn final_preview_rejects_ambient_amplification_and_measures_audible_gate_output() {
+        let input = recording(0.01, 0.07, 0.03);
+        let cancel = AtomicBool::new(false);
+        let mut config = Config::from_state(&AppState::empty());
+        config.processing.headphones = true;
+        config = config.preset(Profile::Natural);
+        config.volume = 200;
+        assert!(
+            checked_preview(&input, config, 0.01, &cancel)
+                .unwrap()
+                .is_none()
+        );
+        config.volume = 100;
+        config.processing.gate = true;
+        config.threshold = 60;
+        assert!(
+            checked_preview(&input, config, 0.0003, &cancel)
+                .unwrap()
+                .is_some()
+        );
     }
 }

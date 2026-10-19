@@ -472,20 +472,24 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
             } else if selected == Mode::Analyze {
                 p { class: "mt-2 text-[12px] text-[var(--text-muted)]", role: "status", {crate::i18n::text("Comparing voice profiles on this device…", &[])} }
             } else if let Some(data) = prepared.read().clone() {
+                if data.analysis.keep_current {
+                    p { class: "mt-2 text-[12px] text-[var(--text)]", role: "status", {crate::i18n::text("No automatic adjustment reduced background noise while preserving speech. Your settings have not changed.", &[])} }
+                } else {
                 p { class: "mt-2 text-[12px] text-[var(--text)]",
                     {crate::i18n::text("Recommended: {0} · volume {1}% · sensitivity {2}", &[crate::i18n::label(data.analysis.config.processing.profile.label()).to_string(), data.analysis.config.volume.to_string(), peak_to_db_label(data.analysis.config.threshold)])}
                 }
+                }
                 if data.analysis.limited_gain { p { class: "mt-1 text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Your input is quiet. Moving the microphone closer can improve it further.", &[])} } }
                 if data.analysis.background_noise { p { class: "mt-1 text-[12px] text-[var(--text-muted)]", role: "status", {crate::i18n::text("Some background noise remains to preserve quiet words. Compare both samples before applying.", &[])} } }
-                if data.analysis.soft_speech_unmeasured { p { class: "mt-1 text-[12px] text-[var(--text-muted)]", role: "status", {crate::i18n::text("We could not measure soft speech. This conservative volume adjustment leaves noise reduction and the voice gate off. Listen before applying, or repeat the test.", &[])} } }
                 div { class: "flex gap-2 mt-2 flex-wrap",
                     button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)]", "aria-pressed": selected == Mode::Before, onclick: move |_| mode.set(if mode() == Mode::Before { Mode::Ready } else { Mode::Before }), {crate::i18n::text("Listen to current", &[])} }
-                    button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)]", "aria-pressed": selected == Mode::After, onclick: move |_| mode.set(if mode() == Mode::After { Mode::Ready } else { Mode::After }), {crate::i18n::text("Listen to recommended", &[])} }
+                    if !data.analysis.keep_current { button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)]", "aria-pressed": selected == Mode::After, onclick: move |_| mode.set(if mode() == Mode::After { Mode::Ready } else { Mode::After }), {crate::i18n::text("Listen to recommended", &[])} } }
                     button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)]", onclick: move |_| { error.set(None); mode.set(Mode::Record); }, {crate::i18n::text("Repeat adjustment", &[])} }
-                    button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)]",
+                    if !data.analysis.keep_current { button { class: "rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text)]",
                         onclick: move |_| {
                             let data = prepared.peek().clone();
                             if let Some(data) = data {
+                                if data.analysis.keep_current { return; }
                                 if calibration::context(&state.peek()).as_ref() != Ok(&data.context) || Config::from_state(&state.peek()) != data.original { error.set(Some(Failure::Adjustment("The audio device or settings changed. Repeat the microphone adjustment.".into()))); mode.set(Mode::Idle); return; }
                                 let mut next = settings.peek().clone();
                                 data.analysis.config.apply_settings(&mut next);
@@ -496,11 +500,11 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                                 mode.set(Mode::Idle);
                             }
                         }, {crate::i18n::text("Apply recommendation", &[])}
-                    }
+                    } }
                 }
                 p { class: "mt-2 text-[11px] text-[var(--text-dim)]", role: "status",
                     if matches!(selected, Mode::Before | Mode::After) { {crate::i18n::text("Playing your sample. Tap the same button to stop.", &[])} }
-                    else { {crate::i18n::text("Compare both samples before applying. Listen for clear, steady speech.", &[])} }
+                    else if !data.analysis.keep_current { {crate::i18n::text("Compare both samples before applying. Listen for clear, steady speech.", &[])} }
                 }
             }
                 div { class: "dxf-mic-test-actions",
