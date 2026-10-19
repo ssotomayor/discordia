@@ -15,6 +15,7 @@ pub(crate) enum Status {
     Deafened,
     ZeroVolume,
     Unavailable,
+    AdjustmentFailed,
 }
 
 impl Status {
@@ -28,6 +29,7 @@ impl Status {
             Self::Deafened => "Call audio disabled",
             Self::ZeroVolume => "Microphone volume is zero",
             Self::Unavailable => "Audio device unavailable",
+            Self::AdjustmentFailed => "Repeat microphone adjustment",
         }
     }
 
@@ -42,6 +44,9 @@ impl Status {
             Self::Deafened => "You are neither hearing nor transmitting call audio.",
             Self::ZeroVolume => "Raise the microphone volume so your voice can be heard.",
             Self::Unavailable => "Check your audio devices and try again.",
+            Self::AdjustmentFailed => {
+                "Your settings have not changed. Follow the instructions and try again."
+            }
         }
     }
 
@@ -59,7 +64,11 @@ impl Status {
     pub fn tone(self) -> &'static str {
         match self {
             Self::Good => "good",
-            Self::InputHigh | Self::OutputHigh | Self::ZeroVolume | Self::Unavailable => "warning",
+            Self::InputHigh
+            | Self::OutputHigh
+            | Self::ZeroVolume
+            | Self::Unavailable
+            | Self::AdjustmentFailed => "warning",
             _ => "neutral",
         }
     }

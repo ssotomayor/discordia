@@ -198,9 +198,13 @@ pub(super) fn analyze(
             hop.samples.iter().fold(0.0_f32, |m, s| m.max(s.abs())),
         );
     }
-    let raw_speech = percentile(&mut raw.speech_rms, 0.6);
     let raw_noise = percentile(&mut raw.noise_rms, 0.95);
-    if raw_speech < 0.001 || raw_speech < raw_noise * 2.0 {
+    let voiced_normal: Vec<_> = raw
+        .speech_rms
+        .iter()
+        .map(|rms| *rms >= (raw_noise * 2.0).max(0.001))
+        .collect();
+    if voiced_normal.iter().filter(|voiced| **voiced).count() < 100 {
         return Err(
             "Not enough clear speech was detected. Move the microphone closer and repeat.".into(),
         );
@@ -214,7 +218,7 @@ pub(super) fn analyze(
         .collect();
     if voiced_soft.len() < 40 {
         return Err(
-            "Not enough clear speech was detected. Move the microphone closer and repeat.".into(),
+            "Not enough soft speech was detected. Speak softly without whispering during seconds 10 to 13, then repeat.".into(),
         );
     }
     let raw_soft = percentile(&mut voiced_soft, 0.35);
@@ -232,6 +236,13 @@ pub(super) fn analyze(
         let mut measuring = candidate;
         measuring.processing.gate = false;
         let (_, mut metrics) = render(&input, measuring, &cancel)?;
+        // Pauses must not set the voice gain, but noise and clipping checks still use the full capture.
+        metrics.speech_rms = metrics
+            .speech_rms
+            .iter()
+            .zip(&voiced_normal)
+            .filter_map(|(rms, voiced)| voiced.then_some(*rms))
+            .collect();
         metrics.soft_peaks = metrics
             .soft_peaks
             .iter()
@@ -361,6 +372,52 @@ mod tests {
                 recording(0.0001, 0.07, 0.02),
                 original,
                 Arc::new(AtomicBool::new(true))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn natural_pauses_do_not_hide_audible_normal_and_soft_speech() {
+        let mut current = Config::from_state(&AppState::empty());
+        current.processing.headphones = true;
+        current.processing.echo = false;
+        current.processing.high_pass = false;
+        let mut input = recording(0.0001, 0.07, 0.02);
+        for hop in &mut input {
+            if (3.0..13.0).contains(&hop.at) && (hop.at * 100.0).round() as usize % 100 >= 30 {
+                hop.samples.fill(0.0001);
+            }
+        }
+        let result = analyze(input, current, Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(result.config.processing.profile, Profile::Natural);
+        assert!((140..=144).contains(&result.config.volume));
+        assert!(!result.config.agc);
+        assert!(result.recommended.iter().any(|sample| sample.abs() > 0.02));
+    }
+
+    #[test]
+    fn missing_soft_speech_has_its_own_guidance() {
+        let message = analyze(
+            recording(0.0001, 0.07, 0.0001),
+            Config::from_state(&AppState::empty()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .err()
+        .unwrap();
+        assert!(message.contains("soft speech"));
+        assert!(message.contains("10 to 13"));
+    }
+
+    #[test]
+    fn a_short_click_cannot_replace_normal_speech() {
+        let mut input = recording(0.0001, 0.0001, 0.02);
+        input[350].samples.fill(0.1);
+        assert!(
+            analyze(
+                input,
+                Config::from_state(&AppState::empty()),
+                Arc::new(AtomicBool::new(false)),
             )
             .is_err()
         );
