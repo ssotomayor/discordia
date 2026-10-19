@@ -1,4 +1,5 @@
 {
+  "No automatic adjustment reduced background noise while preserving speech. Your settings have not changed.": ["No encontramos un ajuste automático que reduzca el ruido y conserve la voz. No se cambiaron tus ajustes.","Não encontramos um ajuste automático que reduza o ruído e preserve a fala. Suas configurações não foram alteradas."],
   "I am testing my microphone. My voice should sound clear, complete, and without interruptions.": ["Estoy probando mi micrófono. Quiero que mi voz se escuche clara, completa y sin cortes.", "Estou testando meu microfone. Quero que minha voz seja ouvida com clareza e sem cortes."],
   "This game has ended.": ["Esta partida terminó.", "Esta partida terminou."],
   "{0} left — round to {1}": ["{0} salió — la ronda es para {1}", "{0} saiu — ponto para {1}"],

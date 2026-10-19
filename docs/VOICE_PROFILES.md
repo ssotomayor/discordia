@@ -100,11 +100,12 @@ Quiet inputs that need more than 200% receive a limited-gain warning.
 Choose the least suppression that reduces measured room noise while preserving
 quiet speech. Energy metrics are diagnostic, not an intelligibility score:
 human before/after listening is required to judge muffling and lost consonants.
-If no candidate meets the preferred 24 dB separation, offer a labelled residual-noise
-preview only with at least 6 dB separation and preserved soft speech. Prefer lighter
-processing unless residual noise improves by 20%; disable an unsafe gate and mark
-the profile Custom. If soft speech cannot be measured but normal speech is usable,
-offer only a labelled Natural volume preview with suppression/gate off.
+Automatic suggestions in noisy rooms retain suppression and a safe speech gate.
+Gain is capped by the current audible noise floor, with a -70 dBFS measurement floor
+and a -44 dBFS ceiling. Final PCM is checked after gain and gating; a louder room
+is rejected even if speech/noise ratio improves. Unknown soft speech or unsafe gates
+keep existing settings instead of offering unfiltered amplification. No-improvement
+results offer current playback without an Apply action.
 Silence, clipping, gaps and insufficient normal speech still fail.
 Offer **Escuchar actual**, **Escuchar recomendado**, **Aplicar**, **Repetir**,
 **Conservar mis ajustes**. Compare the same phrase; any comparison loudness matching
