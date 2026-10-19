@@ -54,10 +54,10 @@ starting points, to be validated with listening tests.
 
 ```mermaid
 flowchart LR
-    A[Elegir micrófono y salida] --> B[3 s de silencio]
-    B --> C[7 s hablando normal]
-    C --> D[3 s hablando suave]
-    D --> E[2 s de silencio]
+    A[Elegir micrófono y salida] --> B[1.5 s de silencio]
+    B --> C[6 s leyendo normal]
+    C --> D[6 s leyendo suave]
+    D --> E[1.5 s de silencio]
     E --> F[Comparar actual y recomendado]
     F --> G[Aplicar o conservar ajustes]
 ```
@@ -65,6 +65,9 @@ flowchart LR
 Before capture, ask whether output is headphones or speakers and whether the selected
 mic already has processing, for example a virtual Broadcast/Krisp device. Start only
 after the person presses the button; no microphone capture is needed for this design task.
+
+Both speech stages display the same localized reading passage; soft speech means
+lower volume without whispering or changing microphone distance.
 
 During capture, mute local monitoring and network publication. Keep the optional short
 keyboard/fan sample separate from speech. The basic sample is 15 seconds; keyboard
