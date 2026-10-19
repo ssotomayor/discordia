@@ -255,7 +255,7 @@ fn UpdateStatusIcon(kind: &'static str) -> Element {
                     "success" => rsx! { path { d: "M5 12l4 4L19 6" } },
                     "error" => rsx! { path { d: "M12 7v6M12 17h.01" } circle { cx: "12", cy: "12", r: "9" } },
                     "busy" => rsx! { path { d: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" } },
-                    "local" => rsx! { path { d: "M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" } },
+                    "local" => rsx! { path { d: "M12 11v6M12 7h.01" } },
                     _ => rsx! { path { d: "M12 3v12m-5-5 5 5 5-5M3 15v5h18v-5" } },
                 }
             }
