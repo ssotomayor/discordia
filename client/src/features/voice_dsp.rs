@@ -140,6 +140,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn individual_peaks_are_limited_after_manual_gain_without_lowering_normal_speech() {
+        let (_, reference) = crate::audio_queue::channel();
+        let mut processor = Processor::new(reference);
+        let mut config = Config::from_state(&AppState::empty());
+        config.processing.headphones = true;
+        let mut config = config.preset(crate::mic_profile::Profile::Natural);
+        for volume in [50, 100, 200] {
+            config.volume = volume;
+            let normal = processor
+                .process([0.05; FRAME_SAMPLES], config, 0, false)
+                .unwrap();
+            let expected = 0.05 * f32::from(volume) / 100.0;
+            assert!(
+                normal
+                    .samples
+                    .iter()
+                    .all(|sample| (*sample - expected).abs() < 1e-6)
+            );
+            let mut peak = [0.1; FRAME_SAMPLES];
+            peak[0] = 0.9;
+            peak[1] = -0.45;
+            let limited = processor.process(peak, config, 0, false).unwrap();
+            assert!(
+                limited
+                    .samples
+                    .iter()
+                    .all(|sample| sample.abs() <= 0.980_001)
+            );
+            assert!((limited.samples[0] / limited.samples[1] + 2.0).abs() < 1e-6);
+            let after = processor
+                .process([0.05; FRAME_SAMPLES], config, 0, false)
+                .unwrap();
+            assert!(
+                after
+                    .samples
+                    .iter()
+                    .all(|sample| (*sample - expected).abs() < 1e-6)
+            );
+        }
+    }
+
+    #[test]
+    fn individually_safe_microphones_can_still_overload_the_final_mix() {
+        let mut config = Config::from_state(&AppState::empty());
+        config.processing.headphones = true;
+        let mut config = config.preset(crate::mic_profile::Profile::Natural);
+        config.volume = 200;
+        let mut processed = Vec::new();
+        for _ in 0..2 {
+            let (_, reference) = crate::audio_queue::channel();
+            let mut processor = Processor::new(reference);
+            let output = processor
+                .process([0.9; FRAME_SAMPLES], config, 0, false)
+                .unwrap();
+            assert!((output.samples[0] - 0.98).abs() < 1e-6);
+            processed.push(output.samples);
+        }
+        let mut limiter = crate::playback_limiter::Limiter::new(SAMPLE_RATE);
+        let mut peak = 0.0_f32;
+        for (first, second) in processed[0].iter().zip(&processed[1]) {
+            let sum = first + second;
+            assert!(sum > 1.95);
+            let output = limiter.process(sum);
+            assert!(output.abs() <= 1.0);
+            peak = peak.max(output.abs());
+        }
+        assert!(peak > 0.99);
+    }
+
+    #[test]
     fn profile_updates_reach_the_dsp_as_one_coherent_configuration() {
         let controls = AudioControls::from_state(&AppState::empty());
         let mut natural = controls.mic_config();

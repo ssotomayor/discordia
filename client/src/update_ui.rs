@@ -300,9 +300,9 @@ pub fn UpdatePanel() -> Element {
         Phase::Failed(_) => "error",
         Phase::Downloading | Phase::Leaving(_) | Phase::Installing => "busy",
         Phase::Ready(_) | Phase::Finished | Phase::Opened => "success",
+        _ if state.offer.is_some() => "available",
         _ if state.check == Check::Searching => "busy",
         _ if matches!(state.check, Check::Failed(_)) => "error",
-        _ if state.offer.is_some() => "available",
         _ if state.check == Check::Current => "success",
         _ if state.check == Check::Local => "local",
         _ => "available",
@@ -374,6 +374,7 @@ pub fn UpdatePanel() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dioxus::core::{AttributeValue, Mutation};
     use std::{cell::RefCell, rc::Rc};
 
     fn offer(tag: &str) -> Update {
@@ -430,6 +431,55 @@ mod tests {
     }
 
     type Export = Rc<RefCell<Option<Updates>>>;
+
+    #[test]
+    fn a_retained_offer_keeps_the_heading_and_icon_consistent_during_rechecks() {
+        for check in [
+            Check::Idle,
+            Check::Searching,
+            Check::Failed("offline".into()),
+            Check::Current,
+            Check::Local,
+        ] {
+            let mut dom = VirtualDom::new_with_props(
+                |check: Check| {
+                    let state = use_signal(|| State {
+                        offer: Some(offer("v1")),
+                        check,
+                        ..Default::default()
+                    });
+                    let open_request = use_signal(|| 0);
+                    let commands = use_coroutine(|_rx: UnboundedReceiver<Command>| async {});
+                    use_context_provider(|| Updates {
+                        state,
+                        open_request,
+                        commands,
+                    });
+                    rsx! { UpdatePanel {} }
+                },
+                check.clone(),
+            );
+            let mutations = dom.rebuild_to_vec();
+            assert!(
+                mutations.edits.iter().any(|edit| matches!(
+                    edit,
+                    Mutation::CreateTextNode { value, .. } if value == "A new version is available"
+                )),
+                "check={check:?}"
+            );
+            assert!(
+                mutations.edits.iter().any(|edit| matches!(
+                    edit,
+                    Mutation::SetAttribute {
+                        name: "data-state",
+                        value: AttributeValue::Text(kind),
+                        ..
+                    } if kind == "available"
+                )),
+                "check={check:?}"
+            );
+        }
+    }
 
     #[test]
     fn downloads_do_not_install_and_restart_waits_for_calls_and_disconnect() {
