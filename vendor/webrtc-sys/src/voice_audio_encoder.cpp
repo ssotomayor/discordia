@@ -180,7 +180,7 @@ void VoiceAudioEncoder::SetMaxPlaybackRate(int frequency_hz) {
 void VoiceAudioEncoder::OnReceivedUplinkPacketLossFraction(float /* fraction */) {}
 
 void VoiceAudioEncoder::OnReceivedTargetAudioBitrate(int target_bps) {
-  ApplyAudioBitrate(target_bps);
+  SetTargetBitrate(target_bps);
 }
 
 void VoiceAudioEncoder::OnReceivedUplinkBandwidth(
@@ -198,8 +198,8 @@ void VoiceAudioEncoder::OnReceivedOverhead(size_t overhead_bytes_per_packet) {
   overhead_bytes_per_packet_ = overhead_bytes_per_packet;
 }
 
-// A target includes the packets' own overhead; until that is known the target
-// says nothing about the payload, so the configured bitrate stands.
+// An estimator's target includes the packets' own overhead; until that is
+// known it says nothing about the payload, so the configured bitrate stands.
 void VoiceAudioEncoder::ApplyAudioBitrate(int target_audio_bitrate_bps) {
   if (!overhead_bytes_per_packet_) {
     return;
