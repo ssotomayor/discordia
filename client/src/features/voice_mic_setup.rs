@@ -78,7 +78,7 @@ impl Recording {
             checked: Instant::now(),
             context,
             config: Config::from_state(&state.peek()),
-            frames: Vec::with_capacity(1500),
+            frames: Vec::with_capacity(calibration::SECONDS as usize * 100),
         })
     }
 
@@ -102,7 +102,7 @@ impl Recording {
             if !frame.is_fresh() || elapsed.as_secs_f32() >= calibration::SECONDS as f32 {
                 continue;
             }
-            if self.frames.len() >= 1600 {
+            if self.frames.len() >= calibration::MAX_FRAMES {
                 return Err(
                     "The microphone returned invalid audio. Try another input device.".into(),
                 );
@@ -254,9 +254,9 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                     if recording.is_none() { prepared.set(None); recording = Some(Recording::start(state)?); elapsed.set(0); }
                     if let Some(capture) = &mut recording {
                         recording_peak.set(capture.collect(&state.peek())?);
-                        let seconds = capture.start.elapsed().as_secs();
-                        if *elapsed.peek() != seconds { elapsed.set(seconds); }
-                        if seconds >= calibration::SECONDS {
+                        let milliseconds = capture.start.elapsed().as_millis() as u64;
+                        if *elapsed.peek() != milliseconds { elapsed.set(milliseconds); }
+                        if milliseconds >= calibration::SECONDS * 1000 {
                             let context = capture.context.clone();
                             let config = capture.config;
                             let frames = std::mem::take(&mut capture.frames);
@@ -386,13 +386,16 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
     };
     let hidden_meter = 100 - meter_level;
     let status_voice = voice.clone();
-    let progress = elapsed().min(calibration::SECONDS);
-    let instruction = if progress < 3 {
+    let total_millis = calibration::SECONDS * 1000;
+    let elapsed_millis = elapsed().min(total_millis);
+    let seconds = elapsed_millis as f32 / 1000.0;
+    let progress = elapsed_millis / 1000;
+    let instruction = if seconds < calibration::NORMAL_START {
         "Stay quiet while we measure the room."
-    } else if progress < 10 {
-        "Speak normally: tell us what you did today."
-    } else if progress < 13 {
-        "Now speak softly, without whispering."
+    } else if seconds < calibration::SOFT_START {
+        "Read the text in your normal voice."
+    } else if seconds < calibration::QUIET_START {
+        "Read the same text softly, without whispering or moving away from the microphone."
     } else {
         "Stay quiet again."
     };
@@ -422,8 +425,13 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
             if busy { p { class: "mt-2 text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Leave your voice call to test the microphone.", &[])} } }
             else if selected == Mode::Record {
                 p { class: "mt-2 text-[13px] text-[var(--text)]", role: "status", {crate::i18n::label(instruction)} }
-                progress { class: "w-full mt-2", max: "15", value: "{progress}", aria_label: crate::i18n::text("Microphone adjustment progress", &[]) }
-                p { class: "text-[11px] text-[var(--text-dim)]", "{progress} / 15 s" }
+                if seconds < calibration::QUIET_START {
+                    blockquote { class: "mt-3 mb-2 rounded border border-[var(--border)] p-3 text-[14px] text-[var(--text)]",
+                        {crate::i18n::text("I am testing my microphone. My voice should sound clear, complete, and without interruptions.", &[])}
+                    }
+                }
+                progress { class: "w-full mt-2", max: "{total_millis}", value: "{elapsed_millis}", aria_label: crate::i18n::text("Microphone adjustment progress", &[]) }
+                p { class: "text-[11px] text-[var(--text-dim)]", "{progress} / {calibration::SECONDS} s" }
             } else if selected == Mode::Analyze {
                 p { class: "mt-2 text-[12px] text-[var(--text-muted)]", role: "status", {crate::i18n::text("Comparing voice profiles on this device…", &[])} }
             } else if let Some(data) = prepared.read().clone() {

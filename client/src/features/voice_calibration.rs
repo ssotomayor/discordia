@@ -1,7 +1,11 @@
 use super::*;
 use crate::mic_profile::{Config, Context, Profile};
 
+pub(super) const NORMAL_START: f32 = 1.5;
+pub(super) const SOFT_START: f32 = 7.5;
+pub(super) const QUIET_START: f32 = 13.5;
 pub(super) const SECONDS: u64 = 15;
+pub(super) const MAX_FRAMES: usize = SECONDS as usize * 100 + 100;
 
 pub(super) struct Hop {
     pub at: f32,
@@ -88,13 +92,13 @@ impl Metrics {
 
     fn push(&mut self, at: f32, samples: &[f32], peak: f32) {
         let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
-        if (0.5..3.0).contains(&at) || (13.0..15.0).contains(&at) {
+        if (0.5..NORMAL_START).contains(&at) || (QUIET_START..SECONDS as f32).contains(&at) {
             self.noise_peaks.push(peak);
             self.noise_rms.push(rms);
-        } else if (3.0..10.0).contains(&at) {
+        } else if (NORMAL_START..SOFT_START).contains(&at) {
             self.speech_rms.push(rms);
             self.peaks.push(peak);
-        } else if (10.0..13.0).contains(&at) {
+        } else if (SOFT_START..QUIET_START).contains(&at) {
             self.soft_peaks.push(peak);
             self.peaks.push(peak);
         }
@@ -172,10 +176,10 @@ pub(super) fn analyze(
     cancel: Arc<AtomicBool>,
 ) -> Result<Analysis, String> {
     for (from, until, minimum) in [
-        (0.5, 3.0, 210),
-        (3.0, 10.0, 600),
-        (10.0, 13.0, 250),
-        (13.0, 15.0, 165),
+        (0.5, NORMAL_START, 85),
+        (NORMAL_START, SOFT_START, 510),
+        (SOFT_START, QUIET_START, 510),
+        (QUIET_START, SECONDS as f32, 125),
     ] {
         if input
             .iter()
@@ -186,7 +190,7 @@ pub(super) fn analyze(
             return Err("The recording had gaps. Close other audio tools and try again.".into());
         }
     }
-    if input.len() > 1600
+    if input.len() > MAX_FRAMES
         || input
             .iter()
             .any(|h| h.samples.iter().any(|s| !s.is_finite()))
@@ -274,7 +278,7 @@ pub(super) fn analyze(
                     soft_speech_unmeasured: true,
                 });
             }
-            return Err("Not enough soft speech was detected. Speak softly without whispering during seconds 10 to 13, then repeat.".into());
+            return Err("Not enough soft speech was detected. Speak softly without whispering during the soft-voice reading, then repeat.".into());
         }
         if percentile(&mut metrics.soft_peaks, 0.35) < raw_soft * 0.45 {
             tracing::info!(
@@ -332,13 +336,13 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires a local 15 second guided microphone WAV (3 quiet, 7 normal, 3 soft, 2 quiet) via DISCORDIA_MIC_AUDIT_WAV"]
+    #[ignore = "requires a local 15 second guided microphone WAV (1.5 quiet, 6 normal, 6 soft, 1.5 quiet) via DISCORDIA_MIC_AUDIT_WAV"]
     fn recorded_speech_produces_a_bounded_stable_recommendation() {
         let path = std::env::var("DISCORDIA_MIC_AUDIT_WAV").unwrap();
         let samples = super::super::speech_audit_tests::read_speech(std::path::Path::new(&path));
-        assert!(samples.len() >= 15 * SAMPLE_RATE as usize);
+        assert!(samples.len() >= SECONDS as usize * SAMPLE_RATE as usize);
         let original: Vec<_> = samples.as_chunks::<FRAME_SAMPLES>().0.iter().collect();
-        let input: Vec<_> = (0..1500)
+        let input: Vec<_> = (0..SECONDS as usize * 100)
             .map(|i| Hop {
                 at: i as f32 / 100.0,
                 samples: *original[i],
@@ -365,7 +369,8 @@ mod tests {
                 .iter()
                 .all(|sample| sample.abs() <= 0.981)
         );
-        let quiet = &result.recommended[10 * SAMPLE_RATE as usize..13 * SAMPLE_RATE as usize];
+        let quiet = &result.recommended[(SOFT_START * SAMPLE_RATE as f32) as usize
+            ..(QUIET_START * SAMPLE_RATE as f32) as usize];
         assert!(
             quiet.iter().any(|sample| sample.abs() > 0.005),
             "quiet speech was removed"
@@ -373,12 +378,12 @@ mod tests {
     }
 
     fn recording(noise: f32, voice: f32, soft: f32) -> Vec<Hop> {
-        (0..1500)
+        (0..SECONDS as usize * 100)
             .map(|i| {
                 let at = i as f32 / 100.0;
-                let amp = if (3.0..10.0).contains(&at) {
+                let amp = if (NORMAL_START..SOFT_START).contains(&at) {
                     voice
-                } else if (10.0..13.0).contains(&at) {
+                } else if (SOFT_START..QUIET_START).contains(&at) {
                     soft
                 } else {
                     noise
@@ -411,8 +416,8 @@ mod tests {
         let peaks: Vec<_> = result
             .recommended
             .chunks(FRAME_SAMPLES)
-            .skip(400)
-            .take(500)
+            .skip((NORMAL_START * 100.0) as usize + 100)
+            .take(((SOFT_START - NORMAL_START - 1.0) * 100.0) as usize)
             .map(|h| h[0].abs())
             .collect();
         assert!(peaks.iter().all(|peak| (*peak - peaks[0]).abs() < 0.00001));
@@ -447,7 +452,9 @@ mod tests {
         current.processing.high_pass = false;
         let mut input = recording(0.0001, 0.07, 0.02);
         for hop in &mut input {
-            if (3.0..13.0).contains(&hop.at) && (hop.at * 100.0).round() as usize % 100 >= 30 {
+            if (NORMAL_START..QUIET_START).contains(&hop.at)
+                && (hop.at * 100.0).round() as usize % 100 >= 30
+            {
                 hop.samples.fill(0.0001);
             }
         }
@@ -476,7 +483,8 @@ mod tests {
         assert!(!result.config.agc);
         assert_eq!(current.volume, 100);
         assert!(
-            result.recommended[10 * SAMPLE_RATE as usize..13 * SAMPLE_RATE as usize]
+            result.recommended[(SOFT_START * SAMPLE_RATE as f32) as usize
+                ..(QUIET_START * SAMPLE_RATE as f32) as usize]
                 .iter()
                 .all(|sample| sample.abs() >= 0.01)
         );
@@ -493,6 +501,25 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn soft_speech_near_the_end_of_the_extended_reading_is_measured() {
+        let mut current = Config::from_state(&AppState::empty());
+        current.processing.headphones = true;
+        let mut input = recording(0.0001, 0.07, 0.0001);
+        for hop in &mut input {
+            if (QUIET_START - 2.0..QUIET_START).contains(&hop.at) {
+                hop.samples = std::array::from_fn(|i| if i % 2 == 0 { 0.02 } else { -0.02 });
+            }
+        }
+        let result = analyze(input, current, Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(!result.soft_speech_unmeasured);
+        assert!(!result.background_noise);
+        assert_eq!(
+            result.recommended.len(),
+            SECONDS as usize * SAMPLE_RATE as usize
         );
     }
 
@@ -546,7 +573,8 @@ mod tests {
         assert!(!result.config.agc);
         assert_eq!(current.volume, 100);
         assert!(
-            result.recommended[10 * SAMPLE_RATE as usize..13 * SAMPLE_RATE as usize]
+            result.recommended[(SOFT_START * SAMPLE_RATE as f32) as usize
+                ..(QUIET_START * SAMPLE_RATE as f32) as usize]
                 .iter()
                 .any(|s| s.abs() >= 0.02)
         );
