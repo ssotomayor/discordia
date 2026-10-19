@@ -33,6 +33,7 @@ mod mediakey;
 mod native_sounds;
 mod net;
 mod nostr;
+mod playback_limiter;
 mod portmap;
 mod presence;
 mod profile;

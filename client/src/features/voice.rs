@@ -3426,13 +3426,6 @@ fn refresh_gains(
     }
 }
 
-/// A lone speaker must come out exactly as sent: the old per-track curve cost
-/// every listener up to 1.4 dB, and the f32 path could hand the device 2.0.
-#[inline]
-fn mix(acc: f32) -> f32 {
-    acc.clamp(-1.0, 1.0)
-}
-
 #[inline]
 fn pop_drift_compensated(
     buf: &mut std::collections::VecDeque<f32>,
@@ -3476,7 +3469,7 @@ fn next_playback_sample(
         };
         total += track.gain * sample;
     }
-    mix(total)
+    total
 }
 
 struct PlaybackMixer {
@@ -3601,6 +3594,7 @@ impl PlaybackMixer {
         let mut dither_rng = DITHER_SEED;
         let mut reference_f32 = crate::echo::Reference::new(self.reference_tx.clone(), device_rate);
         let mut reference_i16 = crate::echo::Reference::new(self.reference_tx.clone(), device_rate);
+        let mut limiter = crate::playback_limiter::Limiter::new(device_rate);
 
         let report_fault = |faults: &UnboundedSender<AudioFault>| {
             let faults = faults.clone();
@@ -3630,12 +3624,12 @@ impl PlaybackMixer {
                     let mut pulled = 0u64;
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        let sample = next_playback_sample(
+                        let sample = limiter.process(next_playback_sample(
                             &mut tracks,
                             counter,
                             overrun_threshold,
                             underrun_threshold,
-                        );
+                        ));
                         reference_f32.push(sample);
                         if sample != 0.0 {
                             pulled += 1;
@@ -3668,12 +3662,12 @@ impl PlaybackMixer {
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        let sample = next_playback_sample(
+                        let sample = limiter.process(next_playback_sample(
                             &mut tracks,
                             counter,
                             overrun_threshold,
                             underrun_threshold,
-                        );
+                        ));
                         let s16 = dither_to_i16(sample, &mut dither_rng);
                         if sample != 0.0 {
                             pulled += 1;
@@ -4554,13 +4548,15 @@ mod tests {
         }
     }
 
-    /// One person talking has to arrive at the level they were sent at. The
-    /// per-track curve this replaced took up to 1.4 dB off that case for a sum
-    /// that only ever happens when several people talk at once.
     #[test]
     fn a_lone_speaker_is_not_quietened() {
         for s in [0.0, 0.1, 0.5, 0.9, 1.0, -0.7] {
-            assert_eq!(mix(s), s);
+            let mut limiter = crate::playback_limiter::Limiter::new(SAMPLE_RATE);
+            let output = (0..=SAMPLE_RATE / 200)
+                .map(|_| limiter.process(s))
+                .last()
+                .unwrap();
+            assert_eq!(output, s);
         }
     }
 
@@ -4674,8 +4670,10 @@ mod tests {
 
     #[test]
     fn a_sum_never_leaves_full_scale() {
-        assert_eq!(mix(1.8), 1.0);
-        assert_eq!(mix(-2.4), -1.0);
+        let mut limiter = crate::playback_limiter::Limiter::new(SAMPLE_RATE);
+        for sample in [1.8, -2.4].into_iter().cycle().take(SAMPLE_RATE as usize) {
+            assert!(limiter.process(sample).abs() <= 1.0);
+        }
     }
 
     #[test]
