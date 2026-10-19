@@ -6,6 +6,9 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../src/features/activities.rs'), 'utf8');
 const page = source.split('const RPS_HTML: &str = r##"')[1].split('"##;')[0];
 const script = page.split('<script>')[1].split('</script>')[0];
+const messages = JSON.parse(fs.readFileSync(path.join(__dirname, '../locales/messages.json'), 'utf8'));
+const keys = [...source.match(/const BUILTIN_MESSAGES:[\s\S]*?=\s*&\[([\s\S]*?)\];/)[1]
+  .matchAll(/"(?:[^"\\]|\\.)*"/g)].map(match => JSON.parse(match[0]));
 
 let timers = [];
 const clock = { now: 0 };
@@ -100,16 +103,23 @@ function hub() {
   };
 }
 
-function load(h, me) {
+function load(h, me, language = 'en') {
   const page = h.bridge(me);
   const nodes = { score: element(), status: element(), picks: element(), who: element() };
   const buttons = ['rock', 'paper', 'scissors'].map(p => element({ dataset: { pick: p } }));
   const document = {
+    documentElement: {},
     getElementById: (id) => nodes[id],
     querySelectorAll: () => buttons,
     createElement: () => { const d = { textContent: '' }; Object.defineProperty(d, 'innerHTML', { get() { return this.textContent; } }); return d; },
   };
-  vm.runInNewContext(script, { document, discordia: page.discordia, setTimeout, clearTimeout, Promise, String, Object });
+  const column = { es: 0, 'pt-BR': 1 }[language];
+  const dictionary = Object.fromEntries(keys.map(key => [key, column === undefined ? key : messages[key][column]]));
+  assert.ok(script.includes('/* BUILTIN_TRANSLATIONS */'));
+  const localized = script.replace('/* BUILTIN_TRANSLATIONS */',
+    `const translations = ${JSON.stringify(dictionary)}; document.documentElement.lang = ${JSON.stringify(language)};`);
+  vm.runInNewContext(localized, { document, discordia: page.discordia, setTimeout, clearTimeout, Promise, String, Object });
+  assert.equal(document.documentElement.lang, language);
   page.pick = (p) => buttons.find(b => b.dataset.pick === p).click();
   page.nodes = nodes;
   page.buttons = buttons;
@@ -166,6 +176,26 @@ const settle = () => new Promise(r => setImmediate(r));
   const late = load(h, 'd');
   await settle(); await settle();
   assert.match(late.nodes.score.innerHTML, /<b>3<\/b>Alice/, 'a late spectator gets the score from the host');
+
+  for (const [language, waiting, winner] of [
+    ['es', 'Esperando a otro jugador…', 'Alice gana la ronda'],
+    ['pt-BR', 'Aguardando outro jogador…', 'Alice vence a rodada'],
+  ]) {
+    const localized = hub();
+    localized.join('a', 'Alice', 'player');
+    const a = load(localized, 'a', language);
+    await settle();
+    assert.equal(a.nodes.status.textContent, waiting);
+    localized.join('b', 'Bob', 'player');
+    const b = load(localized, 'b', language);
+    await settle();
+    a.pick('rock');
+    b.pick('scissors');
+    await settle(); await settle();
+    assert.equal(a.nodes.status.textContent, `✊ vs ✌️ — ${winner}`);
+    assert.equal(b.nodes.status.textContent, a.nodes.status.textContent);
+    assert.match(a.nodes.score.innerHTML, /<b>1<\/b>Alice/);
+  }
 
   console.log('activity rps: ok');
 })().catch((e) => { console.error(e); process.exit(1); });

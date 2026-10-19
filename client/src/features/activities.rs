@@ -1524,27 +1524,32 @@ mod tests {
 
     #[test]
     fn activity_names_translate_only_for_builtins() {
+        use std::{cell::RefCell, rc::Rc};
+        type Names = Rc<RefCell<Vec<String>>>;
         fn probe() -> Element {
-            let (language, expected) = use_context::<(crate::i18n::Language, &'static str)>();
+            let (language, names) = use_context::<(crate::i18n::Language, Names)>();
             let locale = use_signal(|| language);
             use_context_provider(|| crate::i18n::Locale(locale));
             let mut activity = Activity::from_builtin(&BUILTINS[0]);
-            assert_eq!(activity.display_name(), expected);
+            names.borrow_mut().push(activity.display_name().to_string());
             activity.source = Source::App {
                 bot_pubkey: String::new(),
                 sha256: String::new(),
             };
-            assert_eq!(activity.display_name(), "Dice Roller");
+            names.borrow_mut().push(activity.display_name().to_string());
             rsx! {}
         }
-        for case in [
+        for (language, expected) in [
             (crate::i18n::Language::English, "Dice Roller"),
-            (crate::i18n::Language::Spanish, "Lanzador de dados"),
-            (crate::i18n::Language::Portuguese, "Lançador de dados"),
+            (crate::i18n::Language::Spanish, "Dados"),
+            (crate::i18n::Language::Portuguese, "Dados"),
         ] {
+            let names: Names = Rc::new(RefCell::new(Vec::new()));
             VirtualDom::new(probe)
-                .with_root_context(case)
+                .with_root_context((language, names.clone()))
                 .rebuild_in_place();
+            // Dioxus catches component panics, so assertions must run outside the render boundary.
+            assert_eq!(*names.borrow(), [expected, "Dice Roller"]);
         }
     }
 
