@@ -1,5 +1,59 @@
 use super::*;
 
+#[test]
+fn overlapping_voice_stream_and_soundboard_are_limited_after_their_volumes() {
+    for rate in [44_100, 48_000, 96_000] {
+        let mut tracks = MixerTracks::default();
+        let samples: std::collections::VecDeque<_> = (0..rate)
+            .map(|i| 0.4 * (std::f32::consts::TAU * 200.0 * i as f32 / rate as f32).sin())
+            .collect();
+        for (id, kind, gain) in [
+            (0, TrackKind::Voice, 1.0),
+            (1, TrackKind::Voice, 2.0),
+            (2, TrackKind::Stream, 0.5),
+            (3, TrackKind::Soundboard, 0.5),
+        ] {
+            tracks.buffers.insert(
+                id,
+                TrackBuf {
+                    samples: samples.clone(),
+                    identity: format!("peer-{id}"),
+                    gain,
+                    kind,
+                    starved: 0,
+                    drift_correction: false,
+                },
+            );
+        }
+        let mut limiter = crate::playback_limiter::Limiter::new(rate);
+        let mut raw_peak = 0.0_f32;
+        let mut limited_peak = 0.0_f32;
+        let mut error = 0.0_f64;
+        let mut clipped_error = 0.0_f64;
+        let delay = rate / 200;
+        for i in 0..rate {
+            let raw = next_playback_sample(&mut tracks, i, usize::MAX, 0);
+            let limited = limiter.process(raw);
+            let mut rng = DITHER_SEED;
+            let integer = dither_to_i16(limited, &mut rng);
+            raw_peak = raw_peak.max(raw.abs());
+            limited_peak = limited_peak.max(limited.abs());
+            assert!(limited.abs() <= 1.0);
+            assert!((f32::from(integer) / f32::from(i16::MAX) - limited).abs() < 0.0001);
+            if i > rate / 10 {
+                let expected =
+                    (std::f32::consts::TAU * 200.0 * (i - delay) as f32 / rate as f32).sin();
+                error += f64::from(limited - expected).powi(2);
+                clipped_error += f64::from((expected * 1.6).clamp(-1.0, 1.0) - expected).powi(2);
+            }
+        }
+        assert!(raw_peak > 1.5);
+        assert!(limited_peak > 0.99);
+        assert!(error < clipped_error * 0.01, "rate={rate}, error={error}");
+        assert!(tracks.buffers.values().all(|track| track.starved == 0));
+    }
+}
+
 fn rms(frames: &[crate::audio_queue::Frame<i16>]) -> f32 {
     let power: f64 = frames
         .iter()
