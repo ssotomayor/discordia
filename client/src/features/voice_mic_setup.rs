@@ -14,6 +14,39 @@ enum Mode {
     After,
 }
 
+#[derive(Clone, Debug)]
+enum Failure {
+    Device(String),
+    Adjustment(String),
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::Device(message)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Self::Device(message.into())
+    }
+}
+
+impl Failure {
+    fn status(&self) -> Status {
+        match self {
+            Self::Device(_) => Status::Unavailable,
+            Self::Adjustment(_) => Status::AdjustmentFailed,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::Device(message) | Self::Adjustment(message) => message,
+        }
+    }
+}
+
 struct Recording {
     _mic: MicCapture,
     rx: crate::audio_queue::AudioReceiver<f32>,
@@ -49,7 +82,7 @@ impl Recording {
         })
     }
 
-    fn collect(&mut self, state: &AppState) -> Result<(), String> {
+    fn collect(&mut self, state: &AppState) -> Result<u32, String> {
         if self.faults.try_recv().is_ok() {
             return Err(
                 "The microphone became unavailable. Reconnect it and repeat the adjustment.".into(),
@@ -61,6 +94,7 @@ impl Recording {
             }
             self.checked = Instant::now();
         }
+        let mut peak = 0.0_f32;
         while let Ok(frame) = self.rx.try_recv() {
             let Some(elapsed) = frame.captured.checked_duration_since(self.start) else {
                 continue;
@@ -73,12 +107,13 @@ impl Recording {
                     "The microphone returned invalid audio. Try another input device.".into(),
                 );
             }
+            peak = frame.samples.iter().fold(peak, |peak, s| peak.max(s.abs()));
             self.frames.push(calibration::Hop {
                 at: elapsed.as_secs_f32(),
                 samples: frame.samples,
             });
         }
-        Ok(())
+        Ok((peak * 1000.0).round().clamp(0.0, 1000.0) as u32)
     }
 }
 
@@ -168,7 +203,8 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
     let mut status = use_signal(Status::default);
     let gateway = crate::state::use_gateway();
     use_drop(move || state.write().mic_test_active = false);
-    let mut error = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<Failure>);
+    let mut recording_peak = use_signal(|| 0_u32);
     let mut prepared = use_signal(|| None::<Arc<Prepared>>);
     use_future(move || async move {
         let mut monitor: Option<MicrophoneTest> = None;
@@ -206,7 +242,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
             if selected == Mode::Idle && prepared.peek().is_some() {
                 prepared.set(None);
             }
-            let update: Result<(), String> = async {
+            let update: Result<(), Failure> = async {
                 if selected == Mode::Monitor {
                     if monitor.as_ref().is_some_and(|m| m.devices != devices(&state.peek())) { monitor = None; }
                     if monitor.is_none() { monitor = Some(MicrophoneTest::start(state)?); }
@@ -217,7 +253,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 } else if selected == Mode::Record {
                     if recording.is_none() { prepared.set(None); recording = Some(Recording::start(state)?); elapsed.set(0); }
                     if let Some(capture) = &mut recording {
-                        capture.collect(&state.peek())?;
+                        recording_peak.set(capture.collect(&state.peek())?);
                         let seconds = capture.start.elapsed().as_secs();
                         if *elapsed.peek() != seconds { elapsed.set(seconds); }
                         if seconds >= calibration::SECONDS {
@@ -238,7 +274,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 } else if selected == Mode::Analyze {
                     if job.as_ref().is_some_and(|job| job.handle.is_finished()) {
                         if let Some(job) = &mut job {
-                            let result = (&mut job.handle).await.map_err(|e| format!("Microphone analysis failed: {e}"))??;
+                            let result = (&mut job.handle).await.map_err(|e| Failure::Adjustment(format!("Microphone analysis failed: {e}")))?.map_err(Failure::Adjustment)?;
                             if calibration::context(&state.peek())? != result.context { return Err("The audio device changed. Repeat the microphone adjustment.".into()); }
                             prepared.set(Some(Arc::new(result)));
                             mode.set(Mode::Ready);
@@ -295,15 +331,16 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 Status::Deafened
             } else if connected && current.voice.muted {
                 Status::Muted
-            } else if error.peek().is_some()
-                || (connected
-                    && (current.active_input_device.is_none()
-                        || current
-                            .dm_call
-                            .as_ref()
-                            .is_some_and(|c| c.microphone_error.is_some())))
+            } else if connected
+                && (current.active_input_device.is_none()
+                    || current
+                        .dm_call
+                        .as_ref()
+                        .is_some_and(|c| c.microphone_error.is_some()))
             {
                 Status::Unavailable
+            } else if let Some(failure) = error.peek().as_ref() {
+                failure.status()
             } else if monitoring {
                 feedback.sample(
                     Instant::now(),
@@ -333,11 +370,14 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
     let busy = in_call(&state.read());
     let selected = mode();
     let adjusting = !matches!(selected, Mode::Idle | Mode::Monitor);
-    let meter_level = if (!busy && selected != Mode::Monitor)
+    let meter_level = if selected == Mode::Record {
+        peak_to_meter_pct(recording_peak())
+    } else if (!busy && selected != Mode::Monitor)
         || matches!(
             status(),
             Status::Muted | Status::Deafened | Status::Unavailable
-        ) {
+        )
+    {
         0
     } else if selected == Mode::Monitor {
         peak_to_meter_pct(level().3)
@@ -358,7 +398,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
     };
     rsx! {
         section { class: "dxf-mic-check",
-            "data-active": selected == Mode::Monitor || busy,
+            "data-active": matches!(selected, Mode::Monitor | Mode::Record) || busy,
             "data-tone": status().tone(),
             div { class: "dxf-mic-eyebrow", {crate::i18n::text(if busy { "Call microphone" } else if selected == Mode::Monitor { "Local test in progress" } else { "Test and adjust" }, &[])} }
             if !adjusting {
@@ -370,6 +410,8 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                     h4 { {crate::i18n::label(status().title())} }
                 }
                 p { class: "dxf-mic-status-detail", {crate::i18n::label(status().detail())} }
+            }
+            if !adjusting || selected == Mode::Record {
                     div { class: "dxf-mic-meter", role: "meter", aria_label: crate::i18n::text("Microphone level", &[]), "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": meter_level,
                         div { class: "dxf-mic-meter-fill", style: "width: {hidden_meter}%;" }
                         div { class: "dxf-mic-meter-segments", "aria-hidden": "true" }
@@ -397,7 +439,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                         onclick: move |_| {
                             let data = prepared.peek().clone();
                             if let Some(data) = data {
-                                if calibration::context(&state.peek()).as_ref() != Ok(&data.context) || Config::from_state(&state.peek()) != data.original { error.set(Some("The audio device or settings changed. Repeat the microphone adjustment.".into())); mode.set(Mode::Idle); return; }
+                                if calibration::context(&state.peek()).as_ref() != Ok(&data.context) || Config::from_state(&state.peek()) != data.original { error.set(Some(Failure::Adjustment("The audio device or settings changed. Repeat the microphone adjustment.".into()))); mode.set(Mode::Idle); return; }
                                 let mut next = settings.peek().clone();
                                 data.analysis.config.apply_settings(&mut next);
                                 crate::mic_profile::remember(&mut next.mic_calibrations, Calibration { version: 1, context: data.context.clone(), config: data.analysis.config });
@@ -445,7 +487,25 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 }
                 }
             if adjusting { button { class: "mt-2 rounded px-3 py-1 text-[12px] border border-[var(--border)] text-[var(--text-muted)]", onclick: move |_| mode.set(Mode::Idle), {crate::i18n::text("Keep my settings", &[])} } }
-            if let Some(message) = error() { p { class: "mt-2 text-[12px]", style: "color: var(--danger);", role: "alert", {crate::i18n::message(&message)} } }
+            if let Some(failure) = error() { p { class: "mt-2 text-[12px]", style: "color: var(--danger);", role: "alert", {crate::i18n::message(failure.message())} } }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analysis_rejection_keeps_adjustment_available_instead_of_device_remedy() {
+        let failure = Failure::Adjustment(
+            "Not enough clear speech was detected. Move the microphone closer and repeat.".into(),
+        );
+        assert_eq!(failure.status(), Status::AdjustmentFailed);
+        assert_eq!(failure.status().action(), None);
+        assert!(failure.message().contains("speech"));
+        let device = Failure::from("No microphone is available. Connect one and try again.");
+        assert_eq!(device.status(), Status::Unavailable);
+        assert_eq!(device.status().action(), Some("Check devices"));
     }
 }
