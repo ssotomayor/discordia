@@ -4684,7 +4684,7 @@ mod tests {
         for _ in 0..600 {
             let mut hop = [0.02_f32; FRAME_SAMPLES];
             let gate_peak = peak_fixed(&hop);
-            agc.process(&mut hop);
+            agc.process(&mut hop).unwrap();
             assert!(matches!(
                 gate.step(gate_peak, bar),
                 GateAction::RampIn | GateAction::Pass
@@ -4694,7 +4694,7 @@ mod tests {
         for _ in 0..500 {
             let mut hop = [0.003_f32; FRAME_SAMPLES];
             let gate_peak = peak_fixed(&hop);
-            agc.process(&mut hop);
+            agc.process(&mut hop).unwrap();
             if !matches!(gate.step(gate_peak, bar), GateAction::Drop) {
                 leaked += 1;
             }

@@ -84,10 +84,36 @@ fn processed_controls(
     controls: AudioControls,
     muted: bool,
 ) -> Vec<crate::audio_queue::Frame<i16>> {
+    let hops = amplitudes.iter().enumerate().map(|(hop, amplitude)| {
+        std::array::from_fn(|i| {
+            let phase = (hop * FRAME_SAMPLES + i) as f32 * std::f32::consts::TAU * 440.0
+                / SAMPLE_RATE as f32;
+            amplitude * phase.sin()
+        })
+    });
+    processed_hops(hops.collect(), controls, muted)
+}
+
+fn processed_speech(pcm: &[f32], gain: i32) -> Vec<crate::audio_queue::Frame<i16>> {
+    let mut state = AppState::empty();
+    let controls = AudioControls::from_state(&state);
+    state.auto_gain_control = true;
+    state.noise_cancellation = false;
+    state.mic_volume = gain as u16;
+    state.mic_sensitivity = 10;
+    direct::update_controls(&controls, &state);
+    processed_hops(pcm.as_chunks::<FRAME_SAMPLES>().0.to_vec(), controls, false)
+}
+
+fn processed_hops(
+    hops: Vec<[f32; FRAME_SAMPLES]>,
+    controls: AudioControls,
+    muted: bool,
+) -> Vec<crate::audio_queue::Frame<i16>> {
     let (tx, rx) = crate::audio_queue::channel();
     // Room for every frame: the live queue drops when full, and a loaded test
     // run starving the reader was enough to lose frames.
-    let (out, mut received) = tokio::sync::mpsc::channel(amplitudes.len().max(1));
+    let (out, mut received) = tokio::sync::mpsc::channel(hops.len().max(1));
     let (_reference, reference_rx) = crate::audio_queue::channel();
     let reader = std::thread::spawn(move || {
         let mut frames = Vec::new();
@@ -107,12 +133,7 @@ fn processed_controls(
             reference_rx,
         )
     });
-    for (hop, amplitude) in amplitudes.iter().copied().enumerate() {
-        let samples = std::array::from_fn(|i| {
-            let phase = (hop * FRAME_SAMPLES + i) as f32 * std::f32::consts::TAU * 440.0
-                / SAMPLE_RATE as f32;
-            amplitude * phase.sin()
-        });
+    for samples in hops {
         // Stamped ahead so waiting behind a busy worker never ages a frame
         // past `MAX_AGE`; staleness is the device's concern, not the gate's.
         let frame = crate::audio_queue::Frame {
@@ -246,10 +267,11 @@ async fn cancelling_remote_playback_discards_its_buffer_before_rewatching() {
 
 #[test]
 fn native_pipeline_limits_hot_microphones_and_recovers() {
-    let mut signal = vec![0.02; 300];
-    signal.extend([0.9; 100]);
-    signal.extend([0.05; 600]);
-    let frames = processed(&signal, 200, true, false);
+    let speech = crate::agc::tests::speech;
+    let mut signal = speech(4.0, -34.0, 1);
+    signal.extend(speech(1.0, -3.0, 2));
+    signal.extend(speech(10.0, -26.0, 3));
+    let frames = processed_speech(&signal, 100);
     assert!(frames.len() > 500);
     let peak = frames
         .iter()
@@ -258,8 +280,11 @@ fn native_pipeline_limits_hot_microphones_and_recovers() {
         .max()
         .unwrap();
     assert!(peak as f32 <= 0.981 * i16::MAX as f32);
-    let settled = rms(&frames[frames.len() - 100..]);
-    assert!((0.18..0.29).contains(&settled), "settled RMS {settled}");
+    let settled = 20.0 * rms(&frames[frames.len() - 300..]).log10();
+    assert!(
+        (-22.0..-12.0).contains(&settled),
+        "settled at {settled:.1} dBFS"
+    );
 }
 
 #[test]
@@ -356,15 +381,16 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
 
 #[test]
 fn closed_gate_room_tone_does_not_raise_the_next_utterance() {
-    let baseline = processed(&[0.05; 600], 100, true, false);
-    assert!(baseline.len() > 500);
-    let settled = rms(&baseline[baseline.len() - 100..]);
-    let mut signal = vec![0.05; 600];
-    signal.extend([0.004; 500]);
-    signal.extend([0.05; 20]);
-    let frames = processed(&signal, 100, true, false);
-    assert!(frames.len() > 600);
-    let resumed = rms(&frames[frames.len() - 15..]);
+    let speech = crate::agc::tests::speech;
+    let mut signal = speech(10.0, -30.0, 4);
+    let settled = rms(&processed_speech(&signal, 100)[400..]);
+    signal
+        .extend((0..5 * SAMPLE_RATE as usize).map(|i| {
+            0.004 * (i as f32 * std::f32::consts::TAU * 120.0 / SAMPLE_RATE as f32).sin()
+        }));
+    signal.extend(speech(1.5, -30.0, 5));
+    let frames = processed_speech(&signal, 100);
+    let resumed = rms(&frames[frames.len() - 60..]);
     println!("AGC settled RMS={settled:.4}, resumed={resumed:.4}");
     assert!(
         resumed < settled * 1.3,

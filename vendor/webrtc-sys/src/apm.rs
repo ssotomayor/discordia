@@ -49,6 +49,14 @@ pub mod ffi {
             high_pass_filter_enabled: bool,
             noise_suppression_enabled: bool,
         ) -> UniquePtr<AudioProcessingModule>;
+
+        fn create_gain_controller(
+            headroom_db: f32,
+            max_gain_db: f32,
+            initial_gain_db: f32,
+            max_gain_change_db_per_second: f32,
+            max_output_noise_level_dbfs: f32,
+        ) -> UniquePtr<AudioProcessingModule>;
     }
 }
 

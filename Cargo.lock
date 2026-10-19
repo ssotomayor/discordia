@@ -2515,6 +2515,7 @@ dependencies = [
  "chrono",
  "coreaudio-sys",
  "cpal",
+ "cxx",
  "deep_filter",
  "dioxus",
  "dioxus-desktop",

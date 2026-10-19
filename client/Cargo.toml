@@ -15,6 +15,7 @@ livekit = "=0.9.5"
 # Later SDK dependency patches changed APIs without a semver break; keep the compatible set.
 libwebrtc = "=0.3.52"
 webrtc-sys = "=0.3.49"
+cxx = "1"
 livekit-common = "=0.1.5"
 livekit-data-stream = "=0.1.8"
 livekit-protocol = "=0.8.1"

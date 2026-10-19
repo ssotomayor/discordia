@@ -4,7 +4,8 @@ use crate::mic_profile::Config;
 pub(super) struct Processor {
     denoiser: Option<crate::denoise::Denoiser>,
     suppression: Option<u32>,
-    agc: crate::agc::Agc,
+    agc: Option<crate::agc::Agc>,
+    agc_error_reported: bool,
     gate: GateState,
     echo: crate::echo::Echo,
     echo_error_reported: bool,
@@ -27,7 +28,8 @@ impl Processor {
         Self {
             denoiser: None,
             suppression: None,
-            agc: crate::agc::Agc::new(),
+            agc: None,
+            agc_error_reported: false,
             gate: GateState::default(),
             echo: crate::echo::Echo::new(reference),
             echo_error_reported: false,
@@ -89,13 +91,15 @@ impl Processor {
         let gate_peak = peak_fixed(&samples);
         let denoised_dbfs = crate::voice_record::rms_dbfs(&samples);
         if config.agc {
-            if gate_peak > config.threshold as i32 {
-                self.agc.process(&mut samples);
-            } else {
-                self.agc.hold(&mut samples);
+            let agc = self.agc.get_or_insert_with(crate::agc::Agc::new);
+            if let Err(error) = agc.process(&mut samples)
+                && !self.agc_error_reported
+            {
+                tracing::warn!(%error, "microphone gain control unavailable");
+                self.agc_error_reported = true;
             }
         } else {
-            self.agc.reset();
+            self.agc = None;
         }
         let gain = config.volume as f32 / 100.0;
         for sample in &mut samples {
@@ -126,11 +130,7 @@ impl Processor {
             model_loaded,
             echoed_dbfs,
             denoised_dbfs,
-            agc_gain_db: if config.agc {
-                20.0 * self.agc.gain().log10()
-            } else {
-                0.0
-            },
+            agc_gain_db: self.agc.as_ref().map_or(0.0, crate::agc::Agc::gain_db),
         })
     }
 }

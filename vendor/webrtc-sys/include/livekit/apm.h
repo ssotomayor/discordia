@@ -46,6 +46,7 @@ struct AudioProcessingConfig {
 class AudioProcessingModule {
  public:
   AudioProcessingModule(const AudioProcessingConfig& config);
+  explicit AudioProcessingModule(const webrtc::AudioProcessing::Config& config);
 
   int process_stream(const int16_t* src,
                      size_t src_len,
@@ -72,5 +73,12 @@ std::unique_ptr<AudioProcessingModule> create_apm(
     bool gain_controller_enabled,
     bool high_pass_filter_enabled,
     bool noise_suppression_enabled);
+
+std::unique_ptr<AudioProcessingModule> create_gain_controller(
+    float headroom_db,
+    float max_gain_db,
+    float initial_gain_db,
+    float max_gain_change_db_per_second,
+    float max_output_noise_level_dbfs);
 
 }  // namespace livekit_ffi

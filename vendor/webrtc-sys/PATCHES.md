@@ -14,6 +14,7 @@ Source: [LiveKit Rust SDK](https://github.com/livekit/rust-sdks), crates.io rele
 | `src/video_encoder_factory.cpp`, `src/webrtc.rs`, `include/livekit/webrtc.h` | Prefer NVENC, then Windows Media Foundation hardware encoders; expose runtime hardware availability and codec names per backend, excluding pass-through encoders and Apple's software VPx hardware aliases. |
 | `src/camera_capture.{cpp,rs}`, `include/livekit/camera_capture.h`, `src/lib.rs` | Preserve native camera format enumeration and selection used by setup and publication. |
 | `src/peer_connection.{cpp,rs}`, `include/livekit/peer_connection.h` | Preserve structured removal errors across CXX for reliable teardown. |
+| `src/apm.{cpp,rs}`, `include/livekit/apm.h` | `create_gain_controller`: an APM running only AGC2 adaptive digital, with its headroom, gain limits, rate and noise ceiling set by the caller. |
 
 `webrtc-sys-build` 0.3.19 selects the matching `webrtc-89d790b` artifact. Headers,
 bindings and libraries must move together; `LK_CUSTOM_WEBRTC` overrides require
