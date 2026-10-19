@@ -610,9 +610,11 @@ pub fn WorkspaceView(
 
             div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                 onmousedown: move |_| crate::app::start_window_drag(),
-                div { class: "shrink-0 flex items-center gap-2 px-1",
-                    crate::app::DiscordiaLogo { class: "w-6 h-6" }
-                    span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
+                if !cfg!(target_os = "windows") {
+                    div { class: "shrink-0 flex items-center gap-2 px-1",
+                        crate::app::DiscordiaLogo { class: "w-6 h-6" }
+                        span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
+                    }
                 }
                 HostBanner {}
                 // One chip: what the connection is, and the button that ends it.
