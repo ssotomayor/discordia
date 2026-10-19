@@ -231,6 +231,7 @@ fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
                 gain: 1.0,
                 kind,
                 starved: 0,
+                drift_correction: true,
             },
         );
     }
@@ -272,6 +273,7 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
             gain: 1.0,
             kind: TrackKind::Stream,
             starved: 0,
+            drift_correction: true,
         },
     );
     state.stream_muted.insert("alice".into());

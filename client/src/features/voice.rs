@@ -3298,6 +3298,7 @@ struct TrackBuf {
     gain: f32,
     kind: TrackKind,
     starved: u64,
+    drift_correction: bool,
 }
 
 #[derive(Clone)]
@@ -3337,6 +3338,14 @@ impl PlaybackHandle {
     }
 
     fn add_track(&self, identity: String, kind: TrackKind) -> u64 {
+        self.insert_track(identity, kind, true)
+    }
+
+    fn add_buffered_track(&self, identity: String) -> u64 {
+        self.insert_track(identity, TrackKind::Voice, false)
+    }
+
+    fn insert_track(&self, identity: String, kind: TrackKind, drift_correction: bool) -> u64 {
         let gain = track_gain(
             kind,
             &identity,
@@ -3356,9 +3365,18 @@ impl PlaybackHandle {
                 gain,
                 kind,
                 starved: 0,
+                drift_correction,
             },
         );
         id
+    }
+
+    fn queued_samples(&self, id: u64) -> Option<usize> {
+        self.tracks
+            .lock()
+            .buffers
+            .get(&id)
+            .map(|track| track.samples.len())
     }
 
     /// Returns the track's buffered samples, its starved-sample count and its gain.
@@ -3450,7 +3468,13 @@ fn next_playback_sample(
         if track.samples.is_empty() {
             track.starved += 1;
         }
-        total += track.gain * pop_drift_compensated(&mut track.samples, counter, overrun, underrun);
+        let sample = if track.drift_correction {
+            pop_drift_compensated(&mut track.samples, counter, overrun, underrun)
+        } else {
+            // Recorded clips share the output clock; correcting drift would change their waveform.
+            track.samples.pop_front().unwrap_or(0.0)
+        };
+        total += track.gain * sample;
     }
     mix(total)
 }

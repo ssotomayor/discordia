@@ -141,6 +141,53 @@ struct Player {
     faults: UnboundedReceiver<AudioFault>,
 }
 
+struct ComparisonAudio<'a> {
+    frames: std::slice::Chunks<'a, f32>,
+    resampler: Option<AudioResampler>,
+    output: Vec<f32>,
+    rate: usize,
+    finished: bool,
+}
+
+impl<'a> ComparisonAudio<'a> {
+    fn new(samples: &'a [f32], rate: u32) -> Self {
+        Self {
+            frames: samples.chunks(FRAME_SAMPLES),
+            resampler: AudioResampler::new(SAMPLE_RATE, rate),
+            output: Vec::new(),
+            rate: rate as usize,
+            finished: false,
+        }
+    }
+
+    fn refill(&mut self, handle: &PlaybackHandle, track: u64) -> bool {
+        let Some(mut queued) = handle.queued_samples(track) else {
+            return true;
+        };
+        if queued <= self.rate / 2 {
+            // A recorded clip can stay ahead of device callbacks without a 10 ms producer timer.
+            while queued < self.rate && !self.finished {
+                let Some(frame) = self.frames.next() else {
+                    self.finished = true;
+                    break;
+                };
+                let samples = if let Some(resampler) = &mut self.resampler {
+                    resampler.process_into(frame, &mut self.output);
+                    &self.output[..]
+                } else {
+                    frame
+                };
+                let Some((depth, _, _)) = handle.push(track, samples, self.rate + samples.len())
+                else {
+                    return true;
+                };
+                queued = depth;
+            }
+        }
+        self.finished && queued == 0
+    }
+}
+
 impl Drop for Player {
     fn drop(&mut self) {
         self.task.abort();
@@ -159,28 +206,18 @@ impl Player {
             return Err("No audio output is available for the microphone test.".into());
         }
         let handle = playback.handle();
-        let track = handle.add_track("mic-comparison".into(), TrackKind::Voice);
+        let track = handle.add_buffered_track("mic-comparison".into());
         let task = tokio::spawn(async move {
             let samples = if after {
                 &data.analysis.recommended
             } else {
                 &data.analysis.current
             };
-            let rate = handle.rate();
-            let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
-            let mut output = Vec::new();
-            let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            for frame in samples.chunks(FRAME_SAMPLES) {
-                tick.tick().await;
-                let frame = if let Some(resampler) = &mut resampler {
-                    resampler.process_into(frame, &mut output);
-                    &output[..]
-                } else {
-                    frame
-                };
-                handle.push(track, frame, rate as usize / PLAYBACK_CAP_DIVISOR as usize);
+            let mut audio = ComparisonAudio::new(samples, handle.rate());
+            while !audio.refill(&handle, track) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
+            // The final samples may still be in the device's own output buffer.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             handle.remove_track(track);
         });
@@ -505,6 +542,64 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_playback_preserves_every_sample_despite_irregular_refill_timing() {
+        let samples: Vec<_> = (0..SAMPLE_RATE as usize * 3)
+            .map(|i| (i as f32 * 0.021).sin() * 0.3 + (i as f32 * 0.053).sin() * 0.1)
+            .collect();
+        for rate in [44_100, 48_000, 96_000, 192_000] {
+            let controls = AudioControls::from_state(&AppState::empty());
+            let handle = PlaybackHandle {
+                tracks: Arc::new(Mutex::new(MixerTracks::default())),
+                device_rate: Arc::new(AtomicU32::new(rate)),
+                gains: controls.gains,
+                stream_gains: controls.stream_gains,
+                soundboard_pct: controls.soundboard_pct,
+            };
+            let track = handle.add_buffered_track("mic-comparison".into());
+            let mut audio = ComparisonAudio::new(&samples, rate);
+            let mut expected = Vec::new();
+            let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
+            let mut scratch = Vec::new();
+            for frame in samples.chunks(FRAME_SAMPLES) {
+                if let Some(resampler) = &mut resampler {
+                    resampler.process_into(frame, &mut scratch);
+                    expected.extend_from_slice(&scratch);
+                } else {
+                    expected.extend_from_slice(frame);
+                }
+            }
+            let mut actual = Vec::new();
+            let mut step = 0;
+            while !audio.refill(&handle, track) {
+                let queued = handle.queued_samples(track).unwrap();
+                assert!(queued <= rate as usize + rate as usize / 20);
+                let requested = rate as usize * [10, 80, 250, 400, 30][step % 5] / 1000;
+                if audio.frames.len() > 0 {
+                    assert!(
+                        queued >= requested,
+                        "playback starved before the clip ended"
+                    );
+                }
+                let mut tracks = handle.tracks.lock();
+                for _ in 0..requested.min(queued) {
+                    actual.push(next_playback_sample(
+                        &mut tracks,
+                        actual.len() as u32,
+                        (rate as f64 * DRIFT_OVERRUN_SECS) as usize,
+                        (rate as f64 * DRIFT_UNDERRUN_SECS) as usize,
+                    ));
+                }
+                step += 1;
+                assert!(step < 100);
+            }
+            assert_eq!(actual, expected, "recorded waveform changed at {rate} Hz");
+            assert_eq!(handle.tracks.lock().buffers[&track].starved, 0);
+            handle.remove_track(track);
+            assert!(handle.queued_samples(track).is_none());
+        }
+    }
 
     #[test]
     fn analysis_rejection_keeps_adjustment_available_instead_of_device_remedy() {
