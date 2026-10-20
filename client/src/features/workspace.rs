@@ -359,6 +359,19 @@ pub fn WorkspaceView(
     provide_context(rail);
     let popouts = super::stream_viewer::use_popouts(state);
     provide_context(popouts);
+    let profile_synced_at = use_memo(move || state.read().profile_synced_at);
+    let mut profile_sent_at = use_signal(|| *profile_synced_at.peek());
+    let profile_gateway = gateway_tx.clone();
+    use_effect(move || {
+        let at = profile_synced_at();
+        if at == *profile_sent_at.peek() {
+            return;
+        }
+        profile_sent_at.set(at);
+        if let Some(local) = crate::profile::load() {
+            profile_gateway.send(local.set_profile_message());
+        }
+    });
     let streams_visible = use_memo(move || {
         let s = state.read();
         let detached = popouts.detached.read();

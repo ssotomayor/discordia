@@ -692,37 +692,17 @@ where
     state.write().gateway_failure = None;
     apply(&mut state, admitted, tx, voice_tx);
 
-    // A link saved by an older build would be refused now and take the whole
-    // profile with it, so it is dropped here rather than sent.
-    let picture =
-        |v: Option<String>| v.filter(|p| !p.starts_with("http://") && !p.starts_with("https://"));
     if let Some(local) = crate::profile::load()
-        && (local.avatar.is_some()
-            || local.banner.is_some()
-            || local.bio.is_some()
-            || local.status.is_some()
-            || local.custom_status.is_some()
-            || local.hide_guild_owner
-            || local.hide_operator)
+        && local != crate::profile::LocalProfile::default()
+        && let Ok(json) = serde_json::to_string(&local.set_profile_message())
     {
-        let set_profile = ClientMessage::SetProfile {
-            avatar: picture(local.avatar),
-            banner: picture(local.banner),
-            bio: local.bio,
-            status: local.status,
-            custom_status: local.custom_status,
-            hide_guild_owner: local.hide_guild_owner,
-            hide_operator: local.hide_operator,
-        };
-        if let Ok(json) = serde_json::to_string(&set_profile) {
-            gateway_send(
-                &mut ws_tx,
-                &mut ws_rx,
-                WsMessage::Text(json),
-                "profile sync",
-            )
-            .await?;
-        }
+        gateway_send(
+            &mut ws_tx,
+            &mut ws_rx,
+            WsMessage::Text(json),
+            "profile sync",
+        )
+        .await?;
     }
 
     let watch = Arc::new(ArmWatch::default());
@@ -1424,6 +1404,7 @@ fn apply(
             let dm_channels: std::collections::HashSet<_> =
                 s.dms.iter().map(|dm| dm.channel_id).collect();
             s.messages.retain(|id, _| dm_channels.contains(id));
+            s.history_loaded.clear();
             // A request the last session never got an answer to would
             // otherwise stay "in flight" forever.
             s.emoji_requested.clear();
@@ -1611,7 +1592,7 @@ fn apply(
             let first_text = s.default_channel_of(gid);
             s.selected_channel = first_text;
             if let Some(channel_id) = first_text
-                && !s.messages.contains_key(&channel_id)
+                && !s.history_loaded.contains(&channel_id)
             {
                 let _ = tx.send(ClientMessage::FetchMessages {
                     channel_id,
@@ -1649,6 +1630,7 @@ fn apply(
             s.integrations.remove(&guild_id);
             for cid in &removed {
                 s.messages.remove(cid);
+                s.history_loaded.remove(cid);
                 s.channel_unread.remove(cid);
             }
             if s.selected_guild == Some(guild_id) {
@@ -1656,7 +1638,7 @@ fn apply(
                 s.selected_guild = next;
                 s.selected_channel = next.and_then(|gid| s.default_channel_of(gid));
                 if let Some(channel_id) = s.selected_channel
-                    && !s.messages.contains_key(&channel_id)
+                    && !s.history_loaded.contains(&channel_id)
                 {
                     let _ = tx.send(ClientMessage::FetchMessages {
                         channel_id,
@@ -1948,13 +1930,14 @@ fn apply(
             s.channels.retain(|c| c.id != channel_id);
             s.channel_unread.remove(&channel_id);
             s.messages.remove(&channel_id);
+            s.history_loaded.remove(&channel_id);
             s.typing.remove(&channel_id);
             s.screen_shares.remove(&channel_id);
             if s.selected_channel == Some(channel_id) {
                 let next = s.default_channel_of(guild_id);
                 s.selected_channel = next;
                 if let Some(cid) = next
-                    && !s.messages.contains_key(&cid)
+                    && !s.history_loaded.contains(&cid)
                 {
                     let _ = tx.send(ClientMessage::FetchMessages {
                         channel_id: cid,

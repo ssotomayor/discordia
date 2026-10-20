@@ -26,7 +26,7 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{metadata, nip02, nip17, nip51, nip59, xp};
+use super::{metadata, nip02, nip17, nip51, nip59, profile, xp};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
@@ -74,6 +74,8 @@ pub enum NostrCmd {
     /// ignored when the number has not actually changed since the last one:
     /// kind 30078 is replaceable, so a re-send costs every relay a write.
     PublishXp(xp::GlobalXp),
+    /// The profile just saved on this device, for the account's other ones.
+    PublishProfile(crate::profile::LocalProfile),
     /// Look an app's manifest up on our relays, for a guild about to install it.
     FetchAppManifest {
         author: String,
@@ -122,7 +124,12 @@ fn message_id(event_id: &str) -> Id {
 }
 
 /// Start the service. Returns the handle the UI sends through.
-pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppState>) -> NostrTx {
+pub fn spawn_nostr(
+    identity: Identity,
+    relays: Vec<String>,
+    state: Signal<AppState>,
+    settings: Signal<crate::settings::ClientSettings>,
+) -> NostrTx {
     let (tx, mut rx) = unbounded_channel::<NostrCmd>();
     let handle = NostrTx(tx);
 
@@ -159,8 +166,8 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                 Filter {
                     kinds: Some(vec![xp::KIND_APP_DATA]),
                     authors: Some(vec![our_pubkey.clone()]),
-                    d: Some(vec![xp::D_TAG.to_string()]),
-                    limit: Some(1),
+                    d: Some(vec![xp::D_TAG.to_string(), profile::D_TAG.to_string()]),
+                    limit: Some(2),
                     ..Default::default()
                 },
             ],
@@ -195,6 +202,11 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         request_names(&pool, &state, &our_pubkey, &mut named);
 
         let mut xp_publisher = xp::Publisher::default();
+        // The newest profile the relays hold or we sent them: what a relay's
+        // copy must beat to be adopted, and whose pictures need no re-upload.
+        let mut synced: Option<profile::SyncedProfile> = None;
+        let mut profile_checked = false;
+        let (profile_tx, mut profile_rx) = unbounded_channel::<profile::SyncedProfile>();
         let mut routes = super::delivery::Routes::default();
         let mut senders = super::delivery::Senders::new();
         let mut outbox = super::delivery::Outbox::new();
@@ -342,6 +354,9 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             );
                         }
                     }
+                    Some(NostrCmd::PublishProfile(local)) => {
+                        share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
+                    }
                     Some(NostrCmd::PublishXp(total)) => {
                         if state.read().global_xp.get(&our_pubkey) != Some(&total) {
                             state.write().global_xp.insert(our_pubkey.clone(), total);
@@ -394,6 +409,17 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         spawn(async move {
                             let _ = result_tx.send((id, delivery.await));
                         });
+                    }
+                }
+                shared = profile_rx.recv() => {
+                    if let Some(shared) = shared
+                        && synced.as_ref().is_none_or(|s| s.updated_at <= shared.updated_at)
+                    {
+                        match profile::profile_event(&secret, &our_pubkey, &shared) {
+                            Ok(event) => pool.publish(event),
+                            Err(e) => tracing::warn!(error = %e, "could not sign the profile"),
+                        }
+                        synced = Some(shared);
                     }
                 }
                 result = delivery_rx.recv() => {
@@ -475,6 +501,20 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                                     .insert(event.pubkey.clone(), (event.created_at, json));
                             }
                         }
+                        profile::KIND_APP_DATA if event.tag("d") == Some(profile::D_TAG) => {
+                            // A far-future copy would beat every later edit for good.
+                            if event.created_at > now() + 600 {
+                                continue;
+                            }
+                            let Some(theirs) = profile::parse_profile(&secret, &our_pubkey, &event) else {
+                                continue;
+                            };
+                            if synced.as_ref().is_some_and(|s| s.updated_at >= theirs.updated_at) {
+                                continue;
+                            }
+                            synced = Some(theirs.clone());
+                            adopt_profile(theirs, state);
+                        }
                         xp::KIND_APP_DATA => {
                             // Self-asserted: stored beside the key that signed
                             // it and drawn as a claim, never used to gate.
@@ -537,6 +577,15 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     Some(RelayEvent::EndOfStored { relay }) => {
                         eprintln!("[nostr] {relay}: finished replaying stored events");
                         replayed.insert(relay);
+                        // Saved here while no relay answered, or before profiles synced.
+                        if !profile_checked && every_relay_replayed(&state, &replayed) {
+                            profile_checked = true;
+                            if let Some(local) = crate::profile::load()
+                                && local.updated_at > synced.as_ref().map_or(0, |s| s.updated_at)
+                            {
+                                share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
+                            }
+                        }
                     }
                     None => break,
                 },
@@ -549,6 +598,54 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+fn share_profile(
+    local: crate::profile::LocalProfile,
+    previous: Option<profile::SyncedProfile>,
+    settings: Signal<crate::settings::ClientSettings>,
+    secret: secp256k1::SecretKey,
+    done: UnboundedSender<profile::SyncedProfile>,
+) {
+    let server = settings.peek().emoji_blob_server.clone();
+    spawn(async move {
+        let previous = previous.unwrap_or_default();
+        let shared =
+            profile::SyncedProfile::share(local, &previous, server.as_deref(), &secret, now())
+                .await;
+        let _ = done.send(shared);
+    });
+}
+
+/// Written to `profile.json` for the next server, and announced through
+/// `AppState::profile_synced_at` for the one already connected.
+fn adopt_profile(theirs: profile::SyncedProfile, mut state: Signal<AppState>) {
+    spawn(async move {
+        let pictures = async {
+            Ok::<_, String>((
+                profile::resolve(&theirs.avatar).await?,
+                profile::resolve(&theirs.banner).await?,
+            ))
+        };
+        let (avatar, banner) = match pictures.await {
+            Ok(pictures) => pictures,
+            Err(e) => {
+                tracing::warn!(error = %e, "synced profile not adopted: a picture is unavailable");
+                return;
+            }
+        };
+        let current = crate::profile::load().unwrap_or_default();
+        // Saved here while the pictures downloaded, and newer still.
+        if current.updated_at >= theirs.updated_at {
+            return;
+        }
+        let local = theirs.into_local(&current, avatar, banner);
+        if let Err(e) = crate::profile::save(&local) {
+            tracing::warn!(error = %e, "synced profile not saved");
+            return;
+        }
+        state.write().profile_synced_at = local.updated_at;
+    });
 }
 
 /// The subscription carrying gift wraps and our own replaceable events.

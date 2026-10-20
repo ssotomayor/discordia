@@ -275,6 +275,7 @@ async fn names_and_free_text_come_back_clean_over_the_wire() {
             custom_status: Some("busy\u{2028}now".into()),
             hide_guild_owner: false,
             hide_operator: false,
+            updated_at: 0,
         })
         .await
         .unwrap();
@@ -358,6 +359,7 @@ async fn a_profile_picture_may_not_be_a_link() {
         custom_status: None,
         hide_guild_owner: false,
         hide_operator: false,
+        updated_at: 0,
     })
     .await
     .unwrap();
@@ -378,6 +380,7 @@ async fn a_profile_picture_may_not_be_a_link() {
         custom_status: None,
         hide_guild_owner: false,
         hide_operator: false,
+        updated_at: 0,
     })
     .await
     .unwrap();
@@ -446,6 +449,7 @@ fn presence(status: &str) -> ClientMessage {
         custom_status: None,
         hide_guild_owner: false,
         hide_operator: false,
+        updated_at: 0,
     }
 }
 

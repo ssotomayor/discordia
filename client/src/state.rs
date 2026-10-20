@@ -304,6 +304,12 @@ pub struct AppState {
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
     pub messages: BTreeMap<Id, Vec<Message>>,
+    /// Not `messages.contains_key`: a live message makes an entry for a channel
+    /// never opened, and that then read as history already fetched.
+    pub history_loaded: HashSet<Id>,
+    /// Bumped when another device's profile is adopted, so the connected
+    /// server gets it too; `net` sends `profile.json` only on connect.
+    pub profile_synced_at: i64,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
@@ -526,6 +532,8 @@ impl AppState {
             channels: Vec::new(),
             members: Vec::new(),
             messages: BTreeMap::new(),
+            history_loaded: HashSet::new(),
+            profile_synced_at: 0,
             message_search: None,
             file_upload_result: None,
             server_chat_tools: false,
@@ -731,6 +739,7 @@ impl AppState {
         self.dm_pane_open = false;
         let dm_channels: HashSet<_> = self.dms.iter().map(|dm| dm.channel_id).collect();
         self.messages.retain(|id, _| dm_channels.contains(id));
+        self.history_loaded.clear();
         self.catalog.clear();
         self.catalog_total = 0;
         self.guild_join_confirmation = None;
@@ -1338,6 +1347,7 @@ impl AppState {
 
     /// Merges a fetched page into what is already held.
     pub fn merge_history(&mut self, channel_id: Id, page: Vec<Message>) {
+        self.history_loaded.insert(channel_id);
         let held = self.messages.entry(channel_id).or_default();
         let mut seen: HashSet<Id> = held.iter().map(|m| m.id).collect();
         let mut incoming = Vec::with_capacity(page.len());
@@ -2095,6 +2105,20 @@ mod tests {
         s.merge_history(cid, vec![at(shared, cid, 200), at(Id::new_v4(), cid, 100)]);
 
         assert_eq!(s.messages[&cid].len(), 2);
+    }
+
+    #[test]
+    fn a_live_message_does_not_count_as_fetched_history() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        s.insert_message(cid, at(Id::new_v4(), cid, 200));
+        assert!(!s.history_loaded.contains(&cid));
+
+        s.merge_history(cid, Vec::new());
+        assert!(
+            s.history_loaded.contains(&cid),
+            "an empty channel is loaded too"
+        );
     }
 
     /// And the page can repeat itself. Sampling the ids once before the loop

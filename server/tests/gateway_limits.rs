@@ -187,6 +187,7 @@ async fn a_combined_profile_upload_reaches_the_handler() {
         custom_status: None,
         hide_guild_owner: false,
         hide_operator: false,
+        updated_at: 0,
     };
     ws.send(WsMessage::Text(serde_json::to_string(&profile).unwrap()))
         .await

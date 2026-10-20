@@ -342,6 +342,10 @@ pub struct Profile {
     /// set, so a hidden operator is not one on the wire either.
     #[serde(default)]
     pub operator: bool,
+    /// Milliseconds by the editing device's clock. A server keeps the newest,
+    /// so a second device connecting with a stale copy cannot put it back.
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 /// A named rank, worn from `xp` until the next tier begins. Guild managers
@@ -2026,6 +2030,9 @@ pub enum ClientMessage {
         hide_guild_owner: bool,
         #[serde(default)]
         hide_operator: bool,
+        /// See `Profile::updated_at`.
+        #[serde(default)]
+        updated_at: i64,
     },
     /// Its own message and not a `SetProfile` field: an activity turns over on
     /// every map load, and a profile is edited twice a year.

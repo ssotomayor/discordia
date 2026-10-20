@@ -572,6 +572,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                     }
                     ClientMessage::SetProfile {
                         avatar, banner, bio, status, custom_status, hide_guild_owner, hide_operator,
+                        updated_at,
                     } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -581,6 +582,12 @@ pub(crate) async fn handle_connection_with_route<S>(
                         };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        // Before the pictures are stored: a stale device would
+                        // otherwise be charged for, and leave behind, blobs nobody keeps.
+                        if let Some(held) = ctx.state.newer_profile(&u.pubkey, updated_at) {
+                            let _ = send(&mut ws_tx, &ServerMessage::ProfileUpdate(held)).await;
                             continue;
                         }
                         let avatar = match avatar.map(|a| ctx.state.image_reference(&u.pubkey, &a)).transpose() {
@@ -626,9 +633,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                             hide_guild_owner,
                             hide_operator,
                             operator: false,
+                            updated_at,
                         }).await;
                         match profile {
-                            Ok(profile) => ctx.state.broadcast(ServerMessage::ProfileUpdate(profile)),
+                            Ok(crate::state::ProfileWrite::Saved(profile)) => ctx.state.broadcast(ServerMessage::ProfileUpdate(profile)),
+                            Ok(crate::state::ProfileWrite::Stale(held)) => { let _ = send(&mut ws_tx, &ServerMessage::ProfileUpdate(held)).await; }
                             Err(message) => { let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await; }
                         }
                     }

@@ -72,7 +72,7 @@ pub fn AccountView(
         } else {
             saved.dm_relays.clone()
         };
-        crate::nostr::service::spawn_nostr(identity.clone(), relays, state)
+        crate::nostr::service::spawn_nostr(identity.clone(), relays, state, settings)
     });
     provide_context(state);
     provide_context(nostr.clone());

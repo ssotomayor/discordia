@@ -20,6 +20,30 @@ pub struct LocalProfile {
     pub hide_guild_owner: bool,
     #[serde(default)]
     pub hide_operator: bool,
+    /// Milliseconds at the last save on any device; 0 for a file older than
+    /// the stamp, which then loses to every stamped copy.
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+impl LocalProfile {
+    pub fn set_profile_message(self) -> crate::protocol::ClientMessage {
+        // A link saved by an older build would be refused now and take the whole
+        // profile with it, so it is dropped here rather than sent.
+        let picture = |v: Option<String>| {
+            v.filter(|p| !p.starts_with("http://") && !p.starts_with("https://"))
+        };
+        crate::protocol::ClientMessage::SetProfile {
+            avatar: picture(self.avatar),
+            banner: picture(self.banner),
+            bio: self.bio,
+            status: self.status,
+            custom_status: self.custom_status,
+            hide_guild_owner: self.hide_guild_owner,
+            hide_operator: self.hide_operator,
+            updated_at: self.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -302,6 +302,7 @@ impl Store {
             "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
             "ALTER TABLE profiles ADD COLUMN hide_guild_owner INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN hide_operator INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE profiles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -327,7 +328,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT pubkey, avatar, banner, bio, status, custom_status, hide_guild_owner, hide_operator FROM profiles")
+            sqlx::query("SELECT pubkey, avatar, banner, bio, status, custom_status, hide_guild_owner, hide_operator, updated_at FROM profiles")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -341,6 +342,7 @@ impl Store {
                 hide_guild_owner: r.get::<i64, _>(6) != 0,
                 hide_operator: r.get::<i64, _>(7) != 0,
                 operator: false,
+                updated_at: r.get(8),
             });
         }
         for r in sqlx::query("SELECT guild_id, pubkey, xp FROM guild_xp")
@@ -524,13 +526,14 @@ impl Store {
     pub async fn upsert_profile(&self, p: &Profile) -> Result<()> {
         sqlx::query(
             "INSERT INTO profiles (pubkey, avatar, banner, bio, status, custom_status,
-               hide_guild_owner, hide_operator)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               hide_guild_owner, hide_operator, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(pubkey) DO UPDATE SET avatar=excluded.avatar,
                banner=excluded.banner, bio=excluded.bio, status=excluded.status,
                custom_status=excluded.custom_status,
                hide_guild_owner=excluded.hide_guild_owner,
-               hide_operator=excluded.hide_operator",
+               hide_operator=excluded.hide_operator,
+               updated_at=excluded.updated_at",
         )
         .bind(&p.pubkey)
         .bind(&p.avatar)
@@ -540,6 +543,7 @@ impl Store {
         .bind(&p.custom_status)
         .bind(p.hide_guild_owner as i64)
         .bind(p.hide_operator as i64)
+        .bind(p.updated_at)
         .execute(&self.pool)
         .await?;
         Ok(())

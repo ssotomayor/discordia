@@ -451,6 +451,7 @@ pub fn ProfileCard() -> Element {
 pub fn ProfileEditor(class: String, children: Element) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
 
     let mut open = use_signal(|| false);
     let mut avatar = use_signal::<Option<String>>(|| None);
@@ -523,6 +524,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             custom_status: custom_opt.clone(),
             hide_guild_owner: !show_crown(),
             hide_operator: !show_operator(),
+            updated_at: chrono::Utc::now().timestamp_millis(),
         };
         let kind = |v: &Option<String>| match v {
             None => "none".to_string(),
@@ -535,6 +537,8 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             kind(&banner())
         );
         let _ = crate::profile::save(&local);
+        let updated_at = local.updated_at;
+        nostr.send(crate::nostr::service::NostrCmd::PublishProfile(local));
         gateway.send(ClientMessage::SetProfile {
             avatar: avatar(),
             banner: banner(),
@@ -543,6 +547,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             custom_status: custom_opt,
             hide_guild_owner: !show_crown(),
             hide_operator: !show_operator(),
+            updated_at,
         });
         open.set(false);
     };

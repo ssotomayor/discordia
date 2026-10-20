@@ -50,6 +50,12 @@ const UPLOAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(24 * 3
 
 pub const MAX_IMAGE_LEN: usize = 3_000_000;
 
+#[derive(Debug)]
+pub enum ProfileWrite {
+    Saved(Profile),
+    Stale(Profile),
+}
+
 struct Conn {
     tx: mpsc::Sender<ServerMessage>,
     ip: Option<std::net::IpAddr>,
@@ -519,12 +525,22 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn set_profile(&self, profile: Profile) -> Result<Profile, String> {
+    /// `Stale` carries what is held instead, for the device that sent the old one.
+    pub async fn set_profile(&self, profile: Profile) -> Result<ProfileWrite, String> {
         let _write = self.durable_writes.lock().await;
+        if let Some(held) = self.newer_profile(&profile.pubkey, profile.updated_at) {
+            return Ok(ProfileWrite::Stale(held));
+        }
         durable(self.store.upsert_profile(&profile).await, "profile")?;
         self.profiles
             .insert(profile.pubkey.clone(), profile.clone());
-        Ok(self.shown_profile(profile))
+        Ok(ProfileWrite::Saved(self.shown_profile(profile)))
+    }
+
+    /// Equal stamps are accepted: two unstamped copies are both 0.
+    pub fn newer_profile(&self, pubkey: &str, updated_at: i64) -> Option<Profile> {
+        let held = self.profiles.get(pubkey).map(|p| p.value().clone())?;
+        (held.updated_at > updated_at).then(|| self.shown_profile(held))
     }
 
     fn shown_profile(&self, mut p: Profile) -> Profile {

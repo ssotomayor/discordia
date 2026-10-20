@@ -47,6 +47,7 @@ fn badges(hide_guild_owner: bool, hide_operator: bool) -> ClientMessage {
         custom_status: None,
         hide_guild_owner,
         hide_operator,
+        updated_at: 0,
     }
 }
 
@@ -110,4 +111,52 @@ async fn the_operator_badge_is_the_servers_to_stamp_and_the_operators_to_hide() 
         shown.operator,
         "hiding the crown leaves the operator badge alone"
     );
+}
+
+fn bio(text: &str, updated_at: i64) -> ClientMessage {
+    ClientMessage::SetProfile {
+        avatar: None,
+        banner: None,
+        bio: Some(text.into()),
+        status: None,
+        custom_status: None,
+        hide_guild_owner: false,
+        hide_operator: false,
+        updated_at,
+    }
+}
+
+#[tokio::test]
+async fn a_second_device_with_an_older_profile_cannot_put_it_back() {
+    let preferred: SocketAddr = "127.0.0.1:19261".parse().unwrap();
+    let handle = discordia_server::spawn(preferred, 100, test_config(Default::default()))
+        .await
+        .expect("spawn server");
+    let url = format!("ws://{}", handle.addr);
+    let me = BotIdentity::generate();
+
+    let (mut laptop, _) = connect_user(&url, &me, "Me").await;
+    laptop.send(&bio("new", 2_000)).await.unwrap();
+    assert_eq!(
+        next_profile_of(&mut laptop, me.pubkey())
+            .await
+            .bio
+            .as_deref(),
+        Some("new")
+    );
+
+    let (mut desktop, _) = connect_user(&url, &me, "Me").await;
+    desktop.send(&bio("old", 1_000)).await.unwrap();
+    let answer = next_profile_of(&mut desktop, me.pubkey()).await;
+    assert_eq!(
+        answer.bio.as_deref(),
+        Some("new"),
+        "the stale device is told what is held"
+    );
+    assert_eq!(answer.updated_at, 2_000);
+
+    drop(desktop);
+    let (_again, profiles) = connect_user(&url, &me, "Me").await;
+    let held = profiles.iter().find(|p| p.pubkey == me.pubkey()).unwrap();
+    assert_eq!(held.bio.as_deref(), Some("new"));
 }
