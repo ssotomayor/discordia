@@ -513,7 +513,7 @@ pub fn spawn_nostr(
                                 continue;
                             }
                             synced = Some(theirs.clone());
-                            adopt_profile(theirs, state);
+                            adopt_profile(theirs, our_pubkey.clone(), state);
                         }
                         xp::KIND_APP_DATA => {
                             // Self-asserted: stored beside the key that signed
@@ -574,13 +574,14 @@ pub fn spawn_nostr(
                             );
                         }
                     }
-                    Some(RelayEvent::EndOfStored { relay }) => {
+                    Some(RelayEvent::EndOfStored { relay, subscription }) => {
+                        if subscription != SUB_DM { continue; }
                         eprintln!("[nostr] {relay}: finished replaying stored events");
                         replayed.insert(relay);
                         // Saved here while no relay answered, or before profiles synced.
                         if !profile_checked && every_relay_replayed(&state, &replayed) {
                             profile_checked = true;
-                            if let Some(local) = crate::profile::load()
+                            if let Some(local) = crate::profile::load(&our_pubkey)
                                 && local.updated_at > synced.as_ref().map_or(0, |s| s.updated_at)
                             {
                                 share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
@@ -617,19 +618,17 @@ fn share_profile(
     });
 }
 
-/// Written to `profile.json` for the next server, and announced through
-/// `AppState::profile_synced_at` for the one already connected.
-fn adopt_profile(theirs: profile::SyncedProfile, mut state: Signal<AppState>) {
+fn adopt_profile(theirs: profile::SyncedProfile, our_pubkey: String, mut state: Signal<AppState>) {
     spawn(async move {
         let avatar = profile::resolve(&theirs.avatar).await;
         let banner = profile::resolve(&theirs.banner).await;
-        let current = crate::profile::load().unwrap_or_default();
+        let current = crate::profile::load(&our_pubkey).unwrap_or_default();
         // Saved here while the pictures downloaded, and newer still.
         if current.updated_at >= theirs.updated_at {
             return;
         }
         let local = theirs.into_local(&current, avatar, banner);
-        if let Err(e) = crate::profile::save(&local) {
+        if let Err(e) = crate::profile::save(&our_pubkey, &local) {
             tracing::warn!(error = %e, "synced profile not saved");
             return;
         }

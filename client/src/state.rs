@@ -308,7 +308,7 @@ pub struct AppState {
     /// never opened, and that then read as history already fetched.
     pub history_loaded: HashSet<Id>,
     /// Bumped when another device's profile is adopted, so the connected
-    /// server gets it too; `net` sends `profile.json` only on connect.
+    /// server gets it too; `net` sends the account cache only on connect.
     pub profile_synced_at: i64,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
     pub file_upload_result: Option<(Id, Option<String>)>,

@@ -449,6 +449,8 @@ pub fn ProfileCard() -> Element {
 /// place your own name, face and key are already on screen, so it opens itself
 /// rather than growing an icon beside it.
 pub fn ProfileEditor(class: String, children: Element) -> Element {
+    let identity = use_context::<crate::identity::Identity>();
+    let profile_owner = use_signal(|| identity.pubkey);
     let state = use_app_state();
     let gateway = use_gateway();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
@@ -480,7 +482,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             show_operator.set(!p.hide_operator);
             return;
         }
-        if let Some(local) = crate::profile::load() {
+        if let Some(local) = crate::profile::load(&profile_owner.peek()) {
             avatar.set(local.avatar);
             banner.set(local.banner);
             bio.set(local.bio.unwrap_or_default());
@@ -536,7 +538,10 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             kind(&avatar()),
             kind(&banner())
         );
-        let _ = crate::profile::save(&local);
+        if let Err(error) = crate::profile::save(&profile_owner.peek(), &local) {
+            err.set(Some(error));
+            return;
+        }
         let updated_at = local.updated_at;
         nostr.send(crate::nostr::service::NostrCmd::PublishProfile(local));
         gateway.send(ClientMessage::SetProfile {
