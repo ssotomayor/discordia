@@ -95,6 +95,9 @@ window.dxScreen = window.dxScreen || (function () {
   let e2eeOn = false;
   let e2eeProvider = null;
   let localCameraTrack = null;
+  // The room the camera was handed to: a start racing the join publishes into
+  // the joining room itself, and a second publish of that track times out.
+  let cameraRoom = null;
   let localCameraStream = null;
   let lastCameraOpts = {};
   let cameraStarting = false;
@@ -578,7 +581,8 @@ window.dxScreen = window.dxScreen || (function () {
         applyViewerSubscription(pub, participant);
       });
     });
-    if (localCameraTrack && localCameraTrack.readyState !== 'ended') {
+    if (localCameraTrack && localCameraTrack.readyState !== 'ended' && cameraRoom !== thisRoom) {
+      cameraRoom = thisRoom;
       try {
         await thisRoom.localParticipant.publishTrack(localCameraTrack, cameraPublishOpts(lastCameraOpts));
       } catch (e) {
@@ -1195,6 +1199,7 @@ window.dxScreen = window.dxScreen || (function () {
     for (let i = 0; i < 150 && !room && !cancelled(); i++) await new Promise(function (r) { setTimeout(r, 100); });
     if (cancelled()) { releaseStream(stream); return; }
     if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
+    cameraRoom = room;
     try {
       await withTimeout(
         room.localParticipant.publishTrack(vt, cameraPublishOpts(opts)),
@@ -1283,7 +1288,7 @@ window.dxScreen = window.dxScreen || (function () {
   async function stopCamera() {
     cameraGen++;
     const vt = localCameraTrack;
-    localCameraTrack = null; localCameraStream = null;
+    localCameraTrack = null; localCameraStream = null; cameraRoom = null;
     detachLocalCamera('camera-self');
     if (!vt) return;
     if (room) { try { await room.localParticipant.unpublishTrack(vt, true); } catch (e) {} }
