@@ -266,7 +266,9 @@ mod tests {
         let event = profile_event(&secret, &me, &sample()).unwrap();
         assert!(event.verify());
         assert_eq!(event.created_at, 1_700_000_000, "the edit's time, not now");
-        assert!(!event.content.contains("hi"));
+        assert!(serde_json::from_str::<SyncedProfile>(&event.content).is_err());
+        let unrelated_key = nip44::conversation_key(&key(4), &me).unwrap();
+        assert!(nip44::decrypt(&unrelated_key, &event.content).is_err());
         assert_eq!(parse_profile(&secret, &me, &event), Some(sample()));
     }
 
