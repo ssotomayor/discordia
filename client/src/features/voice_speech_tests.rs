@@ -59,7 +59,7 @@ pub(super) fn read_speech(path: &Path) -> Vec<f32> {
     result
 }
 
-pub(super) fn write_wav(path: &Path, samples: &[f32]) {
+fn write_wav(path: &Path, samples: &[f32]) {
     let size = (samples.len() * 2) as u32;
     let mut bytes = Vec::with_capacity(size as usize + 44);
     bytes.extend_from_slice(b"RIFF");
