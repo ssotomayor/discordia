@@ -692,7 +692,7 @@ where
     state.write().gateway_failure = None;
     apply(&mut state, admitted, tx, voice_tx);
 
-    if let Some(local) = crate::profile::load()
+    if let Some(local) = crate::profile::load(&params.identity.pubkey)
         && local != crate::profile::LocalProfile::default()
         && let Ok(json) = serde_json::to_string(&local.set_profile_message())
     {

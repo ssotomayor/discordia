@@ -814,7 +814,16 @@ pub fn App() -> Element {
         });
     }
 
-    let mut identity = use_signal(|| Identity::load().ok().flatten());
+    let mut identity = use_signal(|| {
+        let identity = Identity::load().ok().flatten();
+        // Bind the old shared cache before sign-in can select a different account.
+        if let Some(identity) = &identity
+            && let Err(error) = crate::profile::migrate_legacy(&identity.pubkey)
+        {
+            tracing::warn!(%error, "could not migrate the account profile");
+        }
+        identity
+    });
     let mut update_dialog = use_signal(|| false);
     use_effect(move || {
         let request = *updates.open_request.read();

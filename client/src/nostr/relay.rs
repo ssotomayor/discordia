@@ -79,6 +79,7 @@ pub enum RelayEvent {
     /// A relay finished replaying stored events for a subscription.
     EndOfStored {
         relay: String,
+        subscription: String,
     },
     /// A relay accepted or rejected something we published.
     Published {
@@ -392,8 +393,12 @@ async fn handle_relay_message(
             let _ = out.send(RelayEvent::Event(Box::new(event)));
         }
         "EOSE" => {
+            let Some(subscription) = v.get(1).and_then(|s| s.as_str()) else {
+                return;
+            };
             let _ = out.send(RelayEvent::EndOfStored {
                 relay: url.to_string(),
+                subscription: subscription.to_string(),
             });
         }
         "OK" => {
@@ -575,10 +580,10 @@ mod tests {
     /// no history for us" from "history is still coming".
     #[tokio::test]
     async fn end_of_stored_names_the_relay_that_finished() {
-        let out = feed(&[r#"["EOSE","sub"]"#]).await;
+        let out = feed(&[r#"["EOSE"]"#, r#"["EOSE",null]"#, r#"["EOSE","sub"]"#]).await;
 
         assert!(
-            matches!(&out[..], [RelayEvent::EndOfStored { relay }] if relay == "wss://r.test"),
+            matches!(&out[..], [RelayEvent::EndOfStored { relay, subscription }] if relay == "wss://r.test" && subscription == "sub"),
             "got {out:?}"
         );
     }
