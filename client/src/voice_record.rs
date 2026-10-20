@@ -24,10 +24,11 @@ enum Op {
         path: PathBuf,
         rate: u32,
     },
-    FloatWav {
-        id: u64,
-        path: PathBuf,
+    PlaybackStart {
+        ids: [u64; 3],
+        paths: [PathBuf; 3],
         rate: u32,
+        header: String,
     },
     Playback {
         before: u64,
@@ -384,17 +385,27 @@ fn write_loop(rx: Receiver<Op>) {
                     );
                 }
             }
-            Ok(Op::FloatWav { id, path, rate }) => {
-                if let Some(file) = create(&path, &audio_header(rate, 0, true)) {
-                    outs.insert(
-                        id,
-                        Out::Wav {
-                            file,
-                            bytes: 0,
-                            rate,
-                            float: true,
-                        },
-                    );
+            Ok(Op::PlaybackStart {
+                ids: [before, after, csv],
+                paths: [before_path, after_path, csv_path],
+                rate,
+                header,
+            }) => {
+                for (id, path) in [(before, before_path), (after, after_path)] {
+                    if let Some(file) = create(&path, &audio_header(rate, 0, true)) {
+                        outs.insert(
+                            id,
+                            Out::Wav {
+                                file,
+                                bytes: 0,
+                                rate,
+                                float: true,
+                            },
+                        );
+                    }
+                }
+                if let Some(file) = create(&csv_path, format!("{header}\n").as_bytes()) {
+                    outs.insert(csv, Out::Csv(file));
                 }
             }
             Ok(Op::Playback {

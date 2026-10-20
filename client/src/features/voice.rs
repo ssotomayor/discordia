@@ -3535,7 +3535,10 @@ fn next_playback_sample(
         if track.samples.is_empty() {
             track.starved += 1;
         }
-        if track.drift_correction && !track.recovery.ready(track.samples.len()) {
+        if track.drift_correction
+            && track.kind != TrackKind::Soundboard
+            && !track.recovery.ready(track.samples.len())
+        {
             continue;
         }
         let sample = if track.drift_correction {

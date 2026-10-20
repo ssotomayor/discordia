@@ -5,6 +5,7 @@ pub(super) struct Recovery {
     started: bool,
     recovering: bool,
     waited: usize,
+    idle_samples: usize,
     pub held_samples: u64,
 }
 
@@ -15,6 +16,7 @@ impl Recovery {
             started: false,
             recovering: false,
             waited: 0,
+            idle_samples: 0,
             held_samples: 0,
         }
     }
@@ -25,10 +27,23 @@ impl Recovery {
             self.reserve = reserve;
             self.recovering = false;
             self.waited = 0;
+            self.started = false;
+            self.idle_samples = 0;
         }
     }
 
     pub fn ready(&mut self, queued: usize) -> bool {
+        if queued == 0 {
+            self.idle_samples = self.idle_samples.saturating_add(1);
+            if self.idle_samples >= self.reserve {
+                self.started = false;
+                self.recovering = false;
+                self.waited = 0;
+                return true;
+            }
+        } else {
+            self.idle_samples = 0;
+        }
         if queued == 0 && self.started {
             self.recovering = true;
         }
