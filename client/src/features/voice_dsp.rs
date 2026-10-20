@@ -1,67 +1,9 @@
 use super::*;
 use crate::mic_profile::Config;
 
-struct SpeechProtection {
-    requested: u32,
-    previous_speech: f32,
-    floor_db: f32,
-    sustained: u32,
-    hold: u32,
-    cap_db: f32,
-}
-
-impl SpeechProtection {
-    fn new(cap_db: u32) -> Self {
-        Self {
-            requested: cap_db,
-            previous_speech: 0.0,
-            floor_db: -60.0,
-            sustained: 0,
-            hold: 0,
-            cap_db: cap_db as f32,
-        }
-    }
-
-    fn step(&mut self, level_db: f32, speech: f32, requested: u32) -> u32 {
-        if self.requested != requested {
-            *self = Self::new(requested);
-        }
-        if level_db < self.floor_db + 8.0 {
-            self.floor_db += (level_db - self.floor_db) * 0.01;
-        }
-        let strong = level_db > -44.0 && level_db > self.floor_db + 18.0;
-        let candidate = strong && (self.previous_speech >= 0.6 || level_db > self.floor_db + 24.0);
-        self.previous_speech = speech;
-        self.sustained = if candidate {
-            (self.sustained + 1).min(4)
-        } else {
-            self.sustained.saturating_sub(1)
-        };
-        if self.sustained == 4 {
-            self.hold = 35;
-        } else {
-            self.hold = self.hold.saturating_sub(1);
-        }
-        let minimum = requested.min(3) as f32;
-        let target = if self.hold > 0 {
-            minimum
-        } else {
-            requested as f32
-        };
-        let delta: f32 = if target < self.cap_db { -4.5 } else { 0.1 };
-        self.cap_db = if (target - self.cap_db).abs() < delta.abs() {
-            target
-        } else {
-            self.cap_db + delta
-        };
-        self.cap_db.round().clamp(minimum, requested as f32) as u32
-    }
-}
-
 pub(super) struct Processor {
     denoiser: Option<crate::denoise::Denoiser>,
     suppression: Option<u32>,
-    protection: Option<SpeechProtection>,
     vad: crate::denoise::Vad,
     agc: Option<crate::agc::Agc>,
     agc_error_reported: bool,
@@ -83,7 +25,6 @@ pub(super) struct Processed {
     pub echoed_dbfs: f32,
     pub denoised_dbfs: f32,
     pub agc_gain_db: f32,
-    pub suppression_db: u32,
 }
 
 impl Processor {
@@ -91,7 +32,6 @@ impl Processor {
         Self {
             denoiser: None,
             suppression: None,
-            protection: None,
             vad: crate::denoise::Vad::new(),
             agc: None,
             agc_error_reported: false,
@@ -103,7 +43,6 @@ impl Processor {
 
     pub fn silence(&mut self) {
         self.gate.silence();
-        self.protection = None;
     }
 
     pub fn denoise_fallback(&self) -> Option<crate::denoise::Fallback> {
@@ -115,14 +54,12 @@ impl Processor {
     pub fn retry_denoise(&mut self) {
         self.denoiser = None;
         self.suppression = None;
-        self.protection = None;
     }
 
     #[cfg(test)]
     pub(super) fn replay_engine(&mut self, engine: crate::denoise::Engine) {
         self.denoiser = Some(crate::denoise::Denoiser::for_replay(engine));
         self.suppression = None;
-        self.protection = None;
     }
 
     pub fn process(
@@ -132,7 +69,6 @@ impl Processor {
         delay: i32,
         muted: bool,
     ) -> Processed {
-        let raw_dbfs = crate::voice_record::rms_dbfs(&samples);
         self.echo
             .configure(config.processing.echo, config.processing.high_pass);
         if let Err(error) = self.echo.process(&mut samples, delay)
@@ -144,7 +80,7 @@ impl Processor {
         let pre = peak_fixed(&samples);
         let echoed_dbfs = crate::voice_record::rms_dbfs(&samples);
         if muted {
-            self.silence();
+            self.gate.silence();
             return Processed {
                 samples,
                 pre,
@@ -158,7 +94,6 @@ impl Processor {
                 echoed_dbfs,
                 denoised_dbfs: echoed_dbfs,
                 agc_gain_db: 0.0,
-                suppression_db: 0,
             };
         }
         let speech = self.vad.speech(&samples);
@@ -169,24 +104,14 @@ impl Processor {
                 model_loaded = true;
                 crate::denoise::Denoiser::new()
             });
-            // The AGC must never feed its amplified signal back into speech protection.
-            let suppression = if denoiser.engine() == Some(crate::denoise::Engine::DeepFilterNet) {
-                self.protection
-                    .get_or_insert_with(|| SpeechProtection::new(config.suppression))
-                    .step(raw_dbfs, speech, config.suppression)
-            } else {
-                self.protection = None;
-                config.suppression
-            };
-            if self.suppression != Some(suppression) {
-                denoiser.set_atten_lim(suppression as f32);
-                self.suppression = Some(suppression);
+            if self.suppression != Some(config.suppression) {
+                denoiser.set_atten_lim(config.suppression as f32);
+                self.suppression = Some(config.suppression);
             }
             lsnr_db = denoiser.process_hop(&mut samples).lsnr_db;
         } else {
             self.denoiser = None;
             self.suppression = None;
-            self.protection = None;
         }
         let gate_peak = peak_fixed(&samples);
         let denoised_dbfs = crate::voice_record::rms_dbfs(&samples);
@@ -237,7 +162,6 @@ impl Processor {
             echoed_dbfs,
             denoised_dbfs,
             agc_gain_db: self.agc.as_ref().map_or(0.0, crate::agc::Agc::gain_db),
-            suppression_db: self.suppression.unwrap_or(0),
         }
     }
 }
@@ -245,34 +169,6 @@ impl Processor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn protection_rejects_quiet_false_positives_and_short_impulses() {
-        let mut protection = SpeechProtection::new(12);
-        for _ in 0..100 {
-            assert_eq!(protection.step(-54.0, 1.0, 12), 12);
-        }
-        for _ in 0..3 {
-            assert_eq!(protection.step(-25.0, 1.0, 12), 12);
-        }
-        for _ in 0..100 {
-            assert_eq!(protection.step(-54.0, 0.0, 12), 12);
-        }
-        // Both detectors can miss speech; sustained energy above the local floor is the fallback.
-        for _ in 0..60 {
-            protection.step(-28.0, 0.05, 12);
-        }
-        assert_eq!(protection.step(-28.0, 0.05, 12), 3);
-        let mut last = 3;
-        for _ in 0..200 {
-            let next = protection.step(-54.0, 0.0, 12);
-            assert!(next >= last && next - last <= 1);
-            last = next;
-        }
-        assert_eq!(last, 12);
-        assert_eq!(protection.step(-28.0, 1.0, 1), 1);
-        assert_eq!(protection.step(-28.0, 1.0, 0), 0);
-    }
 
     #[test]
     fn individual_peaks_are_limited_after_manual_gain_without_lowering_normal_speech() {
