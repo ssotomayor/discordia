@@ -171,7 +171,10 @@
     menu.querySelector('button').focus({ preventScroll: true });
   });
   on(document, 'pointerdown', e => { if (menu && !menu.contains(e.target)) { close(); context = null; } }, true);
-  on(document, 'scroll', () => { close(); context = null; }, true);
+  on(document, 'scroll', e => {
+    if (menu && menu.contains(e.target)) return;
+    close(); context = null;
+  }, true);
   on(window, 'resize', () => { close(); context = null; });
   on(window, 'blur', () => { close(); context = null; });
   on(document, 'keydown', e => {

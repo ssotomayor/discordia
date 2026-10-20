@@ -108,6 +108,17 @@ test('dismissed menus and removed fields cannot receive delayed paste', async ()
   }
 });
 
+test('scrolling inside the context menu keeps it open; scrolling elsewhere closes it', () => {
+  const f = fixture(), input = f.field();
+  f.event('contextmenu', input);
+  const menu = f.menu(), child = new f.Element('button');
+  menu.append(child);
+  f.event('scroll', child);
+  assert.equal(f.menu(), menu);
+  f.event('scroll', f.document.body);
+  assert.equal(f.menu(), undefined);
+});
+
 test('passwords hide copy/cut and readonly fields hide paste/cut', () => {
   const f = fixture(), password = f.field(); password.tagName = 'INPUT'; password.type = 'password';
   f.event('contextmenu', password); assert.deepEqual(f.labels(), ['Paste', 'Select all']);
