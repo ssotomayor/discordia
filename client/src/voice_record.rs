@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
+mod playback;
+pub use playback::Playback;
+
 const QUEUE: usize = 8192;
 /// A header is patched this often, so a crash or a killed app still leaves files that play.
 const PATCH_EVERY: Duration = Duration::from_secs(1);
@@ -20,6 +23,19 @@ enum Op {
         id: u64,
         path: PathBuf,
         rate: u32,
+    },
+    FloatWav {
+        id: u64,
+        path: PathBuf,
+        rate: u32,
+    },
+    Playback {
+        before: u64,
+        after: u64,
+        csv: u64,
+        raw: Vec<f32>,
+        output: Vec<f32>,
+        line: String,
     },
     Csv {
         id: u64,
@@ -51,6 +67,7 @@ struct Session {
 
 static ON: AtomicBool = AtomicBool::new(false);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static SESSION: RwLock<Option<Arc<Session>>> = RwLock::new(None);
 
 fn session() -> Option<Arc<Session>> {
@@ -72,8 +89,9 @@ pub fn start(root: Option<PathBuf>) -> Result<PathBuf, String> {
         .spawn(move || write_loop(rx))
         .map_err(|e| e.to_string())?;
     tracing::info!(dir = %dir.display(), "voice recording on");
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     *SESSION.write() = Some(Arc::new(Session {
-        generation: GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
+        generation,
         dir: dir.clone(),
         start: Instant::now(),
         tx,
@@ -82,15 +100,21 @@ pub fn start(root: Option<PathBuf>) -> Result<PathBuf, String> {
         overflowed: AtomicBool::new(false),
     }));
     ON.store(true, Ordering::Relaxed);
+    ACTIVE_GENERATION.store(generation, Ordering::Release);
     Ok(dir)
 }
 
 /// The writer finishes every file once the last sender is gone.
 pub fn stop() {
+    ACTIVE_GENERATION.store(0, Ordering::Release);
     ON.store(false, Ordering::Relaxed);
     if SESSION.write().take().is_some() {
         tracing::info!("voice recording off");
     }
+}
+
+pub fn generation() -> u64 {
+    ACTIVE_GENERATION.load(Ordering::Acquire)
 }
 
 pub fn folder() -> Option<PathBuf> {
@@ -267,6 +291,7 @@ enum Out {
         file: BufWriter<File>,
         bytes: u32,
         rate: u32,
+        float: bool,
     },
     Csv(BufWriter<File>),
 }
@@ -274,11 +299,16 @@ enum Out {
 impl Out {
     fn patch(&mut self) -> std::io::Result<()> {
         match self {
-            Out::Wav { file, bytes, rate } => {
+            Out::Wav {
+                file,
+                bytes,
+                rate,
+                float,
+            } => {
                 file.flush()?;
                 let inner = file.get_mut();
                 inner.seek(SeekFrom::Start(0))?;
-                inner.write_all(&wav_header(*rate, *bytes))?;
+                inner.write_all(&audio_header(*rate, *bytes, *float))?;
                 inner.seek(SeekFrom::End(0))?;
                 Ok(())
             }
@@ -302,6 +332,26 @@ fn wav_header(rate: u32, bytes: u32) -> [u8; 44] {
     h[36..40].copy_from_slice(b"data");
     h[40..44].copy_from_slice(&bytes.to_le_bytes());
     h
+}
+
+fn audio_header(rate: u32, bytes: u32, float: bool) -> [u8; 44] {
+    let mut header = wav_header(rate, bytes);
+    if float {
+        header[20..22].copy_from_slice(&3u16.to_le_bytes());
+        header[28..32].copy_from_slice(&(rate * 4).to_le_bytes());
+        header[32..34].copy_from_slice(&4u16.to_le_bytes());
+        header[34..36].copy_from_slice(&32u16.to_le_bytes());
+    }
+    header
+}
+
+fn write_float(outs: &mut HashMap<u64, Out>, id: u64, samples: &[f32]) {
+    if let Some(Out::Wav { file, bytes, .. }) = outs.get_mut(&id) {
+        for sample in samples {
+            let _ = file.write_all(&sample.to_le_bytes());
+        }
+        *bytes = bytes.saturating_add(4 * samples.len() as u32);
+    }
 }
 
 fn create(path: &Path, first: &[u8]) -> Option<BufWriter<File>> {
@@ -329,8 +379,36 @@ fn write_loop(rx: Receiver<Op>) {
                             file,
                             bytes: 0,
                             rate,
+                            float: false,
                         },
                     );
+                }
+            }
+            Ok(Op::FloatWav { id, path, rate }) => {
+                if let Some(file) = create(&path, &audio_header(rate, 0, true)) {
+                    outs.insert(
+                        id,
+                        Out::Wav {
+                            file,
+                            bytes: 0,
+                            rate,
+                            float: true,
+                        },
+                    );
+                }
+            }
+            Ok(Op::Playback {
+                before,
+                after,
+                csv,
+                raw,
+                output,
+                line,
+            }) => {
+                write_float(&mut outs, before, &raw);
+                write_float(&mut outs, after, &output);
+                if let Some(Out::Csv(file)) = outs.get_mut(&csv) {
+                    let _ = writeln!(file, "{line}");
                 }
             }
             Ok(Op::Csv { id, path, header }) => {

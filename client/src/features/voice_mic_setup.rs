@@ -177,7 +177,7 @@ impl<'a> ComparisonAudio<'a> {
                 } else {
                     frame
                 };
-                let Some((depth, _, _)) = handle.push(track, samples, self.rate + samples.len())
+                let Some((depth, _, _, _)) = handle.push(track, samples, self.rate + samples.len())
                 else {
                     return true;
                 };

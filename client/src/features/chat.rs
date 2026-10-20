@@ -954,12 +954,17 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     }
                     if let Some(store) = bookmarks.clone().filter(|_| bookmark_key.is_some()) {
                         button {
-                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--accent)]",
+                            r#type: "button",
+                            class: "dxf-message-bookmark rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--accent)]",
                             title: if bookmarked { crate::i18n::text("Remove bookmark", &[]) } else { crate::i18n::text("Save message", &[]) },
                             aria_label: if bookmarked { crate::i18n::text("Remove bookmark", &[]) } else { crate::i18n::text("Save message", &[]) },
                             "data-context-action": "bookmark",
+                            aria_pressed: bookmarked.to_string(),
                             disabled: store.state.read().busy || !store.state.read().loaded,
-                            onclick: move |_| {
+                            onpointerdown: move |e: PointerEvent| e.stop_propagation(),
+                            onmousedown: move |e: MouseEvent| e.stop_propagation(),
+                            onclick: move |e: MouseEvent| {
+                                e.stop_propagation();
                                 if let Some(message) = crate::bookmarks::SavedMessage::capture(&state.peek(), &bookmark_message) {
                                     store.toggle(message);
                                 }

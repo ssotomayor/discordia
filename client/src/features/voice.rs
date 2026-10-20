@@ -51,6 +51,8 @@ pub mod direct;
 mod dsp;
 #[path = "voice_mic_test.rs"]
 pub mod mic_test;
+#[path = "voice_playback_recovery.rs"]
+mod playback_recovery;
 pub(crate) fn microphone_context(state: &AppState) -> Result<crate::mic_profile::Context, String> {
     calibration::context(state)
 }
@@ -2315,7 +2317,7 @@ fn denoise_gate_loop(
     let mut sent_wav = crate::voice_record::Wav::new("mic-sent", SAMPLE_RATE);
     let mut dsp_csv = crate::voice_record::Csv::new(
         "mic-dsp",
-        "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,sent_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db",
+        "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,sent_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db,echo,high_pass,gate_enabled,headphones",
     );
     while let Some(packet) = frame_rx.blocking_recv() {
         if !packet.is_fresh() {
@@ -2390,7 +2392,7 @@ fn denoise_gate_loop(
         });
         dsp_csv.row(|| {
             format!(
-                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{},{},{:.2},{}",
+                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{},{},{:.2},{},{},{},{},{}",
                 processed.echoed_dbfs,
                 processed.denoised_dbfs,
                 processed.agc_gain_db,
@@ -2413,6 +2415,10 @@ fn denoise_gate_loop(
                 processed
                     .lsnr_db
                     .map_or(String::new(), |db| format!("{db:.1}")),
+                config.processing.echo,
+                config.processing.high_pass,
+                config.processing.gate,
+                config.processing.headphones,
             )
         });
         if processed.action == GateAction::Drop {
@@ -3359,6 +3365,7 @@ struct TrackBuf {
     kind: TrackKind,
     starved: u64,
     drift_correction: bool,
+    recovery: playback_recovery::Recovery,
 }
 
 #[derive(Clone)]
@@ -3426,6 +3433,7 @@ impl PlaybackHandle {
                 kind,
                 starved: 0,
                 drift_correction,
+                recovery: playback_recovery::Recovery::new(self.rate()),
             },
         );
         id
@@ -3439,15 +3447,21 @@ impl PlaybackHandle {
             .map(|track| track.samples.len())
     }
 
-    /// Returns the track's buffered samples, its starved-sample count and its gain.
-    fn push(&self, id: u64, samples: &[f32], cap: usize) -> Option<(usize, u64, f32)> {
+    /// Queue depth and counters are sampled under the same lock as the appended audio.
+    fn push(&self, id: u64, samples: &[f32], cap: usize) -> Option<(usize, u64, f32, u64)> {
         let mut t = self.tracks.lock();
         let track = t.buffers.get_mut(&id)?;
+        track.recovery.set_rate(self.rate());
         track.samples.extend(samples);
         while track.samples.len() > cap {
             track.samples.pop_front();
         }
-        Some((track.samples.len(), track.starved, track.gain))
+        Some((
+            track.samples.len(),
+            track.starved,
+            track.gain,
+            track.recovery.held_samples,
+        ))
     }
 
     fn remove_track(&self, id: u64) {
@@ -3520,6 +3534,9 @@ fn next_playback_sample(
     for track in tracks.buffers.values_mut() {
         if track.samples.is_empty() {
             track.starved += 1;
+        }
+        if track.drift_correction && !track.recovery.ready(track.samples.len()) {
+            continue;
         }
         let sample = if track.drift_correction {
             pop_drift_compensated(&mut track.samples, counter, overrun, underrun)
@@ -3655,6 +3672,7 @@ impl PlaybackMixer {
         let mut reference_f32 = crate::echo::Reference::new(self.reference_tx.clone(), device_rate);
         let mut reference_i16 = crate::echo::Reference::new(self.reference_tx.clone(), device_rate);
         let mut limiter = crate::playback_limiter::Limiter::new(device_rate);
+        let mut recording = crate::voice_record::Playback::new(device_rate);
 
         let report_fault = |faults: &UnboundedSender<AudioFault>| {
             let faults = faults.clone();
@@ -3669,8 +3687,21 @@ impl PlaybackMixer {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 config.into(),
                 move |data: &mut [f32], _| {
+                    let started = Instant::now();
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
+                    recording.begin(
+                        started,
+                        data.len() / device_channels,
+                        started.elapsed(),
+                        tracks
+                            .buffers
+                            .values()
+                            .map(|t| t.samples.len())
+                            .min()
+                            .unwrap_or(0),
+                        tracks.buffers.values().map(|t| t.starved).sum(),
+                    );
                     refresh_gains(
                         &mut tracks,
                         &gains_f32,
@@ -3684,12 +3715,14 @@ impl PlaybackMixer {
                     let mut pulled = 0u64;
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        let sample = limiter.process(next_playback_sample(
+                        let raw = next_playback_sample(
                             &mut tracks,
                             counter,
                             overrun_threshold,
                             underrun_threshold,
-                        ));
+                        );
+                        let sample = limiter.process(raw);
+                        recording.push(raw, sample, limiter.gain());
                         reference_f32.push(sample);
                         if sample != 0.0 {
                             pulled += 1;
@@ -3698,6 +3731,7 @@ impl PlaybackMixer {
                             *s = sample;
                         }
                     }
+                    recording.finish();
                     drift_counter_cb.store(counter, Ordering::Relaxed);
                     pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
@@ -3707,8 +3741,21 @@ impl PlaybackMixer {
             cpal::SampleFormat::I16 => device.build_output_stream(
                 config.into(),
                 move |data: &mut [i16], _| {
+                    let started = Instant::now();
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
+                    recording.begin(
+                        started,
+                        data.len() / device_channels,
+                        started.elapsed(),
+                        tracks
+                            .buffers
+                            .values()
+                            .map(|t| t.samples.len())
+                            .min()
+                            .unwrap_or(0),
+                        tracks.buffers.values().map(|t| t.starved).sum(),
+                    );
                     refresh_gains(
                         &mut tracks,
                         &gains_i16,
@@ -3722,13 +3769,15 @@ impl PlaybackMixer {
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        let sample = limiter.process(next_playback_sample(
+                        let raw = next_playback_sample(
                             &mut tracks,
                             counter,
                             overrun_threshold,
                             underrun_threshold,
-                        ));
+                        );
+                        let sample = limiter.process(raw);
                         let s16 = dither_to_i16(sample, &mut dither_rng);
+                        recording.push(raw, s16 as f32 / i16::MAX as f32, limiter.gain());
                         if sample != 0.0 {
                             pulled += 1;
                         }
@@ -3737,6 +3786,7 @@ impl PlaybackMixer {
                             *s = s16;
                         }
                     }
+                    recording.finish();
                     drift_counter_cb.store(counter, Ordering::Relaxed);
                     pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
@@ -3808,9 +3858,10 @@ async fn consume_remote_track(
     let mut recv_wav = crate::voice_record::Wav::new(&record_name, SAMPLE_RATE);
     let mut recv_csv = crate::voice_record::Csv::new(
         &record_name,
-        "samples,rate,rms_dbfs,peak,gap_ms,mixer_ms,mixer_starved_samples,gain",
+        "samples,rate,rms_dbfs,peak,gap_ms,mixer_ms,mixer_starved_samples,gain,rebuffered_samples",
     );
     let mut arrived: Option<Instant> = None;
+    let mut record_generation = 0;
     while let Some(frame) = stream.next().await {
         // The output stream can be reopened at a different native rate mid-call.
         let current = handle.rate();
@@ -3847,15 +3898,20 @@ async fn consume_remote_track(
             }
             None => handle.push(track_id, &f32_buf, cap),
         };
+        let generation = crate::voice_record::generation();
+        if generation != record_generation {
+            arrived = None;
+            record_generation = generation;
+        }
         if recv_csv.is_on() {
             recv_wav.write_i16(&frame.data);
             let now = Instant::now();
             let gap = arrived.map_or(0, |at| now.duration_since(at).as_millis());
             arrived = Some(now);
-            let (depth, starved, gain) = mixer.unwrap_or_default();
+            let (depth, starved, gain, rebuffered) = mixer.unwrap_or_default();
             recv_csv.row(|| {
                 format!(
-                    "{},{},{:.1},{frame_peak},{gap},{},{starved},{gain:.2}",
+                    "{},{},{:.1},{frame_peak},{gap},{},{starved},{gain:.2},{rebuffered}",
                     frame.data.len(),
                     frame.sample_rate,
                     crate::voice_record::rms_dbfs(&f32_buf),

@@ -11,6 +11,10 @@ pub struct Limiter {
 }
 
 impl Limiter {
+    pub fn gain(&self) -> f32 {
+        self.gain as f32
+    }
+
     pub fn new(sample_rate: u32) -> Self {
         let rate = f64::from(sample_rate.max(1));
         let lookahead = (sample_rate as usize / 200).max(1);
