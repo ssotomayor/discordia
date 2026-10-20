@@ -149,19 +149,10 @@ impl Files {
         let before = session.next_id.fetch_add(1, Ordering::Relaxed);
         let after = session.next_id.fetch_add(1, Ordering::Relaxed);
         let csv = session.next_id.fetch_add(1, Ordering::Relaxed);
-        for (id, name) in [(before, "playback-mix"), (after, "playback-out")] {
-            session
-                .tx
-                .try_send(Op::FloatWav {
-                    id,
-                    path: session.path(name, "wav"),
-                    rate,
-                })
-                .ok()?;
-        }
-        session.tx.try_send(Op::Csv {
-            id: csv,
-            path: session.path("playback", "csv"),
+        session.tx.try_send(Op::PlaybackStart {
+            ids: [before, after, csv],
+            paths: [session.path("playback-mix", "wav"), session.path("playback-out", "wav"), session.path("playback", "csv")],
+            rate,
             header: "t_ms,sample_index,samples,rate,raw_dbfs,raw_peak,out_dbfs,out_peak,limiter_reduction_db,callback_gap_us,callback_frames,lock_wait_us,min_buffer_samples,starved_samples,record_dropped_samples".into(),
         }).ok()?;
         Some(Self {
@@ -248,6 +239,57 @@ fn record_loop(rx: Receiver<Block>, rate: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_playback_files_is_one_queue_operation_under_backpressure() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let session = Arc::new(Session {
+            generation: 1,
+            dir: PathBuf::from("unused-recording-path"),
+            start: Instant::now(),
+            tx,
+            next_id: AtomicU64::new(1),
+            names: Mutex::new(HashMap::new()),
+            overflowed: AtomicBool::new(false),
+        });
+        for _ in 0..4 {
+            session
+                .tx
+                .try_send(Op::Line {
+                    id: 99,
+                    line: String::new(),
+                })
+                .ok()
+                .unwrap();
+        }
+        assert!(Files::open(session.clone(), 48_000).is_none());
+        for _ in 0..4 {
+            assert!(matches!(rx.try_recv().unwrap(), Op::Line { id: 99, .. }));
+        }
+        assert!(rx.try_recv().is_err());
+        for _ in 0..3 {
+            session
+                .tx
+                .try_send(Op::Line {
+                    id: 99,
+                    line: String::new(),
+                })
+                .ok()
+                .unwrap();
+        }
+        let files = Files::open(session, 48_000).expect("one free slot must open all three files");
+        for _ in 0..3 {
+            assert!(matches!(rx.try_recv().unwrap(), Op::Line { id: 99, .. }));
+        }
+        let ids = match rx.try_recv().unwrap() {
+            Op::PlaybackStart { ids, .. } => ids,
+            _ => panic!("playback files must be opened as one operation"),
+        };
+        drop(files);
+        for expected in ids {
+            assert!(matches!(rx.try_recv().unwrap(), Op::Close { id } if id == expected));
+        }
+    }
 
     #[test]
     fn recorded_mix_preserves_overload_and_native_rate_beside_actual_output() {

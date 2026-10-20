@@ -496,6 +496,52 @@ fn recovery_avoids_chopping_audio_while_a_stalled_producer_catches_up() {
 }
 
 #[test]
+fn soundboard_restarts_immediately_after_short_and_long_pauses() {
+    for rate in [44_100, 48_000, 96_000] {
+        let controls = AudioControls::from_state(&AppState::empty());
+        controls.soundboard_pct.store(100, Ordering::Relaxed);
+        let handle = PlaybackHandle {
+            tracks: Arc::new(Mutex::new(MixerTracks::default())),
+            device_rate: Arc::new(AtomicU32::new(rate)),
+            gains: controls.gains,
+            stream_gains: controls.stream_gains,
+            soundboard_pct: controls.soundboard_pct,
+        };
+        let id = handle.add_track("peer".into(), TrackKind::Soundboard);
+        let mut tracks = handle.tracks.lock();
+        for (gap_ms, value) in [(0, 0.2), (20, 0.3), (200, 0.4), (20, 0.5)] {
+            for _ in 0..rate * gap_ms / 1000 {
+                assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), 0.0);
+            }
+            tracks
+                .buffers
+                .get_mut(&id)
+                .unwrap()
+                .samples
+                .push_back(value);
+            assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), value);
+        }
+        assert_eq!(tracks.buffers[&id].recovery.held_samples, 0);
+    }
+}
+
+#[test]
+fn live_playback_restarts_immediately_after_a_long_idle() {
+    for rate in [44_100, 48_000, 96_000] {
+        let mut recovery = playback_recovery::Recovery::new(rate);
+        assert!(recovery.ready(1));
+        for _ in 0..rate {
+            recovery.ready(0);
+        }
+        assert!(
+            recovery.ready(1),
+            "rate={rate}: a new utterance must not wait for the previous one"
+        );
+        assert_eq!(recovery.held_samples, 0);
+    }
+}
+
+#[test]
 fn recovery_does_not_delay_startup_or_trap_a_short_final_fragment() {
     for rate in [44_100, 48_000, 96_000] {
         let mut recovery = playback_recovery::Recovery::new(rate);
@@ -504,9 +550,6 @@ fn recovery_does_not_delay_startup_or_trap_a_short_final_fragment() {
         }
         assert!(recovery.ready(1));
         assert!(!recovery.ready(0));
-        for _ in 0..rate {
-            assert!(!recovery.ready(0));
-        }
         let mut held = 0;
         while !recovery.ready(1) {
             held += 1;
@@ -524,6 +567,7 @@ fn recorded_playback_bypasses_recovery_and_output_rate_changes_reset_its_wait() 
     assert!(!recovery.ready(0));
     assert!(!recovery.ready(1));
     recovery.set_rate(96_000);
+    assert!(recovery.ready(0));
     assert!(recovery.ready(1));
     let mut tracks = MixerTracks::default();
     tracks.buffers.insert(
