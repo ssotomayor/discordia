@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const script = fs.readFileSync(`${__dirname}/../assets/text-menu.js`, 'utf8');
 
-function fixture() {
+function fixture({ nativeMenuDisabled = false } = {}) {
   class Element {
     constructor(tag = 'div', attrs = {}) {
       this.tagName = tag.toUpperCase(); this.attrs = attrs; this.childNodes = [];
@@ -54,17 +54,20 @@ function fixture() {
   const window = new Element();
   window.getSelection = () => selection;
   window.__dxfTextMenuLabels = { copy: 'Copy', message: 'Copy message', cut: 'Cut', paste: 'Paste', all: 'Select all', react: 'Add reaction', error: 'Clipboard error' };
-  vm.runInNewContext(script, { window, document, navigator: { platform: 'Win32' }, innerWidth: 800, innerHeight: 600,
+  if (nativeMenuDisabled) document.addEventListener('contextmenu', e => e.preventDefault());
+  let bridgeClosed = false;
+  const lifetime = vm.runInNewContext('(async function(dioxus) {' + script + '})(dioxus)', { window, document, navigator: { platform: 'Win32' }, innerWidth: 800, innerHeight: 600,
     getComputedStyle: () => ({ getPropertyValue: () => '#123', fontFamily: 'sans-serif' }),
     Event: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
     dioxus: { send: value => requests.push(value), recv: () => new Promise(resolve => { receive = resolve; }) },
   });
+  lifetime.then(() => { bridgeClosed = true; });
   function event(type, target, extra = {}) {
     const e = { type, target, clientX: 799, clientY: 599, preventDefault() { this.defaultPrevented = true; }, ...extra };
-    document.dispatchEvent(e); return e;
+    document.body.dispatchEvent(e); document.dispatchEvent(e); return e;
   }
   const menu = () => document.body.childNodes.find(e => e.className === 'dxf-text-menu');
-  return { Element, document, window, requests, commands, event, menu,
+  return { Element, document, window, requests, commands, event, menu, bridgeClosed: () => bridgeClosed,
     field(value = 'abcd') { const el = new Element('textarea'); el.value = value; el.setSelectionRange(1, 3); document.body.append(el); return el; },
     labels: () => menu().querySelectorAll('button').map(b => b.childNodes[0]?.textContent || b.textContent),
     choose(label) { const b = menu().querySelectorAll('button').find(b => (b.childNodes[0]?.textContent || b.textContent) === label); assert.ok(b, label); b.click(); },
@@ -147,4 +150,26 @@ test('saved messages expose the personal bookmark action even without text', () 
   f.event('contextmenu', row); assert.deepEqual(f.labels(), ['Remove bookmark']);
   assert.equal(f.menu().querySelector('[role="separator"]'), null);
   f.choose('Remove bookmark'); assert.equal(removed, 1);
+});
+
+test('release native-menu blocker does not suppress the custom menu', () => {
+  const f = fixture({ nativeMenuDisabled: true }), field = f.field();
+  f.event('contextmenu', field);
+  assert.ok(f.menu(), 'the custom handler runs before the document-level native blocker');
+  assert.ok(f.labels().includes('Paste'));
+  f.event('contextmenu', field, { defaultPrevented: true });
+  assert.equal(f.menu(), undefined, 'explicit child context menus retain priority');
+});
+
+test('the desktop eval channel stays open after startup and handles clipboard replies', async () => {
+  const f = fixture(), field = f.field();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.bridgeClosed(), false);
+  f.event('contextmenu', field); f.choose('Paste');
+  await f.reply({ ok: true, text: 'saved' });
+  assert.equal(field.value, 'asavedd');
+  assert.equal(f.bridgeClosed(), false);
+  f.window.__dxfTextMenuOff();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.bridgeClosed(), true, 'unmount closes the channel');
 });
