@@ -2407,7 +2407,7 @@ fn denoise_gate_loop(
                 config.threshold,
                 config.agc,
                 config.denoise,
-                processed.suppression_db,
+                config.suppression,
                 config.volume,
                 packet.captured.elapsed().as_millis(),
                 processed
