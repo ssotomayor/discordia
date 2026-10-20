@@ -56,6 +56,12 @@ impl Processor {
         self.suppression = None;
     }
 
+    #[cfg(test)]
+    pub(super) fn replay_engine(&mut self, engine: crate::denoise::Engine) {
+        self.denoiser = Some(crate::denoise::Denoiser::for_replay(engine));
+        self.suppression = None;
+    }
+
     pub fn process(
         &mut self,
         mut samples: [f32; FRAME_SAMPLES],
