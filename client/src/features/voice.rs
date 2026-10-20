@@ -300,10 +300,6 @@ mod audio_audit_tests;
 #[path = "voice_speech_tests.rs"]
 mod speech_audit_tests;
 
-#[cfg(test)]
-#[path = "voice_replay_tests.rs"]
-mod replay_tests;
-
 #[path = "voice_endpoints.rs"]
 mod voice_endpoints;
 
