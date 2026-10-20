@@ -210,8 +210,11 @@ code, kbd, .dxf-mono, .font-mono { font-family: 'JetBrains Mono', ui-monospace, 
 ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--accent) 38%, transparent); }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
-.dxf-message-bookmark { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; line-height: 1; -webkit-app-region: no-drag; }
+.dxf-message-bookmark { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; line-height: 1; color: var(--text-muted); -webkit-app-region: no-drag; }
 .dxf-message-bookmark span, .dxf-message-bookmark svg { display: block; width: 16px; height: 16px; pointer-events: none; }
+.dxf-message-bookmark:hover, .dxf-message-bookmark[aria-pressed='true'] { color: var(--accent); border-color: var(--accent); }
+.dxf-message-bookmark[aria-pressed='true'] { background-color: var(--accent-soft); }
+.dxf-message-bookmark[aria-pressed='true'] svg { fill: currentColor; }
 .dxf-message-bookmark:disabled { opacity: .45; }
 .dxf-message-bookmark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input::placeholder { color: var(--text-dim); }
