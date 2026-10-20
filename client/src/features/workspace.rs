@@ -305,6 +305,7 @@ pub fn WorkspaceView(
     on_disconnect: EventHandler<String>,
     on_switch: EventHandler<super::server_rail::Switch>,
 ) -> Element {
+    super::bookmarks::use_panel();
     let mut state = use_app_state();
     // A selected DM here is in the chat panel, always on screen; left false by
     // the last session, every message read here counted as unread.
@@ -593,6 +594,7 @@ pub fn WorkspaceView(
             crate::features::camera::CameraGridWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
+            super::bookmarks::BookmarksDialog {}
             if status == ConnectionStatus::Connecting {
                 ConnectingOverlay { target: connecting_target(&params.mode) }
             }
@@ -641,6 +643,7 @@ pub fn WorkspaceView(
                 div { class: "dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
                     onmousedown: move |e| e.stop_propagation(),
                     LayoutButton { layout, settings, edit_mode }
+                    super::bookmarks::BookmarksButton {}
                     crate::features::appearance::AppearanceButton {}
                     button {
                         class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",

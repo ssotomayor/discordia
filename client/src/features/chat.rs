@@ -377,6 +377,7 @@ pub fn ChatView() -> Element {
                         super::chat_tools::ChatTools { key: "{channel_id}", channel_id }
                     }
                 }
+                super::bookmarks::BookmarksButton {}
             }
 
             NoDrag {
@@ -643,6 +644,13 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         });
     // A DM lives on Nostr relays, which hold no edits.
     let can_edit = is_author && guild_id.is_some();
+    let bookmarks = try_consume_context::<crate::bookmarks::Bookmarks>();
+    let bookmark_key = crate::bookmarks::Conversation::of(&state.read(), channel_id);
+    let bookmarked = bookmarks
+        .as_ref()
+        .zip(bookmark_key.as_ref())
+        .is_some_and(|(store, key)| store.contains(key, message_id));
+    let bookmark_message = message.clone();
     let mut editing = use_signal(|| None::<String>);
     let has_media = message.image.is_some() || message.attachment.is_some();
     let edit_pending = state.read().pending_edits.contains(&message_id);
@@ -722,6 +730,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         div {
             class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
             style: "{mention_style}",
+            "data-context-message": "{message.content}",
 
             if grouped {
                 div { class: "w-9 shrink-0 font-mono text-[9.5px] text-[var(--text-dim)] text-right pt-1.5 opacity-0 group-hover:opacity-100 transition-opacity",
@@ -912,6 +921,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                         title: crate::i18n::text("Reply", &[]),
+                        "data-context-action": "reply",
                         onclick: {
                             let author = author_name.clone();
                             let body = content_for_reply.clone();
@@ -930,6 +940,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         button {
                             class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                             title: crate::i18n::text("Edit message", &[]),
+                            "data-context-action": "edit",
                             onclick: {
                                 let body = message.content.clone();
                                 move |_| {
@@ -941,15 +952,32 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             "✎"
                         }
                     }
+                    if let Some(store) = bookmarks.clone().filter(|_| bookmark_key.is_some()) {
+                        button {
+                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--accent)]",
+                            title: if bookmarked { crate::i18n::text("Remove bookmark", &[]) } else { crate::i18n::text("Save message", &[]) },
+                            aria_label: if bookmarked { crate::i18n::text("Remove bookmark", &[]) } else { crate::i18n::text("Save message", &[]) },
+                            "data-context-action": "bookmark",
+                            disabled: store.state.read().busy || !store.state.read().loaded,
+                            onclick: move |_| {
+                                if let Some(message) = crate::bookmarks::SavedMessage::capture(&state.peek(), &bookmark_message) {
+                                    store.toggle(message);
+                                }
+                            },
+                            span { dangerous_inner_html: super::icons::BOOKMARK }
+                        }
+                    }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                         title: crate::i18n::text("Add reaction", &[]),
+                        "data-context-action": if guild_id.is_some() { "react" } else { "" },
                         onclick: move |_| show_react.set(!show_react()),
                         "☺"
                     }
                     if can_pin {
                         button {
                             title: if pinned { crate::i18n::text("Unpin message", &[]) } else { crate::i18n::text("Pin message", &[]) },
+                            "data-context-action": "pin",
                             onclick: { let g = gateway.clone(); move |_| g.send(ClientMessage::PinMessage { channel_id, message_id, pinned: !pinned }) },
                             "📌"
                         }
@@ -958,8 +986,22 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         button {
                             class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] text-sm leading-none transition-colors",
                             title: crate::i18n::text("Delete message", &[]),
+                            "data-context-action": if guild_id.is_some() { "delete" } else { "" },
                             onclick: move |_| confirm_delete.set(!confirm_delete()),
                             "🗑"
+                        }
+                    }
+                    if guild_id.is_some() {
+                        div { hidden: true,
+                            for emoji in QUICK_REACTIONS.iter().take(4).copied() {
+                                button {
+                                    "data-context-emoji": "{emoji}",
+                                    onclick: {
+                                        let g = gateway.clone();
+                                        move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.to_string() })
+                                    },
+                                }
+                            }
                         }
                     }
                     if confirm_delete() {

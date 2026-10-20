@@ -7,6 +7,7 @@ mod app;
 mod audio_device;
 mod audio_diag;
 mod audio_queue;
+mod bookmarks;
 mod camera_quality;
 mod chat_image;
 mod clipboard;
@@ -15,6 +16,7 @@ mod denoise;
 mod e2ee;
 mod echo;
 mod mic_profile;
+mod text_menu;
 #[macro_use]
 mod devlog;
 mod emoji;
