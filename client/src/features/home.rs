@@ -13,6 +13,7 @@ pub fn HomeView(
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
+    super::bookmarks::use_panel();
     let state = use_app_state();
     // Every panel asks for a gateway; there is none here. Safe only because
     // `chat.rs` routes by `dm_of` and no non-DM channel can exist on this screen.
@@ -39,6 +40,7 @@ pub fn HomeView(
     };
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] {mac_top_pad}",
+            super::bookmarks::BookmarksDialog {}
             if !social() { crate::features::chat::ImageViewer {} }
             if !social() { crate::features::dm_call::CallPanel {} }
             crate::features::workspace::ErrorToast {}
@@ -181,6 +183,7 @@ fn TopBar(
                 div { class: "dxf-no-drag flex items-center gap-3 shrink-0",
                     style: "padding-right: 44px;",
                     onmousedown: move |e| e.stop_propagation(),
+                    super::bookmarks::BookmarksButton {}
                     button {
                         class: "flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
                         onclick: move |_| {

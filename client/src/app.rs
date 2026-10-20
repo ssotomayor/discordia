@@ -952,6 +952,7 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
 /// props of Style/Script is not supported".
 pub(crate) fn AppHead() -> Element {
     rsx! {
+        crate::text_menu::TextMenu {}
         crate::i18n::LanguageDocument {}
         document::Script { {LIVEKIT_JS} }
         document::Script { {include_str!("../assets/gif-playback.js")} }

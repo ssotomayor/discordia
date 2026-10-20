@@ -61,6 +61,7 @@ pub fn AccountView(
 ) -> Element {
     let settings = use_context::<Signal<ClientSettings>>();
     let mut state = use_account_state(settings);
+    crate::bookmarks::use_bookmarks(&identity, state);
     let nostr = use_hook(|| {
         let saved = settings.peek();
         let relays = if saved.dm_relays.is_empty() {

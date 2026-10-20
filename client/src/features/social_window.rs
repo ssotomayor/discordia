@@ -23,6 +23,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
     let gateway = use_context::<GatewayTx>();
     let parent = dioxus::desktop::use_window();
     let locale = use_context::<crate::i18n::Locale>();
+    let bookmarks = use_context::<crate::bookmarks::Bookmarks>();
     let handle = use_hook(|| Rc::new(RefCell::new(None::<dioxus::desktop::WeakDesktopContext>)));
     let alive = use_hook(|| Rc::new(Cell::new(true)));
     let (closed, receiver) = use_hook(|| {
@@ -74,6 +75,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
         .with_root_context(state)
         .with_root_context(settings)
         .with_root_context(locale)
+        .with_root_context(bookmarks.clone())
         .with_root_context(crate::i18n::WindowTitle("Discordia — Social"))
         .with_root_context(nostr.clone())
         .with_root_context(identity.clone())
@@ -223,6 +225,7 @@ impl PartialEq for SocialWindowProps {
 
 #[allow(non_snake_case)]
 fn SocialWindow(props: SocialWindowProps) -> Element {
+    super::bookmarks::use_panel();
     let SocialWindowProps {
         alive,
         closed,
@@ -249,6 +252,7 @@ fn SocialWindow(props: SocialWindowProps) -> Element {
         crate::app::AppHead {}
         style { "{size_css}" }
         div { class: "dxf-ui h-screen w-screen text-[var(--text)] bg-[var(--bg)] overflow-hidden", style: "{theme}",
+            super::bookmarks::BookmarksDialog {}
             super::chat::ImageViewer {}
             super::profiles::ProfileCard {}
             super::workspace::ErrorToast {}
