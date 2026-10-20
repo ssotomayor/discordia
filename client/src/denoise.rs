@@ -96,6 +96,18 @@ impl Denoiser {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_replay(engine: Engine) -> Self {
+        let mut denoiser = match engine {
+            Engine::DeepFilterNet => Self::new(),
+            Engine::RNNoise => Self::light(),
+        };
+        assert_eq!(denoiser.engine(), Some(engine));
+        // Offline runs must not switch models because of debug builds or machine load.
+        denoiser.budget = Duration::MAX;
+        denoiser
+    }
+
     pub fn engine(&self) -> Option<Engine> {
         match self.model.as_ref()? {
             Model::Deep(_) => Some(Engine::DeepFilterNet),
