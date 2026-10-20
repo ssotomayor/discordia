@@ -621,19 +621,8 @@ fn share_profile(
 /// `AppState::profile_synced_at` for the one already connected.
 fn adopt_profile(theirs: profile::SyncedProfile, mut state: Signal<AppState>) {
     spawn(async move {
-        let pictures = async {
-            Ok::<_, String>((
-                profile::resolve(&theirs.avatar).await?,
-                profile::resolve(&theirs.banner).await?,
-            ))
-        };
-        let (avatar, banner) = match pictures.await {
-            Ok(pictures) => pictures,
-            Err(e) => {
-                tracing::warn!(error = %e, "synced profile not adopted: a picture is unavailable");
-                return;
-            }
-        };
+        let avatar = profile::resolve(&theirs.avatar).await;
+        let banner = profile::resolve(&theirs.banner).await;
         let current = crate::profile::load().unwrap_or_default();
         // Saved here while the pictures downloaded, and newer still.
         if current.updated_at >= theirs.updated_at {

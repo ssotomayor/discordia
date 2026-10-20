@@ -139,16 +139,29 @@ impl SyncedProfile {
     }
 }
 
+/// Waits between attempts at a picture: a blip is retried, a dead blob server
+/// is given up on.
+const RETRY_WAITS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(10)];
+
 /// What a device that reads `picture` should hold: `None` to keep its own.
-/// An error leaves the whole profile unadopted, to be tried at the next launch.
-pub async fn resolve(picture: &Picture) -> Result<Option<Option<String>>, String> {
-    match picture {
-        Picture::Unshared => Ok(None),
-        Picture::None => Ok(Some(None)),
-        Picture::Blob { url, sha256, mime } => fetch(url, sha256, mime)
-            .await
-            .map(|data_url| Some(Some(data_url)))
-            .map_err(|e| format!("{url}: {e}")),
+/// An unreachable blob is kept-own too, so it cannot hold back the bio and status.
+pub async fn resolve(picture: &Picture) -> Option<Option<String>> {
+    resolve_with(picture, &RETRY_WAITS).await
+}
+
+async fn resolve_with(picture: &Picture, waits: &[Duration]) -> Option<Option<String>> {
+    let Picture::Blob { url, sha256, mime } = picture else {
+        return (*picture == Picture::None).then_some(None);
+    };
+    let mut waits = waits.iter();
+    loop {
+        match fetch(url, sha256, mime).await {
+            Ok(data_url) => return Some(Some(data_url)),
+            Err(e) => {
+                tracing::warn!(%url, error = %e, "synced profile picture unavailable");
+                tokio::time::sleep(*waits.next()?).await;
+            }
+        }
     }
 }
 
@@ -312,8 +325,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_unreachable_picture_is_kept_rather_than_blocking_the_rest() {
+        let gone = Picture::Blob {
+            url: "https://127.0.0.1:1/gone.png".into(),
+            sha256: "ab".repeat(32),
+            mime: "image/png".into(),
+        };
+        assert_eq!(block_on(resolve_with(&gone, &[Duration::ZERO])), None);
+        assert_eq!(block_on(resolve_with(&Picture::None, &[])), Some(None));
+        assert_eq!(block_on(resolve_with(&Picture::Unshared, &[])), None);
+    }
+
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("runtime")
             .block_on(f)
