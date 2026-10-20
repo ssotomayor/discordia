@@ -955,7 +955,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     if let Some(store) = bookmarks.clone().filter(|_| bookmark_key.is_some()) {
                         button {
                             r#type: "button",
-                            class: "dxf-message-bookmark rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--accent)]",
+                            class: "dxf-message-bookmark rounded-md border border-[var(--border)] bg-[var(--panel-solid)]",
                             title: if bookmarked { crate::i18n::text("Remove bookmark", &[]) } else { crate::i18n::text("Save message", &[]) },
                             aria_label: if bookmarked { crate::i18n::text("Remove bookmark", &[]) } else { crate::i18n::text("Save message", &[]) },
                             "data-context-action": "bookmark",
