@@ -1,7 +1,9 @@
-(async function () {
+return (async function () {
   if (window.__dxfTextMenuOff) window.__dxfTextMenuOff();
   let menu = null, context = null, waiting = null, alive = true;
   const listeners = [];
+  let stop;
+  const stopped = new Promise(resolve => { stop = resolve; });
   const on = (target, name, fn, capture = false) => {
     target.addEventListener(name, fn, capture);
     listeners.push(() => target.removeEventListener(name, fn, capture));
@@ -90,7 +92,8 @@
     }
     close(true);
   }
-  on(document, 'contextmenu', e => {
+  // The release build cancels native menus on document before later listeners run.
+  on(document.body, 'contextmenu', e => {
     close(); context = null;
     if (e.defaultPrevented || waiting || !e.target.closest) return;
     const field = editable(e.target);
@@ -188,11 +191,12 @@
       buttons[i].focus({ preventScroll: true });
     }
   }, true);
-  const off = () => { alive = false; close(); context = null; listeners.forEach(remove => remove()); };
+  const off = () => { alive = false; close(); context = null; listeners.forEach(remove => remove()); stop(); };
   window.__dxfTextMenuOff = off;
   try {
     while (alive) {
-      const result = await dioxus.recv();
+      const result = await Promise.race([dioxus.recv(), stopped]);
+      if (!alive) break;
       if (waiting) { const resolve = waiting; waiting = null; resolve(result); }
     }
   } finally {
