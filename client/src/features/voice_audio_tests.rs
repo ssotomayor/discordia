@@ -22,6 +22,7 @@ fn overlapping_voice_stream_and_soundboard_are_limited_after_their_volumes() {
                     kind,
                     starved: 0,
                     drift_correction: false,
+                    recovery: playback_recovery::Recovery::new(rate),
                 },
             );
         }
@@ -311,6 +312,7 @@ fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
                 kind,
                 starved: 0,
                 drift_correction: true,
+                recovery: playback_recovery::Recovery::new(SAMPLE_RATE),
             },
         );
     }
@@ -353,6 +355,7 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
             kind: TrackKind::Stream,
             starved: 0,
             drift_correction: true,
+            recovery: playback_recovery::Recovery::new(SAMPLE_RATE),
         },
     );
     state.stream_muted.insert("alice".into());
@@ -420,6 +423,125 @@ fn playback_backlog_is_bounded_and_retains_current_audio() {
     }
     handle.remove_track(id);
     assert!(handle.tracks.lock().buffers.is_empty());
+}
+
+fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
+    let controls = AudioControls::from_state(&AppState::empty());
+    let handle = PlaybackHandle {
+        tracks: Arc::new(Mutex::new(MixerTracks::default())),
+        device_rate: Arc::new(AtomicU32::new(rate)),
+        gains: controls.gains,
+        stream_gains: controls.stream_gains,
+        soundboard_pct: controls.soundboard_pct,
+    };
+    let id = handle.add_track("peer".into(), TrackKind::Voice);
+    let hop = rate as usize / 100;
+    let cap = rate as usize / PLAYBACK_CAP_DIVISOR as usize;
+    let overrun = (f64::from(rate) * DRIFT_OVERRUN_SECS) as usize;
+    let underrun = (f64::from(rate) * DRIFT_UNDERRUN_SECS) as usize;
+    handle.push(id, &vec![0.2; 4 * hop], cap);
+    let frame = vec![0.2; hop];
+    let mut next_hop = 0;
+    let mut silent_runs = 0;
+    let mut was_silent = false;
+    for sample in 0..rate as usize * 2 {
+        loop {
+            let due = if next_hop < rate as usize {
+                next_hop
+            } else if next_hop < rate as usize * 11 / 10 {
+                rate as usize * 1064 / 1000 + 2 * (next_hop - rate as usize)
+            } else {
+                next_hop.max(rate as usize * 1264 / 1000)
+            };
+            if due > sample {
+                break;
+            }
+            handle.push(id, &frame, cap);
+            next_hop += hop;
+        }
+        let mut tracks = handle.tracks.lock();
+        if !recover {
+            tracks.buffers.get_mut(&id).unwrap().recovery = playback_recovery::Recovery::new(rate);
+        }
+        let value = next_playback_sample(&mut tracks, sample as u32, overrun, underrun);
+        let silent = value == 0.0;
+        silent_runs += usize::from(silent && !was_silent);
+        was_silent = silent;
+        assert!(value == 0.0 || (value - 0.2).abs() < 1e-6);
+        assert!(tracks.buffers[&id].samples.len() <= cap);
+    }
+    let tracks = handle.tracks.lock();
+    let track = &tracks.buffers[&id];
+    (silent_runs, track.starved, track.recovery.held_samples)
+}
+
+#[test]
+fn recovery_avoids_chopping_audio_while_a_stalled_producer_catches_up() {
+    for rate in [44_100, 48_000, 96_000] {
+        let baseline = replay_stalled_delivery(rate, false);
+        let recovered = replay_stalled_delivery(rate, true);
+        eprintln!("rate={rate}: before={baseline:?}, after={recovered:?}");
+        assert!(
+            baseline.0 > 1,
+            "the stalled producer must reproduce repeated cuts"
+        );
+        assert!(
+            recovered.0 * 3 <= baseline.0,
+            "rate={rate}: recovery must reduce fragmented output"
+        );
+        assert!(recovered.1 < baseline.1);
+        assert!(recovered.2 > 0);
+        assert!(recovered.1 + recovered.2 <= baseline.1 + u64::from(rate) * 80 / 1000);
+    }
+}
+
+#[test]
+fn recovery_does_not_delay_startup_or_trap_a_short_final_fragment() {
+    for rate in [44_100, 48_000, 96_000] {
+        let mut recovery = playback_recovery::Recovery::new(rate);
+        for _ in 0..rate / 10 {
+            assert!(recovery.ready(0));
+        }
+        assert!(recovery.ready(1));
+        assert!(!recovery.ready(0));
+        for _ in 0..rate {
+            assert!(!recovery.ready(0));
+        }
+        let mut held = 0;
+        while !recovery.ready(1) {
+            held += 1;
+            assert!(held <= rate as usize * 80 / 1000);
+        }
+        assert_eq!(held, rate as usize * 80 / 1000);
+        assert_eq!(recovery.held_samples, held as u64);
+    }
+}
+
+#[test]
+fn recorded_playback_bypasses_recovery_and_output_rate_changes_reset_its_wait() {
+    let mut recovery = playback_recovery::Recovery::new(48_000);
+    assert!(recovery.ready(1));
+    assert!(!recovery.ready(0));
+    assert!(!recovery.ready(1));
+    recovery.set_rate(96_000);
+    assert!(recovery.ready(1));
+    let mut tracks = MixerTracks::default();
+    tracks.buffers.insert(
+        0,
+        TrackBuf {
+            samples: [0.2].into(),
+            identity: "recorded".into(),
+            gain: 1.0,
+            kind: TrackKind::Voice,
+            starved: 0,
+            drift_correction: false,
+            recovery,
+        },
+    );
+    assert_eq!(next_playback_sample(&mut tracks, 0, usize::MAX, 0), 0.2);
+    assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), 0.0);
+    tracks.buffers.get_mut(&0).unwrap().samples.push_back(0.3);
+    assert_eq!(next_playback_sample(&mut tracks, 2, usize::MAX, 0), 0.3);
 }
 
 #[test]
