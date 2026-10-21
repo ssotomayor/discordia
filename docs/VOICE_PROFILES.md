@@ -81,6 +81,10 @@ tab close, device loss/change or entering a call. Retain only applied settings/s
 
 Measure 10 ms RMS/peak distributions, input clipping, sample gaps and speech/noise
 separation. Reject missing/zero input, inadequate speech, clipping or excessive gaps.
+Use median quiet-window RMS to identify normal speech; brief room sounds must not
+set that floor. Keep high-percentile noise for gate/gain and preview safety checks.
+RNNoise speech probability can support weaker normal/soft frames above the measured
+background. Low probability alone never rejects an otherwise usable level measurement.
 Silence/speech instructions alone are not proof that all frames contain the expected
 signal; require sufficient valid frames and separation.
 
@@ -121,6 +125,24 @@ Candidate suppression values are experimental, not equivalents of Discord/Krisp 
 | Equilibrado | Lowest validated candidate, initially testing 12–18 dB | Calibrated gate and fixed gain; continuous AGC off | According to output setup |
 | Entorno ruidoso | Test 24–30 dB, reducing it if speech is damaged | Calibrated gate/fixed gain; no automatic move to 60 dB | According to output setup |
 | Personalizado | Preserve every manual choice | Expose existing controls plus explicit echo/gate policy | Manual |
+
+## Optional voice activation
+
+Advanced settings offers **Use voice detection (experimental)**. Enabling it also
+enables the transmission gate; existing saved configurations default to level-only
+activation. It reuses the post-echo RNNoise probability, independent of suppression.
+Two consecutive 10 ms frames at probability ≥0.6 and the selected sensitivity open
+the gate; probability ≥0.35 and half that level sustain it. Release holds 300 ms.
+This detects speech, not the identity of its speaker.
+
+`voice_activity.rs` retains at most three processed hops (30 ms) before opening,
+including their original capture stamps/positions. The first retained hop fades in.
+Mute, zero gain, configuration changes, stale input and capture reopens discard it.
+Channel calls, DMs, local monitoring and calibration previews share this behavior;
+preview metrics include the restored leading samples. VAD-gated recommendations
+also need measurable normal and soft output, so silence cannot win on noise alone.
+Sensitivity remains a minimum level; local listening and real-call validation are
+required before assuming quiet words are preserved on a particular microphone.
 
 Natural retains resampling, mono voice transport and an overload limiter; the UI
 must describe those limits rather than promise lossless studio capture. Existing

@@ -43,6 +43,8 @@ mod camera;
 use camera::CameraPublisher;
 
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
+#[path = "voice_activity.rs"]
+mod activity;
 #[path = "voice_calibration.rs"]
 mod calibration;
 #[path = "voice_direct.rs"]
@@ -2341,9 +2343,19 @@ fn denoise_gate_loop(
     let mut retry = controls.denoise_retry.load(Ordering::Relaxed);
     let mut trace = crate::voice_record::MicrophoneTrace::new("mic-processing", "mic-processed");
     let mut dsp_csv = crate::voice_record::Csv::new("mic-dsp", MIC_DSP_HEADER);
+    let mut lead_in = activity::LeadIn::new();
+    let mut transmission = Vec::with_capacity(4);
+    let mut capture_id = None;
     while let Some(packet) = frame_rx.blocking_recv() {
+        let next_capture = packet.position.map(|position| position.capture_id);
+        if next_capture != capture_id {
+            processor.silence();
+            lead_in.clear();
+            capture_id = next_capture;
+        }
         if !packet.is_fresh() {
             processor.silence();
+            lead_in.clear();
             trace.record_float(
                 packet.position,
                 packet.captured,
@@ -2360,11 +2372,23 @@ fn denoise_gate_loop(
             processor.retry_denoise();
         }
         let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
+        let is_muted = muted.load(Ordering::Relaxed);
         let processed = processor.process(
             packet.samples,
             config,
             50 + packet.captured.elapsed().as_millis().min(450) as i32,
-            muted.load(Ordering::Relaxed),
+            is_muted,
+        );
+        lead_in.push(
+            crate::audio_queue::Frame {
+                samples: processed.samples,
+                captured: packet.captured,
+                position: packet.position,
+            },
+            processed.action,
+            config,
+            is_muted,
+            &mut transmission,
         );
         if processed.model_loaded {
             while let Ok(discarded) = frame_rx.try_recv() {
@@ -2419,7 +2443,7 @@ fn denoise_gate_loop(
         let sent = processed.action != GateAction::Drop;
         dsp_csv.row(|| {
             format!(
-                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{},{},{:.2},{},{},{},{},{}",
+                "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{},{},{:.2},{},{},{},{},{},{}",
                 processed.echoed_dbfs,
                 processed.denoised_dbfs,
                 processed.agc_gain_db,
@@ -2446,6 +2470,7 @@ fn denoise_gate_loop(
                 config.processing.high_pass,
                 config.processing.gate,
                 config.processing.headphones,
+                config.processing.voice_detection,
             )
         });
         if processed.action == GateAction::Drop {
@@ -2459,32 +2484,41 @@ fn denoise_gate_loop(
             continue;
         }
         stats.passed.fetch_add(1, Ordering::Relaxed);
-        let data = processed
-            .samples
-            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
-        let packet = crate::audio_queue::Frame {
-            samples: data,
-            captured: packet.captured,
-            position: packet.position,
-        };
-        let (position, captured) = (packet.position, packet.captured);
-        let outcome = if packet.is_fresh() {
-            match crate::audio_queue::offer(&out_tx, packet) {
-                Ok(true) => "queued",
-                Ok(false) => "publisher_full",
-                Err(()) => "publisher_closed",
+        let total = transmission.len();
+        for (index, outgoing) in transmission.drain(..).enumerate() {
+            let data = outgoing
+                .samples
+                .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+            let packet = crate::audio_queue::Frame {
+                samples: data,
+                captured: outgoing.captured,
+                position: outgoing.position,
+            };
+            let (position, captured) = (packet.position, packet.captured);
+            let outcome = if packet.is_fresh() {
+                match crate::audio_queue::offer(&out_tx, packet) {
+                    Ok(true) => {
+                        if index + 1 < total {
+                            "lead_in_queued"
+                        } else {
+                            "queued"
+                        }
+                    }
+                    Ok(false) => "publisher_full",
+                    Err(()) => "publisher_closed",
+                }
+            } else {
+                "stale_processed"
+            };
+            trace.record_float(position, captured, outcome, &outgoing.samples);
+            if outcome == "publisher_closed" {
+                return;
             }
-        } else {
-            "stale_processed"
-        };
-        trace.record_float(position, captured, outcome, &processed.samples);
-        if outcome == "publisher_closed" {
-            return;
         }
     }
 }
 
-const MIC_DSP_HEADER: &str = "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,processed_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db,echo,high_pass,gate_enabled,headphones";
+const MIC_DSP_HEADER: &str = "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,processed_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db,echo,high_pass,gate_enabled,headphones,voice_detection";
 
 fn stale_dsp_row() -> String {
     let mut fields = vec![""; MIC_DSP_HEADER.split(',').count()];

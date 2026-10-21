@@ -113,26 +113,38 @@ fn render(
     let (_tx, reference) = crate::audio_queue::channel();
     let mut processor = dsp::Processor::new(reference);
     let mut output = Vec::with_capacity(input.len() * FRAME_SAMPLES);
+    let mut lead_in = activity::LeadIn::new();
+    let mut transmission = Vec::with_capacity(4);
+    let mut gate_peaks = Vec::with_capacity(input.len());
     let mut metrics = Metrics::new();
     for frame in input {
         if cancel.load(Ordering::Relaxed) {
             return Err("Microphone adjustment cancelled.".into());
         }
         let processed = processor.process(frame.samples, config, 0, false);
-        metrics.push(
-            frame.at,
-            if processed.action == GateAction::Drop {
-                &[0.0; FRAME_SAMPLES]
-            } else {
-                &processed.samples
-            },
-            processed.gate_peak as f32 / 1000.0,
+        gate_peaks.push(processed.gate_peak as f32 / 1000.0);
+        lead_in.push(
+            crate::audio_queue::Frame::new(processed.samples),
+            processed.action,
+            config,
+            false,
+            &mut transmission,
         );
-        if processed.action == GateAction::Drop {
-            output.extend_from_slice(&[0.0; FRAME_SAMPLES]);
-        } else {
-            output.extend_from_slice(&processed.samples);
+        output.extend_from_slice(&[0.0; FRAME_SAMPLES]);
+        let start = output.len() - transmission.len() * FRAME_SAMPLES;
+        for (slot, outgoing) in output[start..]
+            .chunks_mut(FRAME_SAMPLES)
+            .zip(transmission.drain(..))
+        {
+            slot.copy_from_slice(&outgoing.samples);
         }
+    }
+    for ((frame, samples), peak) in input
+        .iter()
+        .zip(output.chunks(FRAME_SAMPLES))
+        .zip(gate_peaks)
+    {
+        metrics.push(frame.at, samples, peak);
     }
     Ok((output, metrics))
 }
@@ -153,6 +165,22 @@ fn checked_preview(
             "microphone candidate increases audible background noise"
         );
         return Ok(None);
+    }
+    if config.processing.gate && config.processing.voice_detection {
+        let mut normal = 0;
+        let mut soft = 0;
+        for (frame, output) in input.iter().zip(samples.chunks(FRAME_SAMPLES)) {
+            let peak = output.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+            if (NORMAL_START..SOFT_START).contains(&frame.at) && peak > 0.001 {
+                normal += 1;
+            }
+            if (SOFT_START..QUIET_START).contains(&frame.at) && peak > 0.0003 {
+                soft += 1;
+            }
+        }
+        if normal < 100 || soft < 40 {
+            return Ok(None);
+        }
     }
     Ok(Some(samples))
 }
@@ -204,6 +232,10 @@ fn recommendation(
     Some((config, wanted_gain > 2.0 || gain < wanted_gain, noise_ratio))
 }
 
+fn vad_supports(level: f32, ambient: f32, probability: f32, confidence: f32) -> bool {
+    probability >= confidence && level >= (ambient * 1.2).max(0.0003)
+}
+
 pub(super) fn analyze(
     input: Vec<Hop>,
     current: Config,
@@ -240,7 +272,20 @@ pub(super) fn analyze(
         return Err("The microphone is clipping. Lower its input level or move it farther away, then repeat.".into());
     }
     let mut raw = Metrics::new();
+    let mut vad = crate::denoise::Vad::new();
+    let mut normal_probability = Vec::new();
+    let mut soft_probability = Vec::new();
     for hop in &input {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Microphone adjustment cancelled.".into());
+        }
+        let probability = vad.speech(&hop.samples);
+        if (NORMAL_START..SOFT_START).contains(&hop.at) {
+            normal_probability.push(probability);
+        }
+        if (SOFT_START..QUIET_START).contains(&hop.at) {
+            soft_probability.push(probability);
+        }
         raw.push(
             hop.at,
             &hop.samples,
@@ -248,22 +293,51 @@ pub(super) fn analyze(
         );
     }
     let raw_noise = percentile(&mut raw.noise_rms, 0.95);
+    // Transient room sounds must not raise the speech-detection floor for the entire reading.
+    let detection_noise = percentile(&mut raw.noise_rms, 0.5);
+    let speech_floor = (detection_noise * 2.0).max(0.001);
     let voiced_normal: Vec<_> = raw
         .speech_rms
         .iter()
-        .map(|rms| *rms >= (raw_noise * 2.0).max(0.001))
+        .zip(&normal_probability)
+        .map(|(rms, probability)| {
+            *rms >= speech_floor || vad_supports(*rms, detection_noise, *probability, 0.6)
+        })
         .collect();
-    if voiced_normal.iter().filter(|voiced| **voiced).count() < 100 {
+    let voiced_frames = voiced_normal.iter().filter(|voiced| **voiced).count();
+    let vad_frames = normal_probability
+        .iter()
+        .filter(|probability| **probability >= 0.6)
+        .count();
+    tracing::info!(
+        voiced_frames,
+        vad_frames,
+        normal_frames = voiced_normal.len(),
+        raw_noise,
+        detection_noise,
+        speech_floor,
+        "microphone calibration speech measurement"
+    );
+    if voiced_frames < 100 {
         return Err(
-            "Not enough clear speech was detected. Move the microphone closer and repeat.".into(),
+            "The adjustment could not separate your voice from background noise. Test the microphone to check the input; your settings have not changed.".into(),
         );
     }
-    let soft_floor = (percentile(&mut raw.noise_peaks, 0.95) * 1.5).max(0.001);
+    let soft_floor = (percentile(&mut raw.noise_peaks, 0.5) * 1.5).max(0.001);
+    let soft_noise = percentile(&mut raw.noise_peaks, 0.5);
+    let soft_mask: Vec<_> = raw
+        .soft_peaks
+        .iter()
+        .zip(&soft_probability)
+        .map(|(peak, probability)| {
+            *peak > soft_floor || vad_supports(*peak, soft_noise, *probability, 0.35)
+        })
+        .collect();
     let mut voiced_soft: Vec<_> = raw
         .soft_peaks
         .iter()
-        .copied()
-        .filter(|peak| *peak > soft_floor)
+        .zip(&soft_mask)
+        .filter_map(|(peak, voiced)| voiced.then_some(*peak))
         .collect();
     let soft_speech_unmeasured = voiced_soft.len() < 40;
     let raw_soft = percentile(&mut voiced_soft, 0.35);
@@ -303,8 +377,8 @@ pub(super) fn analyze(
         metrics.soft_peaks = metrics
             .soft_peaks
             .iter()
-            .zip(&raw.soft_peaks)
-            .filter_map(|(processed, original)| (*original > soft_floor).then_some(*processed))
+            .zip(&soft_mask)
+            .filter_map(|(processed, voiced)| voiced.then_some(*processed))
             .collect();
         if percentile(&mut metrics.soft_peaks, 0.35) < raw_soft * 0.45 {
             tracing::info!(
@@ -358,6 +432,14 @@ pub(super) fn analyze(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_evidence_can_support_quiet_speech_but_not_silence_or_unchanged_background() {
+        assert!(vad_supports(0.0006, 0.0001, 0.9, 0.6));
+        assert!(!vad_supports(0.0006, 0.0001, 0.1, 0.6));
+        assert!(!vad_supports(0.0, 0.0, 0.99, 0.6));
+        assert!(!vad_supports(0.01, 0.01, 0.99, 0.6));
+    }
 
     #[test]
     #[ignore = "requires a local 15 second guided microphone WAV (1.5 quiet, 6 normal, 6 soft, 1.5 quiet) via DISCORDIA_MIC_AUDIT_WAV"]
@@ -473,6 +555,24 @@ mod tests {
                 Arc::new(AtomicBool::new(true))
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn brief_noise_during_quiet_measurement_does_not_reject_audible_speech() {
+        let mut current = Config::from_state(&AppState::empty());
+        current.processing.headphones = true;
+        let mut input = recording(0.0001, 0.03, 0.01);
+        for hop in &mut input {
+            if (0.7..0.9).contains(&hop.at) {
+                hop.samples = std::array::from_fn(|i| if i % 2 == 0 { 0.08 } else { -0.08 });
+            }
+        }
+        let result = analyze(input, current, Arc::new(AtomicBool::new(false)));
+        assert!(
+            result.is_ok(),
+            "A brief noise burst must not be treated as the room's sustained noise: {}",
+            result.err().unwrap_or_default()
         );
     }
 

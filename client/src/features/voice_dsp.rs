@@ -8,6 +8,8 @@ pub(super) struct Processor {
     agc: Option<crate::agc::Agc>,
     agc_error_reported: bool,
     gate: GateState,
+    voice_gate: activity::VoiceGate,
+    gate_mode: Option<(bool, bool)>,
     echo: crate::echo::Echo,
     echo_error_reported: bool,
 }
@@ -36,6 +38,8 @@ impl Processor {
             agc: None,
             agc_error_reported: false,
             gate: GateState::default(),
+            voice_gate: activity::VoiceGate::default(),
+            gate_mode: None,
             echo: crate::echo::Echo::new(reference),
             echo_error_reported: false,
         }
@@ -43,6 +47,7 @@ impl Processor {
 
     pub fn silence(&mut self) {
         self.gate.silence();
+        self.voice_gate.silence();
     }
 
     pub fn denoise_fallback(&self) -> Option<crate::denoise::Fallback> {
@@ -82,9 +87,14 @@ impl Processor {
             self.echo_error_reported = true;
         }
         let pre = peak_fixed(&samples);
+        let mode = (config.processing.gate, config.processing.voice_detection);
+        if self.gate_mode != Some(mode) {
+            self.silence();
+            self.gate_mode = Some(mode);
+        }
         let echoed_dbfs = crate::voice_record::rms_dbfs(&samples);
         if muted {
-            self.gate.silence();
+            self.silence();
             return Processed {
                 samples,
                 pre,
@@ -137,16 +147,18 @@ impl Processor {
         crate::agc::limit(&mut samples);
         let peak = peak_fixed(&samples);
         let action = if gain == 0.0 {
-            self.gate.silence();
+            self.silence();
             GateAction::Drop
         } else if !config.processing.gate {
-            self.gate.silence();
+            self.silence();
             GateAction::Pass
+        } else if config.processing.voice_detection {
+            self.voice_gate.step(speech, pre, config.threshold as i32)
         } else {
             self.gate.step(gate_peak, config.threshold as i32)
         };
         match action {
-            GateAction::RampIn => ramp(&mut samples, true),
+            GateAction::RampIn if !config.processing.voice_detection => ramp(&mut samples, true),
             GateAction::RampOut => ramp(&mut samples, false),
             _ => {}
         }

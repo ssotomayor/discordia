@@ -611,11 +611,11 @@ mod tests {
     #[test]
     fn analysis_rejection_keeps_adjustment_available_instead_of_device_remedy() {
         let failure = Failure::Adjustment(
-            "Not enough clear speech was detected. Move the microphone closer and repeat.".into(),
+            "The adjustment could not separate your voice from background noise. Test the microphone to check the input; your settings have not changed.".into(),
         );
         assert_eq!(failure.status(), Status::AdjustmentFailed);
         assert_eq!(failure.status().action(), None);
-        assert!(failure.message().contains("speech"));
+        assert!(failure.message().contains("background noise"));
         let device = Failure::from("No microphone is available. Connect one and try again.");
         assert_eq!(device.status(), Status::Unavailable);
         assert_eq!(device.status().action(), Some("Check devices"));

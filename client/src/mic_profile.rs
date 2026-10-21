@@ -46,6 +46,7 @@ pub struct Processing {
     pub echo: bool,
     pub high_pass: bool,
     pub gate: bool,
+    pub voice_detection: bool,
     pub headphones: bool,
 }
 
@@ -56,6 +57,7 @@ impl Default for Processing {
             echo: true,
             high_pass: true,
             gate: true,
+            voice_detection: false,
             headphones: false,
         }
     }
@@ -220,6 +222,7 @@ mod tests {
                 echo: false,
                 high_pass: false,
                 gate: true,
+                voice_detection: true,
                 headphones: true,
             },
             threshold: 31,
@@ -292,6 +295,20 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Processing>("{}").unwrap(),
             Processing::default()
+        );
+        assert!(
+            !serde_json::from_str::<Processing>(r#"{"gate":true}"#)
+                .unwrap()
+                .voice_detection
+        );
+        let enabled = Processing {
+            voice_detection: true,
+            ..Processing::default()
+        };
+        assert!(
+            serde_json::from_str::<Processing>(&serde_json::to_string(&enabled).unwrap())
+                .unwrap()
+                .voice_detection
         );
         let mut state = crate::state::AppState::empty();
         state.voice.muted = true;

@@ -1482,9 +1482,21 @@ fn VoiceOccupant(
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
-                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", {crate::i18n::text("deafened", &[])} }
+                    span {
+                        class: "inline-flex w-4 h-4 shrink-0 items-center justify-center text-[var(--danger)]",
+                        role: "img",
+                        title: crate::i18n::text("deafened", &[]),
+                        aria_label: crate::i18n::text("deafened", &[]),
+                        dangerous_inner_html: crate::features::icons::HEADPHONES_OFF,
+                    }
                 } else if remote_muted {
-                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", {crate::i18n::text("muted", &[])} }
+                    span {
+                        class: "inline-flex w-4 h-4 shrink-0 items-center justify-center text-[var(--danger)]",
+                        role: "img",
+                        title: crate::i18n::text("Microphone muted", &[]),
+                        aria_label: crate::i18n::text("Microphone muted", &[]),
+                        dangerous_inner_html: crate::features::icons::MIC_OFF,
+                    }
                 }
                 if !is_self && (locally_muted || volume != 100) {
                     button {
