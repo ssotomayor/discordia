@@ -3925,8 +3925,10 @@ impl PlaybackMixer {
         }
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
-        self.handle.set_rate(device_rate);
+        // After play(), not before: set_rate drops queued PCM and repoints the
+        // rate producers read, which a failed play() would do for nothing.
         stream.play().map_err(|e| format!("play output: {e}"))?;
+        self.handle.set_rate(device_rate);
 
         if device_rate != SAMPLE_RATE {
             eprintln!("[voice] playback: resampling {SAMPLE_RATE}Hz → {device_rate}Hz via rubato");
