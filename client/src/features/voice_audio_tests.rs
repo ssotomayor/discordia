@@ -135,19 +135,150 @@ fn processed_hops(
             reference_rx,
         )
     });
-    for samples in hops {
+    for (index, samples) in hops.into_iter().enumerate() {
         // Stamped ahead so waiting behind a busy worker never ages a frame
         // past `MAX_AGE`; staleness is the device's concern, not the gate's.
         let frame = crate::audio_queue::Frame {
             samples,
             captured: std::time::Instant::now() + std::time::Duration::from_secs(60),
-            position: None,
+            position: Some(crate::audio_queue::CapturePosition {
+                capture_id: 1,
+                first_sample: (index * FRAME_SAMPLES) as u64,
+            }),
         };
         tx.blocking_send(frame).unwrap();
     }
     drop(tx);
     worker.join().unwrap();
     reader.join().unwrap()
+}
+
+#[test]
+#[ignore = "requires DISCORDIA_VAD_AUDIT_WAV and DISCORDIA_VAD_AUDIT_OUT for an offline local recording replay"]
+fn recorded_voice_detection_replay_exports_audio_and_frame_decisions() {
+    let path = std::env::var("DISCORDIA_VAD_AUDIT_WAV").unwrap();
+    let dir = std::path::PathBuf::from(std::env::var("DISCORDIA_VAD_AUDIT_OUT").unwrap());
+    let samples = super::speech_audit_tests::read_speech(std::path::Path::new(&path));
+    let samples = &samples[..samples.len().min(SAMPLE_RATE as usize * 30)];
+    let mut state = AppState::empty();
+    let mut config =
+        crate::mic_profile::Config::from_state(&state).preset(crate::mic_profile::Profile::Natural);
+    config.processing.headphones = true;
+    config.processing.echo = false;
+    config.processing.gate = true;
+    config.processing.voice_detection = true;
+    config.threshold = 1;
+    config.apply_state(&mut state);
+    let controls = AudioControls::from_state(&state);
+    let frames = processed_hops(
+        samples.as_chunks::<FRAME_SAMPLES>().0.to_vec(),
+        controls,
+        false,
+    );
+    assert!(
+        !frames.is_empty(),
+        "No speech was passed from the supplied recording"
+    );
+    let mut output = vec![0.0_f32; samples.len()];
+    let mut accepted = std::collections::HashSet::new();
+    for frame in &frames {
+        let first = frame.position.unwrap().first_sample as usize;
+        accepted.insert(first / FRAME_SAMPLES);
+        for (slot, sample) in output[first..first + FRAME_SAMPLES]
+            .iter_mut()
+            .zip(frame.samples)
+        {
+            *slot = sample as f32 / i16::MAX as f32;
+        }
+    }
+    let mut vad = crate::denoise::Vad::new();
+    let mut csv = String::from("time_s,input_dbfs,speech_probability,transmitted\n");
+    for (index, frame) in samples.as_chunks::<FRAME_SAMPLES>().0.iter().enumerate() {
+        use std::fmt::Write;
+        writeln!(
+            csv,
+            "{:.2},{:.2},{:.4},{}",
+            index as f32 / 100.0,
+            crate::voice_record::rms_dbfs(frame),
+            vad.speech(frame),
+            accepted.contains(&index)
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    super::speech_audit_tests::write_wav(&dir.join("input.wav"), samples);
+    super::speech_audit_tests::write_wav(&dir.join("voice-detection.wav"), &output);
+    std::fs::write(dir.join("decisions.csv"), csv).unwrap();
+    println!(
+        "VAD replay: {} input frames, {} transmitted frames, {:.2} s retained; annotated listening still required",
+        samples.len() / FRAME_SAMPLES,
+        frames.len(),
+        frames.len() as f32 / 100.0
+    );
+}
+
+#[test]
+fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech() {
+    for dbfs in [-30.0, -45.0] {
+        let state = AppState::empty();
+        let mut config = crate::mic_profile::Config::from_state(&state)
+            .preset(crate::mic_profile::Profile::Natural);
+        config.processing.echo = false;
+        config.processing.gate = true;
+        config.processing.voice_detection = true;
+        config.threshold = 1;
+        let controls = AudioControls::from_state(&state);
+        controls.apply_mic(config);
+        let speech = crate::agc::tests::speech(6.0, dbfs, 3);
+        let mut samples = vec![0.0; SAMPLE_RATE as usize * 2];
+        samples.extend_from_slice(&speech);
+        samples.extend_from_slice(&vec![0.0; SAMPLE_RATE as usize * 2]);
+        let voiced = processed_hops(
+            samples.as_chunks::<FRAME_SAMPLES>().0.to_vec(),
+            controls.clone(),
+            false,
+        );
+        assert!(
+            voiced.len() > 100,
+            "voice was lost at {dbfs} dBFS: {} frames",
+            voiced.len()
+        );
+        assert!(
+            voiced
+                .windows(2)
+                .all(|pair| pair[0].position.unwrap().first_sample
+                    < pair[1].position.unwrap().first_sample)
+        );
+        assert!(voiced.last().unwrap().position.unwrap().first_sample < SAMPLE_RATE as u64 * 9);
+        let mut seed = 79_u32;
+        let noise: Vec<f32> = (0..SAMPLE_RATE as usize * 10)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.02
+            })
+            .collect();
+        let unvoiced = processed_hops(
+            noise.as_chunks::<FRAME_SAMPLES>().0.to_vec(),
+            controls.clone(),
+            false,
+        );
+        assert!(
+            unvoiced.len() < voiced.len() / 2,
+            "noise was transmitted as speech: {} vs {}",
+            unvoiced.len(),
+            voiced.len()
+        );
+        assert!(
+            processed_hops(
+                samples.as_chunks::<FRAME_SAMPLES>().0.to_vec(),
+                controls,
+                true
+            )
+            .is_empty()
+        );
+    }
 }
 
 #[test]
