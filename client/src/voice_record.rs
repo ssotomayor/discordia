@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 mod playback;
 pub use playback::Playback;
+mod microphone;
+pub use microphone::{CaptureRecorder, MicrophoneTrace};
 
 const QUEUE: usize = 8192;
 /// A header is patched this often, so a crash or a killed app still leaves files that play.
@@ -49,6 +51,11 @@ enum Op {
     },
     Line {
         id: u64,
+        line: String,
+    },
+    Microphone {
+        wav: Option<(u64, Vec<i16>)>,
+        csv: u64,
         line: String,
     },
     Close {
@@ -153,11 +160,19 @@ impl Session {
         self.dir.join(file)
     }
 
-    fn send(&self, op: Op) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(op)
-            && !self.overflowed.swap(true, Ordering::Relaxed)
-        {
-            tracing::warn!("voice recording fell behind the disk; some audio is missing from it");
+    fn send(&self, op: Op) -> bool {
+        match self.tx.try_send(op) {
+            Ok(()) => true,
+            Err(error) => {
+                if matches!(error, TrySendError::Full(_))
+                    && !self.overflowed.swap(true, Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        "voice recording fell behind the disk; some audio is missing from it"
+                    );
+                }
+                false
+            }
         }
     }
 }
@@ -218,16 +233,6 @@ impl Wav {
         Self {
             sink: Sink::new(name),
             rate,
-        }
-    }
-
-    pub fn write(&mut self, samples: &[f32]) {
-        if let Some((session, id)) = self.target() {
-            let data = samples
-                .iter()
-                .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-                .collect();
-            session.send(Op::Samples { id, data });
         }
     }
 
@@ -440,6 +445,19 @@ fn write_loop(rx: Receiver<Op>) {
                     let _ = writeln!(file, "{line}");
                 }
             }
+            Ok(Op::Microphone { wav, csv, line }) => {
+                if let Some((id, data)) = wav
+                    && let Some(Out::Wav { file, bytes, .. }) = outs.get_mut(&id)
+                {
+                    for sample in &data {
+                        let _ = file.write_all(&sample.to_le_bytes());
+                    }
+                    *bytes = bytes.saturating_add(2 * data.len() as u32);
+                }
+                if let Some(Out::Csv(file)) = outs.get_mut(&csv) {
+                    let _ = writeln!(file, "{line}");
+                }
+            }
             Ok(Op::Close { id }) => {
                 if let Some(mut out) = outs.remove(&id) {
                     let _ = out.patch();
@@ -518,14 +536,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("voice-session-{}", std::process::id()));
         let mut wav = Wav::new("recv-alice", 48_000);
         let mut csv = Csv::new("recv-alice", "x");
-        wav.write(&[0.5; 10]);
+        wav.write_i16(&[16384; 10]);
         csv.row(|| "before".into());
         let dir = start(Some(root.clone())).unwrap();
         assert_eq!(folder(), Some(dir.clone()));
-        wav.write(&[0.5; 10]);
+        wav.write_i16(&[16384; 10]);
         csv.row(|| "during".into());
         stop();
-        wav.write(&[0.5; 10]);
+        wav.write_i16(&[16384; 10]);
         csv.row(|| "after".into());
         let path = dir.join("recv-alice.wav");
         let deadline = Instant::now() + Duration::from_secs(5);

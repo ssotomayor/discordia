@@ -198,18 +198,33 @@ window.dxScreen = window.dxScreen || (function () {
   const audioElements = {};
   const audioGains = {};
   let sinkLabel = null;
+  let sinkRevision = 0;
+  const sinkApplications = new WeakMap();
   function applySink() {
-    if (!sinkLabel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
-    navigator.mediaDevices.enumerateDevices().then(function (devs) {
-      const device = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === sinkLabel; });
-      if (!device) return;
+    const target = sinkLabel || '';
+    const revision = sinkRevision;
+    if (target && (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices)) return;
+    const lookup = target
+      ? navigator.mediaDevices.enumerateDevices().then(function (devs) {
+        const device = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === target; });
+        if (!device) { console.warn('[dxScreen] audio output unavailable', target); return null; }
+        return device.deviceId;
+      }) : Promise.resolve('');
+    lookup.then(function (deviceId) {
+      if (revision !== sinkRevision || deviceId === null) return;
       Object.keys(audioElements).forEach(function (identity) {
         const t = audioTracks[identity];
-        if (t && typeof t.setSinkId === 'function') t.setSinkId(device.deviceId).catch(function () {});
+        if (!t || typeof t.setSinkId !== 'function') return;
+        const previous = sinkApplications.get(t) || Promise.resolve();
+        const applied = previous.then(function () {
+          if (revision !== sinkRevision || audioTracks[identity] !== t || !audioElements[identity]) return;
+          return t.setSinkId(deviceId);
+        }).catch(function (e) { console.warn('[dxScreen] audio output change failed', e); });
+        sinkApplications.set(t, applied);
       });
-    }).catch(function () {});
+    }).catch(function (e) { console.warn('[dxScreen] audio output lookup failed', e); });
   }
-  function setSink(label) { sinkLabel = label || null; applySink(); }
+  function setSink(label) { sinkLabel = label || null; sinkRevision++; applySink(); }
   function setStreamVolume(v, identity) {
     if (!identity) return;
     identity = baseIdentity(identity);

@@ -56,6 +56,16 @@ impl Processor {
         self.suppression = None;
     }
 
+    pub fn prepare(&mut self, config: Config) {
+        if config.denoise {
+            let denoiser = self
+                .denoiser
+                .get_or_insert_with(crate::denoise::Denoiser::new);
+            denoiser.set_atten_lim(config.suppression as f32);
+            self.suppression = Some(config.suppression);
+        }
+    }
+
     pub fn process(
         &mut self,
         mut samples: [f32; FRAME_SAMPLES],
@@ -163,6 +173,20 @@ impl Processor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparing_the_denoiser_keeps_model_loading_out_of_the_first_captured_frame() {
+        let (_, reference) = crate::audio_queue::channel();
+        let mut processor = Processor::new(reference);
+        let config = Config::from_state(&AppState::empty());
+        assert!(config.denoise);
+        processor.prepare(config);
+        assert!(processor.denoiser.is_some());
+        assert_eq!(processor.suppression, Some(config.suppression));
+        let output = processor.process([0.01; FRAME_SAMPLES], config, 0, false);
+        assert!(!output.model_loaded);
+        assert_eq!(output.engine, Some(crate::denoise::Engine::DeepFilterNet));
+    }
 
     #[test]
     fn individual_peaks_are_limited_after_manual_gain_without_lowering_normal_speech() {

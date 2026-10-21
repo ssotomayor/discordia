@@ -11,7 +11,10 @@ struct MicrophoneTest {
 }
 
 impl MicrophoneTest {
-    fn start(state: Signal<AppState>) -> Result<Self, String> {
+    async fn start(
+        state: Signal<AppState>,
+        requested: impl Fn() -> bool,
+    ) -> Result<Option<Self>, String> {
         let controls = AudioControls::from_state(&state.peek());
         controls.deafened.store(false, Ordering::Relaxed);
         controls.gains.lock().clear();
@@ -27,7 +30,8 @@ impl MicrophoneTest {
         if !playback.is_open() {
             return Err("No audio output is available for the microphone test.".into());
         }
-        let mic = MicCapture::start(input_tx, state, muted.clone(), stats.clone(), fault_tx)?;
+        let worker_muted = muted.clone();
+        let worker_stats = stats.clone();
         let dsp_controls = controls.clone();
         let dsp_meter = meter.clone();
         std::thread::Builder::new()
@@ -38,16 +42,21 @@ impl MicrophoneTest {
                     processed_tx,
                     dsp_controls,
                     dsp_meter,
-                    muted,
-                    stats,
+                    worker_muted,
+                    worker_stats,
                     reference_rx,
                 );
             })
             .map_err(|error| format!("Start microphone test processing: {error}"))?;
+        stats.wait_ready().await?;
+        if !requested() || !state.peek().audio_settings || in_call(&state.peek()) {
+            return Ok(None);
+        }
+        let mic = MicCapture::start(input_tx, state, muted, stats, fault_tx)?;
         let handle = playback.handle();
         let track = handle.add_track("mic-test".into(), TrackKind::Voice);
         let monitor = tokio::spawn(monitor_loop(processed_rx, handle, track));
-        Ok(Self {
+        Ok(Some(Self {
             _mic: mic,
             _playback: playback,
             controls,
@@ -55,7 +64,7 @@ impl MicrophoneTest {
             faults,
             monitor,
             devices: devices(&state.peek()),
-        })
+        }))
     }
 
     fn update(&mut self, state: &AppState) -> Result<(u32, bool, u32, u32), String> {
@@ -116,11 +125,16 @@ async fn monitor_loop(
     handle: PlaybackHandle,
     track: u64,
 ) {
-    let mut resampler = AudioResampler::new(SAMPLE_RATE, handle.rate());
+    let mut rate = handle.rate();
+    let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
     let mut output = Vec::new();
     while let Some(frame) = processed_rx.recv().await {
         if !frame.is_fresh() {
             continue;
+        }
+        if rate != handle.rate() {
+            rate = handle.rate();
+            resampler = AudioResampler::new(SAMPLE_RATE, rate);
         }
         let samples = frame.samples.map(|sample| sample as f32 / 32768.0);
         let samples = if let Some(resampler) = &mut resampler {
@@ -132,7 +146,8 @@ async fn monitor_loop(
         handle.push(
             track,
             samples,
-            handle.rate() as usize / PLAYBACK_CAP_DIVISOR as usize,
+            rate,
+            rate as usize / PLAYBACK_CAP_DIVISOR as usize,
         );
     }
 }
@@ -157,6 +172,7 @@ mod tests {
         tx.send(crate::audio_queue::Frame {
             samples: [i16::MAX; FRAME_SAMPLES],
             captured: Instant::now() - std::time::Duration::from_secs(1),
+            position: None,
         })
         .await
         .unwrap();

@@ -24,10 +24,7 @@ pub struct Audio {
 }
 
 impl Audio {
-    pub fn start(
-        factory: &PeerConnectionFactory,
-        mut state: Signal<AppState>,
-    ) -> Result<Self, String> {
+    pub fn start(factory: &PeerConnectionFactory, state: Signal<AppState>) -> Result<Self, String> {
         let controls = AudioControls::from_state(&state.peek());
         let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 100);
         let track = factory.create_audio_track("dm-mic", source.clone());
@@ -43,21 +40,6 @@ impl Audio {
         let (faults, faults_rx) = unbounded_channel::<AudioFault>();
         let playback = PlaybackMixer::start(state, controls.clone(), reference_tx, faults.clone());
         let input = input_preferences(&state.peek());
-        let (mic, microphone_error) = match MicCapture::start(
-            frame_tx.clone(),
-            state,
-            muted.clone(),
-            gate_stats.clone(),
-            faults.clone(),
-        ) {
-            Ok(mic) => (Some(mic), None),
-            Err(error) => {
-                tracing::warn!(%error, "DM microphone unavailable; retrying capture");
-                state.write().error_toast =
-                    Some(format!("Couldn't open the call microphone: {error}"));
-                (None, Some(error))
-            }
-        };
         let dsp_controls = controls.clone();
         let dsp_meter = meter.clone();
         let dsp_muted = muted.clone();
@@ -77,14 +59,14 @@ impl Audio {
             })
             .map_err(|e| format!("Start call audio processing: {e}"))?;
         Ok(Self {
-            mic,
+            mic: None,
             frame_tx,
             gate_stats,
             muted,
             input,
             output: state.peek().selected_output_device.clone(),
             retry_at: None,
-            microphone_error,
+            microphone_error: None,
             playback,
             faults,
             faults_rx,
@@ -150,23 +132,30 @@ impl Audio {
             self.track.set_enabled(false);
             self.muted.store(true, Ordering::Relaxed);
         }
-        let result = reopen_capture(
-            &mut self.mic,
-            &mut self.input,
-            &mut self.retry_at,
-            input,
-            std::time::Instant::now(),
-            || {
-                let faults = self.faults.clone();
-                MicCapture::start(
-                    self.frame_tx.clone(),
-                    state,
-                    self.muted.clone(),
-                    self.gate_stats.clone(),
-                    faults,
+        let result = self
+            .gate_stats
+            .ready
+            .load(Ordering::Acquire)
+            .then(|| {
+                reopen_capture(
+                    &mut self.mic,
+                    &mut self.input,
+                    &mut self.retry_at,
+                    input,
+                    std::time::Instant::now(),
+                    || {
+                        let faults = self.faults.clone();
+                        MicCapture::start(
+                            self.frame_tx.clone(),
+                            state,
+                            self.muted.clone(),
+                            self.gate_stats.clone(),
+                            faults,
+                        )
+                    },
                 )
-            },
-        );
+            })
+            .flatten();
         if let Some(result) = result {
             match result {
                 Ok(()) => self.microphone_error = None,

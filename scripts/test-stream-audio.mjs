@@ -6,6 +6,79 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../client/src/features/screenshare.rs', import.meta.url), 'utf8');
 const bridge = source.split('pub(crate) const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
 
+function sinkFixture(enumerateDevices, setSinkId) {
+  const warnings = [];
+  const context = vm.createContext({
+    audioTracks: { alice: { setSinkId } },
+    navigator: enumerateDevices ? { mediaDevices: { enumerateDevices } } : {},
+    console: { warn(...args) { warnings.push(args); } },
+  });
+  vm.runInContext(bridge.slice(bridge.indexOf('  const audioElements = {}'), bridge.indexOf('  function setStreamVolume')), context);
+  vm.runInContext('audioElements.alice = {};', context);
+  return { set: value => context.setSink(value), warnings };
+}
+
+const flushPromises = () => new Promise(resolve => setImmediate(resolve));
+
+test('system default clears an explicit sink without requiring device enumeration', async () => {
+  const calls = [];
+  let enumerations = 0;
+  const f = sinkFixture(async () => { enumerations++; return [{ kind: 'audiooutput', label: 'Headphones', deviceId: 'headphones' }]; }, async id => calls.push(id));
+  f.set('Headphones');
+  await flushPromises();
+  f.set(null);
+  await flushPromises();
+  assert.deepEqual(calls, ['headphones', '']);
+  assert.equal(enumerations, 1);
+  const withoutEnumeration = sinkFixture(null, async id => calls.push(id));
+  withoutEnumeration.set(null);
+  await flushPromises();
+  assert.equal(calls.at(-1), '');
+});
+
+test('an old device lookup cannot override a newer selection', async () => {
+  let finishLookup;
+  const calls = [];
+  const f = sinkFixture(() => new Promise(resolve => { finishLookup = resolve; }), async id => calls.push(id));
+  f.set('Headphones');
+  f.set(null);
+  await flushPromises();
+  finishLookup([{ kind: 'audiooutput', label: 'Headphones', deviceId: 'headphones' }]);
+  await flushPromises();
+  assert.deepEqual(calls, ['']);
+});
+
+test('a pending sink change settles before the newest sink is applied', async () => {
+  const calls = [];
+  let finishFirst;
+  const f = sinkFixture(async () => [{ kind: 'audiooutput', label: 'Headphones', deviceId: 'headphones' }], id => {
+    calls.push(id);
+    return id ? new Promise(resolve => { finishFirst = resolve; }) : Promise.resolve();
+  });
+  f.set('Headphones');
+  await flushPromises();
+  f.set(null);
+  await flushPromises();
+  assert.deepEqual(calls, ['headphones']);
+  finishFirst();
+  await flushPromises();
+  assert.deepEqual(calls, ['headphones', '']);
+});
+
+test('failed sink changes are reported and do not block the next selection', async () => {
+  const calls = [];
+  const f = sinkFixture(async () => [{ kind: 'audiooutput', label: 'Headphones', deviceId: 'headphones' }], async id => {
+    calls.push(id);
+    if (id) throw new Error('device unavailable');
+  });
+  f.set('Headphones');
+  await flushPromises();
+  assert.equal(f.warnings.length, 1);
+  f.set(null);
+  await flushPromises();
+  assert.deepEqual(calls, ['headphones', '']);
+});
+
 function fixture() {
   const subscriptions = [], volumes = [], reports = [];
   let attachments = 0, removals = 0;

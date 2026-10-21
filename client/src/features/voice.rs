@@ -193,6 +193,8 @@ struct MicMeter {
 
 #[derive(Default)]
 struct GateStats {
+    ready: AtomicBool,
+    ready_notify: tokio::sync::Notify,
     dropped: AtomicU64,
     passed: AtomicU64,
     peak_after: AtomicI32,
@@ -201,6 +203,18 @@ struct GateStats {
     /// 0 off, 1 DeepFilterNet, 2 RNNoise.
     engine: AtomicU8,
     speaking: AtomicU64,
+}
+
+impl GateStats {
+    async fn wait_ready(&self) -> Result<(), String> {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !self.ready.load(Ordering::Acquire) {
+                self.ready_notify.notified().await;
+            }
+        })
+        .await
+        .map_err(|_| "Timed out preparing microphone processing".to_string())
+    }
 }
 
 pub const DENOISE_ATTEN_LIM_DB_MIN: u32 = 6;
@@ -773,6 +787,7 @@ impl ActiveVoice {
                 })
                 .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
         }
+        gate_stats.wait_ready().await?;
         tokio::spawn(publish_loop(gated_rx, source.clone()));
         // A missing microphone no longer refuses the join: the track stays
         // published and silent until one appears.
@@ -2312,22 +2327,24 @@ fn denoise_gate_loop(
     reference_rx: crate::audio_queue::AudioReceiver<i16>,
 ) {
     let mut processor = dsp::Processor::new(reference_rx);
+    processor.prepare(controls.mic_config());
+    stats.ready.store(true, Ordering::Release);
+    stats.ready_notify.notify_one();
     let mut retry = controls.denoise_retry.load(Ordering::Relaxed);
-    let mut raw_wav = crate::voice_record::Wav::new("mic-raw", SAMPLE_RATE);
-    let mut sent_wav = crate::voice_record::Wav::new("mic-sent", SAMPLE_RATE);
-    let mut dsp_csv = crate::voice_record::Csv::new(
-        "mic-dsp",
-        "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,sent_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db,echo,high_pass,gate_enabled,headphones",
-    );
+    let mut trace = crate::voice_record::MicrophoneTrace::new("mic-processing", "mic-processed");
+    let mut dsp_csv = crate::voice_record::Csv::new("mic-dsp", MIC_DSP_HEADER);
     while let Some(packet) = frame_rx.blocking_recv() {
         if !packet.is_fresh() {
             processor.silence();
-            raw_wav.write(&packet.samples);
-            sent_wav.write(&[0.0; FRAME_SAMPLES]);
-            dsp_csv.row(|| "-120,-120,-120,0,-120,Stale,,,,,,,,,".into());
+            trace.record_float(
+                packet.position,
+                packet.captured,
+                "stale_input",
+                &[0.0; FRAME_SAMPLES],
+            );
+            dsp_csv.row(stale_dsp_row);
             continue;
         }
-        raw_wav.write(&packet.samples);
         let config = controls.mic_config();
         let asked = controls.denoise_retry.load(Ordering::Relaxed);
         if asked != retry {
@@ -2342,7 +2359,14 @@ fn denoise_gate_loop(
             muted.load(Ordering::Relaxed),
         );
         if processed.model_loaded {
-            while frame_rx.try_recv().is_ok() {}
+            while let Ok(discarded) = frame_rx.try_recv() {
+                trace.record(
+                    discarded.position,
+                    discarded.captured,
+                    "model_load_discard",
+                    None,
+                );
+            }
         }
         meter.denoise_fallback.store(
             match processor.denoise_fallback() {
@@ -2385,11 +2409,6 @@ fn denoise_gate_loop(
         let open = matches!(processed.action, GateAction::Pass | GateAction::RampIn);
         meter.open.store(open, Ordering::Relaxed);
         let sent = processed.action != GateAction::Drop;
-        sent_wav.write(if sent {
-            &processed.samples
-        } else {
-            &[0.0; FRAME_SAMPLES]
-        });
         dsp_csv.row(|| {
             format!(
                 "{raw_dbfs:.1},{:.1},{:.1},{:.2},{:.1},{:?},{},{},{},{},{},{},{},{:.2},{},{},{},{},{}",
@@ -2422,6 +2441,12 @@ fn denoise_gate_loop(
             )
         });
         if processed.action == GateAction::Drop {
+            trace.record_float(
+                packet.position,
+                packet.captured,
+                "gate_drop",
+                &[0.0; FRAME_SAMPLES],
+            );
             stats.dropped.fetch_add(1, Ordering::Relaxed);
             continue;
         }
@@ -2432,11 +2457,31 @@ fn denoise_gate_loop(
         let packet = crate::audio_queue::Frame {
             samples: data,
             captured: packet.captured,
+            position: packet.position,
         };
-        if packet.is_fresh() && crate::audio_queue::offer(&out_tx, packet).is_err() {
+        let (position, captured) = (packet.position, packet.captured);
+        let outcome = if packet.is_fresh() {
+            match crate::audio_queue::offer(&out_tx, packet) {
+                Ok(true) => "queued",
+                Ok(false) => "publisher_full",
+                Err(()) => "publisher_closed",
+            }
+        } else {
+            "stale_processed"
+        };
+        trace.record_float(position, captured, outcome, &processed.samples);
+        if outcome == "publisher_closed" {
             return;
         }
     }
+}
+
+const MIC_DSP_HEADER: &str = "raw_dbfs,after_echo_dbfs,after_denoise_dbfs,agc_gain_db,processed_dbfs,gate,threshold,agc,denoise,suppression,volume,queue_age_ms,engine,speech,lsnr_db,echo,high_pass,gate_enabled,headphones";
+
+fn stale_dsp_row() -> String {
+    let mut fields = vec![""; MIC_DSP_HEADER.split(',').count()];
+    fields[..6].copy_from_slice(&["-120", "-120", "-120", "0", "-120", "Stale"]);
+    fields.join(",")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2608,10 +2653,10 @@ async fn soundboard_loop(
         match resampler.as_mut() {
             Some(r) => {
                 r.process_into(&frame, &mut resampled);
-                mixer.push(local, &resampled, cap);
+                mixer.push(local, &resampled, rate, cap);
             }
             None => {
-                mixer.push(local, &frame, cap);
+                mixer.push(local, &frame, rate, cap);
             }
         }
     }
@@ -2644,8 +2689,10 @@ fn peak_fixed(samples: &[f32]) -> i32 {
 
 async fn publish_loop(mut rx: crate::audio_queue::AudioReceiver<i16>, source: NativeAudioSource) {
     let mut sent = 0u64;
+    let mut trace = crate::voice_record::MicrophoneTrace::new("mic-publication", "mic-accepted");
     while let Some(packet) = rx.recv().await {
         if !packet.is_fresh() {
+            trace.record(packet.position, packet.captured, "stale_publish", None);
             continue;
         }
         let frame = AudioFrame {
@@ -2656,7 +2703,15 @@ async fn publish_loop(mut rx: crate::audio_queue::AudioReceiver<i16>, source: Na
         };
         if let Err(e) = source.capture_frame(&frame).await {
             eprintln!("[voice] capture_frame error: {e:?}");
+            trace.record(packet.position, packet.captured, "source_error", None);
+            continue;
         }
+        trace.record(
+            packet.position,
+            packet.captured,
+            "accepted",
+            Some(&packet.samples),
+        );
         sent += 1;
         if sent.is_multiple_of(500) {
             eprintln!("[voice] publish: {sent} frames forwarded to libwebrtc");
@@ -2902,14 +2957,22 @@ impl MicCapture {
             return None;
         }
 
-        let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (fatal_tx, mut fatal_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::rawmic::CaptureFault>();
         // A raw device can only be rebuilt from the session loop, so the death
         // is reported upwards instead of retried here.
         let faults = faults.clone();
         dioxus::prelude::spawn(async move {
             if let Some(e) = fatal_rx.recv().await {
-                eprintln!("[voice] raw mic died mid-call: {e}");
-                state.write().mic_bypass_error = Some(e.clone());
+                match e {
+                    crate::rawmic::CaptureFault::Device(error) => {
+                        eprintln!("[voice] raw mic died mid-call: {error}");
+                        state.write().mic_bypass_error = Some(error);
+                    }
+                    crate::rawmic::CaptureFault::DefaultChanged => {
+                        tracing::info!("Default microphone changed; reopening capture");
+                    }
+                }
                 let _ = faults.send(AudioFault::Input);
             }
         });
@@ -2917,8 +2980,7 @@ impl MicCapture {
         let (frame_tx, raw_peak, frames_pushed) =
             (frame_tx.clone(), raw_peak.clone(), frames_pushed.clone());
         let sink: crate::rawmic::SinkBuilder = Box::new(move |rate: u32, channels: u32| {
-            let accum: Arc<Mutex<Vec<f32>>> =
-                Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
+            let accum = Arc::new(Mutex::new(MicBuffer::new()));
             let resampler = Arc::new(Mutex::new(AudioResampler::new(rate, SAMPLE_RATE)));
             if resampler.lock().is_some() {
                 eprintln!("[voice] mic: resampling {rate}Hz → {SAMPLE_RATE}Hz via rubato");
@@ -3002,8 +3064,7 @@ impl MicCapture {
         let raw_peak_cb = raw_peak.clone();
         let frames_pushed_cb = frames_pushed.clone();
 
-        let accum: Arc<Mutex<Vec<f32>>> =
-            Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
+        let accum = Arc::new(Mutex::new(MicBuffer::new()));
 
         let resampler = Arc::new(Mutex::new(AudioResampler::new(device_rate, SAMPLE_RATE)));
         if resampler.lock().is_some() {
@@ -3128,7 +3189,7 @@ impl MicCapture {
                     "speaking"
                 };
                 eprintln!(
-                    "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames pushed to webrtc={f} (+{})",
+                    "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames queued for processing={f} (+{})",
                     f - prev_frames
                 );
                 let after = gate_stats.peak_after.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
@@ -3169,11 +3230,30 @@ impl Drop for MicCapture {
     }
 }
 
+struct MicBuffer {
+    samples: Vec<f32>,
+    id: u64,
+    next_sample: u64,
+    recorder: crate::voice_record::CaptureRecorder,
+}
+
+impl MicBuffer {
+    fn new() -> Self {
+        static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(1);
+        Self {
+            samples: Vec::with_capacity(FRAME_SAMPLES * 4),
+            id: NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed),
+            next_sample: 0,
+            recorder: crate::voice_record::CaptureRecorder::new(),
+        }
+    }
+}
+
 fn forward_mic(
     frame_tx: &crate::audio_queue::AudioSender<f32>,
     samples: &[f32],
     device_channels: u32,
-    accum: &Arc<Mutex<Vec<f32>>>,
+    accum: &Arc<Mutex<MicBuffer>>,
     resampler: &Arc<Mutex<Option<AudioResampler>>>,
     mono_buf: &mut Vec<f32>,
     resampled_buf: &mut Vec<f32>,
@@ -3195,18 +3275,34 @@ fn forward_mic(
         }
     }
 
-    let mut buf = accum.lock();
-    buf.extend_from_slice(resampled_buf);
+    let mut capture = accum.lock();
+    capture.samples.extend_from_slice(resampled_buf);
 
     let mut pushed = 0usize;
-    while buf.len() >= FRAME_SAMPLES {
+    while capture.samples.len() >= FRAME_SAMPLES {
         let mut samples = [0.0; FRAME_SAMPLES];
-        samples.copy_from_slice(&buf[..FRAME_SAMPLES]);
-        buf.drain(..FRAME_SAMPLES);
-        match crate::audio_queue::offer(frame_tx, crate::audio_queue::Frame::new(samples)) {
-            Ok(true) => pushed += 1,
-            Ok(false) => {}
-            Err(()) => break,
+        samples.copy_from_slice(&capture.samples[..FRAME_SAMPLES]);
+        capture.samples.drain(..FRAME_SAMPLES);
+        let mut packet = crate::audio_queue::Frame::new(samples);
+        packet.position = Some(crate::audio_queue::CapturePosition {
+            capture_id: capture.id,
+            first_sample: capture.next_sample,
+        });
+        capture.next_sample += FRAME_SAMPLES as u64;
+        let (position, captured) = (packet.position, packet.captured);
+        let outcome = match crate::audio_queue::offer(frame_tx, packet) {
+            Ok(true) => {
+                pushed += 1;
+                "queued"
+            }
+            Ok(false) => "capture_full",
+            Err(()) => "capture_closed",
+        };
+        capture
+            .recorder
+            .record(samples, position, captured, outcome);
+        if outcome == "capture_closed" {
+            break;
         }
     }
     pushed
@@ -3366,6 +3462,7 @@ struct TrackBuf {
     starved: u64,
     drift_correction: bool,
     recovery: playback_recovery::Recovery,
+    source_rate: u32,
 }
 
 #[derive(Clone)]
@@ -3404,6 +3501,19 @@ impl PlaybackHandle {
         self.device_rate.load(Ordering::Relaxed)
     }
 
+    fn set_rate(&self, rate: u32) {
+        let mut t = self.tracks.lock();
+        if self.rate() == rate {
+            return;
+        }
+        for track in t.buffers.values_mut() {
+            track.samples.clear();
+            track.source_rate = rate;
+            track.recovery.set_rate(rate);
+        }
+        self.device_rate.store(rate, Ordering::Relaxed);
+    }
+
     fn add_track(&self, identity: String, kind: TrackKind) -> u64 {
         self.insert_track(identity, kind, true)
     }
@@ -3434,6 +3544,7 @@ impl PlaybackHandle {
                 starved: 0,
                 drift_correction,
                 recovery: playback_recovery::Recovery::new(self.rate()),
+                source_rate: self.rate(),
             },
         );
         id
@@ -3448,10 +3559,24 @@ impl PlaybackHandle {
     }
 
     /// Queue depth and counters are sampled under the same lock as the appended audio.
-    fn push(&self, id: u64, samples: &[f32], cap: usize) -> Option<(usize, u64, f32, u64)> {
+    fn push(
+        &self,
+        id: u64,
+        samples: &[f32],
+        rate: u32,
+        cap: usize,
+    ) -> Option<(usize, u64, f32, u64)> {
         let mut t = self.tracks.lock();
+        let current = self.rate();
+        if rate != current {
+            return None;
+        }
         let track = t.buffers.get_mut(&id)?;
-        track.recovery.set_rate(self.rate());
+        if track.source_rate != current {
+            track.samples.clear();
+            track.source_rate = current;
+        }
+        track.recovery.set_rate(current);
         track.samples.extend(samples);
         while track.samples.len() > cap {
             track.samples.pop_front();
@@ -3800,14 +3925,12 @@ impl PlaybackMixer {
         }
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
+        self.handle.set_rate(device_rate);
         stream.play().map_err(|e| format!("play output: {e}"))?;
 
         if device_rate != SAMPLE_RATE {
             eprintln!("[voice] playback: resampling {SAMPLE_RATE}Hz → {device_rate}Hz via rubato");
         }
-        self.handle
-            .device_rate
-            .store(device_rate, Ordering::Relaxed);
         state.write().active_output_device = Some(device_name.clone());
         self.device_name = Some(device_name);
         self.stream = Some(stream);
@@ -3897,9 +4020,9 @@ async fn consume_remote_track(
         let mixer = match resampler.as_mut() {
             Some(r) => {
                 r.process_into(&f32_buf, &mut resampled_buf);
-                handle.push(track_id, &resampled_buf, cap)
+                handle.push(track_id, &resampled_buf, rate, cap)
             }
-            None => handle.push(track_id, &f32_buf, cap),
+            None => handle.push(track_id, &f32_buf, rate, cap),
         };
         let generation = crate::voice_record::generation();
         if generation != record_generation {
@@ -3954,7 +4077,7 @@ mod tests {
     #[test]
     fn microphone_overload_drains_input_and_keeps_new_audio_after_recovery() {
         let (tx, mut rx) = crate::audio_queue::channel();
-        let accum = Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 2)));
+        let accum = Arc::new(Mutex::new(MicBuffer::new()));
         let resampler = Arc::new(Mutex::new(None));
         let mut mono = Vec::new();
         let mut resampled = Vec::new();
@@ -3970,12 +4093,22 @@ mod tests {
                 &mut mono,
                 &mut resampled,
             );
-            assert!(accum.lock().is_empty());
+            assert!(accum.lock().samples.is_empty());
         }
         assert_eq!(accepted, rx.len());
         assert!(accepted < 100);
+        let capture_id = accum.lock().id;
+        let mut expected_sample = 0;
         while let Ok(packet) = rx.try_recv() {
             assert_eq!(packet.samples, [0.5; FRAME_SAMPLES]);
+            assert_eq!(
+                packet.position,
+                Some(crate::audio_queue::CapturePosition {
+                    capture_id,
+                    first_sample: expected_sample,
+                })
+            );
+            expected_sample += FRAME_SAMPLES as u64;
         }
         assert_eq!(
             forward_mic(
@@ -3989,7 +4122,23 @@ mod tests {
             ),
             1
         );
-        assert_eq!(rx.try_recv().unwrap().samples, [0.25; FRAME_SAMPLES]);
+        let resumed = rx.try_recv().unwrap();
+        assert_eq!(resumed.samples, [0.25; FRAME_SAMPLES]);
+        assert_eq!(
+            resumed.position,
+            Some(crate::audio_queue::CapturePosition {
+                capture_id,
+                first_sample: 100 * FRAME_SAMPLES as u64,
+            })
+        );
+        assert_ne!(MicBuffer::new().id, capture_id);
+    }
+
+    #[test]
+    fn stale_dsp_rows_keep_the_same_columns_as_processed_frames() {
+        let row = stale_dsp_row();
+        assert_eq!(row.split(',').count(), MIC_DSP_HEADER.split(',').count());
+        assert_eq!(row.split(',').nth(5), Some("Stale"));
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

@@ -177,7 +177,8 @@ impl<'a> ComparisonAudio<'a> {
                 } else {
                     frame
                 };
-                let Some((depth, _, _, _)) = handle.push(track, samples, self.rate + samples.len())
+                let Some((depth, _, _, _)) =
+                    handle.push(track, samples, self.rate as u32, self.rate + samples.len())
                 else {
                     return true;
                 };
@@ -282,7 +283,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
             let update: Result<(), Failure> = async {
                 if selected == Mode::Monitor {
                     if monitor.as_ref().is_some_and(|m| m.devices != devices(&state.peek())) { monitor = None; }
-                    if monitor.is_none() { monitor = Some(MicrophoneTest::start(state)?); }
+                    if monitor.is_none() { monitor = MicrophoneTest::start(state, || *mode.peek() == Mode::Monitor).await?; }
                     if let Some(test) = &mut monitor {
                         let next = test.update(&state.peek())?;
                         if *level.peek() != next { level.set(next); }
