@@ -17,7 +17,7 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 5135 |
+| `client/src/features/voice.rs` | 5143 |
 | `server/src/state/mod.rs` | 3470 |
 | `server/tests/owner_controls.rs` | 3157 |
 | `server/src/gateway/connection.rs` | 3582 |

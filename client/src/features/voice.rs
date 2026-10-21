@@ -767,12 +767,14 @@ impl ActiveVoice {
         let muted = Arc::new(AtomicBool::new(start_muted));
         local_audio_for_mute.rtc_track().set_enabled(!start_muted);
         let gate_stats = Arc::new(GateStats::default());
+        // Past the mic publish the room is live and nothing downstream owns it
+        // yet, so every way out of here has to close it.
         {
             let controls = controls.clone();
             let meter = meter.clone();
             let muted = muted.clone();
             let gate_stats = gate_stats.clone();
-            std::thread::Builder::new()
+            if let Err(error) = std::thread::Builder::new()
                 .name("dxf-mic-dsp".into())
                 .spawn(move || {
                     denoise_gate_loop(
@@ -785,9 +787,15 @@ impl ActiveVoice {
                         reference_rx,
                     )
                 })
-                .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
+            {
+                let _ = room.close().await;
+                return Err(format!("spawn mic dsp thread: {error}"));
+            }
         }
-        gate_stats.wait_ready().await?;
+        if let Err(error) = gate_stats.wait_ready().await {
+            let _ = room.close().await;
+            return Err(error);
+        }
         tokio::spawn(publish_loop(gated_rx, source.clone()));
         // A missing microphone no longer refuses the join: the track stays
         // published and silent until one appears.
