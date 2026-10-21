@@ -23,6 +23,7 @@ fn overlapping_voice_stream_and_soundboard_are_limited_after_their_volumes() {
                     starved: 0,
                     drift_correction: false,
                     recovery: playback_recovery::Recovery::new(rate),
+                    source_rate: rate,
                 },
             );
         }
@@ -140,6 +141,7 @@ fn processed_hops(
         let frame = crate::audio_queue::Frame {
             samples,
             captured: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            position: None,
         };
         tx.blocking_send(frame).unwrap();
     }
@@ -214,7 +216,7 @@ fn dm_playback_volume_changes_output_without_changing_microphone_gain() {
         state.voice.deafened = deafened;
         direct::update_controls(&controls, &state);
         assert_eq!(controls.mic_gain_pct.load(Ordering::Relaxed), 150);
-        handle.push(id, &[0.1; 480], 480);
+        handle.push(id, &[0.1; 480], SAMPLE_RATE, 480);
         let mut tracks = handle.tracks.lock();
         refresh_gains(
             &mut tracks,
@@ -250,7 +252,7 @@ async fn cancelling_remote_playback_discards_its_buffer_before_rewatching() {
         soundboard_pct: controls.soundboard_pct.clone(),
     };
     let id = handle.add_track("alice#video".into(), TrackKind::Stream);
-    handle.push(id, &[0.5; 480], 9600);
+    handle.push(id, &[0.5; 480], SAMPLE_RATE, 9600);
     let guard = RemotePlaybackGuard(handle.clone(), id);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
@@ -313,6 +315,7 @@ fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
                 starved: 0,
                 drift_correction: true,
                 recovery: playback_recovery::Recovery::new(SAMPLE_RATE),
+                source_rate: SAMPLE_RATE,
             },
         );
     }
@@ -356,6 +359,7 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
             starved: 0,
             drift_correction: true,
             recovery: playback_recovery::Recovery::new(SAMPLE_RATE),
+            source_rate: SAMPLE_RATE,
         },
     );
     state.stream_muted.insert("alice".into());
@@ -413,8 +417,8 @@ fn playback_backlog_is_bounded_and_retains_current_audio() {
     };
     let id = handle.add_track("alice".into(), TrackKind::Voice);
     let cap = 48000 / PLAYBACK_CAP_DIVISOR as usize;
-    handle.push(id, &vec![0.1; cap * 2], cap);
-    handle.push(id, &[0.7; 480], cap);
+    handle.push(id, &vec![0.1; cap * 2], SAMPLE_RATE, cap);
+    handle.push(id, &[0.7; 480], SAMPLE_RATE, cap);
     {
         let tracks = handle.tracks.lock();
         let samples = &tracks.buffers[&id].samples;
@@ -439,7 +443,7 @@ fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
     let cap = rate as usize / PLAYBACK_CAP_DIVISOR as usize;
     let overrun = (f64::from(rate) * DRIFT_OVERRUN_SECS) as usize;
     let underrun = (f64::from(rate) * DRIFT_UNDERRUN_SECS) as usize;
-    handle.push(id, &vec![0.2; 4 * hop], cap);
+    handle.push(id, &vec![0.2; 4 * hop], rate, cap);
     let frame = vec![0.2; hop];
     let mut next_hop = 0;
     let mut silent_runs = 0;
@@ -456,7 +460,7 @@ fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
             if due > sample {
                 break;
             }
-            handle.push(id, &frame, cap);
+            handle.push(id, &frame, rate, cap);
             next_hop += hop;
         }
         let mut tracks = handle.tracks.lock();
@@ -492,6 +496,44 @@ fn recovery_avoids_chopping_audio_while_a_stalled_producer_catches_up() {
         assert!(recovered.1 < baseline.1);
         assert!(recovered.2 > 0);
         assert!(recovered.1 + recovered.2 <= baseline.1 + u64::from(rate) * 80 / 1000);
+    }
+}
+
+#[test]
+fn output_rate_changes_flush_old_pcm_and_reject_in_flight_old_rate_blocks() {
+    for (old, new) in [(48_000, 96_000), (96_000, 44_100), (44_100, 48_000)] {
+        let controls = AudioControls::from_state(&AppState::empty());
+        let handle = PlaybackHandle {
+            tracks: Arc::new(Mutex::new(MixerTracks::default())),
+            device_rate: Arc::new(AtomicU32::new(old)),
+            gains: controls.gains,
+            stream_gains: controls.stream_gains,
+            soundboard_pct: controls.soundboard_pct,
+        };
+        for (kind, drift) in [
+            (TrackKind::Voice, true),
+            (TrackKind::Stream, true),
+            (TrackKind::Soundboard, true),
+            (TrackKind::Voice, false),
+        ] {
+            let id = handle.insert_track("peer".into(), kind, drift);
+            handle.push(id, &[0.2; 480], old, old as usize).unwrap();
+        }
+        handle.set_rate(new);
+        let ids: Vec<_> = handle.tracks.lock().buffers.keys().copied().collect();
+        for id in ids {
+            assert_eq!(handle.queued_samples(id), Some(0));
+            assert!(handle.push(id, &[0.2; 480], old, old as usize).is_none());
+            handle.push(id, &[0.3; 480], new, new as usize).unwrap();
+            handle.set_rate(new);
+            assert_eq!(handle.queued_samples(id), Some(480));
+            assert!(
+                handle.tracks.lock().buffers[&id]
+                    .samples
+                    .iter()
+                    .all(|sample| *sample == 0.3)
+            );
+        }
     }
 }
 
@@ -580,6 +622,7 @@ fn recorded_playback_bypasses_recovery_and_output_rate_changes_reset_its_wait() 
             starved: 0,
             drift_correction: false,
             recovery,
+            source_rate: SAMPLE_RATE,
         },
     );
     assert_eq!(next_playback_sample(&mut tracks, 0, usize::MAX, 0), 0.2);

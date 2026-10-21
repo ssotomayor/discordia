@@ -9,6 +9,13 @@ const MAX_AGE: Duration = Duration::from_millis(100);
 pub struct Frame<T> {
     pub samples: [T; SAMPLES],
     pub captured: Instant,
+    pub position: Option<CapturePosition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapturePosition {
+    pub capture_id: u64,
+    pub first_sample: u64,
 }
 
 impl<T> Frame<T> {
@@ -16,6 +23,7 @@ impl<T> Frame<T> {
         Self {
             samples,
             captured: Instant::now(),
+            position: None,
         }
     }
 
@@ -68,10 +76,12 @@ mod tests {
         let input = Frame {
             samples: [0.0; SAMPLES],
             captured: Instant::now() - Duration::from_secs(1),
+            position: None,
         };
         let output = Frame {
             samples: [0_i16; SAMPLES],
             captured: input.captured,
+            position: input.position,
         };
         assert!(!input.is_fresh());
         assert!(!output.is_fresh());

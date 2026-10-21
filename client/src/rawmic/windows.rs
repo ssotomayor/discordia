@@ -1,4 +1,5 @@
-use std::sync::mpsc as std_mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc as std_mpsc};
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -9,9 +10,10 @@ use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_SERVICE_NOT_RUNNING,
     AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMOPTIONS_NONE, AUDCLNT_STREAMOPTIONS_RAW, AudioCategory_Other,
-    AudioClientProperties, DEVICE_STATE_ACTIVE, IAudioCaptureClient, IAudioClient, IAudioClient2,
-    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-    eCapture, eConsole,
+    AudioClientProperties, DEVICE_STATE, DEVICE_STATE_ACTIVE, EDataFlow, ERole,
+    IAudioCaptureClient, IAudioClient, IAudioClient2, IMMDevice, IMMDeviceEnumerator,
+    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator, WAVEFORMATEX,
+    WAVEFORMATEXTENSIBLE, eCapture, eConsole,
 };
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 use windows::Win32::System::Com::{
@@ -20,7 +22,81 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
 use windows::Win32::System::Variant::VT_LPWSTR;
-use windows::core::{GUID, HRESULT, Interface};
+use windows::core::{GUID, HRESULT, Interface, PCWSTR, implement};
+
+#[derive(Debug)]
+pub enum CaptureFault {
+    Device(String),
+    DefaultChanged,
+}
+
+#[implement(IMMNotificationClient)]
+struct DefaultEndpoint {
+    opened_id: String,
+    fatal: UnboundedSender<CaptureFault>,
+    notified: AtomicBool,
+}
+
+impl DefaultEndpoint {
+    fn changed(&self, flow: EDataFlow, role: ERole, id: Option<&str>) {
+        if flow == eCapture
+            && role == eConsole
+            && id != Some(self.opened_id.as_str())
+            && !self.notified.swap(true, Ordering::Relaxed)
+            && let Err(error) = self.fatal.send(CaptureFault::DefaultChanged)
+        {
+            tracing::debug!(%error, "Microphone session already closed");
+        }
+    }
+}
+
+#[allow(non_snake_case)]
+impl IMMNotificationClient_Impl for DefaultEndpoint_Impl {
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: EDataFlow,
+        role: ERole,
+        id: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        // SAFETY: Windows keeps the nullable notification string valid for this callback.
+        let id = if id.is_null() {
+            None
+        } else {
+            unsafe { id.to_string() }.ok()
+        };
+        self.changed(flow, role, id.as_deref());
+        Ok(())
+    }
+    fn OnDeviceStateChanged(&self, _: &PCWSTR, _: DEVICE_STATE) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnDeviceAdded(&self, _: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnDeviceRemoved(&self, _: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn OnPropertyValueChanged(&self, _: &PCWSTR, _: &PROPERTYKEY) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+struct EndpointSubscription {
+    enumerator: IMMDeviceEnumerator,
+    notification: IMMNotificationClient,
+}
+
+impl Drop for EndpointSubscription {
+    fn drop(&mut self) {
+        // SAFETY: Both COM interfaces remain owned until the callback is unregistered.
+        if let Err(error) = unsafe {
+            self.enumerator
+                .UnregisterEndpointNotificationCallback(&self.notification)
+        } {
+            tracing::warn!(%error, "Couldn't unregister microphone endpoint notification");
+        }
+    }
+}
 
 pub type SinkBuilder = Box<dyn FnOnce(u32, u32) -> Sink + Send>;
 
@@ -43,21 +119,30 @@ const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
     pid: 14,
 };
 
-#[derive(Clone, Copy)]
-struct SendHandle(HANDLE);
-unsafe impl Send for SendHandle {}
-unsafe impl Sync for SendHandle {}
+struct EventHandle(HANDLE);
+// SAFETY: Windows events are thread-independent; ownership survives every outstanding wait.
+unsafe impl Send for EventHandle {}
+unsafe impl Sync for EventHandle {}
+
+impl Drop for EventHandle {
+    fn drop(&mut self) {
+        // SAFETY: This owner is created only from a successful CreateEventW.
+        if let Err(error) = unsafe { CloseHandle(self.0) } {
+            tracing::warn!(%error, "Couldn't close microphone event");
+        }
+    }
+}
 
 pub struct Capture {
     pub device_name: String,
-    shutdown: SendHandle,
+    shutdown: Arc<EventHandle>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Capture {
     pub fn start(
         device: Option<String>,
-        fatal: UnboundedSender<String>,
+        fatal: UnboundedSender<CaptureFault>,
         sink: SinkBuilder,
     ) -> Result<Self, String> {
         Self::start_with_bypass(device, fatal, sink, true)
@@ -65,32 +150,36 @@ impl Capture {
 
     pub fn start_with_bypass(
         device: Option<String>,
-        fatal: UnboundedSender<String>,
+        fatal: UnboundedSender<CaptureFault>,
         sink: SinkBuilder,
         bypass: bool,
     ) -> Result<Self, String> {
         let shutdown = unsafe { CreateEventW(None, true, false, None) }
             .map_err(|e| format!("create shutdown event: {e}"))?;
-        let shutdown = SendHandle(shutdown);
+        let shutdown = Arc::new(EventHandle(shutdown));
+        let worker_shutdown = Arc::clone(&shutdown);
 
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<String, String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-rawmic-win".into())
-            .spawn(move || run(device, fatal, sink, shutdown, ready_tx, bypass))
+            .spawn(move || run(device, fatal, sink, worker_shutdown, ready_tx, bypass))
             .map_err(|e| format!("spawn capture thread: {e}"))?;
+        Self::wait_for_start(shutdown, thread, ready_rx, START_TIMEOUT)
+    }
 
-        match ready_rx.recv_timeout(START_TIMEOUT) {
+    fn wait_for_start(
+        shutdown: Arc<EventHandle>,
+        thread: std::thread::JoinHandle<()>,
+        ready_rx: std_mpsc::Receiver<Result<String, String>>,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        match ready_rx.recv_timeout(timeout) {
             Ok(Ok(device_name)) => Ok(Self {
                 device_name,
                 shutdown,
                 thread: Some(thread),
             }),
-            Ok(Err(e)) => {
-                unsafe {
-                    let _ = CloseHandle(shutdown.0);
-                }
-                Err(e)
-            }
+            Ok(Err(e)) => Err(e),
             Err(_) => {
                 unsafe {
                     let _ = SetEvent(shutdown.0);
@@ -109,17 +198,14 @@ impl Drop for Capture {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        unsafe {
-            let _ = CloseHandle(self.shutdown.0);
-        }
     }
 }
 
 fn run(
     device: Option<String>,
-    fatal: UnboundedSender<String>,
+    fatal: UnboundedSender<CaptureFault>,
     sink: SinkBuilder,
-    shutdown: SendHandle,
+    shutdown: Arc<EventHandle>,
     ready: std_mpsc::Sender<Result<String, String>>,
     bypass: bool,
 ) {
@@ -129,9 +215,13 @@ fn run(
         return;
     }
 
-    let started = match setup(device, bypass) {
+    let started = match setup(device, bypass, &fatal) {
         Ok(s) => {
-            let _ = ready.send(Ok(s.device_name.clone()));
+            if ready.send(Ok(s.device_name.clone())).is_err() {
+                drop(s);
+                unsafe { CoUninitialize() };
+                return;
+            }
             s
         }
         Err(e) => {
@@ -142,10 +232,11 @@ fn run(
     };
 
     let mut sink = sink(started.format.rate, started.format.channels);
-    if let Err(e) = pump(&started, &mut sink, shutdown) {
-        let _ = fatal.send(e);
+    if let Err(e) = pump(&started, &mut sink, &shutdown) {
+        let _ = fatal.send(CaptureFault::Device(e));
     }
 
+    drop(started);
     unsafe { CoUninitialize() };
 }
 
@@ -165,21 +256,31 @@ struct Started {
     device_name: String,
     client: IAudioClient,
     capture: IAudioCaptureClient,
-    event: SendHandle,
+    event: EventHandle,
     format: Format,
+    subscription: Option<EndpointSubscription>,
 }
 
 impl Drop for Started {
     fn drop(&mut self) {
+        drop(self.subscription.take());
         unsafe {
             let _ = self.client.Stop();
-            let _ = CloseHandle(self.event.0);
         }
     }
 }
 
-fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
-    let device = open(device)?;
+fn setup(
+    device: Option<String>,
+    bypass: bool,
+    fatal: &UnboundedSender<CaptureFault>,
+) -> Result<Started, String> {
+    let (device, follows_default) = open(device)?;
+    let subscription = if follows_default {
+        Some(watch_default(&device, fatal.clone())?)
+    } else {
+        None
+    };
     let name = friendly_name(&device).unwrap_or_else(|| "<unknown>".into());
 
     let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
@@ -221,7 +322,7 @@ fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
 
     let event = unsafe { CreateEventW(None, false, false, None) }
         .map_err(|e| format!("create audio event: {e}"))?;
-    let event = SendHandle(event);
+    let event = EventHandle(event);
     unsafe { client.SetEventHandle(event.0) }
         .map_err(|e| format!("set event handle: {}", explain(e.code())))?;
     let capture: IAudioCaptureClient = unsafe { client.GetService() }
@@ -245,10 +346,11 @@ fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
         capture,
         event,
         format,
+        subscription,
     })
 }
 
-fn open(device: Option<String>) -> Result<IMMDevice, String> {
+fn open(device: Option<String>) -> Result<(IMMDevice, bool), String> {
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
             .map_err(|e| format!("enumerate audio devices: {}", explain(e.code())))?;
@@ -266,13 +368,60 @@ fn open(device: Option<String>) -> Result<IMMDevice, String> {
                 })
         };
         match found {
-            Some(d) => return Ok(d),
+            Some(d) => return Ok((d, false)),
             None => eprintln!("[rawmic] '{want}' is not a capture endpoint; using the default"),
         }
     }
 
     unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }
+        .map(|device| (device, true))
         .map_err(|e| format!("no microphone available: {}", explain(e.code())))
+}
+
+fn endpoint_id(device: &IMMDevice) -> Result<String, String> {
+    // SAFETY: GetId returns an allocated UTF-16 string, released after copying it.
+    let pointer = unsafe { device.GetId() }.map_err(|e| format!("read endpoint ID: {e}"))?;
+    let id = unsafe { pointer.to_string() }.map_err(|e| format!("decode endpoint ID: {e}"));
+    unsafe { CoTaskMemFree(Some(pointer.0.cast())) };
+    id
+}
+
+fn watch_default(
+    device: &IMMDevice,
+    fatal: UnboundedSender<CaptureFault>,
+) -> Result<EndpointSubscription, String> {
+    // SAFETY: This function runs on the capture thread with COM initialized.
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+            .map_err(|e| format!("watch default microphone: {e}"))?;
+    let opened_id = endpoint_id(device)?;
+    let notification: IMMNotificationClient = DefaultEndpoint {
+        opened_id: opened_id.clone(),
+        fatal: fatal.clone(),
+        notified: AtomicBool::new(false),
+    }
+    .into();
+    // SAFETY: The subscription retains both interfaces through unregistration.
+    unsafe { enumerator.RegisterEndpointNotificationCallback(&notification) }
+        .map_err(|e| format!("register default microphone notification: {e}"))?;
+    let subscription = EndpointSubscription {
+        enumerator,
+        notification,
+    };
+    // The default may have changed between opening the endpoint and registering its observer.
+    let current = unsafe {
+        subscription
+            .enumerator
+            .GetDefaultAudioEndpoint(eCapture, eConsole)
+    }
+    .ok()
+    .and_then(|device| endpoint_id(&device).ok());
+    if current.as_deref() != Some(opened_id.as_str())
+        && let Err(error) = fatal.send(CaptureFault::DefaultChanged)
+    {
+        tracing::debug!(%error, "Microphone session already closed");
+    }
+    Ok(subscription)
 }
 
 fn friendly_name(device: &IMMDevice) -> Option<String> {
@@ -328,25 +477,29 @@ fn describe(format: *const WAVEFORMATEX) -> Result<Format, String> {
     })
 }
 
-fn pump(started: &Started, sink: &mut Sink, shutdown: SendHandle) -> Result<(), String> {
-    let handles = [started.event.0, shutdown.0];
+fn pump(started: &Started, sink: &mut Sink, shutdown: &EventHandle) -> Result<(), String> {
     let mut scratch: Vec<f32> = Vec::with_capacity(4096);
 
-    loop {
-        let waited = unsafe { WaitForMultipleObjects(&handles, false, WAIT_MS) };
-        if waited == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
-            break;
-        }
-        if waited == WAIT_TIMEOUT {
-            return Err("the microphone stopped delivering audio".into());
-        }
-        if waited != WAIT_OBJECT_0 {
-            return Err(format!("the audio engine stopped responding ({waited:?})"));
-        }
+    while wait_for_audio(&started.event, shutdown)? {
         drain(started, sink, &mut scratch)?;
     }
     eprintln!("[rawmic] windows raw capture stopped");
     Ok(())
+}
+
+fn wait_for_audio(event: &EventHandle, shutdown: &EventHandle) -> Result<bool, String> {
+    let handles = [shutdown.0, event.0];
+    // SAFETY: Both event owners remain borrowed for the entire wait.
+    let waited = unsafe { WaitForMultipleObjects(&handles, false, WAIT_MS) };
+    if waited == WAIT_OBJECT_0 {
+        Ok(false)
+    } else if waited == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
+        Ok(true)
+    } else if waited == WAIT_TIMEOUT {
+        Err("the microphone stopped delivering audio".into())
+    } else {
+        Err(format!("the audio engine stopped responding ({waited:?})"))
+    }
 }
 
 fn drain(started: &Started, sink: &mut Sink, scratch: &mut Vec<f32>) -> Result<(), String> {
@@ -432,6 +585,7 @@ fn explain(hr: HRESULT) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -439,12 +593,119 @@ mod tests {
     use parking_lot::Mutex;
     use tokio::sync::mpsc::unbounded_channel;
 
+    #[test]
+    fn default_endpoint_notifications_ignore_outputs_roles_and_the_current_endpoint() {
+        use windows::Win32::Media::Audio::{eCommunications, eRender};
+        use windows::core::HSTRING;
+        let (fatal, mut received) = unbounded_channel();
+        let notification: IMMNotificationClient = DefaultEndpoint {
+            opened_id: "endpoint-A".into(),
+            fatal,
+            notified: AtomicBool::new(false),
+        }
+        .into();
+        let old = HSTRING::from("endpoint-A");
+        let new = HSTRING::from("endpoint-B");
+        // SAFETY: The interfaces and both strings remain owned throughout these callbacks.
+        unsafe {
+            notification
+                .OnDefaultDeviceChanged(eRender, eConsole, &new)
+                .unwrap();
+            notification
+                .OnDefaultDeviceChanged(eCapture, eCommunications, &new)
+                .unwrap();
+            notification
+                .OnDefaultDeviceChanged(eCapture, eConsole, &old)
+                .unwrap();
+        }
+        assert!(received.try_recv().is_err());
+        unsafe {
+            notification
+                .OnDefaultDeviceChanged(eCapture, eConsole, &new)
+                .unwrap();
+            notification
+                .OnDefaultDeviceChanged(eCapture, eConsole, &new)
+                .unwrap();
+        }
+        assert!(matches!(
+            received.try_recv(),
+            Ok(CaptureFault::DefaultChanged)
+        ));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn removing_the_default_endpoint_requests_capture_recovery() {
+        let (fatal, mut received) = unbounded_channel();
+        let notification: IMMNotificationClient = DefaultEndpoint {
+            opened_id: "endpoint-A".into(),
+            fatal,
+            notified: AtomicBool::new(false),
+        }
+        .into();
+        // SAFETY: A null ID is the documented notification when no endpoint remains.
+        unsafe {
+            notification
+                .OnDefaultDeviceChanged(eCapture, eConsole, PCWSTR::null())
+                .unwrap();
+        }
+        assert!(matches!(
+            received.try_recv(),
+            Ok(CaptureFault::DefaultChanged)
+        ));
+    }
+
+    #[test]
+    fn shutdown_takes_priority_over_ready_audio() {
+        let audio =
+            super::EventHandle(unsafe { super::CreateEventW(None, true, true, None) }.unwrap());
+        let stop =
+            super::EventHandle(unsafe { super::CreateEventW(None, true, true, None) }.unwrap());
+        assert!(!super::wait_for_audio(&audio, &stop).unwrap());
+    }
+
+    #[test]
+    fn startup_timeout_returns_while_the_driver_still_owns_its_shutdown_event() {
+        let shutdown = Arc::new(super::EventHandle(
+            unsafe { super::CreateEventW(None, true, false, None) }.unwrap(),
+        ));
+        let weak = Arc::downgrade(&shutdown);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            release_rx.recv().unwrap();
+            drop(ready_tx);
+            drop(worker_shutdown);
+            closed_tx.send(()).unwrap();
+        });
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let result = super::Capture::wait_for_start(
+                shutdown,
+                worker,
+                ready_rx,
+                Duration::from_millis(5),
+            );
+            finished_tx.send(result.is_err()).unwrap();
+        });
+        let result = finished_rx.recv_timeout(Duration::from_secs(2));
+        let worker_kept_event = weak.strong_count() == 1;
+        release_tx.send(()).unwrap();
+        waiter.join().unwrap();
+        closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(result, Ok(true));
+        assert!(worker_kept_event);
+        assert!(weak.upgrade().is_none());
+    }
+
     fn collect(
         bypass: bool,
         into: Arc<Mutex<Vec<f32>>>,
         fmt: Arc<Mutex<String>>,
     ) -> super::Capture {
-        let (fatal_tx, _fatal_rx) = unbounded_channel::<String>();
+        let (fatal_tx, _fatal_rx) = unbounded_channel::<CaptureFault>();
         let (buf, f) = (into, fmt);
         super::Capture::start_with_bypass(
             None,
@@ -542,7 +803,7 @@ mod tests {
     #[test]
     #[ignore = "needs a microphone and a desktop session"]
     fn rawmic_delivers_real_samples() {
-        let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
+        let (fatal_tx, mut fatal_rx) = unbounded_channel::<CaptureFault>();
         let seen = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(Mutex::new(0.0f32));
         let (seen_cb, peak_cb) = (seen.clone(), peak.clone());
@@ -570,7 +831,7 @@ mod tests {
         drop(capture);
 
         if let Ok(err) = fatal_rx.try_recv() {
-            panic!("the capture reported a fatal error: {err}");
+            panic!("the capture reported a fatal error: {err:?}");
         }
         let (samples, peak) = (seen.load(Ordering::Relaxed), *peak.lock());
         println!("samples={samples} peak={peak:.4}");

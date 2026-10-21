@@ -2,7 +2,7 @@
 mod windows;
 
 #[cfg(target_os = "windows")]
-pub use self::windows::{Capture, Sink, SinkBuilder};
+pub use self::windows::{Capture, CaptureFault, Sink, SinkBuilder};
 
 pub const fn supported() -> bool {
     cfg!(target_os = "windows")
