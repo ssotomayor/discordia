@@ -11,4 +11,10 @@ ignore = [
     # pinned deliberately: DeepFilterNet's model does not load on a newer tract
     # (see client/Cargo.toml).
     "RUSTSEC-2026-0217",
+    # webpki-roots 0.26.11, reached through tokio-tungstenite (still `^0.26`
+    # at 0.30) and ureq 2. The crate is a semver shim over webpki-roots 1.x --
+    # `pub use parent::TLS_SERVER_ROOTS` and nothing else -- so the fixed
+    # 1.0.10 the lock pins is the root list it hands out. No 0.26.x release
+    # carries the fix, and no released tokio-tungstenite stops asking for one.
+    "RUSTSEC-2026-0381",
 ]
