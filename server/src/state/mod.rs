@@ -634,6 +634,43 @@ impl AppState {
         Some(self.stamp_xp(member))
     }
 
+    /// The one way XP moves other than `award_xp`, and like it never for a bot.
+    pub async fn adjust_xp(
+        &self,
+        guild_id: Id,
+        target_pubkey: &str,
+        change: crate::protocol::XpChange,
+        by_pubkey: &str,
+    ) -> Result<Member, String> {
+        let _write = self.durable_writes.lock().await;
+        self.require_acting(guild_id, by_pubkey, Permission::ManageXp)?;
+        let member = self
+            .members
+            .get(&guild_id)
+            .and_then(|gm| gm.get(target_pubkey).map(|m| m.clone()))
+            .ok_or_else(|| "that user isn't a member of this guild".to_string())?;
+        if member.bot {
+            return Err("bots don't earn experience".into());
+        }
+        let xp = match change {
+            crate::protocol::XpChange::Set(xp) => xp,
+            crate::protocol::XpChange::Add(delta) => self
+                .xp_of(guild_id, target_pubkey)
+                .saturating_add_signed(delta),
+        };
+        durable(
+            self.store
+                .upsert_guild_xp(guild_id, target_pubkey, xp)
+                .await,
+            "xp",
+        )?;
+        self.xp
+            .entry(guild_id)
+            .or_default()
+            .insert(target_pubkey.to_string(), xp);
+        Ok(self.stamp_xp(member))
+    }
+
     pub async fn set_guild_leveling(
         &self,
         guild_id: Id,
@@ -742,6 +779,55 @@ impl AppState {
 
     pub fn has_permission(&self, guild_id: Id, pubkey: &str, perm: Permission) -> bool {
         self.effective_permissions(guild_id, pubkey).contains(&perm)
+    }
+
+    /// For the few commands a bot may also send: roles never apply to a bot,
+    /// so what it may do is what its install was granted.
+    pub fn acting_permissions(
+        &self,
+        guild_id: Id,
+        pubkey: &str,
+    ) -> std::collections::HashSet<Permission> {
+        match self.bot_install(guild_id, pubkey) {
+            Some(install) if !self.is_owner(guild_id, pubkey) => {
+                install.permissions.into_iter().collect()
+            }
+            _ => self.effective_permissions(guild_id, pubkey),
+        }
+    }
+
+    /// A bot is a way to act, so the powers over other members reach one only
+    /// from someone who holds them; otherwise Manage guild could launder them.
+    pub(crate) fn may_grant_to_bot(
+        &self,
+        guild_id: Id,
+        by_pubkey: &str,
+        perms: &[Permission],
+    ) -> Result<(), String> {
+        let mine = self.effective_permissions(guild_id, by_pubkey);
+        match perms.iter().find(|p| {
+            matches!(p, Permission::ManageRoles | Permission::ManageXp) && !mine.contains(p)
+        }) {
+            Some(p) => Err(format!(
+                "you can't grant {} to an app — you don't hold it yourself",
+                serde_variant_name(*p)
+            )),
+            None => Ok(()),
+        }
+    }
+
+    fn require_acting(&self, guild_id: Id, pubkey: &str, perm: Permission) -> Result<(), String> {
+        if !self.guilds.contains_key(&guild_id) {
+            return Err("unknown guild".into());
+        }
+        if self.acting_permissions(guild_id, pubkey).contains(&perm) {
+            Ok(())
+        } else {
+            Err(format!(
+                "you need the {} permission to do that here",
+                serde_variant_name(perm)
+            ))
+        }
     }
 
     pub fn require_permission(
@@ -1211,11 +1297,11 @@ impl AppState {
         by_pubkey: &str,
         role_perms: &[&[Permission]],
     ) -> Result<(), String> {
-        self.require_permission(guild_id, by_pubkey, Permission::ManageRoles)?;
+        self.require_acting(guild_id, by_pubkey, Permission::ManageRoles)?;
         if self.is_owner(guild_id, by_pubkey) {
             return Ok(());
         }
-        let mine = self.effective_permissions(guild_id, by_pubkey);
+        let mine = self.acting_permissions(guild_id, by_pubkey);
         for perms in role_perms {
             if perms
                 .iter()
@@ -3317,6 +3403,7 @@ impl AppState {
                 serde_variant_name(*bad)
             ));
         }
+        self.may_grant_to_bot(guild_id, by_pubkey, &permissions)?;
         let name = {
             let n = crate::protocol::sanitize_line(name, 32);
             match (&app, n.is_empty()) {

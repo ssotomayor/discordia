@@ -150,10 +150,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                             | ClientMessage::ActivitySend { .. }
                             | ClientMessage::InvokeCommand { .. }
                             | ClientMessage::RespondToCommand { .. }
+                            | ClientMessage::SetProfile { .. }
+                            | ClientMessage::AssignRole { .. }
+                            | ClientMessage::UnassignRole { .. }
+                            | ClientMessage::AdjustXp { .. }
                     )
                 {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
-                        message: "bots may only fetch history, send and edit messages, react, declare commands and manifests, call and answer commands, and speak in their activities".into(),
+                        message: "bots may only fetch history, send and edit messages, react, declare commands and manifests, call and answer commands, speak in their activities, set their picture, banner and bio, give and take roles, and adjust experience".into(),
                     }).await;
                     continue;
                 }
@@ -324,7 +328,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms).await;
+                        let mut history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms).await;
+                        // History is the same text the live stream blanks for a
+                        // bot without the content intent (`filter_for_bot`).
+                        if is_bot && !bot_has_intent(&ctx.state, channel_id, &u.pubkey, Intent::MessageContent) {
+                            for m in &mut history {
+                                m.content.clear();
+                                m.image = None;
+                            }
+                        }
                         if send(&mut ws_tx, &ServerMessage::MessageHistory {
                             channel_id,
                             messages: history,
@@ -623,6 +635,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         }
+                        // A bot's presence is its connection, and it owns no
+                        // guild and runs no server, so it has no badge to hide.
+                        let (status, custom_status, hide_guild_owner, hide_operator) = if is_bot {
+                            (None, None, false, false)
+                        } else {
+                            (status, custom_status, hide_guild_owner, hide_operator)
+                        };
                         let profile = ctx.state.set_profile(crate::protocol::Profile {
                             pubkey: u.pubkey.clone(),
                             avatar,
@@ -1830,6 +1849,27 @@ pub(crate) async fn handle_connection_with_route<S>(
                         match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, false, &u.pubkey).await {
                             Ok(member) => {
                                 apply_sight_change(&ctx, guild_id, &sight_before, None);
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::AdjustXp { guild_id, user_pubkey, change } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.adjust_xp(guild_id, &user_pubkey, change, &u.pubkey).await {
+                            Ok(member) => {
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                             }
@@ -3129,6 +3169,18 @@ fn sanitize_client_version(raw: &str) -> String {
 
 /// A DM or any channel with no guild grants a bot nothing: installs are
 /// per-guild, and there is no guild here to have been installed in.
+fn bot_has_intent(
+    state: &crate::state::AppState,
+    channel_id: crate::protocol::Id,
+    bot_pubkey: &str,
+    intent: Intent,
+) -> bool {
+    state
+        .channel_guild(channel_id)
+        .and_then(|gid| state.bot_install(gid, bot_pubkey))
+        .is_some_and(|i| i.has_intent(intent))
+}
+
 fn bot_can(
     state: &crate::state::AppState,
     channel_id: crate::protocol::Id,

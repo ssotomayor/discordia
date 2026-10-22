@@ -22,6 +22,7 @@ pub enum BotError {
     Json(String),
     Handshake(String),
     Quic(String),
+    Image(String),
 }
 
 impl std::fmt::Display for BotError {
@@ -32,6 +33,7 @@ impl std::fmt::Display for BotError {
             BotError::Json(e) => write!(f, "json error: {e}"),
             BotError::Handshake(e) => write!(f, "handshake error: {e}"),
             BotError::Quic(e) => write!(f, "quic error: {e}"),
+            BotError::Image(e) => write!(f, "image error: {e}"),
         }
     }
 }
@@ -148,6 +150,27 @@ impl BotIdentity {
         })
         .to_string()
     }
+}
+
+/// The host reads the type from the data URL, so it is named from the bytes
+/// rather than trusted from a file name.
+fn image_data_url(bytes: &[u8]) -> Result<String> {
+    use base64::Engine;
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        return Err(BotError::Image("not a PNG, JPEG, GIF or WebP".into()));
+    };
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 fn now_secs() -> i64 {
@@ -364,6 +387,93 @@ impl Bot {
             instance_id,
             to: to.map(str::to_string),
             data: data.to_string(),
+        })
+        .await
+    }
+
+    /// Replaces this bot's picture, banner and bio on the host; `None` clears
+    /// one. The host stores the images itself, so they reach no one else's server.
+    pub async fn set_profile(
+        &mut self,
+        avatar: Option<&[u8]>,
+        banner: Option<&[u8]>,
+        bio: Option<&str>,
+    ) -> Result<()> {
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.send(&ClientMessage::SetProfile {
+            avatar: avatar.map(image_data_url).transpose()?,
+            banner: banner.map(image_data_url).transpose()?,
+            bio: bio.map(str::to_string),
+            status: None,
+            custom_status: None,
+            hide_guild_owner: false,
+            hide_operator: false,
+            updated_at,
+        })
+        .await
+    }
+
+    /// Answered by `ServerMessage::MessageHistory`, newest last. Needs the
+    /// read history permission; without the content intent the text is blank.
+    pub async fn fetch_messages(
+        &mut self,
+        channel_id: Id,
+        limit: u32,
+        before_ms: Option<i64>,
+    ) -> Result<()> {
+        self.send(&ClientMessage::FetchMessages {
+            channel_id,
+            limit,
+            before_ms,
+        })
+        .await
+    }
+
+    /// Needs manage roles, and the host refuses a role carrying any
+    /// permission this bot's install lacks.
+    pub async fn assign_role(
+        &mut self,
+        guild_id: Id,
+        role_id: Id,
+        user_pubkey: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::AssignRole {
+            guild_id,
+            role_id,
+            user_pubkey: user_pubkey.to_string(),
+        })
+        .await
+    }
+
+    pub async fn unassign_role(
+        &mut self,
+        guild_id: Id,
+        role_id: Id,
+        user_pubkey: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::UnassignRole {
+            guild_id,
+            role_id,
+            user_pubkey: user_pubkey.to_string(),
+        })
+        .await
+    }
+
+    /// Needs manage experience. The member's new total arrives as a
+    /// `MemberUpdate` to everyone in the guild.
+    pub async fn adjust_xp(
+        &mut self,
+        guild_id: Id,
+        user_pubkey: &str,
+        change: protocol::XpChange,
+    ) -> Result<()> {
+        self.send(&ClientMessage::AdjustXp {
+            guild_id,
+            user_pubkey: user_pubkey.to_string(),
+            change,
         })
         .await
     }

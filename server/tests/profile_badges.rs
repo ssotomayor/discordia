@@ -160,3 +160,70 @@ async fn a_second_device_with_an_older_profile_cannot_put_it_back() {
     let held = profiles.iter().find(|p| p.pubkey == me.pubkey()).unwrap();
     assert_eq!(held.bio.as_deref(), Some("new"));
 }
+
+/// 1×1 PNG.
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xFC, 0xCF, 0xC0, 0x50,
+    0x0F, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xA9, 0x8C, 0x21, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+#[tokio::test]
+async fn a_bot_sets_its_picture_and_bio_but_not_a_presence_or_badges() {
+    let preferred: SocketAddr = "127.0.0.1:19262".parse().unwrap();
+    let handle = discordia_server::spawn(preferred, 100, test_config(Default::default()))
+        .await
+        .expect("spawn server");
+    let url = format!("ws://{}", handle.addr);
+    let (mut onlooker, _) = connect_user(&url, &BotIdentity::generate(), "Onlooker").await;
+
+    let id = BotIdentity::generate();
+    let mut bot = Bot::connect(&url, &id, "Helper").await.unwrap();
+    while !matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {}
+    bot.set_profile(Some(TINY_PNG), Some(TINY_PNG), Some("Answers questions"))
+        .await
+        .unwrap();
+    let shown = next_profile_of(&mut onlooker, id.pubkey()).await;
+    assert!(
+        shown
+            .avatar
+            .as_deref()
+            .is_some_and(|a| a.starts_with("media:"))
+    );
+    assert!(
+        shown
+            .banner
+            .as_deref()
+            .is_some_and(|b| b.starts_with("media:"))
+    );
+    assert_eq!(shown.bio.as_deref(), Some("Answers questions"));
+
+    bot.send(&ClientMessage::SetProfile {
+        avatar: shown.avatar.clone(),
+        banner: None,
+        bio: None,
+        status: Some("dnd".into()),
+        custom_status: Some("ocupado".into()),
+        hide_guild_owner: true,
+        hide_operator: true,
+        updated_at: shown.updated_at + 1,
+    })
+    .await
+    .unwrap();
+    let shown = next_profile_of(&mut onlooker, id.pubkey()).await;
+    assert_eq!(shown.status, None);
+    assert_eq!(shown.custom_status, None);
+    assert!(!shown.hide_guild_owner && !shown.hide_operator);
+    assert!(
+        shown.avatar.is_some(),
+        "a held picture is sent back by address"
+    );
+    assert_eq!(shown.banner, None, "None clears the banner");
+
+    assert!(matches!(
+        bot.set_profile(Some(b"<svg/>"), None, None).await,
+        Err(discordia_bot::BotError::Image(_))
+    ));
+}
