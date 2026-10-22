@@ -517,3 +517,44 @@ async fn an_app_delivers_its_own_bundle_when_a_guild_wants_it() {
 
     handle.abort();
 }
+
+async fn member_join(owner: &mut Bot, pubkey: &str) -> discordia_server::protocol::Member {
+    loop {
+        match next_timeout(owner).await {
+            ServerMessage::MemberJoin(m) if m.user.pubkey == pubkey => return m,
+            ServerMessage::Error { message } => panic!("unexpected error: {message}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_bot_connected_before_its_install_is_seated_online_and_renamed_by_its_manifest() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, guild_id) = owner_with_guild(&url).await;
+    let app = BotIdentity::generate();
+    let mut bot = Bot::connect(&url, &app, "Early").await.unwrap();
+    while !matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {}
+
+    let v1 = app.sign_manifest(&manifest(1, vec![Permission::SendMessages]));
+    owner
+        .send(&install(guild_id, &app, vec![Permission::SendMessages], v1))
+        .await
+        .unwrap();
+    let seated = member_join(&mut owner, app.pubkey()).await;
+    assert!(seated.online, "its socket is already open");
+    assert_eq!(seated.user.username, "Rock Paper Scissors");
+
+    let mut v2 = manifest(2, vec![Permission::SendMessages]);
+    v2.name = "Rock Paper Lizard".into();
+    bot.register_manifest(&app, &v2).await.unwrap();
+    let renamed = member_join(&mut owner, app.pubkey()).await;
+    assert_eq!(renamed.user.username, "Rock Paper Lizard");
+    assert!(renamed.online);
+    assert_eq!(
+        integrations(&mut owner, app.pubkey()).await.name,
+        "Rock Paper Lizard"
+    );
+
+    handle.abort();
+}

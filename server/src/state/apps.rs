@@ -104,7 +104,7 @@ impl AppState {
         self.may_grant_to_bot(guild_id, by_pubkey, &pending.permissions)?;
         install.permissions = pending.permissions.clone();
         install.intents = pending.intents.clone();
-        install.app = Some(pending);
+        adopt(&mut install, pending);
         let seat = self.seat_for(&install);
         durable(
             self.store.update_bot_install(&install, &seat).await,
@@ -135,7 +135,9 @@ impl AppState {
                     username: install.name.clone(),
                 },
                 guild_id: install.guild_id,
-                online: false,
+                // A bot connected before it was installed gets no new Ready to
+                // mark it online, so it would read as offline until it reconnects.
+                online: self.has_sessions(&install.bot_pubkey),
                 bot: true,
                 roles: Vec::new(),
                 xp: 0,
@@ -334,10 +336,23 @@ fn apply_newer(mut install: BotInstall, newer: &AppManifest) -> Option<BotInstal
             .permissions
             .retain(|p| newer.permissions.contains(p));
         install.intents.retain(|i| newer.intents.contains(i));
-        install.app = Some(newer.clone());
+        adopt(&mut install, newer.clone());
         install.pending = None;
     }
     Some(install)
+}
+
+/// Pins `manifest`, and renames the install with it unless the guild chose a
+/// name of its own at install time, which a new version must not overwrite.
+fn adopt(install: &mut BotInstall, manifest: AppManifest) {
+    if install
+        .app
+        .as_ref()
+        .is_some_and(|old| old.name == install.name)
+    {
+        install.name = manifest.name.clone();
+    }
+    install.app = Some(manifest);
 }
 
 #[cfg(test)]
@@ -407,6 +422,35 @@ mod tests {
         assert_eq!(next.app, before.app);
         assert_eq!(next.permissions, before.permissions);
         assert_eq!(next.pending.unwrap().version, 2);
+    }
+
+    #[test]
+    fn a_new_name_follows_the_manifest_unless_the_guild_chose_one() {
+        let v1 = manifest(1, vec![Permission::SendMessages], vec![]);
+        let mut v2 = manifest(2, vec![Permission::SendMessages], vec![]);
+        v2.name = "Renamed".into();
+        let next = apply_newer(install(Some(v1.clone())), &v2).unwrap();
+        assert_eq!(next.name, "Renamed");
+
+        let mut chosen = install(Some(v1));
+        chosen.name = "Our bot".into();
+        assert_eq!(apply_newer(chosen, &v2).unwrap().name, "Our bot");
+    }
+
+    #[test]
+    fn a_wider_update_is_renamed_only_once_approved() {
+        let v1 = manifest(1, vec![Permission::SendMessages], vec![]);
+        let mut v2 = manifest(
+            2,
+            vec![Permission::SendMessages],
+            vec![ActivityCapability::MessageSend],
+        );
+        v2.name = "Renamed".into();
+        let mut waiting = apply_newer(install(Some(v1)), &v2).unwrap();
+        assert_eq!(waiting.name, "Game");
+        let pending = waiting.pending.take().unwrap();
+        adopt(&mut waiting, pending);
+        assert_eq!(waiting.name, "Renamed");
     }
 
     #[test]
