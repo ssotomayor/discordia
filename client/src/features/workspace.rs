@@ -607,6 +607,7 @@ pub fn WorkspaceView(
             crate::features::camera::CameraSelfPreview {}
             crate::features::camera::CameraGridWindow {}
             crate::features::profiles::ProfileCard {}
+            crate::features::bot_commands::CommandDialogHost {}
             crate::features::chat::ImageViewer {}
             super::bookmarks::BookmarksDialog {}
             if status == ConnectionStatus::Connecting {

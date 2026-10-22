@@ -1594,6 +1594,25 @@ pub struct CommandOption {
     #[serde(default)]
     pub required: bool,
     pub kind: OptionKind,
+    /// Absent unless an earlier choice holds one of these values, so one
+    /// command can ask different things per choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<ShownWhen>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShownWhen {
+    pub option: String,
+    pub any_of: Vec<String>,
+}
+
+/// Whether `opt` is asked, given the arguments of the options before it.
+pub fn option_shown(opt: &CommandOption, earlier: &[CommandArg]) -> bool {
+    opt.when.as_ref().is_none_or(|w| {
+        earlier.iter().any(|a| {
+            a.id == w.option && matches!(&a.value, ArgValue::Choice(c) if w.any_of.contains(c))
+        })
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1730,7 +1749,16 @@ impl CommandOption {
             description: String::new(),
             required: true,
             kind,
+            when: None,
         }
+    }
+
+    pub fn shown_when(mut self, option: &str, any_of: &[&str]) -> Self {
+        self.when = Some(ShownWhen {
+            option: option.to_string(),
+            any_of: any_of.iter().map(|v| v.to_string()).collect(),
+        });
+        self
     }
 
     pub fn text(id: &str, label: &str, max_len: u16) -> Self {
@@ -1816,6 +1844,21 @@ pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String
                     cmd.id, opt.id
                 ));
             }
+            if let Some(w) = &opt.when {
+                let controls = options.iter().find(|o| o.id == w.option);
+                let valid = matches!(
+                    controls.map(|o| &o.kind),
+                    Some(OptionKind::Choice { choices })
+                        if !w.any_of.is_empty()
+                            && w.any_of.iter().all(|v| choices.iter().any(|c| &c.value == v))
+                );
+                if !valid {
+                    return Err(format!(
+                        "option '{}' of command '{}' must depend on values of an earlier choice",
+                        opt.id, cmd.id
+                    ));
+                }
+            }
             let kind = match opt.kind {
                 OptionKind::Text { max_len } => OptionKind::Text {
                     max_len: max_len.clamp(1, MAX_COMMAND_TEXT),
@@ -1859,6 +1902,7 @@ pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String
                 id: opt.id,
                 required: opt.required,
                 kind,
+                when: opt.when,
             });
         }
         out.push(BotCommand {
@@ -1890,6 +1934,12 @@ pub fn check_args(cmd: &BotCommand, args: Vec<CommandArg>) -> Result<Vec<Command
             .iter()
             .find(|a| a.id == opt.id)
             .map(|a| a.value.clone());
+        if !option_shown(opt, &out) {
+            if given.is_some() {
+                return Err(format!("{} doesn't apply to that choice", opt.label));
+            }
+            continue;
+        }
         let value = match (&opt.kind, given) {
             (_, None) => None,
             (OptionKind::Text { max_len }, Some(ArgValue::Text(t))) => {
@@ -3379,6 +3429,108 @@ mod command_tests {
         for args in refused {
             assert!(check_args(&cmd, args.clone()).is_err(), "accepted {args:?}");
         }
+    }
+
+    fn per_game() -> BotCommand {
+        BotCommand::new("lechear", "Lechear")
+            .option(CommandOption::choice(
+                "game",
+                "Juego",
+                &[("smash", "Smash"), ("cod", "CoD"), ("generica", "Genérica")],
+            ))
+            .option(CommandOption::members("targets", "A quién", 1, 3))
+            .option(
+                CommandOption::integer("players", "Jugadores", 1, 8)
+                    .shown_when("game", &["smash", "generica"]),
+            )
+            .option(
+                CommandOption::integer("kills", "Kills", 1, 30)
+                    .optional()
+                    .shown_when("game", &["cod"]),
+            )
+    }
+
+    fn arg(id: &str, value: ArgValue) -> CommandArg {
+        CommandArg {
+            id: id.into(),
+            value,
+        }
+    }
+
+    #[test]
+    fn a_dependent_option_is_required_only_while_shown() {
+        let cmd = validate_commands(vec![per_game()]).unwrap().remove(0);
+        let targets = arg("targets", ArgValue::Members(vec![key('a')]));
+        let smash = arg("game", ArgValue::Choice("smash".into()));
+        let cod = arg("game", ArgValue::Choice("cod".into()));
+
+        assert!(
+            check_args(&cmd, vec![smash.clone(), targets.clone()]).is_err(),
+            "players is asked for smash"
+        );
+        let ok = check_args(
+            &cmd,
+            vec![
+                smash.clone(),
+                targets.clone(),
+                arg("players", ArgValue::Integer(4)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(ok.len(), 3);
+
+        let ok = check_args(&cmd, vec![cod.clone(), targets.clone()]).unwrap();
+        assert_eq!(
+            ok.len(),
+            2,
+            "players is not asked for cod, and kills is optional"
+        );
+        assert!(
+            check_args(
+                &cmd,
+                vec![cod, targets.clone(), arg("players", ArgValue::Integer(4))]
+            )
+            .is_err(),
+            "an answer to a hidden option is refused"
+        );
+        assert!(
+            check_args(
+                &cmd,
+                vec![smash, targets, arg("kills", ArgValue::Integer(3))]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_dependency_must_name_values_of_an_earlier_choice() {
+        let later = BotCommand::new("x", "X")
+            .option(CommandOption::integer("n", "N", 1, 2).shown_when("game", &["a"]))
+            .option(CommandOption::choice("game", "Game", &[("a", "A")]));
+        let not_a_choice = BotCommand::new("x", "X")
+            .option(CommandOption::integer("game", "Game", 1, 2))
+            .option(CommandOption::integer("n", "N", 1, 2).shown_when("game", &["1"]));
+        let unknown_value = BotCommand::new("x", "X")
+            .option(CommandOption::choice("game", "Game", &[("a", "A")]))
+            .option(CommandOption::integer("n", "N", 1, 2).shown_when("game", &["b"]));
+        let nothing = BotCommand::new("x", "X")
+            .option(CommandOption::choice("game", "Game", &[("a", "A")]))
+            .option(CommandOption::integer("n", "N", 1, 2).shown_when("game", &[]));
+        for cmd in [later, not_a_choice, unknown_value, nothing] {
+            assert!(
+                validate_commands(vec![cmd.clone()]).is_err(),
+                "accepted {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_option_without_a_dependency_serialises_as_before() {
+        let json = serde_json::to_string(&CommandOption::integer("n", "N", 1, 2)).unwrap();
+        assert!(
+            !json.contains("when"),
+            "a signed manifest's bytes must not move: {json}"
+        );
     }
 
     #[test]
