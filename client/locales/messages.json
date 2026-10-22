@@ -1,4 +1,5 @@
 {
+  "(optional)": ["(opcional)","(opcional)"],
   "Saved messages": ["Mensajes guardados", "Mensagens salvas"],
   "Save message": ["Guardar mensaje", "Salvar mensagem"],
   "Remove bookmark": ["Quitar de guardados", "Remover dos salvos"],
@@ -831,6 +832,7 @@
   "No moderation actions yet.": ["Aún no hay acciones de moderación.","Ainda não há ações de moderação."],
   "No more public guilds here. Try an invite or create your own.": ["No hay más comunidades públicas aquí. Usa una invitación o crea la tuya.","Não há mais comunidades públicas aqui. Use um convite ou crie a sua."],
   "No names yet — members show as Lv1, Lv2 and so on.": ["Aún no hay nombres: los miembros aparecen como Nv. 1, Nv. 2, etc.","Ainda não há nomes: os membros aparecem como Nv. 1, Nv. 2 etc."],
+  "No one matches": ["No hay coincidencias","Ninguém corresponde"],
   "No other clients connected.": ["No hay otros clientes conectados.","Não há outros clientes conectados."],
   "No other members yet.": ["Aún no hay otros miembros.","Ainda não há outros membros."],
   "No output device — retrying": ["Sin dispositivo de salida — reintentando","Sem dispositivo de saída — tentando novamente"],
@@ -1022,7 +1024,7 @@
   "Search did not finish. Reconnect and try again.": ["La búsqueda no terminó. Reconecta y reintenta.","A busca não terminou. Reconecte e tente novamente."],
   "Search guilds": ["Buscar comunidades","Buscar comunidades"],
   "Search guilds…": ["Buscar comunidades…","Buscar comunidades…"],
-  "Search members": ["Buscar miembros","Buscar membros"],
+  "Search by name or npub": ["Buscar por nombre o npub","Buscar por nome ou npub"],
   "Search messages": ["Buscar mensajes","Buscar mensagens"],
   "Search, or paste an npub…": ["Busca o pega una clave npub…","Busque ou cole uma chave npub…"],
   "Searching…": ["Buscando…","Buscando…"],

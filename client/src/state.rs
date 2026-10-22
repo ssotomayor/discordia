@@ -207,6 +207,13 @@ impl VoiceSession {
     }
 }
 
+/// A bot command whose fields are being filled in (`bot_commands::CommandDialog`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandForm {
+    pub bot_pubkey: String,
+    pub command: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuildDialog {
     Settings(Id),
@@ -389,6 +396,7 @@ pub struct AppState {
     /// the person holds a socket, and the server clears it when they drop.
     pub activities: HashMap<String, crate::protocol::Activity>,
     pub profile_card: Option<String>,
+    pub command_form: Option<CommandForm>,
     pub image_viewer: Option<String>,
     pub guild_dialog: Option<GuildDialog>,
     pub rules_prompt: Option<RulesPrompt>,
@@ -577,6 +585,7 @@ impl AppState {
             resolved_share: None,
             activities: HashMap::new(),
             profile_card: None,
+            command_form: None,
             image_viewer: None,
             guild_dialog: None,
             rules_prompt: None,
