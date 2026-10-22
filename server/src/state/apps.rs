@@ -101,6 +101,7 @@ impl AppState {
             .pending
             .take()
             .ok_or("there is no update to approve")?;
+        self.may_grant_to_bot(guild_id, by_pubkey, &pending.permissions)?;
         install.permissions = pending.permissions.clone();
         install.intents = pending.intents.clone();
         install.app = Some(pending);

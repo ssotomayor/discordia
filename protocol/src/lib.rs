@@ -439,6 +439,15 @@ impl Default for Leveling {
     }
 }
 
+/// A hand-made change to a member's guild XP. `Add` is applied by the server,
+/// so two quick adjustments from one bot cannot overwrite each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum XpChange {
+    Set(u64),
+    Add(i64),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XpAction {
     Message,
@@ -1096,6 +1105,8 @@ pub enum Permission {
     CreateInvite,
     ManageEmojis,
     DisconnectMembers,
+    /// Set or add to a member's guild XP by hand (`AdjustXp`).
+    ManageXp,
 }
 
 impl Permission {
@@ -1112,13 +1123,18 @@ impl Permission {
         Permission::CreateInvite,
         Permission::ManageEmojis,
         Permission::DisconnectMembers,
+        Permission::ManageXp,
     ];
 
+    /// A bot with `ManageRoles` may still hand out only roles whose every
+    /// permission its install holds (`authorize_role_touch`).
     pub const BOT_INSTALLABLE: &'static [Permission] = &[
         Permission::SendMessages,
         Permission::ReadMessageHistory,
         Permission::AddReactions,
         Permission::ManageMessages,
+        Permission::ManageRoles,
+        Permission::ManageXp,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1135,6 +1151,7 @@ impl Permission {
             Permission::CreateInvite => "Create invites",
             Permission::ManageEmojis => "Manage emojis",
             Permission::DisconnectMembers => "Disconnect from voice",
+            Permission::ManageXp => "Manage experience",
         }
     }
 }
@@ -2240,6 +2257,11 @@ pub enum ClientMessage {
         guild_id: Id,
         role_id: Id,
         user_pubkey: String,
+    },
+    AdjustXp {
+        guild_id: Id,
+        user_pubkey: String,
+        change: XpChange,
     },
     SetGuildVisibility {
         guild_id: Id,

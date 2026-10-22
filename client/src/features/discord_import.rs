@@ -230,20 +230,7 @@ fn everyone_cannot_send(c: &DcChannel) -> bool {
 pub fn map_permissions(bits: &str) -> Vec<Permission> {
     let bits: u64 = bits.parse().unwrap_or(0);
     if bits & (1 << 3) != 0 {
-        return vec![
-            Permission::SendMessages,
-            Permission::ReadMessageHistory,
-            Permission::AddReactions,
-            Permission::ManageChannels,
-            Permission::ManageMessages,
-            Permission::KickMembers,
-            Permission::BanMembers,
-            Permission::ManageRoles,
-            Permission::ManageGuild,
-            Permission::CreateInvite,
-            Permission::ManageEmojis,
-            Permission::DisconnectMembers,
-        ];
+        return Permission::ALL.to_vec();
     }
     const TABLE: &[(u64, Permission)] = &[
         (1 << 0, Permission::CreateInvite),
