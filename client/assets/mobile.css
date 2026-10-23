@@ -53,3 +53,18 @@
 .dxf-platform-mobile .dxf-stream-volume::-webkit-slider-thumb { min-width: 24px; min-height: 24px; }
 .dxf-platform-mobile #camera-setup-dialog :is(button, select) { min-height: 44px; }
 .dxf-platform-mobile .dxf-direct-connect summary { min-height: 44px; }
+.dxf-platform-mobile .dxf-media-self {
+  top: auto !important; bottom: 72px; width: min(180px, calc((100vw - 24px) / 2)) !important;
+  height: 146px !important; max-height: calc(100dvh - 136px);
+}
+.dxf-platform-mobile .dxf-camera-self { left: auto !important; right: 8px; }
+.dxf-platform-mobile .dxf-screen-self { left: 8px !important; }
+.dxf-platform-mobile .dxf-camera-grid {
+  left: 8px !important; right: 8px; top: 56px !important; bottom: 226px;
+  width: auto !important; height: auto !important; min-height: 100px;
+}
+.dxf-platform-mobile :is(.dxf-media-self, .dxf-camera-grid) .dxf-media-heading {
+  height: 44px; padding: 0 4px; gap: 4px; cursor: default; pointer-events: none;
+}
+.dxf-platform-mobile .dxf-media-heading button { min-width: 44px; height: 44px; pointer-events: auto; }
+.dxf-platform-mobile .dxf-media-resize { display: none; }

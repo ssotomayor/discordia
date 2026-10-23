@@ -83,6 +83,8 @@ struct Session {
     audio: Option<super::voice::direct::Audio>,
     job: Option<Task>,
     remote_answer_set: bool,
+    #[cfg(target_os = "android")]
+    _background_call: Option<crate::android::BackgroundCall>,
 }
 
 impl Drop for Session {
@@ -123,7 +125,9 @@ pub fn spawn_service(
                 command = rx.recv() => match command {
                     Some(Command::Action(action)) => {
                         #[cfg(target_os = "android")]
-                        if matches!(action, Action::Start(_) | Action::Accept)
+                        let start_voice = actor.needs_voice_start(&action);
+                        #[cfg(target_os = "android")]
+                        if start_voice
                             && let Err(error) = crate::android::prepare_voice().await
                         {
                             if matches!(action, Action::Accept) {
@@ -134,6 +138,21 @@ pub fn spawn_service(
                             continue;
                         }
                         actor.action(action);
+                        #[cfg(target_os = "android")]
+                        if start_voice && actor.session.as_ref().is_some_and(|session| {
+                            matches!(session.phase, Phase::Ringing | Phase::Connecting)
+                                && session._background_call.is_none()
+                        })
+                        {
+                            match crate::android::BackgroundCall::start().await {
+                                Ok(guard) => {
+                                    if let Some(session) = &mut actor.session {
+                                        session._background_call = Some(guard);
+                                    }
+                                }
+                                Err(error) => actor.finish(EndReason::Failed, Some(&error)),
+                            }
+                        }
                     },
                     Some(Command::Incoming(incoming)) => actor.incoming(incoming),
                     Some(Command::Native { call_id, event }) => actor.native(call_id, event),
@@ -168,6 +187,26 @@ fn guild_busy(state: &AppState) -> bool {
 }
 
 impl Actor {
+    #[cfg(any(target_os = "android", test))]
+    fn needs_voice_start(&self, action: &Action) -> bool {
+        if guild_busy(&self.state.peek()) {
+            return false;
+        }
+        match action {
+            Action::Start(peer) => {
+                self.session.is_none()
+                    && peer != &self.our_key
+                    && peer.len() == 64
+                    && hex::decode(peer).is_ok()
+            }
+            Action::Accept => self
+                .session
+                .as_ref()
+                .is_some_and(|s| s.phase == Phase::Incoming),
+            Action::End => false,
+        }
+    }
+
     fn emit(&self, peer: &str, id: Uuid, target: Option<Uuid>, body: Body) {
         let signal = CallSignal {
             version: 1,
@@ -248,6 +287,8 @@ impl Actor {
                     audio: None,
                     job: None,
                     remote_answer_set: false,
+                    #[cfg(target_os = "android")]
+                    _background_call: None,
                 });
                 self.send(Body::Invite);
                 self.update_view();
@@ -361,6 +402,8 @@ impl Actor {
                 audio: None,
                 job: None,
                 remote_answer_set: false,
+                #[cfg(target_os = "android")]
+                _background_call: None,
             });
             self.update_view();
             return;
