@@ -168,7 +168,7 @@ function globeIdleAndVisibility() {
   const frames = new Map(), timers = new Map(), events = new Map();
   let next = 0, now = 100, draws = 0;
   const context = new Proxy({ clearRect: () => draws++ }, { get: (object, key) => object[key] || (() => {}) });
-  const canvas = { style: {}, getContext: () => context,
+  const canvas = { style: {}, getContext: () => context, closest: () => null,
     getBoundingClientRect: () => ({ width: 320, height: 300 }),
     addEventListener() {}, removeEventListener() {} };
   const document = { hidden: false, getElementById: () => canvas,
