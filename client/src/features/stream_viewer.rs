@@ -554,14 +554,15 @@ fn WindowControls(props: WindowControlsProps) -> Element {
     let mut fullscreen = props.fullscreen;
     rsx! {
         div { class: "flex flex-wrap items-center justify-end gap-2",
-            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: crate::i18n::text("Keep window on top", &[]), aria_pressed: "{pinned}",
+            button { r#type: "button", class: "dxf-stream-icon-button", title: if pinned() { crate::i18n::text("Unpin", &[]) } else { crate::i18n::text("Keep window on top", &[]) },
+                aria_label: if pinned() { crate::i18n::text("Unpin", &[]) } else { crate::i18n::text("Keep window on top", &[]) }, aria_pressed: "{pinned}",
                 onclick: move |_| { pinned.toggle(); pin_window.window.set_always_on_top(pinned()); },
-                if pinned() { {crate::i18n::text("Unpin", &[])} } else { {crate::i18n::text("Pin", &[])} }
+                dangerous_inner_html: super::icons::PIN,
             }
-            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| {
+            button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Full screen", &[]), aria_label: crate::i18n::text("Full screen", &[]), onclick: move |_| {
                 fullscreen.toggle();
-            }, {crate::i18n::text("Full screen", &[])} }
-            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands, generation, Command::DockAll), {crate::i18n::text("Return to app", &[])} }
+            }, dangerous_inner_html: super::icons::EXPAND }
+            button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Return to app", &[]), aria_label: crate::i18n::text("Return to app", &[]), onclick: move |_| send(&commands, generation, Command::DockAll), dangerous_inner_html: super::icons::LAYOUT }
         }
     }
 }
@@ -714,9 +715,9 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
                 super::screenshare::StreamViewers { names: stream.viewers.clone() }
                 if props.multiple_streams {
-                    button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), {crate::i18n::text("Return", &[])} }
+                    button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Return to app", &[]), aria_label: crate::i18n::text("Return to app", &[]), onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), dangerous_inner_html: super::icons::LAYOUT }
                 }
-                button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", aria_label: crate::i18n::text("Stop watching", &[]), onclick: move |_| send(&stop, generation, Command::Stop(pk_stop.clone())), "✕" }
+                button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Stop watching", &[]), aria_label: crate::i18n::text("Stop watching", &[]), onclick: move |_| send(&stop, generation, Command::Stop(pk_stop.clone())), dangerous_inner_html: super::icons::CLOSE }
             }
             div { id: "{container}", class: "flex-1 min-h-0 bg-black flex items-center justify-center text-sm text-[var(--text-muted)]",
                 style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
@@ -752,7 +753,12 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                     super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
                 }
                 div { class: "flex items-center gap-2",
-                button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { {crate::i18n::text("Unmute", &[])} } else { {crate::i18n::text("Mute", &[])} } }
+                button { r#type: "button", class: "dxf-stream-icon-button", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", "data-muted": stream.muted,
+                    title: if stream.muted { crate::i18n::text("Unmute stream audio", &[]) } else { crate::i18n::text("Mute stream audio", &[]) },
+                    aria_label: if stream.muted { crate::i18n::text("Unmute stream audio", &[]) } else { crate::i18n::text("Mute stream audio", &[]) },
+                    onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)),
+                    dangerous_inner_html: if stream.muted { super::icons::SPEAKER_OFF } else { super::icons::SPEAKER }
+                }
                 input { r#type: "range", min: "0", max: "100", value: "{stream.volume}", class: "w-24 accent-[var(--accent)]", aria_label: crate::i18n::text("Stream volume", &[]), disabled: !stream.has_audio || stream.muted,
                     oninput: move |event| if let Ok(value) = event.value().parse::<u32>() { send(&volume, generation, Command::Volume(pk_volume.clone(), value.min(100))); }
                 }
