@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import os
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -18,7 +20,38 @@ signing = module("sign-android")
 building = module("build-android")
 
 
+def jni_dex(defined):
+    descriptor = b"Llivekit/org/jni_zero/JniZero;"
+    data = bytearray(152)
+    data[:8] = b"dex\n035\0"
+    struct.pack_into("<II", data, 0x38, 1, 112)
+    struct.pack_into("<II", data, 0x40, 1, 116)
+    struct.pack_into("<II", data, 0x60, int(defined), 120)
+    struct.pack_into("<I", data, 112, 152)
+    data.extend(bytes([len(descriptor)]) + descriptor + b"\0")
+    return data
+
+
 class AndroidReleaseTests(unittest.TestCase):
+    def test_jni_class_must_be_defined_in_dex_not_only_referenced(self):
+        for defined in (False, True):
+            data = jni_dex(defined)
+            self.assertIn(b"Llivekit/org/jni_zero/JniZero;", data)
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("classes.dex", data)
+            with zipfile.ZipFile(stream) as archive, patch.object(building, "REQUIRED_CLASSES", ("livekit/org/jni_zero/JniZero.class",)):
+                if defined:
+                    building.verify_java_classes(archive)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "JniZero"):
+                        building.verify_java_classes(archive)
+
+    def test_invalid_dex_is_rejected(self):
+        for data in (b"", b"dex\n035\0", jni_dex(True)[:140]):
+            with self.assertRaises(RuntimeError):
+                building.dex_classes(data)
+
     def test_debug_apk_has_a_separate_package_and_visible_label(self):
         good = "package: name='com.discordia.app.debug' versionCode='1'\napplication-debuggable\napplication-label:'Debug Discordia'\n"
         with patch.object(building.subprocess, "check_output", return_value=good):

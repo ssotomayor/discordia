@@ -102,6 +102,8 @@ pub async fn ensure_media_ready() -> Result<(), String> {
         .get_or_try_init(|| async {
             on_ui(|env, activity| {
                 for name in [
+                    "livekit/org/jni_zero/JniZero",
+                    "livekit/org/jni_zero/CommonApis",
                     "livekit/org/webrtc/ContextUtils",
                     "livekit/org/webrtc/DefaultVideoEncoderFactory",
                 ] {

@@ -353,7 +353,7 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 | `ANDROID_KEYSTORE_PASSWORD` | JKS password |
 | `ANDROID_KEY_PASSWORD` | Private-key password |
 
-Keep the JKS and passwords backed up **outside the repository**; no private key belongs in an artifact, cache or release. Reuse that key for every update. `scripts/sign-android.py` aligns before signing and verifies the APK and committed certificate before publishing the output. Release builds validate package, debuggable flag and version metadata; versionCode follows the CI run number.
+Keep the JKS and passwords backed up **outside the repository**; no private key belongs in an artifact, cache or release. Reuse that key for every update. `scripts/sign-android.py` aligns before signing and verifies the APK and committed certificate before publishing the output. Release builds validate package, debuggable flag and version metadata; versionCode follows the CI run number. DEX validation requires class definitions, including WebRTC's `livekit.org.jni_zero` bridge; a referenced class name alone does not prove R8 preserved it. `discordia.pro` retains that bridge and WebRTC methods used only through JNI.
 
 ```sh
 python scripts/build-android.py --release --version-code 862 --version-name v0.1.0-pre.862 --output target/android-release/unsigned.apk
