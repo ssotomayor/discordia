@@ -20,6 +20,10 @@ pub fn asset_name() -> Option<&'static str> {
         ("windows", _) => Some("Discordia-windows-setup.exe"),
         ("macos", "aarch64") => Some("Discordia-macos-arm64.dmg"),
         ("linux", "x86_64") => Some("Discordia-linux-x86_64.AppImage"),
+        #[cfg(target_os = "android")]
+        ("android", "aarch64") if crate::android::update_version().ok().flatten().is_some() => {
+            Some("Discordia-android-arm64.apk")
+        }
         _ => None,
     }
 }
@@ -55,6 +59,16 @@ pub fn trusted_comment(tag: &str, asset: &str) -> String {
 }
 
 pub fn verify(data: &[u8], sig: &str, tag: &str, asset: &str) -> Result<(), VerifyError> {
+    let (key, signature) = signing_material(sig, tag, asset)?;
+    key.verify(data, &signature, false)
+        .map_err(|e| VerifyError::Mismatch(e.to_string()))
+}
+
+fn signing_material(
+    sig: &str,
+    tag: &str,
+    asset: &str,
+) -> Result<(PublicKey, Signature), VerifyError> {
     let key = PublicKey::from_base64(trim_key(PUBLIC_KEY))
         .map_err(|e| VerifyError::BadPublicKey(e.to_string()))?;
     let signature = Signature::decode(sig).map_err(|e| VerifyError::BadSignature(e.to_string()))?;
@@ -63,8 +77,7 @@ pub fn verify(data: &[u8], sig: &str, tag: &str, asset: &str) -> Result<(), Veri
             signature.trusted_comment().to_string(),
         ));
     }
-    key.verify(data, &signature, false)
-        .map_err(|e| VerifyError::Mismatch(e.to_string()))
+    Ok((key, signature))
 }
 
 fn trim_key(file: &str) -> &str {
@@ -92,43 +105,53 @@ pub async fn fetch_verified(
     asset: &str,
     asset_url: &str,
     signature_url: &str,
-    mut on_progress: impl FnMut(u64, Option<u64>),
+    on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<std::path::PathBuf, String> {
-    let client = reqwest::Client::new();
-    let sig = client
-        .get(signature_url)
-        .send()
-        .await
-        .map_err(|e| format!("could not fetch the signature: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("could not read the signature: {e}"))?;
-    let mut resp = client
-        .get(asset_url)
-        .send()
-        .await
-        .map_err(|e| format!("could not download the update: {e}"))?;
-
-    // Streamed rather than `.bytes()` so the dialog has a number to draw. A
-    // truncated body needs no length check: the signature will not match.
-    let total = resp.content_length();
-    let mut body: Vec<u8> = Vec::with_capacity(total.unwrap_or(0).min(1 << 28) as usize);
-    on_progress(0, total);
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("the download was cut short: {e}"))?
+    #[cfg(target_os = "android")]
+    return android::fetch_verified(tag, asset, asset_url, signature_url, on_progress).await;
+    #[cfg(not(target_os = "android"))]
     {
-        body.extend_from_slice(&chunk);
-        on_progress(body.len() as u64, total);
+        let mut on_progress = on_progress;
+        let client = reqwest::Client::new();
+        let sig = client
+            .get(signature_url)
+            .send()
+            .await
+            .map_err(|e| format!("could not fetch the signature: {e}"))?
+            .text()
+            .await
+            .map_err(|e| format!("could not read the signature: {e}"))?;
+        let mut resp = client
+            .get(asset_url)
+            .send()
+            .await
+            .map_err(|e| format!("could not download the update: {e}"))?;
+
+        // Streamed rather than `.bytes()` so the dialog has a number to draw. A
+        // truncated body needs no length check: the signature will not match.
+        let total = resp.content_length();
+        let mut body: Vec<u8> = Vec::with_capacity(total.unwrap_or(0).min(1 << 28) as usize);
+        on_progress(0, total);
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| format!("the download was cut short: {e}"))?
+        {
+            body.extend_from_slice(&chunk);
+            on_progress(body.len() as u64, total);
+        }
+
+        verify(&body, &sig, tag, asset).map_err(|e| e.to_string())?;
+
+        let path = staging_path(asset);
+        std::fs::write(&path, &body).map_err(|e| format!("could not save the update: {e}"))?;
+        Ok(path)
     }
-
-    verify(&body, &sig, tag, asset).map_err(|e| e.to_string())?;
-
-    let path = staging_path(asset);
-    std::fs::write(&path, &body).map_err(|e| format!("could not save the update: {e}"))?;
-    Ok(path)
 }
+
+#[cfg(any(target_os = "android", test))]
+#[path = "update_android.rs"]
+mod android;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Install {

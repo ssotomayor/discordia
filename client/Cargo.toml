@@ -69,7 +69,7 @@ serde_json = { workspace = true }
 quick-xml = "0.41"
 uuid = { workspace = true }
 chrono = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util", "fs"] }
 futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

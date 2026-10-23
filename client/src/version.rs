@@ -72,7 +72,7 @@ fn download_for(assets: &[Asset]) -> Option<Download> {
     })
 }
 
-fn release_number(tag: &str) -> Option<u64> {
+pub(crate) fn release_number(tag: &str) -> Option<u64> {
     tag.rsplit_once("-pre.")?.1.parse().ok()
 }
 
@@ -98,7 +98,11 @@ pub enum CheckResult {
 }
 
 pub async fn check_for_update() -> Result<CheckResult, String> {
-    let Some(mine) = is_release().then(|| release_number(VERSION)).flatten() else {
+    #[cfg(target_os = "android")]
+    let mine = crate::android::update_version()?;
+    #[cfg(not(target_os = "android"))]
+    let mine = is_release().then(|| release_number(VERSION)).flatten();
+    let Some(mine) = mine else {
         return Ok(CheckResult::Local);
     };
     let url = releases_url().ok_or_else(|| "Update repository is unavailable.".to_string())?;

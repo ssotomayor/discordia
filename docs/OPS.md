@@ -367,7 +367,9 @@ Signing reads passwords from the two environment variables named above. SDK 34/b
 | Release | Discordia | `com.discordia.app` |
 | Debug | Debug Discordia | `com.discordia.app.debug` |
 
-Updates are manual: install the new release APK over the previous release to preserve data. There is no Android in-app updater. Debug and release coexist with independent data. Older debug builds used the release application ID and cannot be updated with the release key; export the recovery phrase before replacing one. The new debug package does not migrate those older installs. Never uninstall as part of CI or packaging.
+Android release builds check GitHub using the installed versionCode. Settings → Updates downloads the ARM64 APK to private storage with streaming minisign verification (256 MiB limit). Install update waits for calls to finish and ordered session teardown, then Android asks for source permission and installation confirmation. Cancelling preserves the verified download for retry. The installer rejects a different package, certificate, or unexpected/non-newer version. Install the first updater-capable APK manually; future releases can use this flow. Physical permission/cancel/install testing is pending.
+
+Debug and release coexist with independent data; debug never offers release installation. Older debug builds used the release application ID and cannot be updated with the release key; export the recovery phrase before replacing one. The new debug package does not migrate those older installs. Never uninstall as part of CI or packaging.
 
 ## Who can read what
 

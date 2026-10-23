@@ -34,6 +34,26 @@ import android.webkit.WebView
 typealias BuildConfig = com.discordia.app.BuildConfig
 
 class MainActivity : WryActivity() {
+    private var appUpdater: com.discordia.app.DioxusUpdater? = null
+
+    @Suppress("DEPRECATION")
+    fun installedUpdateVersion(): Long {
+        if (BuildConfig.DEBUG || packageName != "com.discordia.app") return 0
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+    }
+
+    fun beginAppUpdate(path: String, version: Long): Boolean {
+        val updater = appUpdater ?: com.discordia.app.DioxusUpdater(this) {
+            voiceSlot < 0 && cameraSlot < 0 && !projectionActive
+        }.also { appUpdater = it }
+        return updater.begin(path, version)
+    }
+
+    fun appUpdateState(): String = appUpdater?.state() ?: "{}"
+
+    fun cancelAppUpdate() { appUpdater?.cancel() }
+
     external fun initializeWebRtc(): Boolean
 
     external fun onVideoFrame(
@@ -477,6 +497,9 @@ class MainActivity : WryActivity() {
     @Deprecated("Android platform callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == com.discordia.app.DioxusUpdater.PERMISSION_REQUEST && appUpdater?.permissionReturned() == true) {
+            return
+        }
         if (requestCode == screenRequestCode) {
             if (!screenPending) return
             screenPending = false
@@ -596,6 +619,7 @@ class MainActivity : WryActivity() {
     }
 
     override fun onDestroy() {
+        appUpdater?.cancel()
         voiceSlot = -1
         stopScreenShare()
         stopCameraCapture()

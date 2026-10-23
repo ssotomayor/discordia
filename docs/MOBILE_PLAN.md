@@ -576,3 +576,10 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - Carga directa de identidad activa con comprobación criptográfica y migración sin descifrados redundantes: arranque debug de proceso frío 4.46→2.8–3.3 s (3 muestras/lote); reapertura sin mejora demostrada. Detalles y límites en el informe de revisión.
 - Segundo plano: servicio común `microphone|camera|mediaProjection`, tipos según uso y wake lock acotado al servicio; voz/cámara esperan confirmación, detener un medio conserva los demás. APK instalado 10:40:18; usuario confirma voz audible y recepción de cámara/pantalla desde la PC al cambiar de app. ADB verifica servicio/wake lock/mismo PID durante ~2 min, incluida pantalla en Dozing en voz. Llamadas largas y video con pantalla bloqueada sin validar; no garantiza supervivencia frente a cierre forzado/fabricante ni reinicia capturas sin consentimiento.
 - Visor móvil: espacio 16:9 desde conexión, controles táctiles de 44 px y volumen directo al mezclador. Preview de cámara Android local y nativa, con rotación, cola de un frame y liberación antes de publicar; usuario confirma imagen y mejor respuesta de audio. Muestreo 1440p/60 muestra presión intermitente real; comparación 1080p/30 y límites en el informe de revisión.
+
+### G — actualizador Android (2026-10-23)
+
+| Estado | Alcance |
+|---|---|
+| Implementado | Detección por versionCode instalado; descarga APK ARM64 con minisign en streaming y límite de tamaño; PackageInstaller con permiso por fuente y confirmación; validación de paquete, versión y certificado; cancelación/reintento sin redescarga. Debug separado. |
+| Pendiente físico | El usuario pospuso USB. Probar actualización entre dos APK firmados, permiso aceptado/denegado, cancelación, identidad conservada y bloqueo durante voz/cámara/pantalla. La primera instalación del actualizador es manual. |
