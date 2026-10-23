@@ -90,6 +90,17 @@ def verify_release_metadata(apk, env):
             raise RuntimeError(f"Android {field} does not match the release version")
 
 
+def verify_debug_metadata(apk, env):
+    tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
+    aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
+    badging = subprocess.check_output([str(aapt), "dump", "badging", str(apk)], text=True)
+    package = dict(re.findall(r"(\w+)='([^']*)'", badging.splitlines()[0]))
+    if package.get("name") != "com.discordia.app.debug" or "application-debuggable" not in badging:
+        raise RuntimeError("Expected a separate Discordia debug application")
+    if "application-label:'Debug Discordia'" not in badging:
+        raise RuntimeError("Debug APK is missing its development label")
+
+
 def verify_release_branding(apk, env):
     tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
     aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
@@ -104,6 +115,7 @@ def package_resources(project):
     for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
         (resources / f"mipmap-{density}/ic_launcher.webp").unlink(missing_ok=True)
     shutil.copytree(ROOT / "client/android/res", resources, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "client/android/debug/res", project / "app/src/debug/res", dirs_exist_ok=True)
     logo = resources / "drawable-nodpi/discordia_logo.png"
     logo.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "client/assets/icon-1024.png", logo)
@@ -209,6 +221,8 @@ def main():
     if args.release:
         verify_release_metadata(apk, env)
         verify_release_branding(apk, env)
+    else:
+        verify_debug_metadata(apk, env)
     with zipfile.ZipFile(apk) as archive:
         if not args.release:
             for resource in ("discordia_logo.png", "discordia_splash.xml", "discordia_launcher_foreground.xml"):

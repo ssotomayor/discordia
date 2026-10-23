@@ -362,7 +362,12 @@ python scripts/sign-android.py --input target/android-release/unsigned.apk --out
 
 Signing reads passwords from the two environment variables named above. SDK 34/build-tools 34.0.0, NDK 27.2.12479018, Java 21, Rust target `aarch64-linux-android` and dx pinned in CI are required; Windows setup is `scripts/android-env.ps1`.
 
-Updates are manual: install the new release APK over the previous release to preserve data. There is no Android in-app updater. A debug-signed install cannot be updated with the release key; export the recovery phrase before replacing a debug install. Never uninstall as part of CI or packaging.
+| Variant | Launcher name | Application ID |
+|---|---|---|
+| Release | Discordia | `com.discordia.app` |
+| Debug | Debug Discordia | `com.discordia.app.debug` |
+
+Updates are manual: install the new release APK over the previous release to preserve data. There is no Android in-app updater. Debug and release coexist with independent data. Older debug builds used the release application ID and cannot be updated with the release key; export the recovery phrase before replacing one. The new debug package does not migrate those older installs. Never uninstall as part of CI or packaging.
 
 ## Who can read what
 
