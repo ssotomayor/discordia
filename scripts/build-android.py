@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_WEBRTC_CLASSES = (
+    "livekit/org/jni_zero/JniZero.class",
+    "livekit/org/jni_zero/CommonApis.class",
     "livekit/org/webrtc/ContextUtils.class",
     "livekit/org/webrtc/DefaultVideoEncoderFactory.class",
     "livekit/org/webrtc/ScreenCapturerAndroid.class",
@@ -50,6 +53,45 @@ def verify_native_exports(archive, env):
         missing = REQUIRED_SYMBOLS - symbols
         if missing:
             raise RuntimeError(f"{name} is missing JNI exports: {sorted(missing)}")
+
+
+def dex_classes(data):
+    try:
+        if len(data) < 112 or not data.startswith(b"dex\n"):
+            raise ValueError("invalid header")
+        strings = struct.unpack_from("<I", data, 0x3C)[0]
+        types = struct.unpack_from("<I", data, 0x44)[0]
+        count, definitions = struct.unpack_from("<II", data, 0x60)
+        if definitions + count * 32 > len(data):
+            raise ValueError("invalid class table")
+        classes = set()
+        for index in range(count):
+            type_index = struct.unpack_from("<I", data, definitions + index * 32)[0]
+            string_index = struct.unpack_from("<I", data, types + type_index * 4)[0]
+            offset = struct.unpack_from("<I", data, strings + string_index * 4)[0]
+            for _ in range(5):
+                byte = data[offset]
+                offset += 1
+                if byte < 128:
+                    break
+            else:
+                raise ValueError("invalid string length")
+            end = data.index(b"\0", offset)
+            classes.add(data[offset:end])
+        return classes
+    except (IndexError, ValueError, struct.error) as error:
+        raise RuntimeError(f"Invalid APK DEX: {error}") from error
+
+
+def verify_java_classes(archive):
+    classes = set()
+    for name in archive.namelist():
+        if name.endswith(".dex"):
+            classes.update(dex_classes(archive.read(name)))
+    for name in REQUIRED_CLASSES:
+        descriptor = ("L" + name.removesuffix(".class") + ";").encode()
+        if descriptor not in classes:
+            raise RuntimeError(f"Final APK is missing {name}")
 
 
 def matching_jar(target_dir, target, profile):
@@ -229,10 +271,7 @@ def main():
                 if not any(name.endswith("/" + resource) for name in archive.namelist()):
                     raise RuntimeError(f"Final APK is missing branding resource: {resource}")
         verify_native_exports(archive, env)
-        dex = [archive.read(n) for n in archive.namelist() if n.endswith(".dex")]
-        for name in REQUIRED_CLASSES:
-            if not any(name.removesuffix(".class").encode() in part for part in dex):
-                raise RuntimeError(f"Final APK is missing {name}")
+        verify_java_classes(archive)
     print(f"Android APK with matching WebRTC classes: {apk}")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
