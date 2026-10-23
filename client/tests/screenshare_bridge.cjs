@@ -13,7 +13,9 @@ script = script.replace('return { testClearTracks:', 'return { testSubscribe: fu
 const containers = new Map();
 function element() {
   return {
-    style: {}, attributes: {}, children: [],
+    style: {}, attributes: {}, children: [], listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    dispatch(type) { this.listeners[type]?.(); },
     setAttribute(k, v) { this.attributes[k] = v; },
     getAttribute(k) { return this.attributes[k]; },
     removeAttribute(k) { delete this.attributes[k]; },
@@ -28,6 +30,25 @@ const context = { window: { postMessage(message) { messages.push(message); } }, 
 }, console, setTimeout() {}, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {}, navigator: {} };
 vm.runInNewContext(script, context);
 const bridge = context.window.dxScreen;
+{
+  const loading = element();
+  loading.setAttribute('data-connecting', 'Connecting');
+  containers.set('loading-video', loading);
+  const video = track();
+  bridge.testTracks['startup|screen'] = video;
+  bridge.attach('startup', 'loading-video', 'screen');
+  assert.equal(loading.getAttribute('data-frame-ready'), 'false');
+  video.elements[0].dispatch('loadeddata');
+  assert.equal(loading.getAttribute('data-frame-ready'), 'true');
+  bridge.attach('startup', 'loading-video', 'screen');
+  assert.equal(loading.getAttribute('data-frame-ready'), 'false');
+  video.elements[0].dispatch('loadeddata');
+  assert.equal(loading.getAttribute('data-frame-ready'), 'false', 'stale frames cannot dismiss replacement loading state');
+  video.elements[1].dispatch('loadeddata');
+  assert.equal(loading.getAttribute('data-frame-ready'), 'true');
+  bridge.detach('loading-video');
+  delete bridge.testTracks['startup|screen'];
+}
 {
   let started = 0;
   const early = { ...context, window: { postMessage() {} }, setInterval() { started++; return 1; } };

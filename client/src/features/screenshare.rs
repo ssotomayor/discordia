@@ -300,6 +300,14 @@ window.dxScreen = window.dxScreen || (function () {
     if (kind === 'camera' && cid === 'camera-self') el.style.transform = 'scaleX(-1)';
     c.appendChild(el);
     attached[cid] = { identity: identity, kind: kind, track: track, el: el };
+    if (c.getAttribute('data-connecting')) {
+      c.setAttribute('data-frame-ready', 'false');
+      const ready = function () {
+        if (attached[cid] && attached[cid].el === el) c.setAttribute('data-frame-ready', 'true');
+      };
+      if (typeof el.requestVideoFrameCallback === 'function') el.requestVideoFrameCallback(ready);
+      else el.addEventListener('loadeddata', ready, { once: true });
+    }
     if (kind === 'camera' && typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver(function () { requestCameraDimensions(track); });
       attached[cid].cameraObserver = observer;
@@ -1688,6 +1696,7 @@ pub fn ScreenShareBridge() -> Element {
         (s.stream_volumes.clone(), s.stream_muted.clone())
     });
     let voice_for_stream = use_voice_tx();
+    let playback = use_context::<super::voice::StreamPlaybackControls>();
     let voice_for_watches = voice_for_stream.clone();
     use_effect(move || {
         let _ = watching();
@@ -1713,6 +1722,7 @@ pub fn ScreenShareBridge() -> Element {
                 .map(|(p, g)| (&p[..p.len().min(8)], g))
                 .collect::<Vec<_>>()
         );
+        playback.apply(&desired);
         for (pk, gain) in desired.iter() {
             voice_for_stream.send(VoiceCmd::SetStreamVolume {
                 pubkey: pk.clone(),
@@ -2435,9 +2445,24 @@ pub fn open_screen_picker(
     {
         dioxus::prelude::spawn(async move {
             let mut state = state;
+            let call = {
+                let current = state.peek();
+                let Some(channel) = current.server_voice_channel() else {
+                    return;
+                };
+                (current.voice_session_epoch, channel)
+            };
             if let Err(error) = crate::android::request_screen_capture().await {
                 state.write().error_toast = Some(format!("Couldn't share your screen: {error}"));
                 return;
+            }
+            {
+                let current = state.peek();
+                if (current.voice_session_epoch, current.server_voice_channel())
+                    != (call.0, Some(call.1))
+                {
+                    return;
+                }
             }
             choose_source(
                 state,
@@ -2980,6 +3005,7 @@ pub fn ScreenWatchWindow() -> Element {
     rsx! {
         if count > 0 { dioxus_grid_layout::GridItem { id: "streams", x: 3, y: 0, w: 7, h: 22,
             min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
+            class: if fullscreen().is_some() { "dxf-streams dxf-streams-expanded" } else { "dxf-streams" },
             div { class: "panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
                 div { class: "h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
                     span { class: "text-sm font-semibold text-[var(--text)]", {crate::i18n::text("Streams", &[])} }
@@ -2989,7 +3015,7 @@ pub fn ScreenWatchWindow() -> Element {
                             onclick: move |_| { focused.set(None); fullscreen.set(None); }, {crate::i18n::text("Mosaic", &[])} }
                     }
                 }
-                div { class: "flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
+                div { class: "dxf-stream-grid flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
                     onmounted: move |event| {
                         let data = event.data();
                         spawn(async move {
@@ -3125,17 +3151,17 @@ fn ScreenWatchTile(
 
     rsx! {
         div {
-            class: "flex flex-col min-w-0 min-h-0 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg overflow-hidden",
+            class: "dxf-stream-tile flex flex-col min-w-0 min-h-0 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg overflow-hidden",
             style: "{layout}",
             div {
-                class: "min-h-9 px-3 flex flex-wrap items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
+                class: "dxf-stream-toolbar min-h-9 px-3 flex flex-wrap items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
                 span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", {crate::i18n::text("{0}'s screen", std::slice::from_ref(&(name)))} }
                 StreamViewers { names: state.read().screen_viewer_names(&pk) }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", {crate::i18n::text("Live", &[])} }
                 button {
                     r#type: "button",
-                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                    class: "dxf-stream-button w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
                     title: crate::i18n::text("Open in separate window", &[]),
                     aria_label: crate::i18n::text("Open in separate window", &[]),
                     onmousedown: move |e| e.stop_propagation(),
@@ -3144,7 +3170,7 @@ fn ScreenWatchTile(
                 }
                 button {
                     r#type: "button",
-                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                    class: "dxf-stream-button w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
                     title: if is_fullscreen { crate::i18n::text("Exit full screen (Esc)", &[]) } else { crate::i18n::text("Full screen", &[]) },
                     aria_label: if is_fullscreen { crate::i18n::text("Exit full screen", &[]) } else { crate::i18n::text("Full screen", &[]) },
                     onmousedown: move |e| e.stop_propagation(),
@@ -3152,10 +3178,10 @@ fn ScreenWatchTile(
                         focused.set(None);
                         fullscreen.set(if is_fullscreen { None } else { Some(pk_fullscreen.clone()) });
                     },
-                    if is_fullscreen { "⤡" } else { "⤢" }
+                    dangerous_inner_html: if is_fullscreen { crate::features::icons::CONTRACT } else { crate::features::icons::EXPAND },
                 }
                 button {
-                    class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
+                    class: "dxf-stream-button text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                     onmousedown: move |e| e.stop_propagation(),
                     title: crate::i18n::text("Stop watching", &[]),
                     aria_label: crate::i18n::text("Stop watching", &[]),
@@ -3165,7 +3191,8 @@ fn ScreenWatchTile(
             }
             div {
                 id: "{container}",
-                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
+                "data-connecting": crate::i18n::text("Connecting to stream…", &[]),
+                class: "dxf-stream-video flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
                 style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
                 role: if can_focus { "button" } else { "group" },
                 tabindex: if can_focus { "0" } else { "-1" },
@@ -3186,7 +3213,6 @@ fn ScreenWatchTile(
                         focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
                     }
                 },
-                {crate::i18n::text("Connecting to stream…", &[])}
             }
             div {
                 class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
@@ -3206,14 +3232,16 @@ fn ScreenWatchTile(
                     }
                     button {
                         class: if stream_muted {
-                            "w-6 h-6 flex items-center justify-center rounded text-[var(--danger)] disabled:opacity-40"
+                            "dxf-stream-button w-6 h-6 flex items-center justify-center rounded text-[var(--danger)] disabled:opacity-40"
                         } else {
-                            "w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] disabled:opacity-40"
+                            "dxf-stream-button w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] disabled:opacity-40"
                         },
                         disabled: !has_audio,
+                        aria_pressed: "{stream_muted}",
+                        aria_label: if stream_muted { crate::i18n::text("Unmute stream audio", &[]) } else { crate::i18n::text("Mute stream audio", &[]) },
                         title: if stream_muted { crate::i18n::text("Unmute stream audio", &[]) } else { crate::i18n::text("Mute stream audio", &[]) },
                         onclick: move |_| {
-                            let now = !stream_muted;
+                            let now = !state.peek().stream_muted.contains(&pk_mute);
                             {
                                 let mut s = state.write();
                                 if now { s.stream_muted.insert(pk_mute.clone()); } else { s.stream_muted.remove(&pk_mute); }
@@ -3231,8 +3259,9 @@ fn ScreenWatchTile(
                         max: "100",
                         value: "{stream_volume}",
                         disabled: stream_muted || !has_audio,
-                        class: "w-24 accent-[var(--accent)] disabled:opacity-40",
+                        class: "dxf-stream-volume w-24 accent-[var(--accent)] disabled:opacity-40",
                         title: crate::i18n::text("Stream volume (yours only)", &[]),
+                        aria_label: crate::i18n::text("Stream volume (yours only)", &[]),
                         oninput: move |e| {
                             let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
                             state.write().stream_volumes.insert(pk_vol.clone(), val);

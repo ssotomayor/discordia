@@ -94,6 +94,8 @@ def package_sources(project):
         ROOT / "client/android/DioxusForegroundService.kt",
         sources / "DioxusForegroundService.kt",
     )
+    # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
+    shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 
 
 def install_auto_init(env):
@@ -112,7 +114,13 @@ def install_auto_init(env):
 
 def run_quiet(args, cwd, env):
     """The first dx pass may fail where the WebRTC jar is still missing."""
-    return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
+    # Gradle daemons can retain inherited pipes after dx exits, preventing EOF.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
+        result = subprocess.run(args, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT)
+        if result.returncode != 0:
+            output.seek(0)
+            print(output.read()[-8000:])
+        return result
 
 
 def main():
@@ -151,6 +159,7 @@ def main():
     shutil.copy2(jar, destination)
     auto_init = install_auto_init(env)
     try:
+        package_sources(project)
         run(dx, ROOT / "client", env)
     finally:
         auto_init.unlink(missing_ok=True)

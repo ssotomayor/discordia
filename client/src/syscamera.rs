@@ -3,10 +3,20 @@ pub fn supported() -> bool {
 }
 
 #[cfg(target_os = "android")]
+use android::start_preview;
+#[cfg(target_os = "android")]
 pub use android::{Capture, devices, start};
 
 #[cfg(target_os = "windows")]
-pub use windows::{Capture, PreviewCommand, devices, preview_controller, start};
+use windows::start_preview;
+#[cfg(target_os = "windows")]
+pub use windows::{Capture, devices, start};
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+#[path = "camera_preview.rs"]
+mod preview;
+#[cfg(any(target_os = "android", target_os = "windows"))]
+pub use preview::{PreviewCommand, preview_controller};
 
 #[cfg(target_os = "android")]
 mod android {
@@ -25,21 +35,69 @@ mod android {
     }
 
     impl Capture {
-        pub async fn stop(self) {
+        pub async fn stop(mut self) {
             crate::android::unregister_frame_sink(self.slot);
-            crate::android::stop_camera_capture();
+            if crate::android::stop_camera_capture_wait(self.slot)
+                .await
+                .is_ok()
+            {
+                self.slot = 0;
+            }
         }
     }
 
     impl Drop for Capture {
         fn drop(&mut self) {
+            if self.slot == 0 {
+                return;
+            }
             crate::android::unregister_frame_sink(self.slot);
-            crate::android::stop_camera_capture();
+            crate::android::stop_camera_capture(self.slot);
         }
     }
 
     pub fn devices() -> Result<Vec<CameraDevice>, String> {
         crate::android::camera_devices()
+    }
+
+    pub(super) async fn start_preview(
+        device: Option<String>,
+        quality: CameraQuality,
+        preview: tokio::sync::mpsc::Sender<super::preview::PreviewBuffer>,
+        fatal: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<Capture, String> {
+        crate::android::prepare_camera().await?;
+        crate::android::ensure_media_ready().await?;
+        let quality = quality.normalized();
+        let selected = devices()?
+            .into_iter()
+            .find(|camera| device.as_ref().is_none_or(|id| camera.id == *id))
+            .ok_or("No available camera")?;
+        let slot = crate::android::next_slot();
+        let capture = Capture {
+            slot,
+            device: selected,
+        };
+        crate::android::register_frame_sink(
+            slot,
+            Arc::new(move |frame| {
+                // Backpressure bounds full-resolution frames while the preview encoder catches up.
+                let _ = preview.try_send(super::preview::PreviewBuffer {
+                    buffer: frame.buffer,
+                    rotation: frame.rotation,
+                });
+            }),
+            fatal,
+        );
+        crate::android::start_camera_capture(
+            slot,
+            Some(capture.device.id.clone()),
+            quality.width(),
+            quality.height,
+            quality.fps,
+        )
+        .await?;
+        Ok(capture)
     }
 
     pub async fn start(
@@ -77,28 +135,21 @@ mod android {
             }),
             fatal,
         );
-        let started = crate::android::start_camera_capture(
+        let capture = Capture {
             slot,
-            Some(selected.id.clone()),
+            device: selected,
+        };
+        crate::android::start_camera_capture(
+            slot,
+            Some(capture.device.id.clone()),
             quality.width(),
             quality.height,
             quality.fps,
         )
-        .await;
-        if let Err(error) = started {
-            crate::android::unregister_frame_sink(slot);
-            return Err(error);
-        }
+        .await?;
         match tokio::time::timeout(Duration::from_secs(12), first_rx).await {
-            Ok(Ok(())) => Ok(Capture {
-                slot,
-                device: selected,
-            }),
-            _ => {
-                crate::android::unregister_frame_sink(slot);
-                crate::android::stop_camera_capture();
-                Err("the camera produced no frames".into())
-            }
+            Ok(Ok(())) => Ok(capture),
+            _ => Err("the camera produced no frames".into()),
         }
     }
 }
@@ -108,147 +159,13 @@ mod windows {
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
-    use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
-    use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFrame, VideoRotation};
+    use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
     use livekit::webrtc::video_source::native::NativeVideoSource;
     use webrtc_sys::camera_capture::{CameraSink, CameraSinkWrapper, ffi};
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
     use crate::camera_quality::CameraQuality;
     use crate::state::CameraDevice;
-
-    pub enum PreviewCommand {
-        Configure {
-            revision: u64,
-            device: Option<String>,
-            quality: CameraQuality,
-        },
-        Stop(tokio::sync::oneshot::Sender<()>),
-    }
-
-    #[derive(Clone, Default)]
-    pub struct PreviewFrame {
-        pub revision: u64,
-        pub image: Option<String>,
-        pub error: Option<String>,
-        pub dimensions: Option<(u32, u32)>,
-    }
-
-    pub fn preview_controller() -> (
-        tokio::sync::mpsc::UnboundedSender<PreviewCommand>,
-        tokio::sync::watch::Receiver<PreviewFrame>,
-    ) {
-        let (commands, mut requests) = tokio::sync::mpsc::unbounded_channel();
-        let (frames, receiver) = tokio::sync::watch::channel(PreviewFrame::default());
-        tokio::spawn(async move {
-            let mut next = requests.recv().await;
-            while let Some(mut command) = next {
-                while let Ok(newer) = requests.try_recv() {
-                    if let PreviewCommand::Stop(done) = command {
-                        let _ = done.send(());
-                    }
-                    command = newer;
-                }
-                if requests.is_closed() {
-                    break;
-                }
-                let PreviewCommand::Configure {
-                    revision,
-                    device,
-                    quality,
-                } = command
-                else {
-                    if let PreviewCommand::Stop(done) = command {
-                        let _ = done.send(());
-                    }
-                    next = requests.recv().await;
-                    continue;
-                };
-                let quality = quality.normalized();
-                frames.send_replace(PreviewFrame {
-                    revision,
-                    ..Default::default()
-                });
-                let (raw_frames, mut stream) = tokio::sync::mpsc::channel(1);
-                let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel();
-                match start_capture(device, None, quality, Some(raw_frames), fatal_tx).await {
-                    Err(error) => {
-                        frames.send_replace(PreviewFrame {
-                            revision,
-                            error: Some(error),
-                            ..Default::default()
-                        });
-                        next = requests.recv().await;
-                    }
-                    Ok(capture) => {
-                        let mut last = std::time::Instant::now() - Duration::from_secs(1);
-                        let mut failed = false;
-                        next = loop {
-                            tokio::select! {
-                                biased;
-                                command = requests.recv() => break command,
-                                Some(error) = fatal_rx.recv() => {
-                                    frames.send_replace(PreviewFrame { revision, error: Some(error), ..Default::default() });
-                                    failed = true;
-                                    break None;
-                                }
-                                frame = stream.recv() => {
-                                    let Some(frame) = frame else {
-                                        frames.send_replace(PreviewFrame { revision, error: Some("Camera preview stopped".into()), ..Default::default() });
-                                        failed = true;
-                                        break None;
-                                    };
-                                    if last.elapsed() < Duration::from_millis(125) { continue; }
-                                    last = std::time::Instant::now();
-                                    let dimensions = (frame.width(), frame.height());
-                                    let encoded = tokio::task::spawn_blocking(move || preview_image(frame)).await;
-                                    match encoded {
-                                        Ok(Ok(image)) => { frames.send_replace(PreviewFrame { revision, image: Some(image), dimensions: Some(dimensions), error: None }); }
-                                        result => { frames.send_replace(PreviewFrame { revision, error: Some(format!("Camera preview failed: {result:?}")), ..Default::default() }); }
-                                    }
-                                }
-                            }
-                        };
-                        // Release the device before opening another mode or publishing it.
-                        capture.stop().await;
-                        if failed {
-                            next = requests.recv().await;
-                        }
-                    }
-                }
-            }
-        });
-        (commands, receiver)
-    }
-
-    fn preview_image(mut buffer: I420Buffer) -> Result<String, String> {
-        use base64::Engine;
-        use livekit::webrtc::video_frame::VideoFormatType;
-        let scale = (640.0 / f64::from(buffer.width()))
-            .min(360.0 / f64::from(buffer.height()))
-            .min(1.0);
-        let width = (f64::from(buffer.width()) * scale).max(1.0) as u32;
-        let height = (f64::from(buffer.height()) * scale).max(1.0) as u32;
-        let buffer = buffer.scale(width as i32, height as i32);
-        let mut pixels = vec![0; (width * height * 4) as usize];
-        buffer.to_argb(
-            VideoFormatType::ABGR,
-            &mut pixels,
-            width * 4,
-            width as i32,
-            height as i32,
-        );
-        let image =
-            image::RgbaImage::from_raw(width, height, pixels).ok_or("Invalid camera preview")?;
-        let mut jpeg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 75)
-            .encode_image(&image::DynamicImage::ImageRgba8(image))
-            .map_err(|e| e.to_string())?;
-        Ok(format!(
-            "data:image/jpeg;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(jpeg)
-        ))
-    }
 
     struct Apartment;
 
@@ -314,7 +231,7 @@ mod windows {
 
     struct Sink {
         source: Option<NativeVideoSource>,
-        preview: Option<tokio::sync::mpsc::Sender<I420Buffer>>,
+        preview: Option<tokio::sync::mpsc::Sender<super::preview::PreviewBuffer>>,
         first: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         alive: Arc<Mutex<std::time::Instant>>,
     }
@@ -340,7 +257,10 @@ mod windows {
                 });
             } else if let Some(preview) = &self.preview {
                 // A slow webview must never accumulate full-resolution camera frames.
-                let _ = preview.try_send(buffer);
+                let _ = preview.try_send(super::preview::PreviewBuffer {
+                    buffer,
+                    rotation: VideoRotation::VideoRotation0,
+                });
             }
             if let Ok(mut alive) = self.alive.lock() {
                 *alive = std::time::Instant::now();
@@ -405,11 +325,20 @@ mod windows {
         start_capture(device, Some(source), quality, None, fatal).await
     }
 
+    pub(super) async fn start_preview(
+        device: Option<String>,
+        quality: CameraQuality,
+        preview: tokio::sync::mpsc::Sender<super::preview::PreviewBuffer>,
+        fatal: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<Capture, String> {
+        start_capture(device, None, quality, Some(preview), fatal).await
+    }
+
     async fn start_capture(
         device: Option<String>,
         source: Option<NativeVideoSource>,
         quality: CameraQuality,
-        preview: Option<tokio::sync::mpsc::Sender<I420Buffer>>,
+        preview: Option<tokio::sync::mpsc::Sender<super::preview::PreviewBuffer>>,
         fatal: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<Capture, String> {
         let quality = quality.normalized();
@@ -516,6 +445,7 @@ mod windows {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::syscamera::preview::{PreviewCommand, preview_controller, preview_image};
 
         #[test]
         fn preview_scales_frames_and_bounds_the_capture_queue() {

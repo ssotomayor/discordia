@@ -73,20 +73,12 @@ impl AndroidVideoCapture {
             }
         });
         crate::android::register_frame_sink(slot, Arc::from(sink), fatal);
-        let result =
-            crate::android::start_screen_share(slot, settings.width, settings.height, settings.fps)
-                .await;
-        if let Err(error) = result {
-            crate::android::unregister_frame_sink(slot);
-            return Err(error);
-        }
+        let capture = Self { slot, metrics };
+        crate::android::start_screen_share(slot, settings.width, settings.height, settings.fps)
+            .await?;
         match tokio::time::timeout(Duration::from_secs(20), first_rx).await {
-            Ok(Ok(())) => Ok(Self { slot, metrics }),
-            _ => {
-                crate::android::unregister_frame_sink(slot);
-                crate::android::stop_screen_share();
-                Err("the screen capture produced no frames".into())
-            }
+            Ok(Ok(())) => Ok(capture),
+            _ => Err("the screen capture produced no frames".into()),
         }
     }
 }
@@ -94,6 +86,6 @@ impl AndroidVideoCapture {
 impl Drop for AndroidVideoCapture {
     fn drop(&mut self) {
         crate::android::unregister_frame_sink(self.slot);
-        crate::android::stop_screen_share();
+        crate::android::stop_screen_share(self.slot);
     }
 }

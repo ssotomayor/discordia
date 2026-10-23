@@ -29,6 +29,7 @@ mod invite;
 pub mod leveling;
 pub mod markup;
 pub mod members;
+mod mobile_workspace;
 #[cfg(test)]
 mod native_teardown;
 pub mod profiles;

@@ -1,4 +1,6 @@
 .dxf-platform-mobile { height: 100dvh; }
+/* The filtered SVG animation keeps Android's WebView compositor busy even at rest. */
+.dxf-platform-mobile .dxf-logo { animation: none; will-change: auto; }
 .dxf-platform-mobile .dxf-settings-backdrop {
   padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
 }
@@ -35,4 +37,19 @@
 .dxf-platform-mobile .dxf-emoji-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; max-width: 100%; }
 .dxf-platform-mobile .dxf-emoji-grid button { width: 44px; height: 44px; }
 .dxf-platform-mobile .dxf-desktop-hint { display: none; }
+.dxf-stream-video { position: relative; min-height: 120px; }
+.dxf-stream-video::before { content: attr(data-connecting); position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; }
+.dxf-stream-video[data-frame-ready="true"]::before { display: none; }
+.dxf-stream-video:not([data-frame-ready="true"]) video { opacity: 0; }
+.dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) { flex: 0 0 auto; height: auto !important; max-height: 52dvh; }
+.dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-grid { grid-template-rows: auto !important; overflow-y: auto; }
+.dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-tile { height: auto !important; }
+.dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-video { flex: 0 0 auto; aspect-ratio: 16 / 9; min-height: 0; }
+.dxf-platform-mobile .dxf-stream-toolbar { gap: 4px; padding: 0 8px; min-height: 44px; flex-wrap: nowrap; }
+.dxf-platform-mobile .dxf-stream-toolbar button[title]:first-of-type { display: none; }
+.dxf-platform-mobile .dxf-stream-toolbar > span.text-\[10px\] { display: none; }
+.dxf-platform-mobile .dxf-stream-button { width: 44px; height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation; }
+.dxf-platform-mobile .dxf-stream-volume { width: 136px; max-width: 40vw; height: 44px; touch-action: pan-y; }
+.dxf-platform-mobile .dxf-stream-volume::-webkit-slider-thumb { min-width: 24px; min-height: 24px; }
+.dxf-platform-mobile #camera-setup-dialog :is(button, select) { min-height: 44px; }
 .dxf-platform-mobile .dxf-direct-connect summary { min-height: 44px; }

@@ -27,19 +27,13 @@ fn CameraSetupDialog() -> Element {
         .unwrap_or_default()
     });
     let mut quality = use_signal(move || settings.read().camera_quality.normalized());
-    #[cfg_attr(target_os = "android", allow(unused_mut, unused_variables))]
     let mut revision = use_signal(|| 0_u64);
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     let mut image = use_signal(String::new);
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     let image = use_signal(String::new);
-    #[cfg(target_os = "android")]
-    let ready = use_signal(|| true);
-    #[cfg(not(target_os = "android"))]
     let mut ready = use_signal(|| false);
-    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut error = use_signal(|| None::<String>);
-    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut dimensions = use_signal(|| None::<(u32, u32)>);
     let mut submitting = use_signal(|| false);
     use_hook(move || super::refresh_cameras(state));
@@ -47,9 +41,9 @@ fn CameraSetupDialog() -> Element {
         let _ = document::eval("document.getElementById('camera-setup-dialog')?.focus();");
     });
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     let controller = use_hook(crate::syscamera::preview_controller);
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     {
         let commands = controller.0.clone();
         use_effect(move || {
@@ -89,9 +83,6 @@ fn CameraSetupDialog() -> Element {
             }
         });
     }
-    // Android publishes a native capture, and the camera cannot be opened twice:
-    // the preview would hold the device the publication needs. The self view
-    // comes from the published track once the camera starts.
     #[cfg(not(any(target_os = "android", target_os = "windows")))]
     {
         use_effect(move || {
@@ -155,7 +146,7 @@ fn CameraSetupDialog() -> Element {
                 }
                 div { class: "p-3 space-y-3 overflow-y-auto",
                     div { style: "aspect-ratio: 16 / 9; background: #000; position: relative; overflow: hidden; border-radius: 8px;",
-                        if cfg!(target_os = "windows") && !image().is_empty() {
+                        if !image().is_empty() {
                             img { src: image(), alt: crate::i18n::text("Local camera preview", &[]), style: "width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1);" }
                         }
                         div { id: "camera-setup-video", style: "width: 100%; height: 100%;" }
@@ -198,10 +189,10 @@ fn CameraSetupDialog() -> Element {
                             if !ready() || submitting() { return; }
                             submitting.set(true);
                             let gateway = gateway.clone();
-                            #[cfg(target_os = "windows")]
+                            #[cfg(any(target_os = "android", target_os = "windows"))]
                             let commands = controller.0.clone();
                             spawn(async move {
-                                #[cfg(target_os = "windows")]
+                                #[cfg(any(target_os = "android", target_os = "windows"))]
                                 {
                                     let (done, stopped) = tokio::sync::oneshot::channel();
                                     if commands.send(crate::syscamera::PreviewCommand::Stop(done)).is_err() || stopped.await.is_err() {

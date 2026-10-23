@@ -501,8 +501,7 @@ pub fn WorkspaceView(
 
     let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
-    let mut mobile_tab = use_signal(|| MobileTab::Chat);
-    let mut activities_open = use_signal(|| false);
+    let activities_open = use_signal(|| false);
     let mut is_mobile = use_signal(|| cfg!(any(target_os = "android", target_os = "ios")));
 
     use_effect(move || {
@@ -518,17 +517,6 @@ pub fn WorkspaceView(
                 is_mobile.set(cfg!(any(target_os = "android", target_os = "ios")) || matches);
             }
         });
-    });
-
-    let mut last_selected_ch = use_signal(|| state.peek().selected_channel);
-    use_effect(move || {
-        let current = state.read().selected_channel;
-        if current != *last_selected_ch.peek() {
-            last_selected_ch.set(current);
-            if is_mobile() {
-                mobile_tab.set(MobileTab::Chat);
-            }
-        }
     });
 
     let guild_accent_style = {
@@ -578,15 +566,6 @@ pub fn WorkspaceView(
         "pt-2 pl-20"
     } else {
         ""
-    };
-    // An `if` is not a valid formatted segment, so the active/inactive nav class
-    // is resolved here and interpolated as a plain identifier.
-    let mobile_nav_class = |tab: MobileTab| {
-        if mobile_tab() == tab {
-            "text-[var(--accent)] font-semibold"
-        } else {
-            "text-[var(--text-muted)] hover:text-[var(--text)]"
-        }
     };
     let mobile_class = if is_mobile() {
         "dxf-workspace-mobile"
@@ -696,7 +675,7 @@ pub fn WorkspaceView(
                     }
                     EncryptionBadge {}
                     button {
-                        class: "h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
+                        class: "dxf-server-disconnect h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                         title: crate::i18n::text("Disconnect from this server", &[]),
                         aria_label: crate::i18n::text("Disconnect from this server", &[]),
                         onclick: move |_| leave(String::new()),
@@ -711,7 +690,6 @@ pub fn WorkspaceView(
                     if !is_mobile() {
                         LayoutButton { layout, settings, edit_mode }
                     }
-                    super::bookmarks::BookmarksButton {}
                     crate::features::appearance::AppearanceButton {}
                     button {
                         class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
@@ -726,73 +704,7 @@ pub fn WorkspaceView(
             }
 
             if is_mobile() {
-                div { class: "flex-1 min-h-0 min-w-0 flex flex-col h-full w-full overflow-hidden",
-                        div { class: "flex-1 min-h-0 w-full overflow-hidden relative",
-                            match mobile_tab() {
-                                MobileTab::Channels => rsx! {
-                                    div { class: "flex h-full w-full overflow-hidden bg-[var(--bg)]",
-                                        div { class: "w-16 shrink-0 h-full border-r border-[var(--border)] overflow-y-auto flex flex-col items-center py-2",
-                                            GuildsSidebar {}
-                                        }
-                                        div { class: "flex-1 min-w-0 h-full overflow-hidden bg-[var(--panel-solid)]",
-                                            ChannelsColumn {}
-                                        }
-                                    }
-                                },
-                                MobileTab::Chat => rsx! {
-                                    div { class: "flex flex-col h-full w-full overflow-hidden bg-[var(--bg)]",
-                                        crate::features::screenshare::ScreenWatchWindow {}
-                                        div { class: "flex-1 min-h-0 h-full flex flex-col overflow-hidden",
-                                            ChatView {}
-                                        }
-                                    }
-                                },
-                                MobileTab::Members => rsx! {
-                                    div { class: "h-full w-full overflow-hidden bg-[var(--panel-solid)] flex flex-col",
-                                        div { class: "h-11 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0",
-                                            button {
-                                                class: "text-xs text-[var(--accent)] flex items-center gap-1 dxf-touch-target",
-                                                onclick: move |_| mobile_tab.set(MobileTab::Chat),
-                                                "← ", {crate::i18n::text("Back to chat", &[])}
-                                            }
-                                        }
-                                        div { class: "flex-1 min-h-0 overflow-y-auto",
-                                            MembersPanel {}
-                                        }
-                                    }
-                                },
-                            }
-                        }
-                        div {
-                            class: "dxf-mobile-nav shrink-0 flex items-center justify-around border-t border-[var(--border)] bg-[var(--panel2)] z-30 select-none",
-                            style: "padding-bottom: max(var(--safe-bottom), 6px); height: calc(52px + var(--safe-bottom));",
-                            button {
-                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs transition-colors {mobile_nav_class(MobileTab::Channels)}",
-                                onclick: move |_| mobile_tab.set(MobileTab::Channels),
-                                span { class: "text-lg leading-none", "☰" }
-                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Channels", &[])} }
-                            }
-                            button {
-                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs transition-colors {mobile_nav_class(MobileTab::Chat)}",
-                                onclick: move |_| mobile_tab.set(MobileTab::Chat),
-                                span { class: "text-lg leading-none", "💬" }
-                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Chat", &[])} }
-                            }
-                            button {
-                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs transition-colors {mobile_nav_class(MobileTab::Members)}",
-                                onclick: move |_| mobile_tab.set(MobileTab::Members),
-                                span { class: "text-lg leading-none", "👥" }
-                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Members", &[])} }
-                            }
-                            button {
-                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs text-[var(--text-muted)]",
-                                onclick: move |_| activities_open.set(true),
-                                aria_expanded: activities_open(),
-                                span { class: "text-lg leading-none", "🎲" }
-                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Activities", &[])} }
-                            }
-                        }
-                    }
+                super::mobile_workspace::MobileWorkspace { activities_open }
             } else {
                 div { class: "flex-1 overflow-auto min-h-0",
                         GridLayout {
@@ -1307,10 +1219,12 @@ fn EncryptionBadge() -> Element {
     };
     rsx! {
         button {
-            class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
+            class: "dxf-encryption-badge shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
             title: crate::i18n::text("{0} — click for the whole picture", &[(title).to_string()]),
+            aria_label: crate::i18n::text(label, &[]),
             onclick: move |_| state.write().topology_open = true,
-            "{label}"
+            span { class: "dxf-encryption-icon", dangerous_inner_html: super::icons::SHIELD }
+            span { class: "dxf-encryption-label", "{label}" }
         }
     }
 }
@@ -1356,7 +1270,9 @@ fn TransportBadge() -> Element {
             class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
             title: crate::i18n::text("{0} — click for the whole picture", &[(title).to_string()]),
             onclick: move |_| state.write().topology_open = true,
-            {crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label)))}
+            aria_label: crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label))),
+            span { class: "dxf-route-full", {crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label)))} }
+            span { class: "dxf-route-mobile", "{route_label}" }
         }
     }
 }
@@ -1390,6 +1306,14 @@ fn VoiceRouteBadge() -> Element {
             }
         }
     };
+    let mobile_phase = crate::i18n::text(
+        match s.voice.phase {
+            crate::state::VoicePhase::Connecting => "Connecting…",
+            crate::state::VoicePhase::Connected => "Connected",
+            _ => "Error",
+        },
+        &[],
+    );
     let signaling = s.voice_endpoint.as_deref().unwrap_or("not connected");
     let send = s
         .voice_send_route
@@ -1422,9 +1346,10 @@ fn VoiceRouteBadge() -> Element {
         })
         .collect();
     rsx! {
-        button { class: "shrink-0 px-2 py-1 text-[10px] text-[var(--text-muted)] border-l border-[var(--border)]", title: "{title}",
+        button { class: "dxf-voice-route-badge shrink-0 px-2 py-1 text-[10px] text-[var(--text-muted)] border-l border-[var(--border)]", title: "{title}",
             onclick: move |_| open.toggle(),
-            {crate::i18n::text("Voice: {0} · {1}", &[(location).to_string(), (phase).to_string()])}
+            span { class: "dxf-route-full", {crate::i18n::text("Voice: {0} · {1}", &[(location).to_string(), (phase).to_string()])} }
+            span { class: "dxf-route-mobile", {crate::i18n::text("Voice", &[])}, ": {mobile_phase}" }
         }
         if open() {
             div { class: "dxf-no-drag rounded-md border border-[var(--border)] bg-[var(--panel2)] p-4 text-[12px]",

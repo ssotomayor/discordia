@@ -113,7 +113,7 @@ if (!window.dxGlobe) {
         ctx.fill();
       }
 
-      var pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(now / 600);
+      var pulse = g.animate ? 0.5 + 0.5 * Math.sin(now / 600) : 0.5;
       var hoverTip = null, selTip = null;
       for (var p = 0; p < g.pins.length; p++) {
         var pin = g.pins[p];
@@ -173,16 +173,16 @@ if (!window.dxGlobe) {
         g.yaw += g.vel; g.vel *= 0.94;
         if (Math.abs(g.vel) < 0.0002) g.vel = 0;
         var idle = now - g.touched > 2500 && !g.hover && !g.selected && !g.place;
-        if (idle && !reduceMotion) g.yaw += 0.00012 * dt;
+        if (idle && g.animate) g.yaw += 0.00012 * dt;
       }
       g.pitch = Math.max(-1.25, Math.min(1.25, g.pitch));
       g.yaw = wrap(g.yaw);
       draw(g, now);
       var idleEligible = !g.dragging && !g.hover && !g.selected && !g.place;
-      var spinning = !reduceMotion && idleEligible && now - g.touched > 2500;
-      var pulsing = !reduceMotion && (g.place || g.selected || g.pins.some(function (p) { return p.fresh; }));
+      var spinning = g.animate && idleEligible && now - g.touched > 2500;
+      var pulsing = g.animate && (g.place || g.selected || g.pins.some(function (p) { return p.fresh; }));
       if (g.target || (!g.dragging && g.vel) || spinning || pulsing) requestDraw(g);
-      else if (!reduceMotion && idleEligible) {
+      else if (g.animate && idleEligible) {
         g.idleTimer = setTimeout(function () { g.idleTimer = null; requestDraw(g); }, Math.max(1, 2501 - (now - g.touched)));
       }
     }
@@ -262,6 +262,8 @@ if (!window.dxGlobe) {
         if (!canvas || instances[id]) return;
         var g = {
           id: id, canvas: canvas, ctx: canvas.getContext('2d'), sink: sink,
+          // Continuous canvas animation keeps the mobile compositor busy even at rest.
+          animate: !reduceMotion && !canvas.closest('.dxf-platform-mobile'),
           alive: true, listeners: [], frame: 0, raf: null, idleTimer: null, paletteDirty: true, dots: [], pins: [], selected: null, place: null, pick: false,
           yaw: -1.2, pitch: 0.35, vel: 0, target: null, dragging: false, hover: null,
           touched: 0, w: 0, h: 0, dpr: 0, r: 0, cx: 0, cy: 0, col: {}
