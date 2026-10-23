@@ -51,6 +51,27 @@ fn incoming(id: Uuid, device: Uuid, body: Body) -> Incoming {
 }
 
 #[test]
+fn only_a_valid_new_call_or_incoming_accept_can_acquire_the_microphone_service() {
+    harness(|actor, _| {
+        let start = Action::Start("22".repeat(32));
+        assert!(actor.needs_voice_start(&start));
+        assert!(!actor.needs_voice_start(&Action::Start(actor.our_key.clone())));
+        assert!(!actor.needs_voice_start(&Action::Start("invalid".into())));
+        assert!(!actor.needs_voice_start(&Action::Accept));
+        assert!(!actor.needs_voice_start(&Action::End));
+        actor.action(Action::Start("22".repeat(32)));
+        assert!(!actor.needs_voice_start(&start));
+        assert!(!actor.needs_voice_start(&Action::Accept));
+        actor.action(Action::End);
+        actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
+        assert!(actor.needs_voice_start(&Action::Accept));
+        assert!(!actor.needs_voice_start(&start));
+        actor.state.write().voice.phase = VoicePhase::Connecting;
+        assert!(!actor.needs_voice_start(&Action::Accept));
+    });
+}
+
+#[test]
 fn incoming_uses_learned_sender_clock_without_accepting_expired_calls() {
     for offset in [-94, 94] {
         harness(|actor, _| {

@@ -414,10 +414,10 @@ pub fn CameraSelfPreview() -> Element {
             }
         }
         div {
-            class: "fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
+            class: "dxf-camera-self dxf-media-self fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
             style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px;",
             div {
-                class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                class: "dxf-media-heading h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
@@ -431,6 +431,8 @@ pub fn CameraSelfPreview() -> Element {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
                     onmousedown: move |e| {
                         e.stop_propagation();
+                    },
+                    onclick: move |_| {
                         toggle_camera(state, settings, &gateway, false);
                     },
                     {crate::i18n::text("Stop", &[])}
@@ -438,7 +440,7 @@ pub fn CameraSelfPreview() -> Element {
             }
             div { id: "camera-self", class: "flex-1 min-h-0 bg-black" }
             div {
-                class: "absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
+                class: "dxf-media-resize absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
                 onmousedown: move |e| {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));
@@ -530,10 +532,10 @@ pub fn CameraGridWindow() -> Element {
             }
         }
         div {
-            class: "fixed flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
+            class: "dxf-camera-grid fixed flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
             style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px; z-index: 35;",
             div {
-                class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                class: "dxf-media-heading h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
@@ -544,6 +546,8 @@ pub fn CameraGridWindow() -> Element {
                     title: crate::i18n::text("Stop watching every camera", &[]),
                     onmousedown: move |e| {
                         e.stop_propagation();
+                    },
+                    onclick: move |_| {
                         state.write().cameras_watching.clear();
                     },
                     "✕"
@@ -557,7 +561,7 @@ pub fn CameraGridWindow() -> Element {
                 }
             }
             div {
-                class: "absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
+                class: "dxf-media-resize absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
                 onmousedown: move |e| {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));

@@ -474,7 +474,9 @@ window.dxScreen = window.dxScreen || (function () {
     });
     if (e2eeProvider) {
       try {
-        if (!e2eeKey && !(await awaitE2eeKey(10000))) {
+        const keyReady = e2eeKey || await awaitE2eeKey(10000);
+        if (!current() || room !== thisRoom) { try { await thisRoom.disconnect(); } catch (ignored) {} return; }
+        if (!keyReady) {
           room = null;
           try { await thisRoom.disconnect(); } catch (ignored) {}
           if (!current()) return;
@@ -1242,7 +1244,9 @@ window.dxScreen = window.dxScreen || (function () {
     if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
     // The room exists while it still waits for the key: publishing now would send
     // the picture in the clear, so the camera waits like the room does.
-    if (!(await awaitE2eeKey(10000))) {
+    const keyReady = await awaitE2eeKey(10000);
+    if (cancelled()) { releaseStream(stream); return; }
+    if (!keyReady) {
       await stopCamera();
       post('camera-error', { detail: 'The channel key did not arrive' });
       return;
@@ -2696,10 +2700,10 @@ pub fn ScreenSelfPreview() -> Element {
             }
         }
         div {
-            class: "fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
+            class: "dxf-screen-self dxf-media-self fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
             style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px;",
             div {
-                class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                class: "dxf-media-heading h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
                     if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
                     let c = e.client_coordinates();
@@ -2712,6 +2716,8 @@ pub fn ScreenSelfPreview() -> Element {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
                     onmousedown: move |e| {
                         e.stop_propagation();
+                    },
+                    onclick: move |_| {
                         let cid = state.read().voice.channel_id;
                         {
                             let mut w = state.write();
@@ -2760,7 +2766,7 @@ pub fn ScreenSelfPreview() -> Element {
                 }
             }
             div {
-                class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
+                class: "dxf-media-resize absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
                 style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
                 onmousedown: move |e| {
                     e.stop_propagation();

@@ -101,6 +101,18 @@ Artefactos de esta ejecución: `target/mobile-tools/review-phone-*.log`, `review
 
 ## Validación
 
+### Revisión del PR #369 · 23/10
+
+| Fallo confirmado | Corrección |
+|---|---|
+| CI Linux/macOS: import de `Icon` exclusivo de Windows | Import condicionado al destino |
+| DM Android sin servicio de llamada | Guardia de servicio ligada a la sesión; solo se adquiere para iniciar/aceptar llamadas válidas |
+| Cámara propia, cámaras remotas y preview de pantalla fuera del viewport móvil | Posiciones dentro de pantalla y controles de 44 px; botones activables por clic/teclado |
+| Timeout de clave de una sala vieja borraba la sala nueva | Comprobar generación antes de modificar la sala; regresión reproduce el fallo previo |
+| Cámara detenida durante la espera de clave podía publicarse | Comprobar cancelación después de esperar; regresión falla al retirar la guarda |
+
+Validación local: 14 pruebas DM (audio Opus incluido, sockets locales fuera del sandbox), check Android, Clippy Windows con `-D warnings`, bridges JS y formato. Falta prueba física de DM en segundo plano y del nuevo acomodo de ventanas; las pruebas anteriores de segundo plano cubrían voz de servidor.
+
 | Comprobación | Resultado |
 |---|---|
 | `cargo check --workspace` | Aprobado, 14.04 s; warnings de caché incremental y bundle SFU |

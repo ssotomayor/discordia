@@ -58,6 +58,8 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
       this.localParticipant = {
         identity: 'self', trackPublications: new Map(),
         async setScreenShareEnabled() {}, async unpublishTrack() {},
+        published: [],
+        async publishTrack(track) { this.published.push(track); return { track }; },
       };
       rooms.push(this);
     }
@@ -71,7 +73,7 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
     'TrackPublished', 'TrackSubscribed', 'TrackUnsubscribed', 'LocalTrackPublished', 'LocalTrackUnpublished']
     .map(name => [name, name]));
   const context = {
-    window: { LivekitClient: { Room, RoomEvent }, postMessage(m) { messages.push(m); } },
+    window: { LivekitClient: { Room, RoomEvent, Track: { Source: { Camera: 'camera' } } }, postMessage(m) { messages.push(m); } },
     document: { body, getElementById(id) { return containers.get(id) || null; } },
     navigator: { mediaDevices: { addEventListener() {} } },
     setTimeout(fn, ms) { timers.push({ fn, ms }); }, clearTimeout() {},
@@ -89,7 +91,8 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
     };
   }
   vm.runInNewContext(script, context);
-  return { bridge: context.window.dxScreen, rooms, messages, timers, workers, containers, body };
+  return { bridge: context.window.dxScreen, rooms, messages, timers, workers, containers, body,
+    devices: context.navigator.mediaDevices };
 }
 
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
@@ -269,6 +272,41 @@ async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); 
     assert.equal(f.rooms[0].e2eeEnabled, undefined);
     assert.equal(f.rooms[0].disconnects, 1);
     assert.equal(f.workers[0].terminated, true);
+  }
+  {
+    const f = fixture({ encrypted: true });
+    const old = f.bridge.connect('wss://old', 'old-token', null, true, 15);
+    await settle();
+    const wait = f.timers.find(t => t.ms === 10000);
+    const next = f.bridge.connect('wss://next', 'next-token', null, false, 16);
+    await settle();
+    f.rooms[1].join.resolve();
+    await next;
+    wait.fn();
+    await old;
+    media(f, f.rooms[1], 'replacement');
+    assert.equal(f.messages.some(m => m.__dxf === 'e2ee-error'), false,
+      'an expired key wait must not report an error for a replacement room');
+  }
+  {
+    const f = fixture({ encrypted: true });
+    const join = f.bridge.connect('wss://test', 'token', null, true, 17);
+    await settle();
+    const track = { stop() { this.stopped = true; }, addEventListener() {}, getSettings() { return {}; } };
+    const stream = { getVideoTracks() { return [track]; }, getTracks() { return [track]; } };
+    f.devices.getUserMedia = async () => stream;
+    const camera = f.bridge.startCamera({});
+    await settle();
+    await f.bridge.stopCamera();
+    f.bridge.setE2eeKey('secret');
+    await settle();
+    f.rooms[0].keySetup.resolve();
+    f.rooms[0].join.resolve();
+    await Promise.all([join, camera]);
+    assert.equal(track.stopped, true);
+    assert.equal(f.rooms[0].localParticipant.published.length, 0,
+      'stopping a camera during the key wait must prevent publication');
+    assert.equal(f.messages.some(m => m.__dxf === 'camera-started'), false);
   }
   console.log('Native video lifecycle bridge: retry reporting, cancellation, room replacement and encryption guards passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
