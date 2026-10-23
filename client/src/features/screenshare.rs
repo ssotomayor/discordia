@@ -3012,8 +3012,8 @@ pub fn ScreenWatchWindow() -> Element {
         if count > 0 { dioxus_grid_layout::GridItem { id: "streams", x: 3, y: 0, w: 7, h: 22,
             min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
             class: if fullscreen().is_some() { "dxf-streams dxf-streams-expanded" } else { "dxf-streams" },
-            div { class: "panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
-                div { class: "h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
+            div { class: "dxf-stream-panel panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
+                div { class: "dxf-stream-heading h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
                     span { class: "text-sm font-semibold text-[var(--text)]", {crate::i18n::text("Streams", &[])} }
                     span { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("{0} live", &[(count).to_string()])} }
                     if count > 1 && selected.is_some() {
@@ -3200,28 +3200,34 @@ fn ScreenWatchTile(
                 "data-connecting": crate::i18n::text("Connecting to stream…", &[]),
                 class: "dxf-stream-video flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
                 style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
-                role: if can_focus { "button" } else { "group" },
-                tabindex: if can_focus { "0" } else { "-1" },
-                title: can_focus.then_some(if selected { "Return to mosaic" } else { "Focus stream" }),
-                aria_label: if can_focus { if selected { "Return to mosaic" } else { "Focus stream" }.to_owned() } else { format!("{name}'s screen") },
+                role: if can_focus || is_fullscreen { "button" } else { "group" },
+                tabindex: if can_focus || is_fullscreen { "0" } else { "-1" },
+                title: if can_focus { if selected { "Return to mosaic" } else { "Focus stream" } } else { "" },
+                aria_label: if is_fullscreen { crate::i18n::text("Exit full screen", &[]) } else if can_focus { if selected { "Return to mosaic" } else { "Focus stream" }.to_owned() } else { format!("{name}'s screen") },
                 aria_pressed: can_focus.then(|| selected.to_string()),
                 onmousedown: move |e| e.stop_propagation(),
                 onclick: move |e| {
                     e.stop_propagation();
-                    if can_focus {
+                    if is_fullscreen {
+                        fullscreen.set(None);
+                    } else if can_focus {
                         focused.set(if selected { None } else { Some(pk_focus.clone()) });
                     }
                 },
                 onkeydown: move |e| {
-                    if can_focus && (e.key() == Key::Enter || e.key() == Key::Character(" ".into())) {
+                    if (can_focus || is_fullscreen) && (e.key() == Key::Enter || e.key() == Key::Character(" ".into())) {
                         e.prevent_default();
                         e.stop_propagation();
-                        focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                        if is_fullscreen {
+                            fullscreen.set(None);
+                        } else {
+                            focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                        }
                     }
                 },
             }
             div {
-                class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
+                class: "dxf-stream-footer px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
                 div {
                     span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::message(&received_label.read())} }
                     StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
