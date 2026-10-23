@@ -15,9 +15,44 @@ pub fn name(device: &cpal::Device) -> Result<String, cpal::Error> {
             return Ok(id.id().to_owned());
         }
     }
-    device
-        .description()
-        .map(|description| description.name().to_owned())
+    let description = device.description()?;
+    #[cfg(target_os = "android")]
+    if let Some(address) = description.address().filter(|address| !address.is_empty()) {
+        return Ok(format!("{} · {address}", description.name()));
+    }
+    Ok(description.name().to_owned())
+}
+
+pub fn selectable(device: &cpal::Device, input: bool) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        let Ok(description) = device.description() else {
+            return false;
+        };
+        if !android_endpoint(description.device_type(), description.interface_type()) {
+            return false;
+        }
+    }
+    if input {
+        device.supports_input()
+    } else {
+        device.supports_output()
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+fn android_endpoint(kind: cpal::DeviceType, interface: cpal::InterfaceType) -> bool {
+    use cpal::{DeviceType as D, InterfaceType as I};
+    matches!(
+        kind,
+        D::Microphone
+            | D::Headset
+            | D::Headphones
+            | D::Speaker
+            | D::Earpiece
+            | D::HearingAid
+            | D::Dock
+    ) || (kind == D::Unknown && matches!(interface, I::Usb | I::Bluetooth))
 }
 
 pub fn needs_reopen(kind: ErrorKind) -> bool {
@@ -25,6 +60,10 @@ pub fn needs_reopen(kind: ErrorKind) -> bool {
         kind,
         ErrorKind::Xrun | ErrorKind::DeviceChanged | ErrorKind::RealtimeDenied
     )
+}
+
+pub fn missing(name: &str, available: &[String], default_route: Option<&str>) -> bool {
+    default_route != Some(name) && !available.iter().any(|device| device == name)
 }
 
 pub fn config(
@@ -101,6 +140,35 @@ fn select(
 mod tests {
     use super::*;
     use cpal::SupportedBufferSize;
+
+    #[test]
+    fn android_picker_excludes_internal_routes_but_keeps_microphones_and_accessories() {
+        use cpal::{DeviceType as D, InterfaceType as I};
+        for kind in [D::Virtual, D::Tuner, D::Handset, D::Unknown] {
+            assert!(!android_endpoint(kind, I::Unknown));
+        }
+        assert!(android_endpoint(D::Microphone, I::BuiltIn));
+        assert!(android_endpoint(D::Headset, I::Bluetooth));
+        assert!(android_endpoint(D::Unknown, I::Usb));
+        assert!(android_endpoint(D::Speaker, I::BuiltIn));
+    }
+
+    #[test]
+    fn android_default_route_survives_physical_device_enumeration() {
+        let physical = vec!["Built-in microphone".into(), "Speaker".into()];
+        assert!(!missing(
+            "Default Device",
+            &physical,
+            Some("Default Device")
+        ));
+        assert!(missing(
+            "Unplugged headset",
+            &physical,
+            Some("Default Device")
+        ));
+        assert!(missing("Default Device", &physical, None));
+        assert!(!missing("Speaker", &physical, None));
+    }
 
     fn range(
         format: SampleFormat,

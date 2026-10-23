@@ -75,7 +75,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut generation = use_signal(|| 0_u64);
     let mut creating = use_signal(|| false);
-    let handle = use_hook(|| Rc::new(RefCell::new(None::<dioxus::desktop::WeakDesktopContext>)));
+    let handle = use_hook(|| Rc::new(RefCell::new(None::<crate::platform::WeakDesktopContext>)));
     let bridge = use_hook(|| {
         let (snapshots, snapshot_rx) = watch::channel(None::<Snapshot>);
         let (commands, command_rx) = mpsc::unbounded_channel::<(u64, Command)>();
@@ -123,7 +123,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     let sender = bridge.0.clone();
     let receiver = bridge.1.clone();
     let commands = bridge.2.clone();
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     let handle_for_open = handle.clone();
     use_effect(move || {
         let next = snapshot();
@@ -176,14 +176,14 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
         let dom = dom.with_root_context(crate::i18n::WindowTitle("Discordia — Streams"));
         let cfg = crate::app::desktop_config(crate::i18n::current())
             .with_window(
-                dioxus::desktop::tao::window::WindowBuilder::new()
+                crate::platform::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Streams")
                     .with_window_icon(crate::load_window_icon())
-                    .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1100.0, 700.0))
-                    .with_min_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(480.0, 320.0))
+                    .with_inner_size(crate::platform::tao::dpi::LogicalSize::new(1100.0, 700.0))
+                    .with_min_inner_size(crate::platform::tao::dpi::LogicalSize::new(480.0, 320.0))
                     .with_always_on_top(false),
             )
-            .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowCloses)
+            .with_close_behaviour(crate::platform::WindowCloseBehaviour::WindowCloses)
             .with_menu(None);
         let pending = window.new_window(dom, cfg);
         let handle = handle_for_open.clone();
@@ -315,13 +315,13 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let pinned = use_signal(|| false);
     let mut status = use_signal(|| "Connecting…".to_owned());
     let mut active_generation = use_signal(|| 0_u64);
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     let initial_size = window.window.inner_size();
     let mut size = use_signal(move || (initial_size.width as f64, initial_size.height as f64));
     let window_id = window.window.id();
     let event_window = window.clone();
-    dioxus::desktop::use_wry_event_handler(move |event, _| {
-        use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
+    crate::platform::use_wry_event_handler(move |event, _| {
+        use crate::platform::tao::event::{ElementState, Event, WindowEvent};
         if let Event::WindowEvent {
             window_id: id,
             event,
@@ -335,7 +335,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
-                        && event.logical_key == dioxus::desktop::tao::keyboard::Key::Escape =>
+                        && event.logical_key == crate::platform::tao::keyboard::Key::Escape =>
                 {
                     focused.set(None);
                     event_window.window.set_fullscreen(None);
@@ -518,7 +518,7 @@ fn WindowControls(props: WindowControlsProps) -> Element {
     let mut pinned = props.pinned;
     let commands = props.commands;
     let generation = props.generation;
-    let pin_window = dioxus::desktop::use_window();
+    let pin_window = crate::platform::use_window();
     let fullscreen_window = pin_window.clone();
     rsx! {
         div { class: "flex flex-wrap items-center justify-end gap-2",
@@ -528,7 +528,7 @@ fn WindowControls(props: WindowControlsProps) -> Element {
             }
             button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| {
                 let active = fullscreen_window.window.fullscreen().is_some();
-                fullscreen_window.window.set_fullscreen(if active { None } else { Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None)) });
+                fullscreen_window.window.set_fullscreen(if active { None } else { Some(crate::platform::tao::window::Fullscreen::Borderless(None)) });
             }, {crate::i18n::text("Full screen", &[])} }
             button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands, generation, Command::DockAll), {crate::i18n::text("Return to app", &[])} }
         }
@@ -539,7 +539,7 @@ fn json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".into())
 }
 
-fn close_popout(handle: &RefCell<Option<dioxus::desktop::WeakDesktopContext>>) {
+fn close_popout(handle: &RefCell<Option<crate::platform::WeakDesktopContext>>) {
     let previous = handle.borrow_mut().take();
     if let Some(window) = previous.and_then(|h| h.upgrade()) {
         window.close();
@@ -611,7 +611,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
     let mut quality_reason = use_signal(String::new);
     let mut health_reason = use_signal(String::new);
     let pk = stream.pubkey.clone();
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     use_future(move || {
         let pk = pk.clone();
         let window = window.clone();

@@ -65,7 +65,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
-                FolderSettings { rev: folder_rev }
+                if !cfg!(target_os = "android") { FolderSettings { rev: folder_rev } }
                 div { class: "px-8 py-2", crate::i18n::LanguageSelector {} }
                 div { class: "flex-1 overflow-auto px-8 py-8 flex flex-col dxf-no-drag",
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5",
@@ -555,19 +555,17 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
                             oninput: move |e| input.set(e.value()),
                         }
                         div { class: "flex flex-wrap gap-2",
-                            if !cfg!(target_os = "linux") {
+                            if !cfg!(any(target_os = "linux", target_os = "android", target_os = "ios")) {
                                 button {
                                     r#type: "button",
                                     class: "px-3 py-1.5 rounded-lg border border-[var(--edge)] text-xs text-[var(--text)] hover:border-[var(--accent)] transition-colors",
                                     onclick: move |_| {
                                         let start = std::path::PathBuf::from(input().trim());
                                         spawn(async move {
-                                            let mut dialog = rfd::AsyncFileDialog::new();
-                                            if start.is_dir() {
-                                                dialog = dialog.set_directory(&start);
-                                            }
-                                            if let Some(dir) = dialog.pick_folder().await {
-                                                input.set(dir.path().display().to_string());
+                                            match crate::file_dialog::pick_folder(&start).await {
+                                                Ok(Some(dir)) => input.set(dir.display().to_string()),
+                                                Ok(None) => {},
+                                                Err(error) => tracing::warn!(%error, "could not select storage folder"),
                                             }
                                         });
                                     },

@@ -104,7 +104,7 @@ pub fn SettingsDialog() -> Element {
     rsx! {
         style { {include_str!("../../assets/settings.css")} }
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-6",
+            class: "dxf-settings-backdrop dxf-backdrop-in fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-6",
             onclick: move |_| state.write().audio_settings = false,
             div {
                 class: "dxf-settings dxf-modal-in max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
@@ -113,18 +113,22 @@ pub fn SettingsDialog() -> Element {
                 aria_label: crate::i18n::text("Settings", &[]),
                 onclick: move |e: MouseEvent| e.stop_propagation(),
 
-                div { class: "h-8 px-2 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
+                div { class: "dxf-settings-heading h-8 px-2 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                     span { class: "text-[11px] font-medium text-[var(--text)] flex-1", {crate::i18n::text("Settings", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-base leading-none",
+                        aria_label: crate::i18n::text("Close", &[]),
                         onclick: move |_| state.write().audio_settings = false,
                         "✕"
                     }
                 }
 
-                    div { class: "flex-1 flex min-h-0",
+                    div { class: "dxf-settings-body flex-1 flex min-h-0",
                         div { class: "dxf-settings-nav shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
-                            for (group, t, label, icon) in SETTINGS_TABS.iter().copied() {
+                            for (group, t, label, icon) in SETTINGS_TABS.iter().copied().filter(|(_, tab, _, _)| {
+                                !cfg!(any(target_os = "android", target_os = "ios"))
+                                    || !matches!(tab, SettingsTab::Video | SettingsTab::Updates)
+                            }) {
                                 {
                                     let group = crate::i18n::label(group);
                                     let label = crate::i18n::label(label);
@@ -137,7 +141,7 @@ pub fn SettingsDialog() -> Element {
                                     rsx! {
                                         Fragment { key: "{label}",
                                             if !group.is_empty() {
-                                                div { class: "px-2 pt-3 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
+                                                div { class: "dxf-settings-group px-2 pt-3 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
                                                     "{group}"
                                                 }
                                             }
@@ -300,6 +304,7 @@ pub fn SettingsDialog() -> Element {
                                 {crate::i18n::text("A number and a count of servers — never which ones. Anyone reading it sees a claim your key signed, marked as self-reported, and it gates nothing anywhere.", &[])}
                             }
                         }
+                        if !cfg!(any(target_os = "android", target_os = "ios")) {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Game activity", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
                             {crate::i18n::text("Shows the people you share a guild with what you are playing. Enabled by default. Turn off sharing to stop publishing your game activity.", &[])}
@@ -383,6 +388,7 @@ pub fn SettingsDialog() -> Element {
                                 }
                                 GameDetectionOverrides {}
                             }
+                        }
                         }
                         }
                         if settings_tab() == SettingsTab::Diagnostics {

@@ -1,0 +1,11 @@
+// Auto-applied for every Gradle build, which is how dx's own `dx build` run
+// gets the WebRTC classes: it takes no --init-script. Scoped to a project that
+// already carries the jar, so an unrelated Android build is untouched.
+allprojects { project ->
+    project.plugins.withId('com.android.application') {
+        def jar = project.file('libs/libwebrtc.jar')
+        if (jar.isFile()) {
+            project.dependencies.add('implementation', project.files(jar))
+        }
+    }
+}

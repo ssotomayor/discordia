@@ -164,10 +164,14 @@ fn pick_file(
     mut generation: Signal<u64>,
 ) {
     spawn(async move {
-        let Some(selected) = rfd::AsyncFileDialog::new().pick_file().await else {
-            return;
+        let path = match crate::file_dialog::pick_file(&[]).await {
+            Ok(Some(path)) => path,
+            Ok(None) => return,
+            Err(message) => {
+                error.set(Some(message));
+                return;
+            }
         };
-        let path = selected.path().to_owned();
         let read = tokio::task::spawn_blocking(move || super::chat_tools::read_file(&path)).await;
         match read.unwrap_or_else(|e| Err(e.to_string())) {
             Ok(file) => {
@@ -1094,7 +1098,7 @@ fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
     }
     rsx! {
         div { class: "mt-1 pt-1 border-t border-[var(--border)] max-h-32 overflow-y-auto",
-            div { class: "grid grid-cols-8 gap-0.5 w-max max-w-[15rem]",
+            div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 w-max max-w-[15rem]",
                 for (code, image, url) in emojis.into_iter() {
                     {
                         let emoji = format!(":{code}:");
@@ -2276,7 +2280,7 @@ fn Composer(
 
             if show_emoji() {
                 div {
-                    class: "dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+                    class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
                     if let Some(target) = emoji_menu() {
                         EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
                     } else {
@@ -2284,7 +2288,7 @@ fn Composer(
                         div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
                             if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
                         }
-                        div { class: "grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
                             for e in guild_emojis.iter().cloned() {
                                 {
                                     let code = e.shortcode.clone();
@@ -2316,7 +2320,7 @@ fn Composer(
                             }
                         }
                     }
-                    div { class: "grid grid-cols-8 gap-0.5",
+                    div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5",
                         for (emoji, name) in EMOJIS.iter().copied() {
                             {
                                 let id = composer_id.clone();
@@ -2528,10 +2532,11 @@ fn Composer(
                 div {
                     class: "flex flex-wrap pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
                     style: "column-gap: 0.875rem; row-gap: 0.125rem;",
-                    span { {crate::i18n::text("Enter send", &[])} }
-                    span { {crate::i18n::text("Shift+Enter new line", &[])} }
-                    span { {crate::i18n::text(":name for emoji", &[])} }
+                    span { class: "dxf-desktop-hint", {crate::i18n::text("Enter send", &[])} }
+                    span { class: "dxf-desktop-hint", {crate::i18n::text("Shift+Enter new line", &[])} }
+                    span { class: "dxf-desktop-hint", {crate::i18n::text(":name for emoji", &[])} }
                     span {
+                        class: "dxf-desktop-hint",
                         title: crate::i18n::text("Or type **bold**, *italic* and __underline__", &[]),
                         {crate::i18n::text("{0}B bold · {0}I italic · {0}U underline", &[shortcut.to_string()])}
                     }

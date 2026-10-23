@@ -14,6 +14,7 @@ edition = "2021"
 name = "webrtc-sys"
 version = "0.3.49"
 build = "build.rs"
+links = "webrtc_sys"
 autolib = false
 autobins = false
 autoexamples = false

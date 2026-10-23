@@ -326,12 +326,15 @@ pub(super) fn StickerPicker(
                             onkeydown: move |e: KeyboardEvent| { if e.key() == Key::Enter { e.prevent_default(); } },
                         }
                             button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
-                                if let Some(file) = rfd::AsyncFileDialog::new().add_filter(crate::i18n::label("Image"), &["png", "gif", "webp", "jpg"]).pick_file().await {
-                                    let path = file.path().to_owned();
+                                match crate::file_dialog::pick_file(&[(crate::i18n::label("Image"), &["png", "gif", "webp", "jpg"])]).await {
+                                Ok(Some(path)) => {
                                     match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
                                         Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
                                         Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
                                     }
+                                }
+                                Ok(None) => {},
+                                Err(message) => error.set(Some(message)),
                                 }
                             }); }, {crate::i18n::text("Image…", &[])} }
                             button { r#type: "button", class: "dxf-cta shrink-0 rounded-lg px-3 py-1 text-xs disabled:opacity-50",
@@ -478,8 +481,9 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                 download_error.set(None);
                 let attachment = attachment.clone();
                 spawn(async move {
-                    let result = async {
-                        let Some(selected) = rfd::AsyncFileDialog::new().set_file_name(&attachment.name).save_file().await else { return Ok::<(), String>(()); };
+                    let result: Result<(), String> = async {
+                        #[cfg(not(target_os = "android"))]
+                        let Some(path) = crate::file_dialog::save_file(&attachment.name).await? else { return Ok::<(), String>(()); };
                         let mut data = None;
                         for _ in 0..100 {
                             if attachment.expires_ms.is_some_and(|ms| ms <= chrono::Utc::now().timestamp_millis()) { return Err("File expired".into()); }
@@ -491,7 +495,9 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                         let payload = data.strip_prefix("data:application/octet-stream;base64,").ok_or("Invalid file data")?;
                         let bytes = base64::engine::general_purpose::STANDARD.decode(payload).map_err(|_| "Invalid file data")?;
                         if bytes.len() as u64 != attachment.bytes || bytes.len() > 2_000_000 { return Err("Invalid file size".into()); }
-                        let path = selected.path().to_owned();
+                        #[cfg(target_os = "android")]
+                        crate::android::document(attachment.name.clone(), String::new(), Some(bytes)).await?;
+                        #[cfg(not(target_os = "android"))]
                         tokio::task::spawn_blocking(move || {
                             save_download(&path, &bytes)?;
                             open_download_folder(&path).map_err(|e| format!("The file was saved, but its folder could not be opened: {e}"))
@@ -515,6 +521,7 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn save_download(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -526,6 +533,7 @@ fn save_download(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
+#[cfg(not(target_os = "android"))]
 fn download_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let parent = path
         .parent()
@@ -537,6 +545,7 @@ fn download_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String>
     Ok(folder)
 }
 
+#[cfg(not(target_os = "android"))]
 fn open_download_folder(path: &std::path::Path) -> Result<(), String> {
     open_folder(&download_folder(path)?)
 }

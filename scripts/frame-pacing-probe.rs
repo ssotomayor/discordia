@@ -1,5 +1,4 @@
-use std::time::{Duration, Instant};
-
+// The included production file brings `Duration` and `Instant` with it.
 include!("frame_pacer_under_test.rs");
 
 fn measure(target: u32, source_hz: f64, jitter_us: u64, mut seed: u64) -> (usize, usize, f64) {

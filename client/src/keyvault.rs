@@ -52,6 +52,8 @@ impl Backend {
     pub fn describe(self) -> &'static str {
         match self {
             Backend::Keychain if cfg!(target_os = "macos") => "the macOS Keychain",
+            Backend::Keychain if cfg!(target_os = "ios") => "the iOS Keychain",
+            Backend::Keychain if cfg!(target_os = "android") => "Android Keystore",
             Backend::Keychain if cfg!(target_os = "windows") => "the Windows Credential Manager",
             Backend::Keychain => "the desktop's Secret Service",
             Backend::File => "a file in the config folder",
@@ -69,6 +71,12 @@ fn key_file_path() -> PathBuf {
 
 /// Where the passphrase lives. Decided once and remembered, because a backend
 /// that quietly changed between runs would leave every key on disk unreadable.
+#[cfg(target_os = "android")]
+pub fn backend() -> Backend {
+    Backend::Keychain
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn backend() -> Backend {
     if let Some(forced) = std::env::var(ENV_BACKEND)
         .ok()
@@ -123,6 +131,12 @@ fn fresh_passphrase() -> Zeroizing<String> {
 }
 
 /// The machine passphrase, created on first use.
+#[cfg(target_os = "android")]
+pub fn passphrase() -> Result<Zeroizing<String>, String> {
+    crate::android::vault_passphrase()
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn passphrase() -> Result<Zeroizing<String>, String> {
     match backend() {
         Backend::Keychain => {

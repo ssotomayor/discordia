@@ -1,11 +1,36 @@
 [application]
 name = "Discordia"
+android_main_activity = "android/MainActivity.kt"
 
 [web.app]
 title = "Discordia"
 
 [desktop]
 enable_dev_tools = true
+
+[android]
+min_sdk = 26
+target_sdk = 34
+compile_sdk = 34
+# MediaProjection may only open its virtual display under a running service of
+# this type (Android 14). The service itself is client/android/DioxusForegroundService.kt.
+foreground_service_types = ["mediaProjection"]
+
+[android.permissions."android.permission.RECORD_AUDIO"]
+description = "Voice calls and microphone testing"
+
+[android.permissions."android.permission.CAMERA"]
+description = "Camera preview and video in calls"
+
+[android.permissions."android.permission.MODIFY_AUDIO_SETTINGS"]
+description = "Voice audio routing and volume"
+
+[android.permissions."android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"]
+description = "Sharing your screen from a foreground service"
+
+[ios]
+deployment_target = "16.0"
+info_plist = "Info.plist"
 
 [bundle]
 display_name = "Discordia"

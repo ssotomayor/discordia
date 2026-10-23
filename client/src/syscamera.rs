@@ -1,9 +1,107 @@
 pub fn supported() -> bool {
-    cfg!(target_os = "windows")
+    cfg!(any(target_os = "android", target_os = "windows"))
 }
+
+#[cfg(target_os = "android")]
+pub use android::{Capture, devices, start};
 
 #[cfg(target_os = "windows")]
 pub use windows::{Capture, PreviewCommand, devices, preview_controller, start};
+
+#[cfg(target_os = "android")]
+mod android {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use livekit::webrtc::video_frame::VideoFrame;
+    use livekit::webrtc::video_source::native::NativeVideoSource;
+
+    use crate::camera_quality::CameraQuality;
+    use crate::state::CameraDevice;
+
+    pub struct Capture {
+        slot: u32,
+        pub device: CameraDevice,
+    }
+
+    impl Capture {
+        pub async fn stop(self) {
+            crate::android::unregister_frame_sink(self.slot);
+            crate::android::stop_camera_capture();
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            crate::android::unregister_frame_sink(self.slot);
+            crate::android::stop_camera_capture();
+        }
+    }
+
+    pub fn devices() -> Result<Vec<CameraDevice>, String> {
+        crate::android::camera_devices()
+    }
+
+    pub async fn start(
+        device: Option<String>,
+        source: NativeVideoSource,
+        quality: CameraQuality,
+        fatal: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<Capture, String> {
+        let quality = quality.normalized();
+        let available = crate::android::camera_devices()?;
+        let selected = match device {
+            Some(id) => available.into_iter().find(|camera| camera.id == id),
+            None => available.into_iter().next(),
+        }
+        .ok_or_else(|| {
+            "No available camera. Connect one or check camera permissions.".to_string()
+        })?;
+        let slot = crate::android::next_slot();
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let first = parking_lot::Mutex::new(Some(first_tx));
+        crate::android::register_frame_sink(
+            slot,
+            Arc::new(move |frame: crate::sysvideo::Frame| {
+                // The track is published after this capture opens, so the
+                // adapter drops frames until then; the camera is still live.
+                source.capture_frame(&VideoFrame {
+                    rotation: frame.rotation,
+                    timestamp_us: frame.timestamp_us,
+                    frame_metadata: None,
+                    buffer: frame.buffer,
+                });
+                if let Some(tx) = first.lock().take() {
+                    let _ = tx.send(());
+                }
+            }),
+            fatal,
+        );
+        let started = crate::android::start_camera_capture(
+            slot,
+            Some(selected.id.clone()),
+            quality.width(),
+            quality.height,
+            quality.fps,
+        )
+        .await;
+        if let Err(error) = started {
+            crate::android::unregister_frame_sink(slot);
+            return Err(error);
+        }
+        match tokio::time::timeout(Duration::from_secs(12), first_rx).await {
+            Ok(Ok(())) => Ok(Capture {
+                slot,
+                device: selected,
+            }),
+            _ => {
+                crate::android::unregister_frame_sink(slot);
+                crate::android::stop_camera_capture();
+                Err("the camera produced no frames".into())
+            }
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod windows {

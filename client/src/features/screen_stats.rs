@@ -2,7 +2,12 @@ use serde_json::Value;
 
 use crate::state::ScreenShareStats;
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
 pub(super) fn screen_device_limited(
     target_fps: f64,
     capture_fps: f64,

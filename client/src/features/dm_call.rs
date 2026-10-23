@@ -121,7 +121,20 @@ pub fn spawn_service(
         loop {
             tokio::select! {
                 command = rx.recv() => match command {
-                    Some(Command::Action(action)) => actor.action(action),
+                    Some(Command::Action(action)) => {
+                        #[cfg(target_os = "android")]
+                        if matches!(action, Action::Start(_) | Action::Accept)
+                            && let Err(error) = crate::android::prepare_voice().await
+                        {
+                            if matches!(action, Action::Accept) {
+                                actor.finish(EndReason::Failed, Some(&error));
+                            } else {
+                                actor.state.write().error_toast = Some(error);
+                            }
+                            continue;
+                        }
+                        actor.action(action);
+                    },
                     Some(Command::Incoming(incoming)) => actor.incoming(incoming),
                     Some(Command::Native { call_id, event }) => actor.native(call_id, event),
                     Some(Command::Published { call_id, accepted: false }) if actor.session.as_ref().is_some_and(|s| s.id == call_id) => actor.finish(EndReason::Failed, Some("The call signal could not reach a relay.")),
@@ -431,6 +444,8 @@ impl Actor {
     }
 
     fn prepare(&mut self, offer: Option<String>) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        crate::android::check_voice_ready()?;
         let factory = PeerConnectionFactory::default();
         let connection = factory
             .create_peer_connection(ice_configuration()?)

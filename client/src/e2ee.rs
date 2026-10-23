@@ -19,6 +19,45 @@ pub fn enabled() -> bool {
     })
 }
 
+pub async fn wait_for_key(
+    mut poll: impl FnMut() -> Result<Option<crate::mediakey::Held>, String>,
+) -> Result<crate::mediakey::Held, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(key) = poll()? {
+                return Ok(key);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        "The voice encryption key did not arrive. Leave and rejoin the channel.".to_string()
+    })?
+}
+
+/// Every room that publishes waits on this first: `register_room` leaves E2EE off
+/// without a key, and `room_options` would otherwise hand the provider its placeholder.
+pub async fn ensure_channel_key(
+    channel: crate::protocol::Id,
+    state: dioxus::prelude::Signal<crate::state::AppState>,
+) -> Result<(), String> {
+    if !enabled() {
+        return Ok(());
+    }
+    use dioxus::prelude::*;
+    let (epoch, key) = wait_for_key(|| {
+        let current = state.peek();
+        if current.server_voice_channel() != Some(channel) {
+            return Err("voice join cancelled".into());
+        }
+        Ok(current.media_keys.get(&channel).copied())
+    })
+    .await?;
+    apply_key(&key, epoch);
+    Ok(())
+}
+
 pub fn shared_key() -> Option<&'static str> {
     static KEY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     KEY.get_or_init(|| {
@@ -221,6 +260,35 @@ pub fn room_options() -> Option<livekit::e2ee::E2eeOptions> {
 #[cfg(test)]
 mod tests {
     use super::{RING_SLOTS, SCREEN_SLOT, rotating_slot, usable_key};
+
+    #[tokio::test]
+    async fn voice_waits_for_a_channel_key_instead_of_using_an_initial_placeholder() {
+        let key = (7, [42; crate::mediakey::KEY_LEN]);
+        let mut polls = 0;
+        let received = super::wait_for_key(|| {
+            polls += 1;
+            Ok((polls == 3).then_some(key))
+        })
+        .await
+        .unwrap();
+        assert_eq!(received, key);
+        assert_eq!(polls, 3);
+    }
+
+    #[tokio::test]
+    async fn leaving_a_channel_cancels_its_key_wait() {
+        let mut polls = 0;
+        let result = super::wait_for_key(|| {
+            polls += 1;
+            if polls == 1 {
+                Ok(None)
+            } else {
+                Err("voice join cancelled".into())
+            }
+        })
+        .await;
+        assert_eq!(result, Err("voice join cancelled".into()));
+    }
 
     #[test]
     fn consecutive_epochs_land_in_different_slots() {
