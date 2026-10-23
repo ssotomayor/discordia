@@ -280,6 +280,8 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Android SDK and NDK
         shell: bash
         run: |
