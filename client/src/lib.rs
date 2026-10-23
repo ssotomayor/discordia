@@ -70,8 +70,10 @@ mod voice_record;
 mod webview2;
 mod xp_ledger;
 
+#[cfg(target_os = "windows")]
+use crate::platform::tao::window::Icon;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::platform::{Config, WindowBuilder, tao::dpi::LogicalSize, tao::window::Icon};
+use crate::platform::{Config, WindowBuilder, tao::dpi::LogicalSize};
 use dioxus::LaunchBuilder;
 
 pub fn log_crate_root() -> &'static str {
