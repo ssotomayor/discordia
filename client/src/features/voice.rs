@@ -732,6 +732,21 @@ pub fn rtc_config(servers: &[IceServer]) -> RtcConfiguration {
     config
 }
 
+fn new_muted_microphone_track(source: NativeAudioSource) -> LocalAudioTrack {
+    let track = LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source));
+    track.mute();
+    track
+}
+
+fn apply_microphone_mute(track: &LocalAudioTrack, muted: &AtomicBool, value: bool) {
+    muted.store(value, Ordering::Relaxed);
+    if value {
+        track.mute();
+    } else {
+        track.unmute();
+    }
+}
+
 impl ActiveVoice {
     async fn connect(
         livekit_url: &str,
@@ -770,8 +785,7 @@ impl ActiveVoice {
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
         let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
-        let local_audio =
-            LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
+        let local_audio = new_muted_microphone_track(source.clone());
         let local_audio_for_mute = local_audio.clone();
         let red = !(cfg!(target_os = "android") && crate::e2ee::enabled());
         let mic_publication = match room
@@ -806,13 +820,7 @@ impl ActiveVoice {
         let (reference_tx, reference_rx) = crate::audio_queue::channel::<i16>();
         let (faults, faults_rx) = unbounded_channel::<AudioFault>();
         let meter = Arc::new(MicMeter::default());
-        let (start_muted, start_deafened) = {
-            let s = state.peek();
-            (s.voice.muted || s.voice.deafened, s.voice.deafened)
-        };
-        controls.deafened.store(start_deafened, Ordering::Relaxed);
-        let muted = Arc::new(AtomicBool::new(start_muted));
-        local_audio_for_mute.rtc_track().set_enabled(!start_muted);
+        let muted = Arc::new(AtomicBool::new(true));
         let gate_stats = Arc::new(GateStats::default());
         // Past the mic publish the room is live and nothing downstream owns it
         // yet, so every way out of here has to close it.
@@ -843,6 +851,13 @@ impl ActiveVoice {
             let _ = room.close().await;
             return Err(error);
         }
+        // DSP initialization yields; a mute changed during that wait must win before capture starts.
+        let (start_muted, start_deafened) = {
+            let s = state.peek();
+            (s.voice.muted || s.voice.deafened, s.voice.deafened)
+        };
+        controls.deafened.store(start_deafened, Ordering::Relaxed);
+        apply_microphone_mute(&local_audio_for_mute, &muted, start_muted);
         tokio::spawn(publish_loop(gated_rx, source.clone()));
         // A missing microphone no longer refuses the join: the track stays
         // published and silent until one appears.
@@ -1507,11 +1522,10 @@ impl ActiveVoice {
     }
 
     async fn set_muted(&mut self, muted: bool) {
-        self.muted.store(muted, Ordering::Relaxed);
+        apply_microphone_mute(&self.local_audio, &self.muted, muted);
         if let Some(mic) = &self.mic {
             mic.muted.store(muted, Ordering::Relaxed);
         }
-        self.local_audio.rtc_track().set_enabled(!muted);
     }
 
     /// Keeps the call alive across a device that came and went: refresh the
@@ -4202,6 +4216,27 @@ impl Drop for RemotePlaybackGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_track_starts_muted_before_publication() {
+        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let track = new_muted_microphone_track(source);
+        assert!(track.is_muted());
+        assert!(!track.is_enabled());
+    }
+
+    #[test]
+    fn microphone_mute_updates_dsp_native_track_and_publication_state() {
+        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let track = new_muted_microphone_track(source);
+        let muted = AtomicBool::new(true);
+        for value in [true, false, true] {
+            apply_microphone_mute(&track, &muted, value);
+            assert_eq!(muted.load(Ordering::Relaxed), value);
+            assert_eq!(track.is_muted(), value);
+            assert_eq!(track.is_enabled(), !value);
+        }
+    }
 
     #[test]
     fn microphone_overload_drains_input_and_keeps_new_audio_after_recovery() {
