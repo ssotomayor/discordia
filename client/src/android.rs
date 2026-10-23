@@ -291,6 +291,73 @@ pub async fn prepare_voice() -> Result<(), String> {
     .map_err(|_| "Microphone permission request timed out.".to_string())?
 }
 
+pub struct BackgroundCall {
+    slot: u32,
+}
+
+impl BackgroundCall {
+    pub async fn start() -> Result<Self, String> {
+        let guard = Self { slot: next_slot() };
+        let slot = guard.slot;
+        let started = on_ui(move |env, activity| {
+            env.call_method(
+                activity,
+                "startVoiceService",
+                "(I)Z",
+                &[JValue::Int(slot as i32)],
+            )
+            .and_then(|value| value.z())
+            .map_err(system_error)
+        })
+        .await?;
+        if !started {
+            return Err("Android could not keep this call active in the background. Open the app and try again.".into());
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let result = on_ui(move |env, activity| {
+                    env.call_method(
+                        activity,
+                        "voiceServiceResult",
+                        "(I)I",
+                        &[JValue::Int(slot as i32)],
+                    )
+                    .and_then(|value| value.i())
+                    .map_err(system_error)
+                })
+                .await?;
+                match result {
+                    1 => return Ok(()),
+                    -1 => return Err(
+                        "Android refused the call foreground service. Open the app and try again."
+                            .to_string(),
+                    ),
+                    _ => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| "Android call foreground service timed out.".to_string())??;
+        Ok(guard)
+    }
+}
+
+impl Drop for BackgroundCall {
+    fn drop(&mut self) {
+        let slot = self.slot;
+        crate::platform::wry::prelude::dispatch(move |env, activity, _| {
+            if let Err(error) = env.call_method(
+                activity,
+                "stopVoiceService",
+                "(I)V",
+                &[JValue::Int(slot as i32)],
+            ) {
+                tracing::warn!(%error, "Android call foreground service cleanup failed");
+            }
+        });
+    }
+}
+
 fn system_error(error: jni::errors::Error) -> String {
     format!("Android system call failed: {error}")
 }
@@ -804,19 +871,34 @@ pub async fn start_camera_capture(
     }
 }
 
-pub fn stop_screen_share() {
-    dispatch_capture("stopScreenShare");
+pub fn stop_screen_share(slot: u32) {
+    dispatch_capture("stopScreenShareSlot", slot);
 }
 
-pub fn stop_camera_capture() {
-    dispatch_capture("stopCameraCapture");
+pub fn stop_camera_capture(slot: u32) {
+    dispatch_capture("stopCameraCaptureSlot", slot);
+}
+
+pub async fn stop_camera_capture_wait(slot: u32) -> Result<(), String> {
+    on_ui(move |env, activity| {
+        env.call_method(
+            activity,
+            "stopCameraCaptureSlot",
+            "(I)V",
+            &[JValue::Int(slot as jint)],
+        )
+        .map(|_| ())
+        .map_err(system_error)
+    })
+    .await
 }
 
 /// Stopping a capturer touches its own handler thread, so it is posted to the UI
 /// thread and never waited on: callers may be dropping a publication.
-fn dispatch_capture(method: &'static str) {
+fn dispatch_capture(method: &'static str, slot: u32) {
     crate::platform::wry::prelude::dispatch(move |env, activity, _| {
-        if let Err(error) = env.call_method(activity, method, "()V", &[]) {
+        if let Err(error) = env.call_method(activity, method, "(I)V", &[JValue::Int(slot as jint)])
+        {
             tracing::warn!(%error, "Couldn't stop an Android capture");
         }
         if let Err(error) = env.exception_clear() {

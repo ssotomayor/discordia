@@ -116,6 +116,15 @@ struct AudioControls {
     soundboard_pct: Arc<AtomicU32>,
 }
 
+#[derive(Clone)]
+pub(super) struct StreamPlaybackControls(Arc<Mutex<HashMap<String, f32>>>);
+
+impl StreamPlaybackControls {
+    pub(super) fn apply(&self, gains: &[(String, f32)]) {
+        *self.0.lock() = gains.iter().cloned().collect();
+    }
+}
+
 impl AudioControls {
     fn mic_config(&self) -> crate::mic_profile::Config {
         let processing = self.processing.lock();
@@ -323,8 +332,10 @@ mod voice_endpoints;
 
 pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd> {
     let (tx, rx) = unbounded_channel::<VoiceCmd>();
+    let controls = AudioControls::from_state(&state.read());
+    provide_context(StreamPlaybackControls(controls.stream_gains.clone()));
     spawn(async move {
-        if let Err(e) = service_loop(rx, state).await {
+        if let Err(e) = service_loop(rx, state, controls).await {
             tracing::error!(error = %e, "voice service loop ended");
         }
     });
@@ -334,10 +345,10 @@ pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd>
 async fn service_loop(
     mut rx: UnboundedReceiver<VoiceCmd>,
     mut state: Signal<AppState>,
+    controls: AudioControls,
 ) -> Result<(), String> {
     let mut session: Option<ActiveVoice> = None;
     let mut last_connect: Option<(String, String, Id, Vec<IceServer>)> = None;
-    let controls = AudioControls::from_state(&state.read());
 
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -674,6 +685,8 @@ async fn restart_session(
 }
 
 struct ActiveVoice {
+    #[cfg(target_os = "android")]
+    _background_call: crate::android::BackgroundCall,
     room: Arc<Room>,
     mic: Option<MicCapture>,
     muted: Arc<AtomicBool>,
@@ -733,6 +746,8 @@ impl ActiveVoice {
             crate::android::check_voice_ready()?;
             crate::android::check_microphone_permission()?;
         }
+        #[cfg(target_os = "android")]
+        let background_call = crate::android::BackgroundCall::start().await?;
         // Publishing before the channel key arrives can strand peers' decryptors after the first key swap.
         crate::e2ee::ensure_channel_key(channel_id, state).await?;
         let mut options = RoomOptions::default();
@@ -1114,6 +1129,8 @@ impl ActiveVoice {
         );
 
         let active = Self {
+            #[cfg(target_os = "android")]
+            _background_call: background_call,
             room,
             mic,
             muted,

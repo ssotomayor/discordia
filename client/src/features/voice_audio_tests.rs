@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn stream_controls_reach_the_mixer_without_polling_the_voice_command_loop() {
+    let controls = AudioControls::from_state(&AppState::empty());
+    let playback = StreamPlaybackControls(controls.stream_gains.clone());
+    playback.apply(&[("stream".into(), 0.35)]);
+    assert_eq!(controls.stream_gains.lock().get("stream"), Some(&0.35));
+    playback.apply(&[("stream".into(), 0.0)]);
+    assert_eq!(controls.stream_gains.lock().get("stream"), Some(&0.0));
+    playback.apply(&[]);
+    assert!(controls.stream_gains.lock().is_empty());
+}
+
+#[test]
 fn overlapping_voice_stream_and_soundboard_are_limited_after_their_volumes() {
     for rate in [44_100, 48_000, 96_000] {
         let mut tracks = MixerTracks::default();

@@ -202,7 +202,7 @@ Implementa el plan de §13 y lo extiende a la cámara: **la publicación es 100%
 
 Decisiones:
 
-- **Android 14 exige un FGS de tipo `mediaProjection`** antes de que la proyección cree su display virtual. Se inicia *antes* del diálogo de consentimiento, así ya está corriendo cuando llega el resultado, y se detiene al terminar el share.
+- **Android 14 exige un FGS de tipo `mediaProjection`** antes de crear el display virtual. Orden actual: consentimiento → servicio confirmado → capturador; parar el share conserva otros medios activos.
 - `sysvideo::supported()` y `syscamera::supported()` son `true` en Android: la UI entra por la ruta nativa sin tocar `screenshare.rs`/`camera.rs` más allá del picker.
 - El selector de fuentes se salta en Android (`open_screen_picker` va directo a `choose_source` con `Target::AndroidScreen`): no hay miniatura sin arrancar la proyección.
 - El diálogo de cámara no previsualiza: la cámara no se puede abrir dos veces y el WebView retendría el dispositivo que necesita la publicación. La vista propia sale de la pista publicada.
@@ -565,3 +565,14 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - Checks: `cargo check --workspace` exit 0 (solo warning del bundle SFU); check Android exit 0 con **37** warnings del cliente (sin nuevos); `cargo fmt --all -- --check` y `git diff --check` aprobados.
 - Pendiente físico: build del APK por `scripts/build-android.py`, `adb install -r` y prueba de cámara (preview + publicación en llamada) y de voz entre dos equipos. Esta entrega no la sustituye. Sin dependencias nuevas.
 - Rama `mobile-platform-support`, cambios locales sin publicar; no se borró identidad, Keystore ni datos del servidor de prueba.
+
+### Revisión y rendimiento (2026-10-23)
+
+- Base actual `5b853c4`; se conservaron los avances de cámara/pantalla nativas. Errores, alcance y mediciones reproducibles en [ANDROID_REVIEW.md](ANDROID_REVIEW.md).
+- Corregidos: orden consentimiento/servicio de MediaProjection, referencia I420, doble parada/callbacks de capturas viejas, limpieza al cancelar y bloqueo del empaquetador por pipes de Gradle.
+- APK corregido compilado, validado e instalado con `adb install -r`. En Moto g15/API 35, Inicio debug pasó de CPU mediana 153.3% a 10.0% (18.7% después de repetir Ajustes), eliminando animación decorativa continua móvil de logo/globo. 100% = un núcleo; no incluye renderer aislado.
+- Se midieron Inicio y diez ciclos de Ajustes, repetidos. No equivale a rendimiento release ni valida voz/cámara/pantalla después de estas correcciones; fases A/E/F siguen abiertas. Sin commits ni publicación de esta revisión.
+- Chat/Canales retenidos: medianas de 837→121 ms y 401→116 ms en el mismo canal caliente. Cabecera de una fila, Guardados solo en Chat dentro del workspace, hora/batería visibles por pedido del usuario.
+- Carga directa de identidad activa con comprobación criptográfica y migración sin descifrados redundantes: arranque debug de proceso frío 4.46→2.8–3.3 s (3 muestras/lote); reapertura sin mejora demostrada. Detalles y límites en el informe de revisión.
+- Segundo plano: servicio común `microphone|camera|mediaProjection`, tipos según uso y wake lock acotado al servicio; voz/cámara esperan confirmación, detener un medio conserva los demás. APK instalado 10:40:18; usuario confirma voz audible y recepción de cámara/pantalla desde la PC al cambiar de app. ADB verifica servicio/wake lock/mismo PID durante ~2 min, incluida pantalla en Dozing en voz. Llamadas largas y video con pantalla bloqueada sin validar; no garantiza supervivencia frente a cierre forzado/fabricante ni reinicia capturas sin consentimiento.
+- Visor móvil: espacio 16:9 desde conexión, controles táctiles de 44 px y volumen directo al mezclador. Preview de cámara Android local y nativa, con rotación, cola de un frame y liberación antes de publicar; usuario confirma imagen y mejor respuesta de audio. Muestreo 1440p/60 muestra presión intermitente real; comparación 1080p/30 y límites en el informe de revisión.

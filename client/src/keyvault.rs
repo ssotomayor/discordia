@@ -172,7 +172,19 @@ pub fn passphrase() -> Result<Zeroizing<String>, String> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static DERIVATIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn derivation_count() -> u32 {
+    DERIVATIONS.with(|count| count.get())
+}
+
 fn derive(passphrase: &str, salt: &[u8], log_n: u8) -> Result<Zeroizing<[u8; 32]>, String> {
+    #[cfg(test)]
+    DERIVATIONS.with(|count| count.set(count.get() + 1));
     // The passphrase is hex we generated, so NIP-49's NFKC step is the identity.
     let params = scrypt::Params::new(log_n, 8, 1, 32).map_err(|e| format!("scrypt: {e}"))?;
     let mut key = Zeroizing::new([0u8; 32]);

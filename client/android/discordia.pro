@@ -1,0 +1,3 @@
+-keep class dev.dioxus.main.** { *; }
+-keep class com.discordia.app.DioxusForegroundService { *; }
+-keep class livekit.org.webrtc.** { *; }

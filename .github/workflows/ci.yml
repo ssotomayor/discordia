@@ -36,6 +36,10 @@ jobs:
           node-version: "22"
       - name: Critical chat and attachment mutations
         run: node scripts/test-bridge-mutations.cjs
+      - name: Mobile rendering and measurement regressions
+        run: |
+          node scripts/test-globe.mjs
+          node scripts/test-measure-android.mjs
 
   test:
     name: fmt · clippy · test

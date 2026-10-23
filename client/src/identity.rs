@@ -247,6 +247,15 @@ impl Identity {
                 active.version, ACTIVE_VERSION
             ));
         }
+        // The filename only locates a candidate; its decrypted key must still match the pointer.
+        if active.active.len() == 64
+            && active.active.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && let Ok(identity) =
+                Self::from_file(&identities_dir().join(format!("{}.json", active.active)))
+            && identity.pubkey == active.active
+        {
+            return Ok(Some(identity));
+        }
         match detected().into_iter().find(|f| f.pubkey == active.active) {
             Some(found) => Self::from_file(&found.path).map(Some),
             // The key it named is gone, so the pointer is a dead end, not an
@@ -331,8 +340,8 @@ impl Identity {
 /// pubkey — the folder wins over a copy left loose in the config directory.
 pub fn detected() -> Vec<FoundIdentity> {
     let mut found = Vec::new();
-    collect_from(&identities_dir(), &mut found);
-    collect_from(&config_dir(), &mut found);
+    collect_from(&identities_dir(), &mut found, None);
+    collect_from(&config_dir(), &mut found, None);
     found.sort_by(|a, b| {
         a.display_name
             .to_lowercase()
@@ -372,7 +381,7 @@ pub struct FoundIdentity {
     pub path: PathBuf,
 }
 
-fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
+fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>, version: Option<u32>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
@@ -402,6 +411,9 @@ fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
                 continue;
             }
         };
+        if version.is_some_and(|version| stored.version != version) {
+            continue;
+        }
         if let Some(reason) = stored.rejection() {
             tracing::warn!(path = %path.display(), reason, "key file skipped");
             continue;
@@ -428,7 +440,7 @@ fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
 /// runs with it, so the plaintext stops existing without anyone signing in.
 fn encrypt_plaintext_files() {
     let mut found = Vec::new();
-    collect_from(&identities_dir(), &mut found);
+    collect_from(&identities_dir(), &mut found, Some(PLAINTEXT_FILE_VERSION));
     for f in found {
         let Ok(content) = std::fs::read_to_string(&f.path) else {
             continue;
@@ -781,6 +793,36 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
 #[cfg(test)]
 mod store_tests {
     use super::*;
+
+    #[test]
+    fn active_key_opens_once_without_decrypting_other_saved_accounts() {
+        sandbox("active-key-once");
+        let active = Identity::restore_from_private_key("22".repeat(32), "active").unwrap();
+        active.save().unwrap();
+        Identity::restore_from_private_key("33".repeat(32), "other")
+            .unwrap()
+            .save()
+            .unwrap();
+        set_active(&active.pubkey).unwrap();
+        let before = crate::keyvault::derivation_count();
+        assert_eq!(Identity::load().unwrap().unwrap().pubkey, active.pubkey);
+        assert_eq!(crate::keyvault::derivation_count() - before, 1);
+    }
+
+    #[test]
+    fn active_filename_cannot_substitute_another_accounts_key() {
+        sandbox("active-key-substitution");
+        let active = Identity::restore_from_private_key("22".repeat(32), "active").unwrap();
+        active.save().unwrap();
+        let other = Identity::restore_from_private_key("33".repeat(32), "other").unwrap();
+        other.save().unwrap();
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(other.key_path()).unwrap()).unwrap();
+        stored["pubkey"] = serde_json::json!(active.pubkey);
+        std::fs::write(active.key_path(), stored.to_string()).unwrap();
+        set_active(&active.pubkey).unwrap();
+        assert!(Identity::load().unwrap().is_none());
+    }
 
     #[test]
     fn detected_encrypted_keys_ignore_claimed_pubkeys_and_deduplicate_by_secret() {

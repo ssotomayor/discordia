@@ -10,6 +10,9 @@ import android.content.res.Configuration
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ResultReceiver
 import android.view.WindowManager
 import livekit.org.webrtc.Camera2Enumerator
 import livekit.org.webrtc.CameraVideoCapturer
@@ -75,11 +78,51 @@ class MainActivity : WryActivity() {
     private var cameraCapturer: CameraVideoCapturer? = null
     private var cameraHelper: SurfaceTextureHelper? = null
     private var cameraEgl: EglBase? = null
+    private var voiceSlot = -1
+    private var voiceServiceResult = 0
+    private var projectionActive = false
 
-    private val cameraEvents = object : CameraVideoCapturer.CameraEventsHandler {
+    private fun updateMediaService(ready: ResultReceiver? = null): Boolean {
+        val intent = foregroundServiceIntent() ?: return false
+        if (voiceSlot < 0 && cameraSlot < 0 && !projectionActive) {
+            stopService(intent)
+            return true
+        }
+        intent.putExtra("microphone", voiceSlot >= 0)
+        intent.putExtra("camera", cameraSlot >= 0)
+        intent.putExtra("projection", projectionActive)
+        if (ready != null) intent.putExtra("ready", ready)
+        return try {
+            startForegroundService(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun startVoiceService(slot: Int): Boolean {
+        voiceSlot = slot
+        voiceServiceResult = 0
+        return updateMediaService(object : ResultReceiver(Handler(Looper.getMainLooper())) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (voiceSlot == slot) voiceServiceResult = resultCode
+            }
+        })
+    }
+
+    fun voiceServiceResult(slot: Int): Int = if (voiceSlot == slot) voiceServiceResult else -1
+
+    fun stopVoiceService(slot: Int) {
+        if (voiceSlot != slot) return
+        voiceSlot = -1
+        voiceServiceResult = 0
+        updateMediaService()
+    }
+
+    private fun cameraEvents(slot: Int) = object : CameraVideoCapturer.CameraEventsHandler {
         override fun onCameraError(errorDescription: String) {
-            val slot = cameraSlot
             runOnUiThread {
+                if (cameraSlot != slot) return@runOnUiThread
                 stopCameraCapture()
                 if (slot >= 0) onCaptureStopped(slot)
             }
@@ -113,9 +156,8 @@ class MainActivity : WryActivity() {
                     i420.width, i420.height, frame.rotation, frame.timestampNs,
                 )
             } finally {
-                // The capturer releases the frame itself (SurfaceTextureHelper
-                // right after onFrame); releasing it here aborts its thread.
-                if (i420 !== source) i420.release()
+                // toI420 retains even when it returns the original buffer.
+                i420.release()
             }
         }
     }
@@ -153,15 +195,11 @@ class MainActivity : WryActivity() {
         screenRequestCode = if (screenRequestCode == 65535) 700 else screenRequestCode + 1
         return try {
             screenPending = true
-            // Android 14 only lets a projection open its display under a running
-            // service of this type, so it starts before the consent dialog.
-            foregroundServiceIntent()?.let { startForegroundService(it) }
             startActivityForResult(manager.createScreenCaptureIntent(), screenRequestCode)
             true
         } catch (error: Exception) {
             screenPending = false
             screenResult = -1
-            foregroundServiceIntent()?.let { stopService(it) }
             false
         }
     }
@@ -177,8 +215,9 @@ class MainActivity : WryActivity() {
         screenFps = fps.coerceAtLeast(1)
         val granted = screenGrant
         if (granted != null) {
+            screenGrant = null
             screenResult = 0
-            return startScreenCapturer(granted)
+            return startProjectionService(granted)
         }
         screenWanted = true
         return launchScreenConsent()
@@ -200,25 +239,50 @@ class MainActivity : WryActivity() {
         }
     }
 
+    private fun startProjectionService(grant: Intent): Boolean {
+        val slot = screenSlot
+        screenPending = true
+        projectionActive = true
+        val started = updateMediaService(object : ResultReceiver(Handler(Looper.getMainLooper())) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (screenSlot != slot || !screenPending) return
+                screenPending = false
+                if (resultCode == 1) {
+                    startScreenCapturer(grant)
+                } else {
+                    stopScreenShare()
+                    screenResult = -1
+                }
+            }
+        })
+        if (!started) {
+            stopScreenShare()
+            screenResult = -1
+        }
+        return started
+    }
+
     private fun startScreenCapturer(grant: Intent): Boolean = try {
+        val slot = screenSlot
         val egl = EglBase.create()
+        screenEgl = egl
         val helper = SurfaceTextureHelper.create("discordia-screen", egl.eglBaseContext)
+        screenHelper = helper
         val capturer = ScreenCapturerAndroid(grant, object : MediaProjection.Callback() {
             override fun onStop() {
-                val stopped = screenSlot
+                val stopped = slot
                 // The framework delivers this on its own thread; the
                 // capturer's own teardown belongs on the UI thread.
                 runOnUiThread {
+                    if (stopped < 0 || screenSlot != stopped) return@runOnUiThread
                     stopScreenShare()
                     if (stopped >= 0) onCaptureStopped(stopped)
                 }
             }
         })
+        screenCapturer = capturer
         capturer.initialize(helper, applicationContext, observer(screenSlot))
         capturer.startCapture(screenWidth, screenHeight, screenFps)
-        screenEgl = egl
-        screenHelper = helper
-        screenCapturer = capturer
         screenGrant = null
         screenResult = 1
         true
@@ -229,6 +293,10 @@ class MainActivity : WryActivity() {
     }
 
     fun takeScreenShareResult(): Int = screenResult
+
+    fun stopScreenShareSlot(slot: Int) {
+        if (screenSlot == slot) stopScreenShare()
+    }
 
     /// dx copies only this activity into its project, so the service it declares
     /// in the manifest is resolved by name instead of imported.
@@ -265,7 +333,8 @@ class MainActivity : WryActivity() {
             projection?.stop()
         } catch (_: Exception) {
         }
-        foregroundServiceIntent()?.let { stopService(it) }
+        projectionActive = false
+        updateMediaService()
     }
 
     /// The camera list is front-facing first, so "Default camera" is the one a
@@ -292,21 +361,36 @@ class MainActivity : WryActivity() {
     }
 
     fun startCameraCapture(slot: Int, device: String?, width: Int, height: Int, fps: Int): Boolean {
-        if (cameraCapturer != null) return false
+        if (cameraSlot >= 0) return false
+        cameraSlot = slot
+        val started = updateMediaService(object : ResultReceiver(Handler(Looper.getMainLooper())) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (cameraSlot != slot) return
+                if (resultCode != 1 || !startCameraCapturer(slot, device, width, height, fps)) {
+                    stopCameraCapture()
+                    onCaptureStopped(slot)
+                }
+            }
+        })
+        if (!started) stopCameraCapture()
+        return started
+    }
+
+    private fun startCameraCapturer(slot: Int, device: String?, width: Int, height: Int, fps: Int): Boolean {
         return try {
             val enumerator = Camera2Enumerator(this)
             val name = device?.takeIf { enumerator.deviceNames.contains(it) }
                 ?: enumerator.deviceNames.firstOrNull()
                 ?: return false
-            val capturer = enumerator.createCapturer(name, cameraEvents) ?: return false
+            val capturer = enumerator.createCapturer(name, cameraEvents(slot)) ?: return false
+            cameraSlot = slot
+            cameraCapturer = capturer
             val egl = EglBase.create()
+            cameraEgl = egl
             val helper = SurfaceTextureHelper.create("discordia-camera", egl.eglBaseContext)
+            cameraHelper = helper
             capturer.initialize(helper, applicationContext, observer(slot))
             capturer.startCapture(width.coerceAtLeast(2), height.coerceAtLeast(2), fps.coerceAtLeast(1))
-            cameraEgl = egl
-            cameraHelper = helper
-            cameraCapturer = capturer
-            cameraSlot = slot
             true
         } catch (error: Exception) {
             stopCameraCapture()
@@ -331,6 +415,11 @@ class MainActivity : WryActivity() {
         cameraHelper = null
         cameraEgl?.release()
         cameraEgl = null
+        updateMediaService()
+    }
+
+    fun stopCameraCaptureSlot(slot: Int) {
+        if (cameraSlot == slot) stopCameraCapture()
     }
 
     fun startDocument(request: String, name: String, extensions: String, bytes: ByteArray?) {
@@ -386,17 +475,18 @@ class MainActivity : WryActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == screenRequestCode) {
+            if (!screenPending) return
             screenPending = false
             if (resultCode != RESULT_OK || data == null) {
+                stopScreenShare()
                 screenResult = -1
-                screenWanted = false
                 return
             }
             // A plain request keeps the grant for the share that follows; a
             // share already waiting for it opens the capturer here.
             if (screenWanted) {
                 screenWanted = false
-                startScreenCapturer(data)
+                startProjectionService(data)
             } else {
                 screenGrant = data
                 screenResult = 1
@@ -500,6 +590,14 @@ class MainActivity : WryActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+    }
+
+    override fun onDestroy() {
+        voiceSlot = -1
+        stopScreenShare()
+        stopCameraCapture()
+        documentRequest?.let { cancelDocument(it) }
+        super.onDestroy()
     }
 
     // The page is served over https (dioxus.index.html) while the gateway mints the
