@@ -2932,6 +2932,10 @@ pub fn ScreenWatchWindow() -> Element {
     let mut focused = use_signal::<Option<String>>(|| None);
     let viewing = use_memo(move || state.read().screen_viewing.clone());
     let mut fullscreen = use_signal::<Option<String>>(|| None);
+    super::stream_viewer::use_fullscreen_escape(use_callback(move |_| {
+        fullscreen.set(None);
+        focused.set(None);
+    }));
     let mut was_fullscreen = use_signal(|| false);
     let window = crate::platform::use_window();
     let original_fullscreen = use_hook({

@@ -168,6 +168,7 @@ jobs:
           node client/tests/chat_attachment_bridge.cjs
           node client/tests/chat_composer.cjs
           node --test client/tests/text_menu.cjs
+          node --test client/tests/stream_fullscreen.cjs
           node client/tests/native_ui_bridges.cjs
           node client/tests/activity_sdk.cjs
           node client/tests/activity_rps.cjs

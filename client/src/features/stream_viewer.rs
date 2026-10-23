@@ -314,6 +314,10 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let mut focused = use_signal::<Option<String>>(|| None);
     let pinned = use_signal(|| false);
     let mut fullscreen = use_signal(|| false);
+    use_fullscreen_escape(use_callback(move |_| {
+        fullscreen.set(false);
+        focused.set(None);
+    }));
     let mut status = use_signal(|| "Connecting…".to_owned());
     let mut active_generation = use_signal(|| 0_u64);
     let window = crate::platform::use_window();
@@ -510,6 +514,19 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
             }
         }
     }
+}
+
+pub(super) fn use_fullscreen_escape(on_escape: EventHandler<()>) {
+    use_drop(|| {
+        document::eval("window.__dxfStreamEscapeOff?.();");
+    });
+    use_future(move || async move {
+        // Keyboard input focused in the WebView may never reach Tao's window handler.
+        let mut eval = document::eval(include_str!("../../assets/stream-fullscreen-keys.js"));
+        while eval.recv::<()>().await.is_ok() {
+            on_escape.call(());
+        }
+    });
 }
 
 #[derive(Clone, Props)]
