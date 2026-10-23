@@ -15,6 +15,13 @@ use crate::state::{ConnectionStatus, SessionParams, VoicePhase, use_app_state, u
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MobileTab {
+    Channels,
+    Chat,
+    Members,
+}
+
 fn persist_layout(
     mut settings: Signal<crate::settings::ClientSettings>,
     layout: dioxus_grid_layout::LayoutStore,
@@ -494,6 +501,35 @@ pub fn WorkspaceView(
 
     let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
+    let mut mobile_tab = use_signal(|| MobileTab::Chat);
+    let mut activities_open = use_signal(|| false);
+    let mut is_mobile = use_signal(|| cfg!(any(target_os = "android", target_os = "ios")));
+
+    use_effect(move || {
+        let mut eval = document::eval(
+            r#"
+            const mql = window.matchMedia('(max-width: 768px)');
+            dioxus.send(mql.matches);
+            mql.addEventListener('change', (e) => dioxus.send(e.matches));
+        "#,
+        );
+        spawn(async move {
+            while let Ok(matches) = eval.recv::<bool>().await {
+                is_mobile.set(cfg!(any(target_os = "android", target_os = "ios")) || matches);
+            }
+        });
+    });
+
+    let mut last_selected_ch = use_signal(|| state.peek().selected_channel);
+    use_effect(move || {
+        let current = state.read().selected_channel;
+        if current != *last_selected_ch.peek() {
+            last_selected_ch.set(current);
+            if is_mobile() {
+                mobile_tab.set(MobileTab::Chat);
+            }
+        }
+    });
 
     let guild_accent_style = {
         let keep_mine = use_context::<Signal<crate::settings::ClientSettings>>()
@@ -543,10 +579,24 @@ pub fn WorkspaceView(
     } else {
         ""
     };
+    // An `if` is not a valid formatted segment, so the active/inactive nav class
+    // is resolved here and interpolated as a plain identifier.
+    let mobile_nav_class = |tab: MobileTab| {
+        if mobile_tab() == tab {
+            "text-[var(--accent)] font-semibold"
+        } else {
+            "text-[var(--text-muted)] hover:text-[var(--text)]"
+        }
+    };
+    let mobile_class = if is_mobile() {
+        "dxf-workspace-mobile"
+    } else {
+        ""
+    };
 
     rsx! {
-        div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
-            style: "{guild_accent_style}",
+        div { class: "h-full w-full min-w-0 flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad} {mobile_class}",
+            style: "{guild_accent_style}; padding-top: max(var(--safe-top), 0.5rem); padding-left: max(var(--safe-left), 0.5rem); padding-right: max(var(--safe-right), 0.5rem);",
             onpointerdown: move |_| {
                 if state.peek().soundboard_open { state.write().soundboard_open = false; }
             },
@@ -595,7 +645,7 @@ pub fn WorkspaceView(
                     super::server_rail::AddServerDialog {}
                 },
             }
-            crate::features::activities::ActivityHost {}
+            crate::features::activities::ActivityHost { picker: activities_open, mobile: is_mobile() }
             crate::presence::PresenceService {}
             crate::features::leveling::XpLedgerService {}
             crate::features::screenshare::ScreenShareBridge {}
@@ -625,10 +675,10 @@ pub fn WorkspaceView(
             GuildDialogHost {}
             crate::features::guilds::RulesPromptDialog {}
 
-            div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
+            div { class: "dxf-workspace-header dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                 onmousedown: move |_| crate::app::start_window_drag(),
                 if !cfg!(target_os = "windows") {
-                    div { class: "shrink-0 flex items-center gap-2 px-1",
+                    div { class: "dxf-workspace-brand shrink-0 flex items-center gap-2 px-1",
                         crate::app::DiscordiaLogo { class: "w-6 h-6" }
                         span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
                     }
@@ -637,7 +687,7 @@ pub fn WorkspaceView(
                 // One chip: what the connection is, and the button that ends it.
                 // Named, so it is never read as the voice hang-up downstairs.
                 div {
-                    class: "dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
+                    class: "dxf-connection-controls dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
                     onmousedown: move |e| e.stop_propagation(),
                     TransportBadge {}
                     VoiceRouteBadge {}
@@ -648,16 +698,19 @@ pub fn WorkspaceView(
                     button {
                         class: "h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                         title: crate::i18n::text("Disconnect from this server", &[]),
+                        aria_label: crate::i18n::text("Disconnect from this server", &[]),
                         onclick: move |_| leave(String::new()),
                         span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
-                        {crate::i18n::text("Disconnect", &[])}
+                        span { class: "dxf-disconnect-label", {crate::i18n::text("Disconnect", &[])} }
                     }
                 }
                 // Settings and appearance sit in the corner of the window, not
                 // beside your name: they are about the app, not about you.
-                div { class: "dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
+                div { class: "dxf-workspace-tools dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
                     onmousedown: move |e| e.stop_propagation(),
-                    LayoutButton { layout, settings, edit_mode }
+                    if !is_mobile() {
+                        LayoutButton { layout, settings, edit_mode }
+                    }
                     super::bookmarks::BookmarksButton {}
                     crate::features::appearance::AppearanceButton {}
                     button {
@@ -672,30 +725,98 @@ pub fn WorkspaceView(
                 }
             }
 
-            div { class: "flex-1 overflow-auto min-h-0",
-                GridLayout {
-                    cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
-                    store: layout, editable: edit_mode(),
-                    mode: LayoutMode::Free,
-                    on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
-                    GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
-                        GuildsSidebar {}
-                    }
-                    GridItem { id: "channels", x: 1, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
-                        ChannelsColumn {}
-                    }
-                    crate::features::screenshare::ScreenWatchWindow {}
-                    GridItem { id: "chat", x: 3, y: 0, w: 7, h: GRID_ROWS, min_w: 3, min_h: 4,
-                        // The log is the darkest surface in the window: the
-                        // panels around it read as chrome only if they sit above it.
-                        div { class: "panel-hover w-full h-full flex flex-col bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden",
-                            ChatView {}
+            if is_mobile() {
+                div { class: "flex-1 min-h-0 min-w-0 flex flex-col h-full w-full overflow-hidden",
+                        div { class: "flex-1 min-h-0 w-full overflow-hidden relative",
+                            match mobile_tab() {
+                                MobileTab::Channels => rsx! {
+                                    div { class: "flex h-full w-full overflow-hidden bg-[var(--bg)]",
+                                        div { class: "w-16 shrink-0 h-full border-r border-[var(--border)] overflow-y-auto flex flex-col items-center py-2",
+                                            GuildsSidebar {}
+                                        }
+                                        div { class: "flex-1 min-w-0 h-full overflow-hidden bg-[var(--panel-solid)]",
+                                            ChannelsColumn {}
+                                        }
+                                    }
+                                },
+                                MobileTab::Chat => rsx! {
+                                    div { class: "flex flex-col h-full w-full overflow-hidden bg-[var(--bg)]",
+                                        crate::features::screenshare::ScreenWatchWindow {}
+                                        div { class: "flex-1 min-h-0 h-full flex flex-col overflow-hidden",
+                                            ChatView {}
+                                        }
+                                    }
+                                },
+                                MobileTab::Members => rsx! {
+                                    div { class: "h-full w-full overflow-hidden bg-[var(--panel-solid)] flex flex-col",
+                                        div { class: "h-11 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0",
+                                            button {
+                                                class: "text-xs text-[var(--accent)] flex items-center gap-1 dxf-touch-target",
+                                                onclick: move |_| mobile_tab.set(MobileTab::Chat),
+                                                "← ", {crate::i18n::text("Back to chat", &[])}
+                                            }
+                                        }
+                                        div { class: "flex-1 min-h-0 overflow-y-auto",
+                                            MembersPanel {}
+                                        }
+                                    }
+                                },
+                            }
+                        }
+                        div {
+                            class: "dxf-mobile-nav shrink-0 flex items-center justify-around border-t border-[var(--border)] bg-[var(--panel2)] z-30 select-none",
+                            style: "padding-bottom: max(var(--safe-bottom), 6px); height: calc(52px + var(--safe-bottom));",
+                            button {
+                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs transition-colors {mobile_nav_class(MobileTab::Channels)}",
+                                onclick: move |_| mobile_tab.set(MobileTab::Channels),
+                                span { class: "text-lg leading-none", "☰" }
+                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Channels", &[])} }
+                            }
+                            button {
+                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs transition-colors {mobile_nav_class(MobileTab::Chat)}",
+                                onclick: move |_| mobile_tab.set(MobileTab::Chat),
+                                span { class: "text-lg leading-none", "💬" }
+                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Chat", &[])} }
+                            }
+                            button {
+                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs transition-colors {mobile_nav_class(MobileTab::Members)}",
+                                onclick: move |_| mobile_tab.set(MobileTab::Members),
+                                span { class: "text-lg leading-none", "👥" }
+                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Members", &[])} }
+                            }
+                            button {
+                                class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs text-[var(--text-muted)]",
+                                onclick: move |_| activities_open.set(true),
+                                aria_expanded: activities_open(),
+                                span { class: "text-lg leading-none", "🎲" }
+                                span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Activities", &[])} }
+                            }
                         }
                     }
-                    GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
-                        MembersPanel {}
+            } else {
+                div { class: "flex-1 overflow-auto min-h-0",
+                        GridLayout {
+                            cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
+                            store: layout, editable: edit_mode(),
+                            mode: LayoutMode::Free,
+                            on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
+                            GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
+                                GuildsSidebar {}
+                            }
+                            GridItem { id: "channels", x: 1, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
+                                ChannelsColumn {}
+                            }
+                            crate::features::screenshare::ScreenWatchWindow {}
+                            GridItem { id: "chat", x: 3, y: 0, w: 7, h: GRID_ROWS, min_w: 3, min_h: 4,
+                                div { class: "panel-hover w-full h-full flex flex-col bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden",
+                                    ChatView {}
+                                }
+                            }
+                            GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
+                                MembersPanel {}
+                            }
+                        }
                     }
-                }
             }
 
             // While rearranging, one reminder of how to stop — the button that

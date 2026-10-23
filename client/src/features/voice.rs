@@ -8,7 +8,7 @@ use dioxus::core::Task;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 use livekit::options::{DegradationPreference, VideoCodec, VideoEncoderBackend, VideoEncoding};
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
@@ -22,11 +22,11 @@ use livekit::webrtc::prelude::RtcAudioSource;
 use livekit::webrtc::stats::RtcStats;
 #[cfg(target_os = "macos")]
 use livekit::webrtc::video_frame::native::NativeBuffer;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_frame::{VideoFrame, VideoRotation};
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_source::native::NativeVideoSource;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use parking_lot::Mutex;
 use rubato::audioadapter_buffers::direct::SequentialSlice;
@@ -36,10 +36,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::protocol::{ClientMessage, IceServer, Id};
 use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "android", target_os = "windows"))]
 #[path = "voice_camera.rs"]
 mod camera;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "android", target_os = "windows"))]
 use camera::CameraPublisher;
 
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
@@ -273,7 +273,7 @@ pub enum VoiceCmd {
         target: crate::sysvideo::Target,
         settings: crate::sysvideo::Settings,
     },
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     SetCamera {
         room: Option<(String, String)>,
         device: Option<String>,
@@ -362,6 +362,27 @@ async fn service_loop(
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown(state).await;
                 }
+                #[cfg(target_os = "android")]
+                {
+                    if state.peek().server_voice_channel() != Some(channel_id)
+                        || state.peek().voice_route_revision != route_revision {
+                        continue;
+                    }
+                    if let Err(error) = crate::android::prepare_voice().await {
+                        if state.peek().server_voice_channel() == Some(channel_id)
+                            && state.peek().voice_route_revision == route_revision {
+                            if let Err(send_error) = report_tx.send(ClientMessage::LeaveVoice) {
+                                tracing::debug!(%send_error, "voice gateway closed");
+                            }
+                            let mut s = state.write();
+                            s.error_toast = Some(error.clone());
+                            s.voice.phase = VoicePhase::Error;
+                            s.voice.error = Some(error);
+                            s.voice.channel_id = None;
+                        }
+                        continue;
+                    }
+                }
                 let result = voice_endpoints::try_endpoints(livekit_url, alternate_urls, |url| {
                     let token = token.clone();
                     let controls = controls.clone();
@@ -434,8 +455,8 @@ async fn service_loop(
                 if let Ok(devs) = host.devices() {
                     for d in devs {
                         if let Ok(name) = crate::audio_device::name(&d) {
-                            let is_input = d.supports_input();
-                            let is_output = d.supports_output();
+                            let is_input = crate::audio_device::selectable(&d, true);
+                            let is_output = crate::audio_device::selectable(&d, false);
                             if is_input {
                                 inputs.push(name.clone());
                             }
@@ -544,7 +565,7 @@ async fn service_loop(
                     eprintln!("[voice] SetScreenVideo ignored — no voice session");
                 }
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "android", target_os = "windows"))]
             VoiceCmd::SetCamera {
                 room,
                 device,
@@ -707,6 +728,13 @@ impl ActiveVoice {
         state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "android")]
+        {
+            crate::android::check_voice_ready()?;
+            crate::android::check_microphone_permission()?;
+        }
+        // Publishing before the channel key arrives can strand peers' decryptors after the first key swap.
+        crate::e2ee::ensure_channel_key(channel_id, state).await?;
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
@@ -730,12 +758,14 @@ impl ActiveVoice {
         let local_audio =
             LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
         let local_audio_for_mute = local_audio.clone();
+        let red = !(cfg!(target_os = "android") && crate::e2ee::enabled());
         let mic_publication = match room
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(local_audio),
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
+                    red,
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
@@ -752,7 +782,7 @@ impl ActiveVoice {
         };
         let encrypted = mic_publication.encryption_type() != livekit::e2ee::EncryptionType::None;
         eprintln!(
-            "[voice] mic published: encrypted={encrypted}, red=true (opus in-band FEC unaffected)"
+            "[voice] mic published: encrypted={encrypted}, red={red} (opus in-band FEC unaffected)"
         );
         crate::e2ee::place_new_voice_publication(&room);
 
@@ -1266,7 +1296,7 @@ impl ActiveVoice {
         })
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     async fn video_room(&mut self, key: (String, String)) -> Result<&mut NativeVideoRoom, String> {
         if self
             .screen_video
@@ -1314,8 +1344,11 @@ impl ActiveVoice {
         if !crate::sysvideo::supported() {
             return Err("screen capture isn't implemented on this platform".into());
         }
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
         {
+            if let Some(channel) = state.peek().server_voice_channel() {
+                crate::e2ee::ensure_channel_key(channel, state).await?;
+            }
             let room = self.video_room(key).await?;
             if room
                 .screen
@@ -1335,12 +1368,12 @@ impl ActiveVoice {
                 }
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(target_os = "android", target_os = "macos", target_os = "windows")))]
         let _ = (key, target, settings, state);
         Ok(())
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     async fn set_camera(
         &mut self,
         room: Option<(String, String)>,
@@ -1358,6 +1391,9 @@ impl ActiveVoice {
             self.close_unused_video_room().await;
             return Ok(());
         };
+        if let Some(channel) = state.peek().server_voice_channel() {
+            crate::e2ee::ensure_channel_key(channel, state).await?;
+        }
         let room = self.video_room(key).await?;
         if room.camera.as_ref().is_some_and(|camera| {
             camera.key == device && camera.quality == settings.read().camera_quality.normalized()
@@ -1367,12 +1403,18 @@ impl ActiveVoice {
         if let Some(camera) = room.camera.take() {
             camera.shutdown().await;
         }
-        match CameraPublisher::connect(room.room.clone(), device, state, settings, gateway).await {
+        room.camera_starting = true;
+        let result =
+            CameraPublisher::connect(room.room.clone(), device, state, settings, gateway).await;
+        room.camera_starting = false;
+        let mut failure = None;
+        match result {
             Ok(camera) => room.camera = Some(camera),
-            Err(e) => {
-                self.close_unused_video_room().await;
-                return Err(e);
-            }
+            Err(e) => failure = Some(e),
+        }
+        if let Some(e) = failure {
+            self.close_unused_video_room().await;
+            return Err(e);
         }
         Ok(())
     }
@@ -1486,10 +1528,10 @@ impl ActiveVoice {
             if let Ok(devices) = host.devices() {
                 for device in devices {
                     if let Ok(name) = crate::audio_device::name(&device) {
-                        if device.supports_input() {
+                        if crate::audio_device::selectable(&device, true) {
                             inputs.push(name.clone());
                         }
-                        if device.supports_output() {
+                        if crate::audio_device::selectable(&device, false) {
                             outputs.push(name);
                         }
                     }
@@ -1512,8 +1554,18 @@ impl ActiveVoice {
                 .as_ref()
                 .and_then(|mic| mic.device_name())
                 .map(str::to_string);
+            // AAudio's virtual default route is absent from physical device enumeration.
+            #[cfg(target_os = "android")]
+            let (default_input, default_output) = (
+                host.default_input_device()
+                    .and_then(|device| crate::audio_device::name(&device).ok()),
+                host.default_output_device()
+                    .and_then(|device| crate::audio_device::name(&device).ok()),
+            );
+            #[cfg(not(target_os = "android"))]
+            let (default_input, default_output): (Option<String>, Option<String>) = (None, None);
             if let Some(name) = mic_device.as_deref()
-                && !inputs.iter().any(|d| d == name)
+                && crate::audio_device::missing(name, &inputs, default_input.as_deref())
             {
                 if let Some(mic) = self.mic.take() {
                     mic.stop();
@@ -1522,7 +1574,7 @@ impl ActiveVoice {
             }
             let output_device = self.playback.device_name().map(str::to_string);
             if let Some(name) = output_device.as_deref()
-                && !outputs.iter().any(|d| d == name)
+                && crate::audio_device::missing(name, &outputs, default_output.as_deref())
             {
                 self.playback.drop_stream();
                 self.output_retry_at = Some(now);
@@ -1619,15 +1671,19 @@ impl ActiveVoice {
 
 struct NativeVideoRoom {
     room: Arc<Room>,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     key: (String, String),
     screen: Option<ScreenVideoRoom>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     camera: Option<CameraPublisher>,
+    /// A camera that is still opening owns the room; closing it under the
+    /// publication would fail its negotiation.
+    #[cfg(any(target_os = "android", target_os = "windows"))]
+    camera_starting: bool,
 }
 
 impl NativeVideoRoom {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     async fn connect(key: (String, String), ice_servers: &[IceServer]) -> Result<Self, String> {
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
@@ -1643,13 +1699,15 @@ impl NativeVideoRoom {
             room,
             key,
             screen: None,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "android", target_os = "windows"))]
             camera: None,
+            #[cfg(any(target_os = "android", target_os = "windows"))]
+            camera_starting: false,
         })
     }
     fn is_empty(&self) -> bool {
-        #[cfg(target_os = "windows")]
-        if self.camera.is_some() {
+        #[cfg(any(target_os = "android", target_os = "windows"))]
+        if self.camera.is_some() || self.camera_starting {
             return false;
         }
         self.screen.is_none()
@@ -1658,7 +1716,7 @@ impl NativeVideoRoom {
         if let Some(screen) = self.screen {
             screen.shutdown().await;
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "android", target_os = "windows"))]
         if let Some(camera) = self.camera {
             camera.shutdown().await;
         }
@@ -1672,23 +1730,23 @@ impl NativeVideoRoom {
 
 struct ScreenVideoRoom {
     room: Arc<Room>,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     sid: TrackSid,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     stats_task: Task,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     network_task: Task,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     fatal_task: Task,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     state: Signal<AppState>,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     _capture: crate::sysvideo::Capture,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     key: (crate::sysvideo::Target, crate::sysvideo::Settings),
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOptions {
     TrackPublishOptions {
         source: TrackSource::Screenshare,
@@ -1751,7 +1809,7 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
 }
 
 impl ScreenVideoRoom {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     async fn connect(
         room: Arc<Room>,
         target: crate::sysvideo::Target,
@@ -1846,21 +1904,25 @@ impl ScreenVideoRoom {
         let adapter_dropped = Arc::new(AtomicU64::new(0));
         let sink_adapter_dropped = adapter_dropped.clone();
         let sink: crate::sysvideo::FrameSink = Box::new(move |frame: crate::sysvideo::Frame| {
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "android", target_os = "windows"))]
             let timestamp_us = frame.timestamp_us;
             #[cfg(target_os = "macos")]
             let timestamp_us = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_micros() as i64)
                 .unwrap_or(0);
+            #[cfg(target_os = "android")]
+            let rotation: VideoRotation = frame.rotation;
+            #[cfg(not(target_os = "android"))]
+            let rotation = VideoRotation::VideoRotation0;
             #[cfg(target_os = "macos")]
             // SAFETY: LiveKit takes ownership of the retained CVPixelBuffer reference.
             let buffer =
                 unsafe { NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer()) };
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "android", target_os = "windows"))]
             let buffer = frame.buffer;
             if !source.capture_frame(&VideoFrame {
-                rotation: VideoRotation::VideoRotation0,
+                rotation,
                 timestamp_us,
                 frame_metadata: None,
                 buffer,
@@ -1868,6 +1930,8 @@ impl ScreenVideoRoom {
                 sink_adapter_dropped.fetch_add(1, Ordering::Relaxed);
             }
         });
+        #[cfg(target_os = "android")]
+        let capture = crate::sysvideo::start(target, settings, sink, fatal_tx).await;
         #[cfg(target_os = "macos")]
         let capture = crate::sysvideo::start(target, settings, sink, fatal_tx);
         #[cfg(target_os = "windows")]
@@ -2075,7 +2139,7 @@ impl ScreenVideoRoom {
     }
 
     async fn shutdown(self) {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
         {
             self.stats_task.cancel();
             self.network_task.cancel();
@@ -2086,7 +2150,7 @@ impl ScreenVideoRoom {
             if let Err(e) = tokio::task::spawn_blocking(move || drop(self._capture)).await {
                 eprintln!("[screen] capture stop failed: {e}");
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "android", target_os = "macos"))]
             drop(self._capture);
             if let Err(e) = self
                 .room
@@ -2097,12 +2161,12 @@ impl ScreenVideoRoom {
                 eprintln!("[screen] unpublish failed: {e}");
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(target_os = "android", target_os = "macos", target_os = "windows")))]
         let _ = self.room;
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 fn native_screen_stats(
     o: &livekit::webrtc::stats::OutboundRtpStats,
     report: &[RtcStats],
@@ -2153,7 +2217,7 @@ fn native_screen_stats(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 fn screen_encode_ms(previous: Option<(u32, f64)>, frames: u32, seconds: f64) -> Option<f64> {
     let (before_frames, before_seconds) = previous?;
     let count = frames.checked_sub(before_frames)?;
@@ -2191,6 +2255,8 @@ impl ScreenAudioRoom {
         ice_servers: &[IceServer],
         mut watched: tokio::sync::watch::Receiver<HashSet<String>>,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "android")]
+        crate::android::ensure_media_ready().await?;
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
@@ -2946,6 +3012,8 @@ impl MicCapture {
         gate_stats: Arc<GateStats>,
         faults: UnboundedSender<AudioFault>,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "android")]
+        crate::android::check_microphone_permission()?;
         let raw_peak = Arc::new(AtomicI32::new(0));
         let frames_pushed = Arc::new(AtomicU64::new(0));
         let selected = state.read().selected_input_device.clone();
@@ -4185,7 +4253,7 @@ mod tests {
         assert_eq!(row.split(',').nth(5), Some("Stale"));
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn native_screen_stats_separate_capture_from_cpu_limited_encoding() {
         use livekit::webrtc::stats::{CodecStats, OutboundRtpStats, QualityLimitationReason};
@@ -4212,7 +4280,7 @@ mod tests {
         assert_eq!(absent.power_efficient, None);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn screen_share_negotiates_full_resolution_without_a_three_fps_layer() {
         let settings = crate::sysvideo::Settings {
@@ -4236,7 +4304,7 @@ mod tests {
         assert_eq!(encodings[0].max_bitrate, Some(18_000_000));
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn principal_encoding_is_high_quality_with_one_two_or_three_layers() {
         for count in 1..=3 {
@@ -4269,7 +4337,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn optional_screen_simulcast_advertises_two_distinct_qualities() {
         for (width, height, alternative_height) in [
@@ -4321,7 +4389,7 @@ mod tests {
         assert!(!screen_video_options(small).simulcast);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn screen_startup_bitrate_reaches_sdk_and_stays_inside_budget() {
         for (height, fps, cap, expected) in [
@@ -4355,7 +4423,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn native_screen_publisher_preserves_codec_and_content_priority() {
         use crate::sysvideo::{Codec, Priority};
@@ -4392,7 +4460,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[test]
     fn encoder_timing_uses_new_frames_and_handles_counter_resets() {
         assert_eq!(
@@ -4405,7 +4473,7 @@ mod tests {
         assert_eq!(screen_encode_ms(Some((100, 1.0)), 160, f64::NAN), None);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "starts a bundled SFU; needs local media ports and a native encoder"]
     async fn native_screen_codecs_reach_a_real_decoder() {

@@ -178,6 +178,12 @@ pub fn configure_jni_symbols() -> Result<()> {
         return Err(anyhow!("No JNI symbols found")); // Shouldn't happen
     }
 
+    // Dependency linker arguments do not reach the final Android application.
+    let exports_path = out_dir.join("webrtc_jni.exports");
+    fs::write(&exports_path, jni_symbols.join("\n"))
+        .context("Failed to write JNI exports")?;
+    println!("cargo::metadata=android_jni_exports={}", exports_path.display());
+
     // Keep JNI symbols
     for symbol in &jni_symbols {
         println!("cargo:rustc-link-arg=-Wl,--undefined={}", symbol);

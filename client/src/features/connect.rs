@@ -259,7 +259,9 @@ pub fn ConnectForm(
 
                 div { class: "flex gap-1 p-1 rounded-[11px] bg-[var(--panel2)] border border-[var(--edge)]",
                     TabButton { active: mode() == Mode::Join, label: crate::i18n::text("Join a server", &[]), onclick: move |_| mode.set(Mode::Join) }
-                    TabButton { active: mode() == Mode::Create, label: crate::i18n::text("Create a server", &[]), onclick: move |_| mode.set(Mode::Create) }
+                    if !cfg!(any(target_os = "android", target_os = "ios")) {
+                        TabButton { active: mode() == Mode::Create, label: crate::i18n::text("Create a server", &[]), onclick: move |_| mode.set(Mode::Create) }
+                    }
                 }
 
                 if let Some(err) = lookup_error().or(error) {
@@ -282,26 +284,9 @@ pub fn ConnectForm(
                                 }
                             }
 
-                            BrowseTab {
-                                on_pick: move |host: Listed| {
-                                    code.set(host.entry.shortcode.clone());
-                                    picked.set(Some((host.rendezvous, host.entry.shortcode)));
-                                },
-                                on_enter: move |host: Listed| {
-                                    on_connect.call(by_code(host.rendezvous, host.entry.shortcode, row_identity.clone()));
-                                },
-                                picked_shortcode: code(),
-                                picked_rendezvous: picked().filter(|(_, c)| *c == code().trim()).map(|(r, _)| r),
-                                rendezvous: rendezvous.clone(),
-                            }
-
-                            // Folded because gateway address entry is rare and
-                            // ignores the directory above. Must start empty:
-                            // an open stale default looks filled, while a
-                            // closed one silently dictates connections.
-                            details { class: "dxf-fold",
+                            details { class: "dxf-fold dxf-direct-connect",
                                 summary { class: "inline-flex items-center cursor-pointer text-xs uppercase tracking-[0.06em] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
-                                    {crate::i18n::text("Other ways to connect", &[])}
+                                    {crate::i18n::text("Connect by address", &[])}
                                 }
                                 div { class: "space-y-2 mt-2.5 px-4 py-3.5 rounded-[11px] bg-[var(--panel)] border border-[var(--edge)]",
                                     label { class: LABEL, {crate::i18n::text("Server address", &[])} }
@@ -316,6 +301,19 @@ pub fn ConnectForm(
                                         {crate::i18n::text("Connects straight to a gateway, ignoring the code and the directory. A quic:// address is what a host copies from their banner; wss:// is a server behind a TLS proxy. Plain ws:// works only on this machine.", &[])}
                                     }
                                 }
+                            }
+
+                            BrowseTab {
+                                on_pick: move |host: Listed| {
+                                    code.set(host.entry.shortcode.clone());
+                                    picked.set(Some((host.rendezvous, host.entry.shortcode)));
+                                },
+                                on_enter: move |host: Listed| {
+                                    on_connect.call(by_code(host.rendezvous, host.entry.shortcode, row_identity.clone()));
+                                },
+                                picked_shortcode: code(),
+                                picked_rendezvous: picked().filter(|(_, c)| *c == code().trim()).map(|(r, _)| r),
+                                rendezvous: rendezvous.clone(),
                             }
                         }
                     },

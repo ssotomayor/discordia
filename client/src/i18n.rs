@@ -100,7 +100,12 @@ fn system_language() -> String {
         .unwrap_or_default()
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "android")]
+fn system_language() -> String {
+    crate::android::system_language()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android")))]
 fn system_language() -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
@@ -270,7 +275,7 @@ pub fn LanguageSelector() -> Element {
 
 #[component]
 pub fn LanguageDocument() -> Element {
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     let title = try_consume_context::<WindowTitle>();
     use_effect(move || {
         let language = current();

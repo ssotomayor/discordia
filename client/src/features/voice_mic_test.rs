@@ -15,6 +15,8 @@ impl MicrophoneTest {
         state: Signal<AppState>,
         requested: impl Fn() -> bool,
     ) -> Result<Option<Self>, String> {
+        #[cfg(target_os = "android")]
+        crate::android::prepare_voice().await?;
         let controls = AudioControls::from_state(&state.peek());
         controls.deafened.store(false, Ordering::Relaxed);
         controls.gains.lock().clear();

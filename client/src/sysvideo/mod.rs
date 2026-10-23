@@ -1,7 +1,16 @@
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
 pub(crate) mod metrics;
+#[cfg(any(target_os = "android", target_os = "windows"))]
+mod pacing;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -9,6 +18,15 @@ mod windows;
 pub struct Frame {
     pub buffer: livekit::webrtc::video_frame::I420Buffer,
     pub timestamp_us: i64,
+}
+
+/// Android hands over already-decoded I420 planes, so the frame carries the
+/// rotation the capturer reported; the desktop backends bake theirs in.
+#[cfg(target_os = "android")]
+pub struct Frame {
+    pub buffer: livekit::webrtc::video_frame::I420Buffer,
+    pub timestamp_us: i64,
+    pub rotation: livekit::webrtc::video_frame::VideoRotation,
 }
 
 #[cfg(target_os = "macos")]
@@ -26,7 +44,7 @@ impl Frame {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 pub type FrameSink = Box<dyn Fn(Frame) + Send + Sync>;
 
 #[cfg(target_os = "macos")]
@@ -39,7 +57,12 @@ pub struct Capture {
     _inner: windows::WinVideoCapture,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "android")]
+pub struct Capture {
+    _inner: android::AndroidVideoCapture,
+}
+
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 impl Capture {
     pub(crate) fn metrics(&self) -> std::sync::Arc<metrics::Metrics> {
         self._inner.metrics.clone()
@@ -151,6 +174,62 @@ pub(crate) fn fit_resolution(width: u32, height: u32, settings: Settings) -> (u3
     )
 }
 
+/// `YuvConverter` wraps both chroma planes with the luma stride and interleaves
+/// U and V inside each row, so only the last row of a plane is short.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn copy_i420_plane_into(
+    source: &[u8],
+    source_stride: usize,
+    rows: usize,
+    destination: &mut [u8],
+    destination_stride: u32,
+) -> Result<(), String> {
+    let row_len = source_stride.min(destination_stride as usize);
+    if source_stride == 0 || rows == 0 || row_len == 0 {
+        return Err("invalid plane geometry".into());
+    }
+    let needed = source_stride
+        .checked_mul(rows - 1)
+        .and_then(|head| head.checked_add(row_len))
+        .ok_or("invalid plane size")?;
+    if source.len() < needed {
+        return Err("the captured plane is shorter than its stride".into());
+    }
+    for row in 0..rows {
+        let from = row * source_stride;
+        let to = row * destination_stride as usize;
+        if to + row_len > destination.len() {
+            return Err("invalid plane stride".into());
+        }
+        destination[to..to + row_len].copy_from_slice(&source[from..from + row_len]);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod plane_tests {
+    use super::copy_i420_plane_into;
+
+    #[test]
+    fn interleaved_chroma_copies_its_short_last_row() {
+        let stride = 8;
+        let rows = 3;
+        let source: Vec<u8> = (0..(stride * (rows - 1) + stride / 2) as u8).collect();
+        let mut destination = vec![0u8; (stride / 2) * rows];
+        copy_i420_plane_into(&source, stride, rows, &mut destination, (stride / 2) as u32).unwrap();
+        assert_eq!(&destination[0..4], &[0, 1, 2, 3]);
+        assert_eq!(&destination[4..8], &[8, 9, 10, 11]);
+        assert_eq!(&destination[8..12], &[16, 17, 18, 19]);
+    }
+
+    #[test]
+    fn a_plane_shorter_than_its_rows_is_refused() {
+        assert!(copy_i420_plane_into(&[0; 10], 8, 3, &mut [0; 12], 4).is_err());
+        assert!(copy_i420_plane_into(&[0; 20], 0, 1, &mut [0; 4], 4).is_err());
+        assert!(copy_i420_plane_into(&[0; 20], 8, 0, &mut [0; 4], 4).is_err());
+    }
+}
+
 #[cfg(test)]
 mod resolution_tests {
     use super::{Codec, CodecCapabilities, Encoder};
@@ -222,6 +301,8 @@ pub enum Target {
     Display(u32),
     Window(u32),
     Application(i32),
+    #[cfg(target_os = "android")]
+    AndroidScreen,
     #[cfg(target_os = "windows")]
     WindowsMonitor(isize),
     #[cfg(target_os = "windows")]
@@ -254,13 +335,22 @@ pub fn sources() -> Result<Vec<Source>, String> {
     windows::sources()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "android")]
+pub fn sources() -> Result<Vec<Source>, String> {
+    android::sources()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "macos", target_os = "windows")))]
 pub fn sources() -> Result<Vec<Source>, String> {
     Err("native screen capture isn't implemented on this platform".into())
 }
 
 pub fn supported() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows"))
+    cfg!(any(
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    ))
 }
 
 pub async fn thumbnail(target: Target) -> Result<String, String> {
@@ -395,6 +485,20 @@ pub fn start(
 ) -> Result<Capture, String> {
     Ok(Capture {
         _inner: windows::WinVideoCapture::start(target, settings, sink, fatal, true)?,
+    })
+}
+
+/// Android's capture starts with a system consent dialog, so unlike the desktop
+/// backends it cannot open on a blocking thread.
+#[cfg(target_os = "android")]
+pub async fn start(
+    target: Target,
+    settings: Settings,
+    sink: FrameSink,
+    fatal: tokio::sync::mpsc::UnboundedSender<String>,
+) -> Result<Capture, String> {
+    Ok(Capture {
+        _inner: android::AndroidVideoCapture::start(target, settings, sink, fatal).await?,
     })
 }
 

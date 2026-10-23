@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A bundled SFU and a host behind a TLS proxy mint ws:// addresses. The
+     desktop trusts them with Chromium's insecure-origin flag; without the same
+     allowance here the WebView cannot join any such room. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

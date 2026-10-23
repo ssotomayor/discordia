@@ -42,8 +42,8 @@ pub fn init_tray_quit_bridge() {
 
     crate::single_instance::init_restore_bridge(restore_sender.clone());
 
-    dioxus::desktop::trayicon::menu::MenuEvent::set_event_handler(Some(
-        move |event: dioxus::desktop::trayicon::menu::MenuEvent| {
+    crate::platform::trayicon::menu::MenuEvent::set_event_handler(Some(
+        move |event: crate::platform::trayicon::menu::MenuEvent| {
             if event.id.0.as_str() == "discordia-quit" {
                 tracing::info!("Received exit request from tray menu");
                 if quit_sender.send(()).is_err() {
@@ -52,12 +52,12 @@ pub fn init_tray_quit_bridge() {
             }
         },
     ));
-    dioxus::desktop::trayicon::TrayIconEvent::set_event_handler(Some(
-        move |event: dioxus::desktop::trayicon::TrayIconEvent| {
+    crate::platform::trayicon::TrayIconEvent::set_event_handler(Some(
+        move |event: crate::platform::trayicon::TrayIconEvent| {
             if matches!(
                 event,
-                dioxus::desktop::trayicon::TrayIconEvent::Click {
-                    button: dioxus::desktop::trayicon::MouseButton::Left,
+                crate::platform::trayicon::TrayIconEvent::Click {
+                    button: crate::platform::trayicon::MouseButton::Left,
                     ..
                 }
             ) {
@@ -113,7 +113,7 @@ const DISCORDIA_LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" vie
 </svg>"##;
 
 pub fn start_window_drag() {
-    dioxus::desktop::window().drag();
+    crate::platform::window().drag();
 }
 
 pub fn open_external(url: &str) {
@@ -191,8 +191,26 @@ const BASE_CSS: &str = "
   --violet: #b98cff; --amber: #ffc46b; --warn: #ffc46b;
   --danger: #e8776a;
   --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 html, body, #main { height: 100%; margin: 0; }
+.dxf-workspace-mobile .dxf-workspace-header { flex-wrap: wrap; flex-shrink: 0; min-width: 0; }
+.dxf-workspace-mobile .dxf-workspace-brand span,
+.dxf-workspace-mobile .dxf-disconnect-label { display: none; }
+.dxf-workspace-mobile .dxf-connection-controls { max-width: 100%; flex-wrap: wrap; }
+.dxf-workspace-mobile .dxf-workspace-header button { min-height: 44px; min-width: 44px; }
+.dxf-activities-dialog { max-width: calc(100vw - 2rem); max-height: calc(100dvh - 2rem); overflow-y: auto; }
+
+@media (max-width: 768px) {
+  .dxf-touch-target,
+  .dxf-mobile-nav button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
 
 .app-bg-layer { position: fixed; inset: 0; z-index: 0; background-size: cover; background-position: center; pointer-events: none; }
 .app-shell { position: relative; z-index: 1; height: 100%; width: 100%; }
@@ -589,9 +607,9 @@ fn font_face_css() -> String {
     )
 }
 
-pub(crate) fn desktop_config(language: crate::i18n::Language) -> dioxus::desktop::Config {
+pub(crate) fn desktop_config(language: crate::i18n::Language) -> crate::platform::Config {
     // Document styles are queued after DOM mutations; bootstrap CSS must precede the first frame.
-    dioxus::desktop::Config::new()
+    crate::platform::Config::new()
         .with_background_color((18, 17, 16, 255))
         .with_custom_head(format!(
             "<style>{TAILWIND_CSS}</style><style>{}</style><style>{BASE_CSS}</style>",
@@ -603,6 +621,7 @@ pub(crate) fn desktop_config(language: crate::i18n::Language) -> dioxus::desktop
 fn desktop_index(language: crate::i18n::Language) -> String {
     include_str!("../assets/desktop.html")
         .replace("__LANGUAGE__", language.tag())
+        .replace("<!-- STARTUP_LOGO -->", include_str!("../assets/icon.svg"))
         .replace(
             "Loading Discordia…",
             &crate::i18n::translate(language, "Loading Discordia…", &[]),
@@ -650,8 +669,8 @@ fn background_pattern_class(pattern: &str) -> &'static str {
 fn window_close_behavior(
     tray_icon_available: bool,
     tray_quit_available: bool,
-) -> dioxus::desktop::WindowCloseBehaviour {
-    use dioxus::desktop::WindowCloseBehaviour;
+) -> crate::platform::WindowCloseBehaviour {
+    use crate::platform::WindowCloseBehaviour;
 
     if tray_icon_available && tray_quit_available {
         WindowCloseBehaviour::WindowHides
@@ -673,15 +692,15 @@ pub fn App() -> Element {
     use_context_provider(|| crate::i18n::Locale(locale));
     let updates = crate::update::use_updates();
     let mut update_exit = use_signal(|| false);
-    let quit_window = dioxus::desktop::use_window();
+    let quit_window = crate::platform::use_window();
     let close_to_tray = use_signal(|| false);
     let close_window = quit_window.clone();
     use_hook(move || {
-        close_window.set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowHides)
+        close_window.set_close_behavior(crate::platform::WindowCloseBehaviour::WindowHides)
     });
     let window_id = quit_window.window.id();
-    dioxus::desktop::use_wry_event_handler(move |event, _| {
-        use dioxus::desktop::tao::event::{Event, WindowEvent};
+    crate::platform::use_wry_event_handler(move |event, _| {
+        use crate::platform::tao::event::{Event, WindowEvent};
         if let Event::WindowEvent {
             window_id: id,
             event: WindowEvent::CloseRequested,
@@ -716,19 +735,19 @@ pub fn App() -> Element {
                 updates.install_after_disconnect();
                 return;
             }
-            quit_window.set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowCloses);
+            quit_window.set_close_behavior(crate::platform::WindowCloseBehaviour::WindowCloses);
             quit_window.close();
         }
     });
     #[cfg(target_os = "windows")]
     {
-        use dioxus::desktop::{
+        use crate::platform::{
             WindowCloseBehaviour,
             muda::{Menu, MenuItem},
             trayicon::TrayIconBuilder,
         };
 
-        let tray_window = dioxus::desktop::use_window();
+        let tray_window = crate::platform::use_window();
         let tray_quit_available = TRAY_QUIT_AVAILABLE.load(std::sync::atomic::Ordering::SeqCst);
         use_future(move || {
             let receiver = TRAY_QUIT_RECEIVER
@@ -785,7 +804,7 @@ pub fn App() -> Element {
                         .resize(32, 32, image::imageops::FilterType::Lanczos3)
                         .to_rgba8();
                     let (width, height) = image.dimensions();
-                    dioxus::desktop::trayicon::Icon::from_rgba(image.into_raw(), width, height)
+                    crate::platform::trayicon::Icon::from_rgba(image.into_raw(), width, height)
                 });
             let builder = match icon {
                 Some(Ok(icon)) => builder.with_icon(icon),
@@ -853,14 +872,20 @@ pub fn App() -> Element {
         root_style.push_str(&accent_vars(a));
     }
     let shell = shell_style(background.is_some(), pattern_class);
+    let platform_class = if cfg!(any(target_os = "android", target_os = "ios")) {
+        "dxf-platform-mobile"
+    } else {
+        ""
+    };
 
     rsx! {
         AppHead {}
         style { {include_str!("../assets/updates.css")} }
+        style { {include_str!("../assets/mobile.css")} }
         style { "{size_css}" }
 
         div {
-            class: "dxf-ui h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
+            class: "dxf-ui {platform_class} h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
             style: "{root_style}; display:flex; flex-direction:column;",
             if !pattern_class.is_empty() {
                 div { class: "{pattern_class}" }
@@ -1000,6 +1025,8 @@ mod tests {
             assert!(html.contains(&format!("<html lang=\"{tag}\">")));
             assert!(html.contains(&format!("<span>{loading}</span>")));
             assert!(!html.contains("/* STARTUP_SCRIPT */"));
+            assert!(!html.contains("<!-- STARTUP_LOGO -->"));
+            assert!(html.contains("viewBox=\"0 0 1024 1024\""));
         }
     }
 
@@ -1012,7 +1039,7 @@ mod tests {
         let behavior = window_close_behavior(true, true);
         assert!(matches!(
             behavior,
-            dioxus::desktop::WindowCloseBehaviour::WindowHides
+            crate::platform::WindowCloseBehaviour::WindowHides
         ));
     }
 
@@ -1022,7 +1049,7 @@ mod tests {
         let behavior = window_close_behavior(false, true);
         assert!(matches!(
             behavior,
-            dioxus::desktop::WindowCloseBehaviour::WindowCloses
+            crate::platform::WindowCloseBehaviour::WindowCloses
         ));
     }
 

@@ -17,7 +17,7 @@ pub(crate) struct Snapshot {
 pub(crate) struct Metrics(parking_lot::Mutex<Snapshot>);
 
 impl Metrics {
-    #[cfg(any(target_os = "windows", test))]
+    #[cfg(any(target_os = "android", target_os = "windows", test))]
     pub fn callback(&self, gap: Duration, paced_out: bool) {
         let mut snapshot = self.0.lock();
         snapshot.callbacks += 1;
@@ -40,7 +40,7 @@ impl Metrics {
         snapshot.record(width, height, elapsed);
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "android", target_os = "macos", test))]
     pub fn record(&self, width: u32, height: u32, elapsed: Duration) {
         let mut snapshot = self.0.lock();
         snapshot.record(width, height, elapsed);

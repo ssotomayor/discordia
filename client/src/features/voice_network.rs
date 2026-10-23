@@ -5,7 +5,7 @@ use std::time::Duration;
 const FEEDBACK_TTL: Duration = Duration::from_secs(7);
 const WINDOW: Duration = Duration::from_secs(5);
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 pub(super) fn spawn_video_budget(
     state: Signal<AppState>,
     track: LocalVideoTrack,
@@ -179,6 +179,7 @@ pub(super) fn spawn_stats_task(
         let mut applied = None;
         let mut applied_ssrc = None;
         let mut prev_out = None;
+        let mut audio_log_at = Instant::now();
         let mut latest_uplink_problem = None;
         // Counters are cumulative as libwebrtc reports them; the reader takes the deltas.
         let mut send_csv = crate::voice_record::Csv::new(
@@ -235,6 +236,30 @@ pub(super) fn spawn_stats_task(
                 continue;
             };
             let now = Instant::now();
+            let log_audio = now.duration_since(audio_log_at) >= LOSS_LOG_EVERY;
+            if log_audio {
+                audio_log_at = now;
+                for report in &stats {
+                    match report {
+                        RtcStats::MediaSource(source) if source.source.kind == "audio" => {
+                            tracing::info!(
+                                level = source.audio.audio_level,
+                                energy = source.audio.total_audio_energy,
+                                duration = source.audio.total_samples_duration,
+                                "voice audio: encoder input"
+                            );
+                        }
+                        RtcStats::OutboundRtp(out) => {
+                            tracing::info!(
+                                packets = out.sent.packets_sent,
+                                bytes = out.sent.bytes_sent,
+                                "voice audio: RTP sent"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let out = stats.iter().find_map(|s| match s {
                 RtcStats::OutboundRtp(s) => Some(s),
                 _ => None,

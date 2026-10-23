@@ -2,11 +2,9 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 $output = Join-Path $repo 'target/frame-pacing-probe'
 New-Item -ItemType Directory -Force $output | Out-Null
-$source = Get-Content (Join-Path $repo 'client/src/sysvideo/windows.rs') -Raw
-$start = $source.IndexOf('struct FramePacer {')
-$end = $source.IndexOf('impl GraphicsCaptureApiHandler for Handler {')
-if ($start -lt 0 -or $end -le $start) { throw 'Cannot locate the production FramePacer' }
-$source.Substring($start, $end - $start) | Set-Content (Join-Path $output 'frame_pacer_under_test.rs')
+$source = Get-Content (Join-Path $repo 'client/src/sysvideo/pacing.rs') -Raw
+if ($source.IndexOf('struct FramePacer {') -lt 0) { throw 'Cannot locate the production FramePacer' }
+$source | Set-Content (Join-Path $output 'frame_pacer_under_test.rs')
 Copy-Item (Join-Path $PSScriptRoot 'frame-pacing-probe.rs') (Join-Path $output 'probe.rs')
 if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'

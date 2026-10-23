@@ -1,0 +1,11 @@
+<resources>
+    <color name="discordia_background">#121110</color>
+    <style name="DiscordiaTheme" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/discordia_splash</item>
+        <item name="android:colorAccent">#e8933a</item>
+        <item name="android:statusBarColor">@color/discordia_background</item>
+        <item name="android:navigationBarColor">@color/discordia_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

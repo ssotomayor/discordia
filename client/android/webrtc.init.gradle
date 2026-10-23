@@ -1,0 +1,9 @@
+allprojects { project ->
+    project.plugins.withId('com.android.application') {
+        def jar = project.file('libs/libwebrtc.jar')
+        if (!jar.isFile()) {
+            throw new GradleException('Missing matching libwebrtc.jar; use scripts/build-android.py')
+        }
+        project.dependencies.add('implementation', project.files(jar))
+    }
+}

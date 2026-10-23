@@ -590,16 +590,24 @@ pub fn config_dir() -> PathBuf {
     if let Some(dir) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
         return dir;
     }
-    if let Some(dir) = std::env::var_os("DISCORDIA_CONFIG_DIR") {
-        return PathBuf::from(dir);
+    #[cfg(target_os = "android")]
+    {
+        crate::android::config_dir()
     }
-    dirs::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("discordia")
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Some(dir) = std::env::var_os("DISCORDIA_CONFIG_DIR") {
+            return PathBuf::from(dir);
+        }
+        dirs::config_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("discordia")
+    }
 }
 
 /// Before the rename the folder was `dioxusfun`; it holds the keys, so it moves
 /// rather than starting a new account. Runs before anything opens the folder.
+#[cfg(not(target_os = "android"))]
 pub fn migrate_legacy_config_dir() {
     if std::env::var_os("DISCORDIA_CONFIG_DIR").is_some() {
         return;
@@ -635,14 +643,24 @@ pub fn identities_dir() -> PathBuf {
 }
 
 pub fn identities_dir_override() -> Option<PathBuf> {
-    let raw = std::fs::read_to_string(config_dir().join(IDENTITIES_DIR_POINTER)).ok()?;
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let raw = std::fs::read_to_string(config_dir().join(IDENTITIES_DIR_POINTER)).ok()?;
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+    }
 }
 
 /// `None` returns to the default. The folder is created so the choice is
 /// visible at once, and the pointer file stays out of it.
 pub fn set_identities_dir(dir: Option<&Path>) -> Result<(), String> {
+    if cfg!(target_os = "android") && dir.is_some() {
+        return Err("Android identities must stay in the app's private storage.".into());
+    }
     let pointer = config_dir().join(IDENTITIES_DIR_POINTER);
     match dir {
         None => match std::fs::remove_file(&pointer) {

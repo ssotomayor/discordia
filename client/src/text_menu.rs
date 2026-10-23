@@ -26,17 +26,7 @@ pub fn TextMenu() -> Element {
                     "ok": request["text"].as_str().is_some_and(crate::clipboard::copy_text),
                 }),
                 Some("paste") => {
-                    let result = tokio::task::spawn_blocking(|| {
-                        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-                        if let Ok(text) = clipboard.get_text() {
-                            return Ok(json!({ "ok": true, "text": text }));
-                        }
-                        if clipboard.get_image().is_ok() {
-                            return Ok(json!({ "ok": true, "image": true }));
-                        }
-                        Err::<Value, String>("No supported clipboard content".into())
-                    })
-                    .await;
+                    let result = tokio::task::spawn_blocking(crate::clipboard::read).await;
                     match result {
                         Ok(Ok(value)) => value,
                         _ => json!({ "ok": false }),

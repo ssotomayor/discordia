@@ -490,11 +490,16 @@ fn handle_instance_event(session: &mut Session, from: &str, data: &str) -> (&'st
 }
 
 #[component]
-pub fn ActivityHost() -> Element {
+pub fn ActivityHost(
+    picker: Option<Signal<bool>>,
+    #[props(default = false)] mobile: bool,
+) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
 
-    let mut picker_open = use_signal(|| false);
+    let local_picker = use_signal(|| false);
+    let unavailable = cfg!(any(target_os = "android", target_os = "ios"));
+    let mut picker_open = picker.unwrap_or(local_picker);
     let mut consenting = use_signal(|| None::<Pending>);
     let mut pending = use_signal(|| None::<Pending>);
     let mut problem = use_signal(|| None::<String>);
@@ -560,7 +565,10 @@ pub fn ActivityHost() -> Element {
                             activity_window::emit(WINDOW_KEY, name, &payload);
                         }
                     }
-                    HostCmd::Window(window, FromActivity::Closed | FromActivity::Failed(_)) => {
+                    HostCmd::Window(
+                        window,
+                        event @ (FromActivity::Closed | FromActivity::Failed(_)),
+                    ) => {
                         if session.as_ref().is_none_or(|s| s.window != window) {
                             continue;
                         }
@@ -570,6 +578,11 @@ pub fn ActivityHost() -> Element {
                             gateway.send(ClientMessage::ActivityLeave { instance_id: id });
                         }
                         launched.set(None);
+                        if let FromActivity::Failed(error) = event {
+                            problem.set(Some(error));
+                            consenting.set(None);
+                            picker_open.set(true);
+                        }
                     }
                     HostCmd::Inbound(Inbound::Event {
                         instance_id,
@@ -775,6 +788,13 @@ pub fn ActivityHost() -> Element {
     });
 
     let list_gw = gateway.clone();
+    use_effect(move || {
+        if picker_open()
+            && let Some(guild_id) = state.peek().selected_guild
+        {
+            list_gw.send(ClientMessage::FetchGuildActivities { guild_id });
+        }
+    });
     let activities = available(&state.read());
     let running: Vec<ActivityInstance> = state
         .read()
@@ -784,7 +804,8 @@ pub fn ActivityHost() -> Element {
     let my_instance = launched().and_then(|l| l.instance);
 
     rsx! {
-        div { class: "fixed bottom-3 left-3 z-40 flex flex-col items-start gap-1.5",
+        if !mobile {
+          div { class: "fixed bottom-3 left-3 z-40 flex flex-col items-start gap-1.5",
             for instance in running.iter().filter(|i| Some(i.id) != my_instance).cloned() {
                 InstanceCard { key: "{instance.id}", instance }
             }
@@ -794,15 +815,11 @@ pub fn ActivityHost() -> Element {
                     if launched.peek().is_some() && activity_window::is_open(WINDOW_KEY) {
                         activity_window::focus(WINDOW_KEY);
                     }
-                    if !picker_open()
-                        && let Some(guild_id) = state.peek().selected_guild
-                    {
-                        list_gw.send(ClientMessage::FetchGuildActivities { guild_id });
-                    }
                     picker_open.set(!picker_open());
                 },
                 {crate::i18n::text("Activities", &[])}
             }
+        }
         }
 
         if picker_open() {
@@ -810,7 +827,7 @@ pub fn ActivityHost() -> Element {
                 class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                 onclick: move |_| { picker_open.set(false); consenting.set(None); },
                 div {
-                    class: "dxf-modal-in w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                    class: "dxf-activities-dialog dxf-modal-in w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                     onclick: move |e| e.stop_propagation(),
                     div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
                         h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Activities", &[])} }
@@ -821,6 +838,11 @@ pub fn ActivityHost() -> Element {
                         }
                     }
                     div { class: "p-2",
+                        if unavailable {
+                            div { class: "px-2 pb-2 text-sm text-[var(--text-muted)]",
+                                {crate::i18n::text("Activities, including Dice Roller and Rock Paper Scissors, are not available on mobile yet.", &[])}
+                            }
+                        }
                         if let Some(err) = problem() {
                             div { class: "px-2 pb-2 text-[11px] text-[var(--danger)]", {crate::i18n::message(&(err).to_string())} }
                         }
@@ -846,10 +868,12 @@ pub fn ActivityHost() -> Element {
                                     key: "{activity.key()}",
                                     activity: activity.clone(),
                                     on_pick: move |a: Activity| {
+                                        if unavailable { return; }
                                         let channel = state.peek().selected_channel;
                                         let mode = if a.shared() && channel.is_some() { Mode::Start } else { Mode::Solo };
                                         consenting.set(Some(Pending { activity: a, channel, mode }));
                                     },
+                                    disabled: unavailable,
                                 }
                             }
                         }
@@ -1066,12 +1090,17 @@ fn OpenActivityRow(
 }
 
 #[component]
-fn ActivityRow(activity: Activity, on_pick: EventHandler<Activity>) -> Element {
+fn ActivityRow(
+    activity: Activity,
+    on_pick: EventHandler<Activity>,
+    #[props(default = false)] disabled: bool,
+) -> Element {
     let third_party = matches!(activity.source, Source::App { .. });
     let pick = activity.clone();
     rsx! {
         button {
-            class: "w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-white/[0.03] text-left transition-colors",
+            class: "w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-white/[0.03] disabled:opacity-50 text-left transition-colors",
+            disabled,
             onclick: move |_| on_pick.call(pick.clone()),
             span { class: "w-9 h-9 rounded-md border border-[var(--border)] flex items-center justify-center text-lg shrink-0",
                 "{activity.icon}"
@@ -1499,6 +1528,61 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_window_reopens_picker_and_leaves_shared_instance() {
+        #[derive(Clone)]
+        struct Props {
+            tx: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
+            picker: std::rc::Rc<std::cell::Cell<Option<Signal<bool>>>>,
+        }
+        impl PartialEq for Props {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+        fn harness(props: Props) -> Element {
+            use_context_provider(|| GatewayTx(props.tx.clone()));
+            use_context_provider(|| Signal::new(AppState::empty()));
+            let picker = use_signal(|| false);
+            use_hook(|| props.picker.set(Some(picker)));
+            rsx! { ActivityHost { picker } }
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let picker = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            harness,
+            Props {
+                tx,
+                picker: picker.clone(),
+            },
+        );
+        dom.rebuild_in_place();
+        let id = Id::new_v4();
+        let session = Session::new(Vec::new(), None, Some(id));
+        let window = session.window;
+        INBOX.with(|inbox| {
+            let co = inbox.borrow().as_ref().copied().unwrap();
+            co.send(HostCmd::Begin(session));
+            co.send(HostCmd::Window(
+                window,
+                FromActivity::Failed("test open failure".into()),
+            ));
+        });
+        for _ in 0..20 {
+            if tokio::time::timeout(std::time::Duration::from_millis(20), dom.wait_for_work())
+                .await
+                .is_err()
+            {
+                break;
+            }
+            dom.render_immediate(&mut dioxus_core::NoOpMutations);
+        }
+        assert!(*picker.get().unwrap().peek());
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMessage::ActivityLeave { instance_id }) if instance_id == id)
+        );
+    }
 
     #[test]
     fn localized_builtin_bundles_have_distinct_cache_keys() {

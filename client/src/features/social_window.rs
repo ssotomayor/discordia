@@ -21,10 +21,10 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
     let nostr = use_context::<NostrTx>();
     let identity = use_context::<Identity>();
     let gateway = use_context::<GatewayTx>();
-    let parent = dioxus::desktop::use_window();
+    let parent = crate::platform::use_window();
     let locale = use_context::<crate::i18n::Locale>();
     let bookmarks = use_context::<crate::bookmarks::Bookmarks>();
-    let handle = use_hook(|| Rc::new(RefCell::new(None::<dioxus::desktop::WeakDesktopContext>)));
+    let handle = use_hook(|| Rc::new(RefCell::new(None::<crate::platform::WeakDesktopContext>)));
     let alive = use_hook(|| Rc::new(Cell::new(true)));
     let (closed, receiver) = use_hook(|| {
         let (tx, rx) = mpsc::unbounded_channel::<u64>();
@@ -82,13 +82,13 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
         .with_root_context(gateway.clone());
         let config = crate::app::desktop_config(crate::i18n::current())
             .with_window(
-                dioxus::desktop::tao::window::WindowBuilder::new()
+                crate::platform::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Social")
                     .with_window_icon(crate::load_window_icon())
-                    .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1050.0, 720.0))
-                    .with_min_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(720.0, 460.0)),
+                    .with_inner_size(crate::platform::tao::dpi::LogicalSize::new(1050.0, 720.0))
+                    .with_min_inner_size(crate::platform::tao::dpi::LogicalSize::new(720.0, 460.0)),
             )
-            .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowCloses)
+            .with_close_behaviour(crate::platform::WindowCloseBehaviour::WindowCloses)
             .with_menu(None);
         let pending = parent.new_window(dom, config);
         let handle = handle.clone();
@@ -236,7 +236,7 @@ fn SocialWindow(props: SocialWindowProps) -> Element {
             tracing::debug!(%error, "social owner closed");
         }
     });
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     let settings = use_context::<Signal<ClientSettings>>();
     let appearance = settings.read();
     let mut theme = crate::app::theme_vars(&appearance.theme).to_owned();

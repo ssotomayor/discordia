@@ -44,12 +44,23 @@ fn from_bytes(bytes: &[u8]) -> Result<String, String> {
     Ok(data_url(format.to_mime_type(), bytes))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn read_clipboard() -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|_| "Clipboard unavailable.")?;
     let image = clipboard
         .get_image()
         .map_err(|_| "Couldn't read an image from the clipboard.")?;
     rgba_png(image.width, image.height, &image.bytes)
+}
+
+#[cfg(target_os = "android")]
+pub fn read_clipboard() -> Result<String, String> {
+    from_bytes(&crate::android::read_clipboard_image()?)
+}
+
+#[cfg(target_os = "ios")]
+pub fn read_clipboard() -> Result<String, String> {
+    Err("Pasting clipboard images is not available on mobile yet.".into())
 }
 
 fn check_dimensions(width: u64, height: u64) -> Result<(), String> {

@@ -6,12 +6,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dioxus::desktop::LogicalSize;
-use dioxus::desktop::tao::event::{Event, WindowEvent};
-use dioxus::desktop::tao::event_loop::EventLoopWindowTarget;
-use dioxus::desktop::tao::window::{Window, WindowBuilder};
-use dioxus::desktop::wry::http::{Request, Response};
-use dioxus::desktop::wry::{self, NewWindowResponse, WebContext, WebView, WebViewBuilder};
+use crate::platform::LogicalSize;
+use crate::platform::tao::event::{Event, WindowEvent};
+use crate::platform::tao::event_loop::EventLoopWindowTarget;
+use crate::platform::tao::window::{Window, WindowBuilder};
+use crate::platform::wry::http::{Request, Response};
+use crate::platform::wry::{self, NewWindowResponse, WebContext, WebView, WebViewBuilder};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -79,6 +79,15 @@ thread_local! {
 /// so the request waits for the next event — the same loop turn as the click.
 pub fn open(spec: OpenSpec) {
     close(spec.key);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        if let Err(error) = spec.tx.send(FromActivity::Failed(
+            "External activities are not available on mobile yet.".into(),
+        )) {
+            tracing::debug!(%error, "activity owner closed");
+        }
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     PENDING.with(|p| p.borrow_mut().push(spec));
 }
 
@@ -244,6 +253,12 @@ pub fn serve(bundle: &Bundle, host: &str, path: &str) -> Response<Cow<'static, [
         .expect("static response")
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn build<T>(_spec: OpenSpec, _target: &EventLoopWindowTarget<T>) -> Result<Open, String> {
+    Err("External activities are not available on mobile yet.".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build<T>(spec: OpenSpec, target: &EventLoopWindowTarget<T>) -> Result<Open, String> {
     if !valid_host(&spec.host) {
         return Err("activity has no valid bundle hash".into());
@@ -302,7 +317,7 @@ fn build<T>(spec: OpenSpec, target: &EventLoopWindowTarget<T>) -> Result<Open, S
     let webview = windows::build_without_network(builder, &window);
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let webview = {
-        use dioxus::desktop::tao::platform::unix::WindowExtUnix;
+        use crate::platform::tao::platform::unix::WindowExtUnix;
         use wry::WebViewBuilderExtUnix;
         let vbox = window.default_vbox().ok_or("window has no GTK box")?;
         builder.build_gtk(vbox)
@@ -422,8 +437,8 @@ mod macos {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use dioxus::desktop::tao::window::Window;
-    use dioxus::desktop::wry::{self, WebView, WebViewBuilder};
+    use crate::platform::tao::window::Window;
+    use crate::platform::wry::{self, WebView, WebViewBuilder};
 
     const ARGS: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
     /// WebRTC may only go through a proxy, and the proxy is a closed port, so
@@ -460,7 +475,7 @@ mod windows {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use dioxus::desktop::wry::{WebView, WebViewExtUnix};
+    use crate::platform::wry::{WebView, WebViewExtUnix};
     use webkit2gtk::{SettingsExt, WebViewExt};
 
     /// WebKitGTK ships with both off; said here so a distro default can't

@@ -2,7 +2,7 @@
 <html lang="__LANGUAGE__">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
     <title>Discordia</title>
     <style>
       html, body { height: 100%; margin: 0; background-color: #121110; color: #f2ece3; }
@@ -18,6 +18,8 @@
         border: 3px solid #322c24; border-top-color: #e8933a;
         animation: startup-spin 1s linear infinite;
       }
+      .startup-logo { width: 96px; height: 96px; }
+      .startup-logo svg { display: block; width: 100%; height: 100%; }
       @keyframes startup-spin { to { transform: rotate(360deg); } }
       @media (prefers-reduced-motion: reduce) { .startup-spinner { animation: none; } }
     </style>
@@ -25,6 +27,7 @@
   <body>
     <div id="main" inert aria-hidden="true"></div>
     <div id="startup" role="status" aria-live="polite">
+      <div class="startup-logo" aria-hidden="true"><!-- STARTUP_LOGO --></div>
       <div class="startup-spinner" aria-hidden="true"></div>
       <span>Loading Discordia…</span>
     </div>

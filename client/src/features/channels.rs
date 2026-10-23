@@ -1808,7 +1808,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                          captured screen share.".into()
                                                                     );
                                                                 } else if now {
-                                                                    crate::features::screenshare::open_screen_picker(state);
+                                                                    crate::features::screenshare::open_screen_picker(state, g_for_share.clone(), settings);
                                                                 } else {
                                                                     let mut s = state.write();
                                                                     s.screen_native_audio = false;

@@ -1,12 +1,12 @@
 use dioxus::prelude::*;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
 use serde_json::Value;
 
 use crate::features::screenshare::{Drag, attach_js, detach_js};
 use crate::protocol::ClientMessage;
 use crate::state::{CameraDevice, use_app_state, use_gateway};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "android", target_os = "windows"))]
 use crate::camera_quality::CameraQuality;
 
 #[path = "camera_setup.rs"]
@@ -25,7 +25,7 @@ fn stop_camera_js() -> String {
     "window.dxScreen.stopCamera();".into()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
 pub fn list_cameras_js() -> String {
     "window.dxScreen.listCameras();".into()
 }
@@ -92,8 +92,27 @@ pub fn toggle_camera(
     };
     state.write().camera_starting = true;
     if crate::syscamera::supported() {
+        // The webview cannot capture until the app holds the permission, and
+        // asking it there surfaces as a bare denial.
+        #[cfg(target_os = "android")]
+        if !crate::android::camera_permission_granted() {
+            let gateway = gateway.clone();
+            spawn(async move {
+                if let Err(error) = crate::android::prepare_camera().await {
+                    let mut w = state.write();
+                    w.camera_starting = false;
+                    w.error_toast = Some(error);
+                    return;
+                }
+                toggle_camera(state, settings, &gateway, true);
+            });
+        }
         return;
     }
+    start_browser_camera(settings, device);
+}
+
+fn start_browser_camera(settings: Signal<crate::settings::ClientSettings>, device: Option<String>) {
     let quality = settings.read().camera_quality.normalized();
     let _ = document::eval(&start_camera_js(
         device.as_deref(),
@@ -106,14 +125,14 @@ pub fn toggle_camera(
 
 #[component]
 pub fn CameraBridge() -> Element {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     return rsx! { NativeCameraBridge {} };
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     rsx! { BrowserCameraBridge {} }
 }
 
 pub fn refresh_cameras(state: Signal<crate::state::AppState>) {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     spawn(async move {
         let mut state = state;
         match tokio::task::spawn_blocking(crate::syscamera::devices).await {
@@ -121,14 +140,14 @@ pub fn refresh_cameras(state: Signal<crate::state::AppState>) {
             result => eprintln!("[camera] device enumeration failed: {result:?}"),
         }
     });
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     {
         let _ = state;
         let _ = document::eval(&list_cameras_js());
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "android", target_os = "windows"))]
 #[component]
 fn NativeCameraBridge() -> Element {
     let mut state = use_app_state();
@@ -175,7 +194,7 @@ fn NativeCameraBridge() -> Element {
     rsx! { Fragment {} }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
 #[component]
 fn BrowserCameraBridge() -> Element {
     let mut state = use_app_state();

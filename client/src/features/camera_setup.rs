@@ -27,13 +27,19 @@ fn CameraSetupDialog() -> Element {
         .unwrap_or_default()
     });
     let mut quality = use_signal(move || settings.read().camera_quality.normalized());
+    #[cfg_attr(target_os = "android", allow(unused_mut, unused_variables))]
     let mut revision = use_signal(|| 0_u64);
     #[cfg(target_os = "windows")]
     let mut image = use_signal(String::new);
     #[cfg(not(target_os = "windows"))]
     let image = use_signal(String::new);
+    #[cfg(target_os = "android")]
+    let ready = use_signal(|| true);
+    #[cfg(not(target_os = "android"))]
     let mut ready = use_signal(|| false);
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut error = use_signal(|| None::<String>);
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut dimensions = use_signal(|| None::<(u32, u32)>);
     let mut submitting = use_signal(|| false);
     use_hook(move || super::refresh_cameras(state));
@@ -83,7 +89,10 @@ fn CameraSetupDialog() -> Element {
             }
         });
     }
-    #[cfg(not(target_os = "windows"))]
+    // Android publishes a native capture, and the camera cannot be opened twice:
+    // the preview would hold the device the publication needs. The self view
+    // comes from the published track once the camera starts.
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     {
         use_effect(move || {
             let selected = device();
@@ -201,7 +210,7 @@ fn CameraSetupDialog() -> Element {
                                         return;
                                     }
                                 }
-                                #[cfg(not(target_os = "windows"))]
+                                #[cfg(not(any(target_os = "android", target_os = "windows")))]
                                 { let mut eval = document::eval("window.dxScreen.stopCameraPreview(); dioxus.send(true);"); if eval.recv::<bool>().await.is_err() { submitting.set(false); return; } }
                                 if state.read().voice_session_epoch != epoch || !state.read().camera_picker { return; }
                                 let selected = device();

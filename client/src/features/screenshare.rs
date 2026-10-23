@@ -94,6 +94,7 @@ window.dxScreen = window.dxScreen || (function () {
   let e2eeWorkerUrl = null;
   let e2eeOn = false;
   let e2eeProvider = null;
+  let e2eeKeyWaiters = [];
   let localCameraTrack = null;
   // The room the camera was handed to: a start racing the join publishes into
   // the joining room itself, and a second publish of that track times out.
@@ -465,12 +466,19 @@ window.dxScreen = window.dxScreen || (function () {
     });
     if (e2eeProvider) {
       try {
-        if (e2eeKey) {
-          postRawKey(e2eeKey);
-          await thisRoom.setE2EEEnabled(true);
-        } else {
-          await thisRoom.setE2EEEnabled(false);
+        if (!e2eeKey && !(await awaitE2eeKey(10000))) {
+          room = null;
+          try { await thisRoom.disconnect(); } catch (ignored) {}
+          if (!current()) return;
+          dropE2eeWorker();
+          e2eeProvider = null;
+          console.warn('[dxScreen] the channel key did not arrive; joining only once it does');
+          post('e2ee-error', { detail: 'The channel key did not arrive' });
+          reportState('retry');
+          return;
         }
+        postRawKey(e2eeKey);
+        await thisRoom.setE2EEEnabled(true);
       } catch (e) {
         if (!current()) { try { await thisRoom.disconnect(); } catch (ignored) {} return; }
         room = null;
@@ -975,6 +983,11 @@ window.dxScreen = window.dxScreen || (function () {
   }
   async function startShare() {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
+    if (!(await awaitE2eeKey(10000))) {
+      console.warn('[dxScreen] the channel key did not arrive, cannot start share');
+      notifyShareEnded();
+      return;
+    }
     try { await room.localParticipant.setScreenShareEnabled(true); } catch (e) { console.warn('[dxScreen] share failed', e); }
   }
   async function requestAndStartShare(quality) {
@@ -1051,6 +1064,11 @@ window.dxScreen = window.dxScreen || (function () {
     }
     if (!room) {
       console.warn('[dxScreen] room not connected yet, cannot start share');
+      abortShare(stream);
+      return;
+    }
+    if (!(await awaitE2eeKey(10000))) {
+      console.warn('[dxScreen] the channel key did not arrive, cannot start share');
       abortShare(stream);
       return;
     }
@@ -1214,6 +1232,13 @@ window.dxScreen = window.dxScreen || (function () {
     for (let i = 0; i < 150 && !room && !cancelled(); i++) await new Promise(function (r) { setTimeout(r, 100); });
     if (cancelled()) { releaseStream(stream); return; }
     if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
+    // The room exists while it still waits for the key: publishing now would send
+    // the picture in the clear, so the camera waits like the room does.
+    if (!(await awaitE2eeKey(10000))) {
+      await stopCamera();
+      post('camera-error', { detail: 'The channel key did not arrive' });
+      return;
+    }
     cameraRoom = room;
     try {
       await withTimeout(
@@ -1255,7 +1280,9 @@ window.dxScreen = window.dxScreen || (function () {
   }
   async function setE2eeKey(key) {
     e2eeKey = key || null;
-    if (!e2eeKey || !e2eeProvider) return;
+    if (!e2eeKey) return;
+    keyArrived();
+    if (!e2eeProvider) return;
     try {
       postRawKey(e2eeKey);
       if (room) await room.setE2EEEnabled(true);
@@ -1263,6 +1290,23 @@ window.dxScreen = window.dxScreen || (function () {
       console.error('[dxScreen] rekey failed', e);
       post('e2ee-error', { detail: String((e && e.message) || e) });
     }
+  }
+  function keyArrived() {
+    const waiting = e2eeKeyWaiters;
+    e2eeKeyWaiters = [];
+    waiting.forEach(function (resolve) { resolve(); });
+  }
+  // Joining without the key is joining in the clear, so a publisher waits for it
+  // instead of joining with encryption off.
+  async function awaitE2eeKey(timeoutMs) {
+    if (!e2eeOn || e2eeKey) return true;
+    await new Promise(function (resolve) {
+      let settled = false;
+      const done = function () { if (!settled) { settled = true; resolve(); } };
+      e2eeKeyWaiters.push(done);
+      setTimeout(done, timeoutMs);
+    });
+    return !!e2eeKey;
   }
   let cameraPreviewStream = null, cameraPreviewGen = 0;
   function stopCameraPreview() {
@@ -1449,7 +1493,23 @@ fn selected_capture_settings(
     if capture.fps == 60 && capture.priority == crate::sysvideo::Priority::Balanced {
         capture.priority = crate::sysvideo::Priority::Motion;
     }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    mobile_capture_budget(&mut capture);
     capture
+}
+
+/// A phone's capture is a GPU readback plus a copy per frame, and that cost
+/// follows the captured size rather than the encoded one: a 1080p preset gave a
+/// 1920x852 capture at 134% of the encoder's frame budget. 720p is the ceiling.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn mobile_capture_budget(capture: &mut crate::sysvideo::Settings) {
+    let scale = (1280.0 / capture.width.max(1) as f64)
+        .min(720.0 / capture.height.max(1) as f64)
+        .min(1.0);
+    capture.width = ((capture.width as f64 * scale) as u32).max(2);
+    capture.height = ((capture.height as f64 * scale) as u32).max(2);
+    capture.fps = capture.fps.min(30);
+    capture.max_bitrate = u64::from(upload_budget(capture.height, capture.fps));
 }
 
 fn picker_quality(saved: &str) -> String {
@@ -1478,6 +1538,33 @@ fn source_resolution_notice(width: u32, height: u32, quality: &str) -> Option<St
 
 pub(crate) fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// tao answers `false` to both on Android, which would leave the app believing
+/// its own window is hidden: no self preview and no stream decoding at all.
+pub(crate) fn window_active(window: &crate::platform::DesktopContext) -> bool {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = window;
+        true
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        window.window.is_focused() && window.window.is_visible() && !window.window.is_minimized()
+    }
+}
+
+/// The same without the focus requirement: a background stream window still decodes.
+pub(crate) fn window_shown(window: &crate::platform::DesktopContext) -> bool {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = window;
+        true
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        window.window.is_visible() && !window.window.is_minimized()
+    }
 }
 
 /// The list as `RTCIceServer[]`; the wire type already uses those field names.
@@ -1573,7 +1660,7 @@ fn capture_settings_for_session(
 
 #[component]
 pub fn ScreenShareBridge() -> Element {
-    let visibility_window = dioxus::desktop::use_window();
+    let visibility_window = crate::platform::use_window();
     use_future(move || {
         let window = visibility_window.clone();
         async move {
@@ -1582,7 +1669,7 @@ pub fn ScreenShareBridge() -> Element {
             let mut sent: Option<bool> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let visible = window.window.is_visible() && !window.window.is_minimized();
+                let visible = window_shown(&window);
                 if sent != Some(visible) {
                     sent = Some(visible);
                     let _ = document::eval(&format!(
@@ -2336,19 +2423,47 @@ fn choose_source(
     }
 }
 
-pub fn open_screen_picker(mut state: Signal<crate::state::AppState>) {
-    state.write().screen_picker = Some(Ok(Vec::new()));
-    if !crate::sysvideo::supported() {
-        return;
+pub fn open_screen_picker(
+    state: Signal<crate::state::AppState>,
+    gateway: crate::state::GatewayTx,
+    settings: Signal<crate::settings::ClientSettings>,
+) {
+    // Android's consent dialog is the picker: one screen, and no thumbnail can
+    // be taken without starting the projection. It is asked for first, so the
+    // share only reads as live once the person agreed.
+    #[cfg(target_os = "android")]
+    {
+        dioxus::prelude::spawn(async move {
+            let mut state = state;
+            if let Err(error) = crate::android::request_screen_capture().await {
+                state.write().error_toast = Some(format!("Couldn't share your screen: {error}"));
+                return;
+            }
+            choose_source(
+                state,
+                gateway,
+                settings,
+                crate::sysvideo::Target::AndroidScreen,
+            );
+        });
     }
-    dioxus::prelude::spawn(async move {
-        let found = tokio::task::spawn_blocking(crate::sysvideo::sources)
-            .await
-            .unwrap_or_else(|e| Err(format!("listing screens failed: {e}")));
-        if state.peek().screen_picker.is_some() {
-            state.write().screen_picker = Some(found);
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (gateway, settings);
+        let mut state = state;
+        state.write().screen_picker = Some(Ok(Vec::new()));
+        if !crate::sysvideo::supported() {
+            return;
         }
-    });
+        dioxus::prelude::spawn(async move {
+            let found = tokio::task::spawn_blocking(crate::sysvideo::sources)
+                .await
+                .unwrap_or_else(|e| Err(format!("listing screens failed: {e}")));
+            if state.peek().screen_picker.is_some() {
+                state.write().screen_picker = Some(found);
+            }
+        });
+    }
 }
 
 fn screen_encoder_label(implementation: Option<&str>) -> String {
@@ -2393,6 +2508,8 @@ pub fn ScreenSelfPreview() -> Element {
         Some(crate::sysvideo::Target::Display(_)) => "Sharing your screen",
         Some(crate::sysvideo::Target::Window(_)) => "Sharing one window",
         Some(crate::sysvideo::Target::Application(_)) => "Sharing an app",
+        #[cfg(target_os = "android")]
+        Some(crate::sysvideo::Target::AndroidScreen) => "Sharing your screen",
         #[cfg(target_os = "windows")]
         Some(crate::sysvideo::Target::WindowsMonitor(_)) => "Sharing your screen",
         #[cfg(target_os = "windows")]
@@ -2408,13 +2525,11 @@ pub fn ScreenSelfPreview() -> Element {
             .unwrap_or(0)
     });
 
-    let window = dioxus::desktop::use_window();
-    let mut preview_active = use_signal(|| {
-        window.window.is_focused() && window.window.is_visible() && !window.window.is_minimized()
-    });
+    let window = crate::platform::use_window();
+    let mut preview_active = use_signal(|| window_active(&window));
     let window_id = window.window.id();
-    dioxus::desktop::use_wry_event_handler(move |event, _| {
-        use dioxus::desktop::tao::event::{Event, WindowEvent};
+    crate::platform::use_wry_event_handler(move |event, _| {
+        use crate::platform::tao::event::{Event, WindowEvent};
         if let Event::WindowEvent {
             window_id: id,
             event,
@@ -2423,14 +2538,8 @@ pub fn ScreenSelfPreview() -> Element {
             && *id == window_id
         {
             let active = match event {
-                WindowEvent::Focused(focused) => {
-                    Some(*focused && window.window.is_visible() && !window.window.is_minimized())
-                }
-                WindowEvent::Resized(_) => Some(
-                    window.window.is_focused()
-                        && window.window.is_visible()
-                        && !window.window.is_minimized(),
-                ),
+                WindowEvent::Focused(focused) => Some(*focused && window_shown(&window)),
+                WindowEvent::Resized(_) => Some(window_active(&window)),
                 _ => None,
             };
             if let Some(active) = active
@@ -2736,10 +2845,10 @@ fn use_stream_drag() -> Signal<Option<Drag>> {
             }
         });
     });
-    let window_id = dioxus::desktop::use_window().window.id();
-    dioxus::desktop::use_wry_event_handler(move |event, _| {
-        use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
-        use dioxus::desktop::tao::keyboard::Key;
+    let window_id = crate::platform::use_window().window.id();
+    crate::platform::use_wry_event_handler(move |event, _| {
+        use crate::platform::tao::event::{ElementState, Event, WindowEvent};
+        use crate::platform::tao::keyboard::Key;
         if let Event::WindowEvent {
             window_id: id,
             event,
@@ -2752,7 +2861,7 @@ fn use_stream_drag() -> Signal<Option<Drag>> {
                 WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => true,
                 WindowEvent::MouseInput {
                     state: ElementState::Released,
-                    button: dioxus::desktop::tao::event::MouseButton::Left,
+                    button: crate::platform::tao::event::MouseButton::Left,
                     ..
                 } => true,
                 WindowEvent::KeyboardInput { event, .. } => {
@@ -2793,7 +2902,7 @@ pub fn ScreenWatchWindow() -> Element {
     let viewing = use_memo(move || state.read().screen_viewing.clone());
     let mut fullscreen = use_signal::<Option<String>>(|| None);
     let mut was_fullscreen = use_signal(|| false);
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     let original_fullscreen = use_hook({
         let window = window.clone();
         move || window.window.fullscreen()
@@ -2805,7 +2914,7 @@ pub fn ScreenWatchWindow() -> Element {
         let active = fullscreen().is_some();
         if active != *was_fullscreen.peek() {
             fullscreen_window.window.set_fullscreen(if active {
-                Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None))
+                Some(crate::platform::tao::window::Fullscreen::Borderless(None))
             } else {
                 restore_fullscreen.clone()
             });
@@ -2813,8 +2922,8 @@ pub fn ScreenWatchWindow() -> Element {
         }
     });
     let window_id = window.window.id();
-    dioxus::desktop::use_wry_event_handler(move |event, _| {
-        use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
+    crate::platform::use_wry_event_handler(move |event, _| {
+        use crate::platform::tao::event::{ElementState, Event, WindowEvent};
         if let Event::WindowEvent {
             window_id: id,
             event: WindowEvent::KeyboardInput { event, .. },
@@ -2822,7 +2931,7 @@ pub fn ScreenWatchWindow() -> Element {
         } = event
             && *id == window_id
             && event.state == ElementState::Pressed
-            && event.logical_key == dioxus::desktop::tao::keyboard::Key::Escape
+            && event.logical_key == crate::platform::tao::keyboard::Key::Escape
         {
             fullscreen.set(None);
             focused.set(None);
@@ -2940,14 +3049,14 @@ fn ScreenWatchTile(
     let mut received_label = use_signal(|| "Waiting for stream measurements…".to_owned());
     let mut quality_reason = use_signal(String::new);
     let mut health_reason = use_signal(String::new);
-    let window = dioxus::desktop::use_window();
+    let window = crate::platform::use_window();
     use_future(move || {
         let identity = js_str(&stats_pk);
         let window = window.clone();
         async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if !window.window.is_visible() || window.window.is_minimized() {
+                if !window_shown(&window) {
                     health_reason.set(String::new());
                     continue;
                 }

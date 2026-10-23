@@ -12,8 +12,35 @@ fn main() -> std::io::Result<()> {
     println!("cargo::rustc-env=DISCORDIA_VERSION={version}");
 
     embed_info_plist();
+    export_android_webrtc()?;
     grow_windows_main_stack();
     embed_windows_identity(&version)?;
+    Ok(())
+}
+
+fn export_android_webrtc() -> std::io::Result<()> {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
+        return Ok(());
+    }
+    let path = std::env::var("DEP_WEBRTC_SYS_ANDROID_JNI_EXPORTS")
+        .map_err(|error| std::io::Error::other(format!("WebRTC JNI metadata missing: {error}")))?;
+    println!("cargo::rerun-if-changed={path}");
+    let exports = std::fs::read_to_string(path)?;
+    if exports.trim().is_empty() {
+        return Err(std::io::Error::other("WebRTC JNI exports are empty"));
+    }
+    for symbol in exports.lines() {
+        if !symbol.starts_with("Java_livekit_org_webrtc_")
+            || !symbol
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(std::io::Error::other("Invalid WebRTC JNI export"));
+        }
+        // Java resolves these by name; Rust references cannot retain or export them.
+        println!("cargo::rustc-link-arg=-Wl,--undefined={symbol}");
+        println!("cargo::rustc-link-arg=-Wl,--export-dynamic-symbol={symbol}");
+    }
     Ok(())
 }
 

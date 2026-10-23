@@ -62,8 +62,8 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
       rooms.push(this);
     }
     on(name, callback) { this.handlers.set(name, callback); }
-    connect() { return this.join.promise; }
-    setE2EEEnabled() { return this.keySetup.promise; }
+    connect() { this.joined = true; return this.join.promise; }
+    setE2EEEnabled(on) { this.e2eeEnabled = on; return this.keySetup.promise; }
     disconnect() { this.disconnects++; return this.leave ? this.leave.promise : Promise.resolve(); }
     emit(name, ...values) { this.handlers.get(name)?.(...values); }
   }
@@ -236,6 +236,39 @@ async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); 
     assert.equal(f.messages.at(-1).generation, 8);
     assert.equal(f.messages.at(-1).status, 'blocked');
     assert.equal(f.timers.length, 0);
+  }
+  {
+    const f = fixture({ encrypted: true });
+    const pending = f.bridge.connect('wss://test', 'token', null, true, 13);
+    await settle();
+    assert.equal(f.rooms[0].e2eeEnabled, undefined, 'a room must not be joined with encryption off while the key is missing');
+    assert.equal(f.rooms[0].joined, undefined);
+    assert.equal(f.messages.some(m => m.__dxf === 'e2ee-error'), false, 'waiting for the key is not a failure');
+    f.bridge.setE2eeKey('secret');
+    await settle();
+    assert.equal(f.rooms[0].e2eeEnabled, true, 'the room enables encryption once the key arrives');
+    f.rooms[0].keySetup.resolve();
+    f.rooms[0].join.resolve();
+    await pending;
+    assert.equal(f.rooms[0].joined, true);
+    assert.equal(f.messages.at(-1).status, 'connected');
+    assert.equal(f.messages.at(-1).generation, 13);
+  }
+  {
+    const f = fixture({ encrypted: true });
+    const pending = f.bridge.connect('wss://test', 'token', null, true, 14);
+    await settle();
+    const wait = f.timers.find(t => t.ms === 10000);
+    assert.ok(wait, 'joining must wait a bounded time for the key');
+    wait.fn();
+    await pending;
+    const error = f.messages.findLast(m => m.__dxf === 'e2ee-error');
+    assert.ok(error && /key did not arrive/.test(error.detail), 'an absent key must be reported instead of joined around');
+    assert.equal(f.messages.at(-1).status, 'retry');
+    assert.equal(f.rooms[0].joined, undefined);
+    assert.equal(f.rooms[0].e2eeEnabled, undefined);
+    assert.equal(f.rooms[0].disconnects, 1);
+    assert.equal(f.workers[0].terminated, true);
   }
   console.log('Native video lifecycle bridge: retry reporting, cancellation, room replacement and encryption guards passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

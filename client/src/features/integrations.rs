@@ -696,16 +696,17 @@ fn BundleRow(
                         disabled: busy(),
                         onclick: move |_| {
                             spawn(async move {
-                                let Some(file) = rfd::AsyncFileDialog::new()
-                                    .add_filter(crate::i18n::label("Activity bundle"), &["zip", "html", "htm"])
-                                    .pick_file()
-                                    .await
-                                else {
-                                    return;
+                                let path = match crate::file_dialog::pick_file(&[(crate::i18n::label("Activity bundle"), &["zip", "html", "htm"])]).await {
+                                    Ok(Some(path)) => path,
+                                    Ok(None) => return,
+                                    Err(message) => { error.set(Some(message)); return; }
                                 };
                                 busy.set(true);
                                 error.set(None);
-                                upload.call(file.read().await);
+                                match tokio::fs::read(&*path).await {
+                                    Ok(bytes) => upload.call(bytes),
+                                    Err(message) => error.set(Some(message.to_string())),
+                                }
                                 busy.set(false);
                             });
                         },
