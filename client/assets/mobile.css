@@ -41,10 +41,6 @@
 .dxf-stream-video::before { content: attr(data-connecting); position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; }
 .dxf-stream-video[data-frame-ready="true"]::before { display: none; }
 .dxf-stream-video:not([data-frame-ready="true"]) video { opacity: 0; }
-.dxf-streams-expanded .dxf-stream-panel,
-.dxf-streams-expanded .dxf-stream-tile { border: 0; border-radius: 0 !important; background-color: #000; }
-.dxf-streams-expanded .dxf-stream-grid { padding: 0; gap: 0; }
-.dxf-streams-expanded :is(.dxf-stream-heading, .dxf-stream-toolbar, .dxf-stream-footer) { display: none; }
 .dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) { flex: 0 0 auto; height: auto !important; max-height: 52dvh; }
 .dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-grid { grid-template-rows: auto !important; overflow-y: auto; }
 .dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-tile { height: auto !important; }

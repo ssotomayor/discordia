@@ -1,0 +1,4 @@
+.dxf-streams-expanded .dxf-stream-panel,
+.dxf-streams-expanded .dxf-stream-tile { border: 0; border-radius: 0 !important; background-color: #000; }
+.dxf-streams-expanded .dxf-stream-grid { padding: 0; gap: 0; }
+.dxf-streams-expanded :is(.dxf-stream-heading, .dxf-stream-toolbar, .dxf-stream-footer) { display: none; }
