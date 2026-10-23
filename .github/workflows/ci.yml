@@ -40,6 +40,8 @@ jobs:
         run: |
           node scripts/test-globe.mjs
           node scripts/test-measure-android.mjs
+      - name: Android release metadata and signing regressions
+        run: python3 scripts/test_android_release.py
 
   test:
     name: fmt · clippy · test
@@ -257,6 +259,94 @@ jobs:
           cargo test -p discordia-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
           cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+
+  android-build:
+    name: Android APK (arm64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
+      DISCORDIA_VERSION: ${{ github.event_name == 'push' && format('v0.1.0-pre.{0}', github.run_number) || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+      - name: Android SDK and NDK
+        shell: bash
+        run: |
+          sdkmanager 'platforms;android-34' 'build-tools;34.0.0' 'ndk;27.2.12479018'
+          ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$bin/aarch64-linux-android26-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android26-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android26-clang" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Cached Dioxus CLI
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dx
+          key: dx-${{ runner.os }}-${{ runner.arch }}-${{ env.DIOXUS_CLI_VERSION }}
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install Dioxus CLI
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if dx --version 2>/dev/null | grep -qF " $DIOXUS_CLI_VERSION"; then
+            exit 0
+          fi
+          cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
+      - name: Build and validate release APK
+        run: |
+          python scripts/build-android.py --release --version-code '${{ github.run_number }}' \
+            --version-name 'v0.1.0-pre.${{ github.run_number }}' \
+            --output target/android-release/Discordia-android-arm64-unsigned.apk
+          git diff --exit-code -- Cargo.lock
+      - name: Sign and verify APK
+        if: github.event_name == 'push'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          umask 077
+          python -c "import base64, os, pathlib; pathlib.Path(os.environ['RUNNER_TEMP'], 'discordia-release.jks').write_bytes(base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))"
+          python scripts/sign-android.py \
+            --input target/android-release/Discordia-android-arm64-unsigned.apk \
+            --output target/android-release/Discordia-android-arm64.apk \
+            --keystore "$RUNNER_TEMP/discordia-release.jks" \
+            --build-tools "$ANDROID_HOME/build-tools/34.0.0"
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/discordia-release.jks"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: prerelease-android
+          path: target/android-release/Discordia-android-arm64.apk
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: android-unsigned
+          path: target/android-release/Discordia-android-arm64-unsigned.apk
+          if-no-files-found: error
+          retention-days: 3
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
@@ -485,7 +575,7 @@ jobs:
   publish-prerelease:
     name: Publish pre-release
     if: github.event_name == 'push'
-    needs: [test, desktop-build, prerelease-linux, prerelease-windows, prerelease-macos]
+    needs: [test, desktop-build, android-build, prerelease-linux, prerelease-windows, prerelease-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write           # create the release + tag
@@ -516,8 +606,11 @@ jobs:
             -exec cp {} release/discordia-server-macos \;
           find artifacts/prerelease-macos -type f -name 'Discordia-macos-arm64.dmg' \
             -exec cp {} release/ \;
+          find artifacts/prerelease-android -type f -name 'Discordia-android-arm64.apk' \
+            -exec cp {} release/ \;
+          test -s release/Discordia-android-arm64.apk
           ls -l release/
-          test "$(find release -type f | wc -l)" -eq 7 || { echo "ERROR: expected 7 artifacts"; exit 1; }
+          test "$(find release -type f | wc -l)" -eq 8 || { echo "ERROR: expected 8 artifacts"; exit 1; }
 
       - name: Sign release artifacts
         env:
@@ -525,7 +618,7 @@ jobs:
         run: |
           if [ -z "$MINISIGN_SECRET_KEY" ]; then
             echo "MINISIGN_SECRET_KEY is not set."
-            echo "Stopping rather than publishing seven artifacts nobody can verify —"
+            echo "Stopping rather than publishing artifacts nobody can verify —"
             echo "a release that is silently unsigned is worse than no release, because"
             echo "it teaches people the signatures are optional."
             echo "See README, 'Verifying a download', for how to generate the pair."
@@ -552,8 +645,8 @@ jobs:
             case "$f" in *.minisig) continue ;; esac
             minisign -V -p release-signing.pub -m "$f"
           done
-          test "$(find release -type f | wc -l)" -eq 14 || {
-            echo "ERROR: expected 7 artifacts and 7 signatures"; exit 1; }
+          test "$(find release -type f | wc -l)" -eq 16 || {
+            echo "ERROR: expected 8 artifacts and 8 signatures"; exit 1; }
 
       - name: Create pre-release
         uses: softprops/action-gh-release@v2
@@ -633,7 +726,7 @@ jobs:
     # saves another copy per job, and the old one sits in the budget until
     # GitHub evicts something, often the newest cache of another OS.
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [desktop-build, windows-build, macos-build, prerelease-linux, prerelease-windows, prerelease-macos, deploy-images]
+    needs: [desktop-build, windows-build, macos-build, android-build, prerelease-linux, prerelease-windows, prerelease-macos, deploy-images]
     runs-on: ubuntu-latest
     permissions:
       actions: write

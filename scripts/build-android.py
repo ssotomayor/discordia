@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_onVideoFrame",
     "Java_dev_dioxus_main_MainActivity_onCaptureStopped",
 }
+BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
 
 
 def verify_native_exports(archive, env):
@@ -52,7 +54,8 @@ def verify_native_exports(archive, env):
 
 def matching_jar(target_dir, target, profile):
     candidates = {}
-    for output in (target_dir / target / profile / "build").glob("webrtc-sys-*/output"):
+    cargo_profile = "android-release" if profile == "release" else "android-dev"
+    for output in (target_dir / target / cargo_profile / "build").glob("webrtc-sys-*/output"):
         for line in output.read_text(encoding="utf-8", errors="replace").splitlines():
             if "rustc-link-search=native=" not in line:
                 continue
@@ -73,6 +76,27 @@ def matching_jar(target_dir, target, profile):
 
 def run(args, cwd, env):
     subprocess.run(args, cwd=cwd, env=env, check=True)
+
+
+def verify_release_metadata(apk, env):
+    tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
+    aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
+    badging = subprocess.check_output([str(aapt), "dump", "badging", str(apk)], text=True)
+    package = dict(re.findall(r"(\w+)='([^']*)'", badging.splitlines()[0]))
+    if package.get("name") != "com.discordia.app" or "application-debuggable" in badging:
+        raise RuntimeError("Expected a non-debuggable Discordia release APK")
+    for field, variable in (("versionCode", "DISCORDIA_ANDROID_VERSION_CODE"), ("versionName", "DISCORDIA_ANDROID_VERSION_NAME")):
+        if variable in env and package.get(field) != env[variable]:
+            raise RuntimeError(f"Android {field} does not match the release version")
+
+
+def verify_release_branding(apk, env):
+    tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
+    aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
+    resources = subprocess.check_output([str(aapt), "dump", "resources", str(apk)], text=True)
+    for name in BRANDING:
+        if f"com.discordia.app:drawable/{name}:" not in resources:
+            raise RuntimeError(f"Final APK is missing branding resource: {name}")
 
 
 def package_resources(project):
@@ -128,8 +152,17 @@ def main():
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--target", default="aarch64-linux-android")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--version-code", type=int)
+    parser.add_argument("--version-name")
     args = parser.parse_args()
     env = dict(os.environ, LIVEKIT_BUNDLE_SKIP="1")
+    if args.version_code is not None:
+        if not 1 <= args.version_code <= 2_100_000_000:
+            parser.error("--version-code must be between 1 and 2100000000")
+        env["DISCORDIA_ANDROID_VERSION_CODE"] = str(args.version_code)
+    if args.version_name:
+        env["DISCORDIA_ANDROID_VERSION_NAME"] = args.version_name
     profile = "release" if args.release else "debug"
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT, env=env
@@ -139,7 +172,7 @@ def main():
     if project.is_dir():
         resources = project / "app/src/main/res"
         # dx rewrites its templates but retains our extra resources on incremental builds.
-        shutil.copy2(ROOT / "client/android/res/values/discordia_theme.xml", resources / "values/discordia_theme.xml")
+        package_resources(project)
         for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
             (resources / f"mipmap-{density}/ic_launcher.png").unlink(missing_ok=True)
     dx = ["dx", "build", "--android", "--target", args.target,
@@ -173,16 +206,23 @@ def main():
     if len(apks) != 1:
         raise RuntimeError(f"Expected one APK in {apk_dir}, found {len(apks)}")
     apk = apks[0]
+    if args.release:
+        verify_release_metadata(apk, env)
+        verify_release_branding(apk, env)
     with zipfile.ZipFile(apk) as archive:
-        for resource in ("discordia_logo.png", "discordia_splash.xml", "discordia_launcher_foreground.xml"):
-            if not any(name.endswith("/" + resource) for name in archive.namelist()):
-                raise RuntimeError(f"Final APK is missing branding resource: {resource}")
+        if not args.release:
+            for resource in ("discordia_logo.png", "discordia_splash.xml", "discordia_launcher_foreground.xml"):
+                if not any(name.endswith("/" + resource) for name in archive.namelist()):
+                    raise RuntimeError(f"Final APK is missing branding resource: {resource}")
         verify_native_exports(archive, env)
         dex = [archive.read(n) for n in archive.namelist() if n.endswith(".dex")]
         for name in REQUIRED_CLASSES:
             if not any(name.removesuffix(".class").encode() in part for part in dex):
                 raise RuntimeError(f"Final APK is missing {name}")
     print(f"Android APK with matching WebRTC classes: {apk}")
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(apk, args.output)
     if args.install:
         if args.release and "unsigned" in apk.name:
             raise RuntimeError("Release APK is unsigned; sign it before installation")

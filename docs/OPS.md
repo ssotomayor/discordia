@@ -343,6 +343,27 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 | SFU | `LIVEKIT_BUNDLE_SKIP=1`, autospawn off | unset to build a server that embeds one |
 | Site | `cd site && npm run dev` on 3100, `npm run build && npm run preview` on 8787 | the only ports compose publishes to the host, loopback only; recreate the container after editing `.devcontainer/` |
 
+## Android release APK
+
+`ci.yml` builds ARM64 Android on PRs (unsigned artifact) and on pushes to master (signed release asset). `publish-prerelease` waits for Android and publishes eight binaries plus their eight minisign signatures. The Android certificate is separate from minisign; its public SHA-256 is `client/android/release-signing.sha256`.
+
+| Repository secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | Base64 of the release JKS; alias `discordia` |
+| `ANDROID_KEYSTORE_PASSWORD` | JKS password |
+| `ANDROID_KEY_PASSWORD` | Private-key password |
+
+Keep the JKS and passwords backed up **outside the repository**; no private key belongs in an artifact, cache or release. Reuse that key for every update. `scripts/sign-android.py` aligns before signing and verifies the APK and committed certificate before publishing the output. Release builds validate package, debuggable flag and version metadata; versionCode follows the CI run number.
+
+```sh
+python scripts/build-android.py --release --version-code 862 --version-name v0.1.0-pre.862 --output target/android-release/unsigned.apk
+python scripts/sign-android.py --input target/android-release/unsigned.apk --output target/android-release/Discordia-android-arm64.apk --keystore /private/release.jks --build-tools "$ANDROID_HOME/build-tools/34.0.0"
+```
+
+Signing reads passwords from the two environment variables named above. SDK 34/build-tools 34.0.0, NDK 27.2.12479018, Java 21, Rust target `aarch64-linux-android` and dx pinned in CI are required; Windows setup is `scripts/android-env.ps1`.
+
+Updates are manual: install the new release APK over the previous release to preserve data. There is no Android in-app updater. A debug-signed install cannot be updated with the release key; export the recovery phrase before replacing a debug install. Never uninstall as part of CI or packaging.
+
 ## Who can read what
 
 | Party | Control | Voice / video |

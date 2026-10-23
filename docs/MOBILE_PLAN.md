@@ -14,7 +14,7 @@ Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discord
 | **Fase 1** | Build Mobile Base | **ANDROID BASE PROBADA / iOS PENDIENTE** | Check ARM64, APK, identidad y persistencia Keystore en Moto g15 aprobados. iOS requiere macOS. |
 | **Fase 2** | UI Responsiva | **BASE VALIDADA / AUDITORÍA RESTANTE** | Ajustes, shell horizontal, emojis y teclado probados físicamente (§12); faltan menús secundarios y pantallas sin adaptar. |
 | **Fase 3** | Funciones de Plataforma | **EN CURSO — ANDROID** | Keystore y directorio privado probados; faltan voz/permisos, ciclo de vida y otras adaptaciones. iOS delegado a otro colaborador. |
-| **Fase 4** | CI y Documentación | **PENDIENTE** | Workflows GitHub Actions para Android/iOS, guía de compilación. |
+| **Fase 4** | CI y Documentación | **EN CURSO — ANDROID** | Build release ARM64 y firma/publicación añadidos a CI; primera ejecución remota pendiente. iOS pendiente. |
 
 ---
 
