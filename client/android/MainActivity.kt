@@ -173,9 +173,12 @@ class MainActivity : WryActivity() {
         val metrics = resources.displayMetrics
         val displayWidth = metrics.widthPixels.coerceAtLeast(2)
         val displayHeight = metrics.heightPixels.coerceAtLeast(2)
+        val longEdge = maxOf(maxWidth, maxHeight)
+        val shortEdge = minOf(maxWidth, maxHeight)
+        val portrait = displayWidth < displayHeight
         val scale = minOf(
-            maxWidth.toDouble() / displayWidth,
-            maxHeight.toDouble() / displayHeight,
+            (if (portrait) shortEdge else longEdge).toDouble() / displayWidth,
+            (if (portrait) longEdge else shortEdge).toDouble() / displayHeight,
             1.0,
         )
         val even = { value: Int -> (value / 2 * 2).coerceAtLeast(2) }

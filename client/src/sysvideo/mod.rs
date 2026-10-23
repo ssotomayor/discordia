@@ -164,6 +164,8 @@ pub enum Priority {
 }
 
 pub(crate) fn fit_resolution(width: u32, height: u32, settings: Settings) -> (u32, u32) {
+    #[cfg(target_os = "android")]
+    let settings = mobile_resolution_bounds(width, height, settings);
     let ratio = (settings.width as f64 / width.max(1) as f64)
         .min(settings.height as f64 / height.max(1) as f64)
         .min(1.0);
@@ -172,6 +174,14 @@ pub(crate) fn fit_resolution(width: u32, height: u32, settings: Settings) -> (u3
         even((width as f64 * ratio) as u32),
         even((height as f64 * ratio) as u32),
     )
+}
+
+#[cfg(any(target_os = "android", test))]
+fn mobile_resolution_bounds(width: u32, height: u32, mut settings: Settings) -> Settings {
+    if (width < height) != (settings.width < settings.height) {
+        std::mem::swap(&mut settings.width, &mut settings.height);
+    }
+    settings
 }
 
 /// `YuvConverter` wraps both chroma planes with the luma stride and interleaves
@@ -290,8 +300,36 @@ mod resolution_tests {
             encoder: crate::sysvideo::Encoder::Auto,
         };
         assert_eq!(super::fit_resolution(3440, 1440, settings), (1920, 802));
-        assert_eq!(super::fit_resolution(1080, 1920, settings), (606, 1080));
+        assert_eq!(
+            super::fit_resolution(1080, 1920, settings),
+            if cfg!(target_os = "android") {
+                (1080, 1920)
+            } else {
+                (606, 1080)
+            }
+        );
         assert_eq!(super::fit_resolution(801, 601, settings), (800, 600));
+    }
+
+    #[test]
+    fn mobile_capture_rotates_its_budget_with_the_display() {
+        let settings = crate::features::screenshare::native_settings("720");
+        for (width, height, expected) in [
+            (1080, 2400, (576, 1280)),
+            (2400, 1080, (1280, 576)),
+            (1080, 1920, (720, 1280)),
+            (1920, 1080, (1280, 720)),
+            (360, 800, (360, 800)),
+        ] {
+            let bounds = super::mobile_resolution_bounds(width, height, settings);
+            let actual = super::fit_resolution(width, height, bounds);
+            assert_eq!(actual, expected);
+            assert!(actual.0 * actual.1 <= 1280 * 720);
+            assert_eq!(
+                (bounds.fps, bounds.max_bitrate),
+                (settings.fps, settings.max_bitrate)
+            );
+        }
     }
 }
 

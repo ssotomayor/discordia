@@ -1837,7 +1837,7 @@ impl ScreenVideoRoom {
         publish_settings.codec = crate::sysvideo::codec_capabilities()
             .await?
             .resolve(settings.codec, settings.encoder)?;
-        if settings.adaptive_quality {
+        if settings.adaptive_quality || cfg!(target_os = "android") {
             let sources = tokio::task::spawn_blocking(crate::sysvideo::sources)
                 .await
                 .map_err(|e| format!("screen source lookup failed: {e}"))??;
