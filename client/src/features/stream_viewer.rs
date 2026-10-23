@@ -313,6 +313,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let mut model = use_signal(|| props.receiver.borrow().clone());
     let mut focused = use_signal::<Option<String>>(|| None);
     let pinned = use_signal(|| false);
+    let mut fullscreen = use_signal(|| false);
     let mut status = use_signal(|| "Connecting…".to_owned());
     let mut active_generation = use_signal(|| 0_u64);
     let window = crate::platform::use_window();
@@ -320,6 +321,14 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let mut size = use_signal(move || (initial_size.width as f64, initial_size.height as f64));
     let window_id = window.window.id();
     let event_window = window.clone();
+    let fullscreen_window = window.clone();
+    use_effect(move || {
+        fullscreen_window.window.set_fullscreen(if fullscreen() {
+            Some(crate::platform::tao::window::Fullscreen::Borderless(None))
+        } else {
+            None
+        });
+    });
     crate::platform::use_wry_event_handler(move |event, _| {
         use crate::platform::tao::event::{ElementState, Event, WindowEvent};
         if let Event::WindowEvent {
@@ -338,6 +347,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                         && event.logical_key == crate::platform::tao::keyboard::Key::Escape =>
                 {
                     focused.set(None);
+                    fullscreen.set(false);
                     event_window.window.set_fullscreen(None);
                 }
                 _ => {}
@@ -470,7 +480,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     };
     let theme = crate::app::theme_vars(&snapshot.theme);
     let size_css = crate::ui_size::text_css(snapshot.text_size_percent);
-    let visible_count = if focused().is_some() {
+    let visible_count = if focused().is_some() || fullscreen() {
         1
     } else {
         snapshot.streams.len()
@@ -479,21 +489,23 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let scale = window.window.scale_factor();
     let grid = grid_style(visible_count, width / scale - 16.0, height / scale - 60.0);
     let multiple_streams = snapshot.streams.len() > 1;
+    let fullscreen_target =
+        focused().or_else(|| snapshot.streams.first().map(|s| s.pubkey.clone()));
     rsx! {
         crate::app::AppHead {}
         style { "{size_css}" }
-        div { class: "dxf-ui h-full flex flex-col bg-[var(--bg)] text-[var(--text)]", style: "{theme}",
+        div { class: if fullscreen() { "dxf-ui dxf-streams-expanded h-full flex flex-col bg-black text-[var(--text)]" } else { "dxf-ui h-full flex flex-col bg-[var(--bg)] text-[var(--text)]" }, style: "{theme}",
             if multiple_streams || !status().is_empty() {
-                div { class: "flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
+                div { class: "dxf-stream-heading flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
                     span { class: "flex-1 text-xs text-[var(--text-muted)]", {crate::i18n::message(&(status).to_string())} }
                     if multiple_streams {
-                        WindowControls { pinned, commands: props.commands.clone(), generation }
+                        WindowControls { pinned, fullscreen, commands: props.commands.clone(), generation }
                     }
                 }
             }
-            div { class: "flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
+            div { class: "dxf-stream-grid flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
                 for stream in snapshot.streams {
-                    PopoutTile { key: "{stream.pubkey}", stream, focused, pinned, commands: props.commands.clone(), generation, multiple_streams }
+                    PopoutTile { key: "{stream.pubkey}", fullscreen, fullscreen_target: fullscreen_target.clone(), stream, focused, pinned, commands: props.commands.clone(), generation, multiple_streams }
                 }
             }
         }
@@ -503,13 +515,16 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
 #[derive(Clone, Props)]
 struct WindowControlsProps {
     pinned: Signal<bool>,
+    fullscreen: Signal<bool>,
     commands: mpsc::UnboundedSender<(u64, Command)>,
     generation: u64,
 }
 
 impl PartialEq for WindowControlsProps {
     fn eq(&self, other: &Self) -> bool {
-        self.pinned == other.pinned && self.generation == other.generation
+        self.pinned == other.pinned
+            && self.fullscreen == other.fullscreen
+            && self.generation == other.generation
     }
 }
 
@@ -519,7 +534,7 @@ fn WindowControls(props: WindowControlsProps) -> Element {
     let commands = props.commands;
     let generation = props.generation;
     let pin_window = crate::platform::use_window();
-    let fullscreen_window = pin_window.clone();
+    let mut fullscreen = props.fullscreen;
     rsx! {
         div { class: "flex flex-wrap items-center justify-end gap-2",
             button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: crate::i18n::text("Keep window on top", &[]), aria_pressed: "{pinned}",
@@ -527,8 +542,7 @@ fn WindowControls(props: WindowControlsProps) -> Element {
                 if pinned() { {crate::i18n::text("Unpin", &[])} } else { {crate::i18n::text("Pin", &[])} }
             }
             button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| {
-                let active = fullscreen_window.window.fullscreen().is_some();
-                fullscreen_window.window.set_fullscreen(if active { None } else { Some(crate::platform::tao::window::Fullscreen::Borderless(None)) });
+                fullscreen.toggle();
             }, {crate::i18n::text("Full screen", &[])} }
             button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands, generation, Command::DockAll), {crate::i18n::text("Return to app", &[])} }
         }
@@ -571,6 +585,8 @@ struct PopoutTileProps {
     stream: Stream,
     focused: Signal<Option<String>>,
     pinned: Signal<bool>,
+    fullscreen: Signal<bool>,
+    fullscreen_target: Option<String>,
     commands: mpsc::UnboundedSender<(u64, Command)>,
     generation: u64,
     multiple_streams: bool,
@@ -581,6 +597,8 @@ impl PartialEq for PopoutTileProps {
         self.stream == other.stream
             && self.focused == other.focused
             && self.pinned == other.pinned
+            && self.fullscreen == other.fullscreen
+            && self.fullscreen_target == other.fullscreen_target
             && self.generation == other.generation
             && self.multiple_streams == other.multiple_streams
     }
@@ -590,9 +608,15 @@ impl PartialEq for PopoutTileProps {
 fn PopoutTile(props: PopoutTileProps) -> Element {
     let stream = props.stream;
     let mut focused = props.focused;
-    let can_focus = props.multiple_streams;
+    let mut fullscreen = props.fullscreen;
+    let is_fullscreen = fullscreen();
+    let can_focus = props.multiple_streams && !is_fullscreen;
     let selected = can_focus && focused().as_ref() == Some(&stream.pubkey);
-    let hidden = can_focus && focused().is_some() && !selected;
+    let hidden = if is_fullscreen {
+        props.fullscreen_target.as_ref() != Some(&stream.pubkey)
+    } else {
+        can_focus && focused().is_some() && !selected
+    };
     let container = format!("popout-stream-{}", stream.pubkey);
     let pk = stream.pubkey.clone();
     let target = container.clone();
@@ -668,8 +692,8 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
     let mute = props.commands.clone();
     let generation = props.generation;
     rsx! {
-        div { class: "min-w-0 min-h-0 flex flex-col border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--panel-solid)]", style: if hidden { "display:none;" } else { "display:flex;" },
-            div { class: "flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
+        div { class: "dxf-stream-tile min-w-0 min-h-0 flex flex-col border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--panel-solid)]", style: if hidden { "display:none;" } else { "display:flex;" },
+            div { class: "dxf-stream-toolbar flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
                 super::screenshare::StreamViewers { names: stream.viewers.clone() }
                 if props.multiple_streams {
@@ -679,27 +703,33 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
             }
             div { id: "{container}", class: "flex-1 min-h-0 bg-black flex items-center justify-center text-sm text-[var(--text-muted)]",
                 style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
-                role: if can_focus { "button" } else { "group" },
-                tabindex: if can_focus { "0" } else { "-1" },
-                title: can_focus.then_some(if selected { "Return to mosaic" } else { "Focus stream" }),
-                aria_label: if can_focus { if selected { "Return to mosaic" } else { "Focus stream" }.to_owned() } else { format!("{}'s screen", stream.name) },
+                role: if can_focus || is_fullscreen { "button" } else { "group" },
+                tabindex: if can_focus || is_fullscreen { "0" } else { "-1" },
+                title: if can_focus { if selected { "Return to mosaic" } else { "Focus stream" } } else { "" },
+                aria_label: if is_fullscreen { crate::i18n::text("Exit full screen", &[]) } else if can_focus { if selected { "Return to mosaic" } else { "Focus stream" }.to_owned() } else { format!("{}'s screen", stream.name) },
                 aria_pressed: can_focus.then(|| selected.to_string()),
                 onclick: move |e| {
                     e.stop_propagation();
-                    if can_focus {
+                    if is_fullscreen {
+                        fullscreen.set(false);
+                    } else if can_focus {
                         focused.set(if selected { None } else { Some(pk_focus.clone()) });
                     }
                 },
                 onkeydown: move |e| {
-                    if can_focus && (e.key() == Key::Enter || e.key() == Key::Character(" ".into())) {
+                    if (can_focus || is_fullscreen) && (e.key() == Key::Enter || e.key() == Key::Character(" ".into())) {
                         e.prevent_default();
                         e.stop_propagation();
-                        focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                        if is_fullscreen {
+                            fullscreen.set(false);
+                        } else {
+                            focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                        }
                     }
                 },
                 {crate::i18n::text("Connecting to stream…", &[])}
             }
-            div { class: "grid items-center gap-2 px-3 py-2 shrink-0", style: "grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);",
+            div { class: "dxf-stream-footer grid items-center gap-2 px-3 py-2 shrink-0", style: "grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);",
                 div { class: "min-w-0",
                     span { class: "text-xs text-[var(--text-muted)]", "{received}" }
                     super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
@@ -713,7 +743,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 }
                 div { class: "min-w-0 justify-self-end",
                     if !props.multiple_streams {
-                        WindowControls { pinned: props.pinned, commands: props.commands.clone(), generation }
+                        WindowControls { pinned: props.pinned, fullscreen, commands: props.commands.clone(), generation }
                     }
                 }
             }
