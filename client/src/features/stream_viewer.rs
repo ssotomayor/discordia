@@ -562,7 +562,7 @@ fn WindowControls(props: WindowControlsProps) -> Element {
             button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Full screen", &[]), aria_label: crate::i18n::text("Full screen", &[]), onclick: move |_| {
                 fullscreen.toggle();
             }, dangerous_inner_html: super::icons::EXPAND }
-            button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Return to app", &[]), aria_label: crate::i18n::text("Return to app", &[]), onclick: move |_| send(&commands, generation, Command::DockAll), dangerous_inner_html: super::icons::LAYOUT }
+            button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Return to app", &[]), aria_label: crate::i18n::text("Return to app", &[]), onclick: move |_| send(&commands, generation, Command::DockAll), dangerous_inner_html: super::icons::WINDOW_POP_IN }
         }
     }
 }
@@ -715,7 +715,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
                 super::screenshare::StreamViewers { names: stream.viewers.clone() }
                 if props.multiple_streams {
-                    button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Return to app", &[]), aria_label: crate::i18n::text("Return to app", &[]), onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), dangerous_inner_html: super::icons::LAYOUT }
+                    button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Return to app", &[]), aria_label: crate::i18n::text("Return to app", &[]), onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), dangerous_inner_html: super::icons::WINDOW_POP_IN }
                 }
                 button { r#type: "button", class: "dxf-stream-icon-button", title: crate::i18n::text("Stop watching", &[]), aria_label: crate::i18n::text("Stop watching", &[]), onclick: move |_| send(&stop, generation, Command::Stop(pk_stop.clone())), dangerous_inner_html: super::icons::CLOSE }
             }
