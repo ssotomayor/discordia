@@ -6,6 +6,7 @@ allprojects { project ->
         }
         project.dependencies.add('implementation', project.files(jar))
         project.androidComponents.finalizeDsl { android ->
+            android.buildTypes.getByName('debug').applicationIdSuffix = '.debug'
             def versionCode = System.getenv('DISCORDIA_ANDROID_VERSION_CODE')
             if (versionCode != null) {
                 if (!(versionCode ==~ /[0-9]+/) || versionCode.toLong() < 1 || versionCode.toLong() > 2100000000L) {

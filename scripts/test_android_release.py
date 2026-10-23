@@ -19,6 +19,15 @@ building = module("build-android")
 
 
 class AndroidReleaseTests(unittest.TestCase):
+    def test_debug_apk_has_a_separate_package_and_visible_label(self):
+        good = "package: name='com.discordia.app.debug' versionCode='1'\napplication-debuggable\napplication-label:'Debug Discordia'\n"
+        with patch.object(building.subprocess, "check_output", return_value=good):
+            building.verify_debug_metadata(Path("debug.apk"), {"ANDROID_HOME": "sdk"})
+        for bad in (good.replace("com.discordia.app.debug", "com.discordia.app"), good.replace("Debug Discordia", "Discordia"), good.replace("application-debuggable", "")):
+            with patch.object(building.subprocess, "check_output", return_value=bad):
+                with self.assertRaises(RuntimeError):
+                    building.verify_debug_metadata(Path("debug.apk"), {"ANDROID_HOME": "sdk"})
+
     def test_release_branding_survives_resource_filename_optimization(self):
         resources = "\n".join(f"resource 0x7f070088 com.discordia.app:drawable/{name}: t=0x03" for name in building.BRANDING)
         with patch.object(building.subprocess, "check_output", return_value=resources):
