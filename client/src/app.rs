@@ -735,7 +735,9 @@ pub fn App() -> Element {
         if *update_exit.peek()
             && matches!(
                 phase,
-                crate::update::UpdatePhase::Failed(_) | crate::update::UpdatePhase::Opened
+                crate::update::UpdatePhase::Failed(_)
+                    | crate::update::UpdatePhase::Opened
+                    | crate::update::UpdatePhase::Ready(_)
             )
         {
             update_exit.set(false);

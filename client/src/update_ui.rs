@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+#[cfg(not(target_os = "android"))]
+use std::time::Duration;
+use std::time::SystemTime;
 
 use dioxus::prelude::*;
 use futures_util::StreamExt;
@@ -38,9 +40,26 @@ pub struct State {
     pub checked: Option<SystemTime>,
     pub dismissed: bool,
     pub in_call: bool,
+    pub install_error: Option<String>,
 }
 
 impl State {
+    #[cfg(any(target_os = "android", test))]
+    fn android_install_finished(&mut self, path: PathBuf, result: Result<bool, String>) {
+        match result {
+            Ok(true) => self.phase = Phase::Finished,
+            result => {
+                self.install_error = Some(match result {
+                    Ok(false) => "Installation cancelled. The verified download is ready to retry."
+                        .to_owned(),
+                    Err(error) => error,
+                    Ok(true) => unreachable!(),
+                });
+                self.phase = Phase::Ready(path);
+            }
+        }
+    }
+
     fn can_check(&self) -> bool {
         self.check != Check::Searching
             && matches!(
@@ -56,6 +75,7 @@ impl State {
                 if self.offer.as_ref() != Some(&offer) {
                     self.dismissed = false;
                     self.phase = Phase::Offered;
+                    self.install_error = None;
                 }
                 self.offer = Some(offer);
                 self.check = Check::Idle;
@@ -105,6 +125,7 @@ impl Updates {
         if let Some(offer) = offer {
             let mut state = self.state.write();
             state.phase = Phase::Downloading;
+            state.install_error = None;
             state.progress = (0, None);
             state.dismissed = false;
             drop(state);
@@ -123,6 +144,7 @@ impl Updates {
                 _ => return,
             }
         };
+        self.state.write().install_error = None;
         self.state.write().phase = Phase::Leaving(path);
     }
 
@@ -189,19 +211,33 @@ pub fn use_updates() -> Updates {
                     };
                 }
                 Command::Install(path) => {
-                    let result = tokio::task::spawn_blocking(move || {
-                        super::perform(&super::plan_install(path))
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(super::Applied::Opened)) => state.write().phase = Phase::Opened,
-                        Ok(Ok(_)) => {
-                            state.write().phase = Phase::Finished;
-                            tokio::time::sleep(Duration::from_millis(900)).await;
-                            std::process::exit(0);
+                    #[cfg(target_os = "android")]
+                    {
+                        let tag = state
+                            .peek()
+                            .offer
+                            .as_ref()
+                            .map(|offer| offer.tag.clone())
+                            .unwrap_or_default();
+                        let result = super::android::install(&path, &tag).await;
+                        state.write().android_install_finished(path, result);
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        let result = tokio::task::spawn_blocking(move || {
+                            super::perform(&super::plan_install(path))
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(super::Applied::Opened)) => state.write().phase = Phase::Opened,
+                            Ok(Ok(_)) => {
+                                state.write().phase = Phase::Finished;
+                                tokio::time::sleep(Duration::from_millis(900)).await;
+                                std::process::exit(0);
+                            }
+                            Ok(Err(error)) => state.write().phase = Phase::Failed(error),
+                            Err(error) => state.write().phase = Phase::Failed(error.to_string()),
                         }
-                        Ok(Err(error)) => state.write().phase = Phase::Failed(error),
-                        Err(error) => state.write().phase = Phase::Failed(error.to_string()),
                     }
                 }
             }
@@ -233,6 +269,9 @@ pub fn UpdateBanner() -> Element {
     };
     let detail = match state.phase {
         Phase::Downloading => "You can keep using Discordia.",
+        Phase::Ready(_) if cfg!(target_os = "android") => {
+            "Install when it suits you. Android will ask for confirmation."
+        }
         Phase::Ready(_) => "Restart when it suits you.",
         _ => "Improvements and fixes for Discordia.",
     };
@@ -273,6 +312,9 @@ pub fn UpdatePanel() -> Element {
         Phase::Ready(_) => "Ready to install",
         Phase::Leaving(_) => "Closing your session…",
         Phase::Installing => "Installing update…",
+        Phase::Finished if cfg!(target_os = "android") => {
+            "Update installed. Open Discordia to continue."
+        }
         Phase::Finished => "Installed — restarting Discordia.",
         Phase::Opened => "Verified — finish in the installer window.",
         Phase::Failed(_) => "Update failed",
@@ -284,13 +326,23 @@ pub fn UpdatePanel() -> Element {
         _ => "Keep Discordia up to date",
     };
     let detail = match &state.phase {
+        Phase::Ready(_) if cfg!(target_os = "android") => {
+            "Android will ask you to confirm installation. Your account and settings are kept."
+        }
         Phase::Ready(_) => "The app restarts only when you choose.",
         Phase::Downloading => "You can keep using Discordia.",
         Phase::Leaving(_) | Phase::Installing | Phase::Finished => {
-            "Do not close Discordia while the update is installed."
+            if cfg!(target_os = "android") {
+                "Allow updates from Discordia if Android asks, then confirm installation."
+            } else {
+                "Do not close Discordia while the update is installed."
+            }
         }
         _ if state.check == Check::Local && state.offer.is_none() => {
             "This is a local build. Automatic updates are available in published releases."
+        }
+        _ if state.offer.is_some() && cfg!(target_os = "android") => {
+            "Download now and install when it suits you."
         }
         _ if state.offer.is_some() => "Download now and restart when it suits you.",
         _ if state.check == Check::Current => "You're using the latest available version.",
@@ -298,6 +350,7 @@ pub fn UpdatePanel() -> Element {
         _ => "Check for a new version whenever you want.",
     };
     let kind = match &state.phase {
+        _ if state.install_error.is_some() => "error",
         Phase::Failed(_) => "error",
         Phase::Downloading | Phase::Leaving(_) | Phase::Installing => "busy",
         Phase::Ready(_) | Phase::Finished | Phase::Opened => "success",
@@ -339,10 +392,11 @@ pub fn UpdatePanel() -> Element {
                     }
                 }
                 if let Phase::Failed(message) = &state.phase { p { class: "dxf-update-error", role: "alert", {crate::i18n::message(message)} } }
+                if let Some(message) = &state.install_error { p { class: "dxf-update-error", role: "alert", {crate::i18n::message(message)} } }
                 if state.offer.is_some() {
                   div { class: "dxf-update-actions",
                     if let Phase::Ready(_) = &state.phase {
-                        button { class: "dxf-update-primary", disabled: state.in_call, onclick: move |_| updates.request_install(), {crate::i18n::text("Restart and update", &[])} }
+                        button { class: "dxf-update-primary", disabled: state.in_call, onclick: move |_| updates.request_install(), {crate::i18n::text(if cfg!(target_os = "android") { "Install update" } else { "Restart and update" }, &[])} }
                     } else if matches!(state.phase, Phase::Offered | Phase::Failed(_)) && state.offer.as_ref().is_some_and(|offer| offer.download.is_some()) {
                         button { class: "dxf-update-primary", disabled: state.check == Check::Searching, onclick: move |_| updates.download(), {crate::i18n::text("Download update", &[])} }
                     }
@@ -351,7 +405,7 @@ pub fn UpdatePanel() -> Element {
                     }
                   }
                 }
-                if matches!(state.phase, Phase::Ready(_)) && state.in_call { p { {crate::i18n::text("Finish your call before restarting. The download is ready.", &[])} } }
+                if matches!(state.phase, Phase::Ready(_)) && state.in_call { p { {crate::i18n::text(if cfg!(target_os = "android") { "Finish your call before installing. The download is ready." } else { "Finish your call before restarting. The download is ready." }, &[])} } }
                 if let Check::Failed(message) = &state.check {
                     p { class: "dxf-update-error", role: "alert", {crate::i18n::text("Could not check for updates. Try again.", &[])} }
                     details { summary { {crate::i18n::text("Details", &[])} } {crate::i18n::message(message)} }
@@ -405,6 +459,23 @@ mod tests {
         state.checked(Ok(crate::version::CheckResult::Available(offer("v2"))));
         assert!(!state.dismissed);
         assert_eq!(state.offer, Some(offer("v2")));
+    }
+
+    #[test]
+    fn android_cancel_and_failure_preserve_the_verified_download_for_retry() {
+        let path = PathBuf::from("verified.apk");
+        let mut state = State {
+            phase: Phase::Installing,
+            ..Default::default()
+        };
+        state.android_install_finished(path.clone(), Ok(false));
+        assert_eq!(state.phase, Phase::Ready(path.clone()));
+        assert!(state.install_error.as_ref().unwrap().contains("cancelled"));
+        state.android_install_finished(path.clone(), Err("permission denied".into()));
+        assert_eq!(state.phase, Phase::Ready(path.clone()));
+        assert_eq!(state.install_error.as_deref(), Some("permission denied"));
+        state.android_install_finished(path, Ok(true));
+        assert_eq!(state.phase, Phase::Finished);
     }
 
     #[test]

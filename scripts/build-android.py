@@ -127,6 +127,8 @@ def verify_release_metadata(apk, env):
     package = dict(re.findall(r"(\w+)='([^']*)'", badging.splitlines()[0]))
     if package.get("name") != "com.discordia.app" or "application-debuggable" in badging:
         raise RuntimeError("Expected a non-debuggable Discordia release APK")
+    if "uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'" not in badging:
+        raise RuntimeError("Android release APK is missing update installation permission")
     for field, variable in (("versionCode", "DISCORDIA_ANDROID_VERSION_CODE"), ("versionName", "DISCORDIA_ANDROID_VERSION_NAME")):
         if variable in env and package.get(field) != env[variable]:
             raise RuntimeError(f"Android {field} does not match the release version")
@@ -172,6 +174,7 @@ def package_sources(project):
         ROOT / "client/android/DioxusForegroundService.kt",
         sources / "DioxusForegroundService.kt",
     )
+    shutil.copy2(ROOT / "client/android/DioxusUpdater.kt", sources / "DioxusUpdater.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 

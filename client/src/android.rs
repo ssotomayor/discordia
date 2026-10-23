@@ -570,6 +570,79 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+pub fn update_version() -> Result<Option<u64>, String> {
+    with_activity(|env, activity| {
+        let version = env
+            .call_method(activity, "installedUpdateVersion", "()J", &[])
+            .and_then(|value| value.j())
+            .map_err(system_error)?;
+        Ok((version > 0).then_some(version as u64))
+    })
+}
+
+pub async fn install_update(path: &std::path::Path, version: u64) -> Result<bool, String> {
+    let path = path
+        .to_str()
+        .ok_or("Invalid Android update path.")?
+        .to_owned();
+    let started = on_ui(move |env, activity| {
+        let path = env.new_string(path).map_err(system_error)?;
+        env.call_method(
+            activity,
+            "beginAppUpdate",
+            "(Ljava/lang/String;J)Z",
+            &[JValue::Object(&path), JValue::Long(version as i64)],
+        )
+        .and_then(|value| value.z())
+        .map_err(system_error)
+    })
+    .await?;
+    if !started {
+        return Err("Android update installation is unavailable.".into());
+    }
+    struct Cancel;
+    impl Drop for Cancel {
+        fn drop(&mut self) {
+            crate::platform::wry::prelude::dispatch(|env, activity, _| {
+                if env
+                    .call_method(activity, "cancelAppUpdate", "()V", &[])
+                    .is_err()
+                {
+                    let _ = env.exception_clear();
+                }
+            });
+        }
+    }
+    let _cancel = Cancel;
+    tokio::time::timeout(Duration::from_secs(15 * 60), async {
+        loop {
+            let state = on_ui(|env, activity| {
+                let value = env
+                    .call_method(activity, "appUpdateState", "()Ljava/lang/String;", &[])
+                    .and_then(|value| value.l())
+                    .map_err(system_error)?;
+                let value = JString::from(value);
+                let text: String = env.get_string(&value).map_err(system_error)?.into();
+                serde_json::from_str::<serde_json::Value>(&text).map_err(|error| error.to_string())
+            })
+            .await?;
+            match state["status"].as_str() {
+                Some("installed") => return Ok(true),
+                Some("cancelled") => return Ok(false),
+                Some("failed") => {
+                    return Err(state["message"]
+                        .as_str()
+                        .unwrap_or("Android update failed.")
+                        .to_owned());
+                }
+                _ => tokio::time::sleep(Duration::from_millis(500)).await,
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Android installer did not respond. You can try again.".to_owned())?
+}
+
 fn vault_state_exists() -> Result<bool, String> {
     let directory = config_dir();
     if directory.join("vault.backend").exists() || directory.join("identity.json").exists() {

@@ -86,8 +86,9 @@ class AndroidReleaseTests(unittest.TestCase):
 
     def test_release_metadata_rejects_debug_builds_and_wrong_versions(self):
         env = {"ANDROID_HOME": "sdk", "DISCORDIA_ANDROID_VERSION_CODE": "862", "DISCORDIA_ANDROID_VERSION_NAME": "v0.1.0-pre.862"}
-        good = "package: name='com.discordia.app' versionCode='862' versionName='v0.1.0-pre.862'\n"
-        for bad in (good + "application-debuggable\n", good.replace("'862'", "'1'"), good.replace("com.discordia.app", "other.app"), good.replace("v0.1.0-pre.862", "0.1.0")):
+        permission = "uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'\n"
+        good = "package: name='com.discordia.app' versionCode='862' versionName='v0.1.0-pre.862'\n" + permission
+        for bad in (good + "application-debuggable\n", good.replace("'862'", "'1'"), good.replace("com.discordia.app", "other.app"), good.replace("v0.1.0-pre.862", "0.1.0"), good.replace(permission, "")):
             with patch.object(building.subprocess, "check_output", return_value=bad):
                 with self.assertRaises(RuntimeError):
                     building.verify_release_metadata(Path("release.apk"), env)
