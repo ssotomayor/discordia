@@ -1897,6 +1897,9 @@ pub(crate) fn select_text_channel(
     gateway: &GatewayTx,
     channel_id: Id,
 ) {
+    if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
+        tab.set(super::workspace::MobileTab::Chat);
+    }
     let needs_fetch = {
         let mut s = state.write();
         s.selected_channel = Some(channel_id);
@@ -1914,6 +1917,9 @@ pub(crate) fn select_text_channel(
 }
 
 fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) {
+    if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
+        tab.set(super::workspace::MobileTab::Chat);
+    }
     let needs_fetch = {
         let mut s = state.write();
         s.dm_mode = true;
