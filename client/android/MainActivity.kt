@@ -249,18 +249,16 @@ class MainActivity : WryActivity() {
         return launchScreenConsent()
     }
 
-    /// A virtual display keeps the size it was created with, so a rotation
-    /// mid-share would letterbox the screen into the old one; the capturer can
-    /// recreate it.
+    // Keeping the old aspect ratio after rotation would letterbox the share.
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         val capturer = screenCapturer ?: return
         val (width, height) = captureSize(screenMaxWidth, screenMaxHeight)
         if (width == screenWidth && height == screenHeight) return
-        screenWidth = width
-        screenHeight = height
         try {
             capturer.changeCaptureFormat(width, height, screenFps)
+            screenWidth = width
+            screenHeight = height
         } catch (_: Exception) {
         }
     }
@@ -335,6 +333,8 @@ class MainActivity : WryActivity() {
         val (actualWidth, actualHeight) = captureSize(width, height)
         return try {
             capturer.changeCaptureFormat(actualWidth, actualHeight, fps)
+            screenMaxWidth = width
+            screenMaxHeight = height
             screenWidth = actualWidth
             screenHeight = actualHeight
             screenFps = fps
