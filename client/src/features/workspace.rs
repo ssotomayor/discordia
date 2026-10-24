@@ -629,12 +629,14 @@ pub fn WorkspaceView(
             crate::features::leveling::XpLedgerService {}
             crate::features::screenshare::ScreenShareBridge {}
             crate::features::screenshare::ScreenSourcePicker {}
-            crate::features::screenshare::ScreenSelfPreview {}
             crate::features::camera::CameraBridge {}
             crate::features::camera::CameraSourcePicker {}
             crate::mediakey::MediaKeyBridge {}
-            crate::features::camera::CameraSelfPreview {}
-            crate::features::camera::CameraGridWindow {}
+            if !cfg!(target_os = "android") {
+                crate::features::screenshare::ScreenSelfPreview {}
+                crate::features::camera::CameraSelfPreview {}
+                crate::features::camera::CameraGridWindow {}
+            }
             crate::features::profiles::ProfileCard {}
             crate::features::bot_commands::CommandDialogHost {}
             crate::features::chat::ImageViewer {}

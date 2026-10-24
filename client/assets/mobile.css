@@ -68,3 +68,64 @@
 }
 .dxf-platform-mobile .dxf-media-heading button { min-width: 44px; height: 44px; pointer-events: auto; }
 .dxf-platform-mobile .dxf-media-resize { display: none; }
+
+.dxf-platform-mobile .dxf-workspace-mobile {
+  --mobile-line: color-mix(in srgb, var(--border) 75%, var(--text) 6%);
+  --mobile-muted: color-mix(in srgb, var(--text-muted) 80%, var(--text) 20%);
+}
+.dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-header { min-height: 56px; padding: 4px 0 8px; gap: 6px; }
+.dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-tools { gap: 4px; }
+.dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-tools button,
+.dxf-platform-mobile .dxf-workspace-mobile .dxf-connection-controls {
+  border-radius: 12px; background-color: var(--panel-solid); border-color: var(--mobile-line);
+}
+.dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-tools button { width: 44px; height: 44px; color: var(--mobile-muted); }
+.dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-header svg { width: 18px; height: 18px; }
+.dxf-platform-mobile .dxf-mobile-server-column { width: 58px; padding: 0; background-color: var(--panel-solid); border-color: var(--mobile-line); }
+.dxf-platform-mobile .dxf-guilds-panel { border: 0; border-radius: 0; background-color: var(--panel-solid); }
+.dxf-platform-mobile .dxf-guilds-grip { height: 26px; border-bottom: 0; }
+.dxf-platform-mobile .dxf-guilds-list { padding: 8px 0; gap: 13px; }
+.dxf-platform-mobile :is(.dxf-dm-home, .dxf-guild-icon, .dxf-add-guild) { width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0; }
+.dxf-platform-mobile .dxf-dm-home:not([aria-pressed="true"]) { background-color: var(--bg); }
+.dxf-platform-mobile .dxf-guild-icon { background-color: var(--bg); }
+.dxf-platform-mobile .dxf-dm-home[aria-pressed="true"]::before {
+  content: ""; position: absolute; left: -7px; top: 12px; width: 3px; height: 20px;
+  border-radius: 0 3px 3px 0; background-color: var(--accent);
+}
+.dxf-platform-mobile .dxf-server-header { min-height: 20px; }
+.dxf-platform-mobile .dxf-channels-panel { border: 0; border-radius: 0; background-color: var(--panel-solid); }
+.dxf-platform-mobile .dxf-channels-heading { height: 56px; padding: 0 13px; border-color: var(--mobile-line); }
+.dxf-platform-mobile .dxf-channels-heading h2 { font-size: 16px; font-weight: 600; }
+.dxf-platform-mobile .dxf-guild-banner { height: 100px; }
+.dxf-platform-mobile .dxf-dm-list { padding: 12px 6px; }
+.dxf-platform-mobile .dxf-dm-key-entry { padding: 0 6px 10px; }
+.dxf-platform-mobile .dxf-dm-key-entry input { height: 44px; padding: 0 11px; border-radius: 12px; background-color: var(--bg); border-color: var(--mobile-line); font-size: 12px; }
+.dxf-platform-mobile .dxf-dm-row { min-height: 56px; padding: 7px; border-radius: 12px; }
+.dxf-platform-mobile .dxf-dm-open { min-height: 42px; gap: 10px; color: var(--text); }
+.dxf-platform-mobile .dxf-dm-open > :first-child { width: 34px; height: 34px; border-radius: 11px; }
+.dxf-platform-mobile .dxf-dm-open .font-mono { color: var(--mobile-muted); }
+.dxf-platform-mobile .dxf-text-channel { min-height: 44px; border-radius: 12px; color: var(--mobile-muted); }
+.dxf-platform-mobile .dxf-channel-audio { padding: 9px 11px; gap: 8px; border-top: 1px solid var(--mobile-line); }
+.dxf-platform-mobile .dxf-channel-audio > button { height: 44px; min-width: 0; border-radius: 12px; }
+.dxf-platform-mobile .dxf-channel-audio > button:not([class*="bg-"]) { background-color: var(--bg); }
+.dxf-platform-mobile .dxf-channel-audio > button svg { width: 18px; height: 18px; }
+.dxf-platform-mobile .dxf-channel-account { height: 66px; padding: 5px 8px; border-color: var(--mobile-line); }
+.dxf-platform-mobile .dxf-channel-account > button { min-height: 48px; border-radius: 12px; }
+.dxf-platform-mobile .dxf-mobile-nav { background-color: var(--panel-solid); border-color: var(--mobile-line); }
+.dxf-platform-mobile .dxf-mobile-nav button { gap: 4px; }
+.dxf-platform-mobile .dxf-mobile-nav button > span:last-child { font-size: 11px; margin-top: 0; }
+.dxf-platform-mobile .dxf-mobile-nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 21px; height: 21px; }
+.dxf-platform-mobile .dxf-mobile-nav-icon svg { width: 21px; height: 21px; stroke-width: 1.8; }
+@media (max-width: 360px) {
+  .dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-header { gap: 3px; }
+  .dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-tools { gap: 2px; }
+}
+.dxf-composer-suggestions { max-height: min(360px, 40dvh); overflow-y: auto; overscroll-behavior: contain; }
+.dxf-platform-mobile .dxf-composer-suggestions button { min-height: 44px; height: auto; padding-top: 7px; padding-bottom: 7px; }
+.dxf-platform-mobile .dxf-mobile-media { flex: 0 0 auto; flex-direction: column; gap: 8px; max-height: 48dvh; overflow-y: auto; min-height: 0; }
+.dxf-platform-mobile .dxf-mobile-media:empty { display: none !important; }
+.dxf-platform-mobile .dxf-mobile-media :is(.dxf-media-self, .dxf-camera-grid) {
+  position: relative !important; inset: auto !important; width: 100% !important;
+  height: min(240px, 34dvh) !important; max-height: none; min-height: 160px;
+  flex: 0 0 auto; box-shadow: none; border-radius: 8px; z-index: auto !important;
+}

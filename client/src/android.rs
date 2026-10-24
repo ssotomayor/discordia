@@ -31,6 +31,7 @@ type CaptureSinks = std::collections::HashMap<u32, CaptureEntry>;
 struct CaptureEntry {
     sink: Arc<dyn Fn(crate::sysvideo::Frame) + Send + Sync>,
     fatal: tokio::sync::mpsc::UnboundedSender<String>,
+    admit: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 pub fn next_slot() -> u32 {
@@ -45,7 +46,24 @@ pub fn register_frame_sink(
     CAPTURE_SINKS
         .lock()
         .get_or_insert_with(CaptureSinks::new)
-        .insert(slot, CaptureEntry { sink, fatal });
+        .insert(
+            slot,
+            CaptureEntry {
+                sink,
+                fatal,
+                admit: None,
+            },
+        );
+}
+
+pub fn filter_capture_frames(slot: u32, admit: Arc<dyn Fn() -> bool + Send + Sync>) {
+    if let Some(entry) = CAPTURE_SINKS
+        .lock()
+        .as_mut()
+        .and_then(|sinks| sinks.get_mut(&slot))
+    {
+        entry.admit = Some(admit);
+    }
 }
 
 pub fn unregister_frame_sink(slot: u32) {
@@ -891,6 +909,43 @@ pub async fn start_screen_share(
     await_screen_result().await
 }
 
+pub async fn screen_capture_pressure() -> Result<u8, String> {
+    on_ui(|env, activity| {
+        env.call_method(activity, "screenCapturePressure", "()I", &[])
+            .and_then(|value| value.i())
+            .map(|value| value as u8)
+            .map_err(system_error)
+    })
+    .await
+}
+
+pub async fn resize_screen_share(
+    slot: u32,
+    settings: crate::sysvideo::Settings,
+) -> Result<(), String> {
+    let applied = on_ui(move |env, activity| {
+        env.call_method(
+            activity,
+            "resizeScreenShare",
+            "(IIII)Z",
+            &[
+                JValue::Int(slot as jint),
+                JValue::Int(settings.width as jint),
+                JValue::Int(settings.height as jint),
+                JValue::Int(settings.fps as jint),
+            ],
+        )
+        .and_then(|value| value.z())
+        .map_err(system_error)
+    })
+    .await?;
+    if applied {
+        Ok(())
+    } else {
+        Err("Android screen capture could not change its budget".into())
+    }
+}
+
 async fn await_screen_result() -> Result<(), String> {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -980,6 +1035,19 @@ fn dispatch_capture(method: &'static str, slot: u32) {
             tracing::warn!(%error, "Couldn't clear an Android capture exception");
         }
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_dioxus_main_MainActivity_shouldCaptureVideoFrame(
+    _env: JNIEnv<'_>,
+    _activity: JObject<'_>,
+    slot: jint,
+) -> jni::sys::jboolean {
+    let admit = CAPTURE_SINKS
+        .lock()
+        .as_ref()
+        .and_then(|sinks| sinks.get(&(slot as u32)).map(|entry| entry.admit.clone()));
+    u8::from(admit.is_some_and(|filter| filter.is_none_or(|filter| filter())))
 }
 
 #[unsafe(no_mangle)]

@@ -17,7 +17,7 @@ REQUIRED_WEBRTC_CLASSES = (
     "livekit/org/jni_zero/JniZero.class",
     "livekit/org/jni_zero/CommonApis.class",
     "livekit/org/webrtc/ContextUtils.class",
-    "livekit/org/webrtc/DefaultVideoEncoderFactory.class",
+    "livekit/org/webrtc/HardwareVideoEncoderFactory.class",
     "livekit/org/webrtc/ScreenCapturerAndroid.class",
     "livekit/org/webrtc/Camera2Enumerator.class",
     "livekit/org/webrtc/SurfaceTextureHelper.class",
@@ -30,6 +30,7 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_initializeWebRtc",
     "Java_dev_dioxus_main_MainActivity_onVideoFrame",
     "Java_dev_dioxus_main_MainActivity_onCaptureStopped",
+    "Java_dev_dioxus_main_MainActivity_shouldCaptureVideoFrame",
 }
 BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
 

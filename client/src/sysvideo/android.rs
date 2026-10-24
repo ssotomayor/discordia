@@ -25,11 +25,27 @@ struct Pacing {
     first: Option<tokio::sync::oneshot::Sender<()>>,
     pacer: FramePacer,
     previous: Option<Instant>,
+    accepted_at: Option<Instant>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CaptureControl {
+    slot: u32,
+    pacing: Arc<parking_lot::Mutex<Pacing>>,
+}
+
+impl CaptureControl {
+    pub async fn apply(&self, settings: Settings) -> Result<(), String> {
+        crate::android::resize_screen_share(self.slot, settings).await?;
+        self.pacing.lock().pacer.set_fps(settings.fps);
+        Ok(())
+    }
 }
 
 pub struct AndroidVideoCapture {
     slot: u32,
     pub(super) metrics: Arc<Metrics>,
+    pub(super) control: CaptureControl,
 }
 
 impl AndroidVideoCapture {
@@ -46,34 +62,56 @@ impl AndroidVideoCapture {
         let metrics = Arc::new(Metrics::default());
         let recorded = metrics.clone();
         let (first_tx, first_rx) = tokio::sync::oneshot::channel();
-        let state = parking_lot::Mutex::new(Pacing {
+        let state = Arc::new(parking_lot::Mutex::new(Pacing {
             first: Some(first_tx),
             pacer: FramePacer::new(settings.fps),
             previous: None,
-        });
-        let sink: FrameSink = Box::new(move |frame: Frame| {
+            accepted_at: None,
+        }));
+        let admission = state.clone();
+        let callbacks = metrics.clone();
+        let filter = Arc::new(move || {
             let now = Instant::now();
-            let (accepted, gap, first) = {
+            let mut state = admission.lock();
+            let accepted = state.pacer.accept(now);
+            let gap = state
+                .previous
+                .map_or(Duration::ZERO, |previous| now.duration_since(previous));
+            state.previous = Some(now);
+            if accepted {
+                state.accepted_at = Some(now);
+            }
+            callbacks.callback(gap, !accepted);
+            accepted
+        });
+        let control = CaptureControl {
+            slot,
+            pacing: state.clone(),
+        };
+        let sink: FrameSink = Box::new(move |frame: Frame| {
+            let (elapsed, first) = {
                 let mut state = state.lock();
-                let accepted = state.pacer.accept(now);
-                let gap = state
-                    .previous
-                    .map_or(Duration::ZERO, |previous| now.duration_since(previous));
-                state.previous = Some(now);
-                let first = accepted.then(|| state.first.take()).flatten();
-                (accepted, gap, first)
+                (
+                    state
+                        .accepted_at
+                        .take()
+                        .map_or(Duration::ZERO, |at| at.elapsed()),
+                    state.first.take(),
+                )
             };
-            recorded.callback(gap, !accepted);
             if let Some(tx) = first {
                 let _ = tx.send(());
             }
-            if accepted {
-                recorded.record(frame.buffer.width(), frame.buffer.height(), Duration::ZERO);
-                sink(frame);
-            }
+            recorded.record(frame.buffer.width(), frame.buffer.height(), elapsed);
+            sink(frame);
         });
         crate::android::register_frame_sink(slot, Arc::from(sink), fatal);
-        let capture = Self { slot, metrics };
+        crate::android::filter_capture_frames(slot, filter);
+        let capture = Self {
+            slot,
+            metrics,
+            control,
+        };
         crate::android::start_screen_share(slot, settings.width, settings.height, settings.fps)
             .await?;
         match tokio::time::timeout(Duration::from_secs(20), first_rx).await {

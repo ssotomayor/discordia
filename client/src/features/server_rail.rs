@@ -247,7 +247,7 @@ pub fn ServerHeader(server: KnownServer, current: Option<ConnectionStatus>) -> E
 
     rsx! {
         div {
-            class: "dxf-tip-host dxf-tip-quick group relative w-full flex items-center gap-0.5 px-1 h-4",
+            class: "dxf-server-header dxf-tip-host dxf-tip-quick group relative w-full flex items-center gap-0.5 px-1 h-4",
             onmouseenter: move |e: MouseEvent| {
                 let c = e.client_coordinates();
                 tip_at.set((c.x + 18.0, c.y));

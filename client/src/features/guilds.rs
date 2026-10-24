@@ -80,10 +80,10 @@ pub fn GuildsSidebar() -> Element {
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
 
     rsx! {
-        nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
+        nav { class: "dxf-guilds-panel panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
             // A word here labels a column of pictures that need no label, but the
             // strip is the panel's drag handle, so it stays as a grip.
-            div { class: HEADER,
+            div { class: "dxf-guilds-grip {HEADER}",
                 span {
                     class: "block w-4 h-1",
                     style: "background-image: radial-gradient(var(--border-strong) 1px, transparent 1px); background-size: 4px 4px;",
@@ -92,7 +92,7 @@ pub fn GuildsSidebar() -> Element {
 
             NoDrag {
             div {
-                class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2.5",
+                class: "dxf-guilds-list flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2.5",
                 // Pointer drag, not HTML5 DnD: on Windows the wry file-drop
                 // handler that attaches dropped files turns HTML5 DnD off.
                 onpointerup: move |_| {
@@ -222,7 +222,7 @@ pub fn GuildsSidebar() -> Element {
                 }
 
                 button {
-                    class: "w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
+                    class: "dxf-add-guild w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
                     title: crate::i18n::text("Add a guild on this server", &[]),
                     aria_label: crate::i18n::text("Add a guild on this server", &[]),
                     onclick: move |_| state.write().guild_dialog = Some(crate::state::GuildDialog::AddGuild),
@@ -482,7 +482,8 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
     };
     rsx! {
         button {
-            class: "relative w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-semibold tracking-wide transition-colors {cls}",
+            class: "dxf-dm-home relative w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-semibold tracking-wide transition-colors {cls}",
+            aria_pressed: active,
             title: crate::i18n::text("Direct messages", &[]),
             onclick: move |_| onclick.call(()),
             {crate::i18n::text("DM", &[])}
@@ -552,7 +553,8 @@ fn GuildIcon(
                 "{name}" {crate::i18n::label(hint)}
             }
             button {
-                class: "w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
+                class: "dxf-guild-icon w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
+                aria_pressed: selected,
                 style: "{tile}",
                 onmouseenter: move |e: MouseEvent| {
                     let c = e.client_coordinates();

@@ -1986,12 +1986,20 @@ impl ScreenVideoRoom {
             }
         };
 
+        #[cfg(target_os = "android")]
+        let capture_control = capture.control();
+
         let mut stats_state = state;
         let capture_metrics = capture.metrics();
         let stats_sid = publication.sid();
         let status_room = room.clone();
         let network_task = network::spawn_video_budget(state, track.clone(), 300_000);
         let stats_task = dioxus::prelude::spawn(async move {
+            #[cfg(target_os = "android")]
+            let mut mobile_budget =
+                crate::sysvideo::mobile_budget::MobileBudget::new(settings, Instant::now());
+            #[cfg(target_os = "android")]
+            let mut pressure_at = Instant::now();
             let mut previous = None;
             let mut capture_previous = capture_metrics.snapshot();
             let mut encode_previous = None;
@@ -2075,9 +2083,50 @@ impl ScreenVideoRoom {
                     outbound.outbound.frames_encoded,
                     outbound.outbound.total_encode_time,
                 ));
+                #[cfg(target_os = "android")]
+                if now.duration_since(pressure_at) >= std::time::Duration::from_secs(3) {
+                    pressure_at = now;
+                    if let Ok(pressure) = crate::android::screen_capture_pressure().await {
+                        let input = crate::sysvideo::mobile_budget::Pressure {
+                            active_frames: capture_fps >= mobile_budget.current().fps as f64 * 0.5,
+                            thermal: pressure & 7,
+                            low_memory: pressure & 8 != 0,
+                            cpu_limited: outbound.outbound.quality_limitation_reason
+                                == livekit::webrtc::stats::QualityLimitationReason::Cpu
+                                && capture_fps >= mobile_budget.current().fps as f64 * 0.8,
+                            processing_ms: capture_processing_ms,
+                            encode_ms,
+                        };
+                        if let Some((level, next)) = mobile_budget.sample(now, input) {
+                            match capture_control.apply(next).await {
+                                Ok(()) => {
+                                    mobile_budget.applied(level, now);
+                                    tracing::info!(
+                                        level,
+                                        width = next.width,
+                                        height = next.height,
+                                        fps = next.fps,
+                                        pressure,
+                                        "Android screen capture budget changed"
+                                    );
+                                }
+                                Err(error) => {
+                                    tracing::debug!(%error, "Android screen capture budget unavailable")
+                                }
+                            }
+                        }
+                    }
+                }
+                #[cfg(target_os = "android")]
+                let effective_settings = mobile_budget.current();
+                #[cfg(not(target_os = "android"))]
+                let effective_settings = settings;
                 if now.duration_since(status_sent).as_secs() >= 3 {
-                    let (width, height) =
-                        crate::sysvideo::fit_resolution(captured.width, captured.height, settings);
+                    let (width, height) = crate::sysvideo::fit_resolution(
+                        captured.width,
+                        captured.height,
+                        effective_settings,
+                    );
                     let payload = serde_json::json!({
                         "sid": stats_sid.to_string(),
                         "width": width, "height": height,
@@ -2091,7 +2140,7 @@ impl ScreenVideoRoom {
                         "cpu": outbound.outbound.quality_limitation_reason
                             == livekit::webrtc::stats::QualityLimitationReason::Cpu,
                         "captureLimited": super::screen_stats::screen_device_limited(
-                            settings.fps as f64, capture_fps, outbound.outbound.frames_per_second,
+                            effective_settings.fps as f64, capture_fps, outbound.outbound.frames_per_second,
                             capture_processing_ms, encode_ms),
                     })
                     .to_string()
@@ -2132,7 +2181,7 @@ impl ScreenVideoRoom {
                 stats.adapter_dropped_frames = Some(adapter_dropped.load(Ordering::Relaxed));
                 stats.encode_ms = encode_ms;
                 stats.device_limited = super::screen_stats::screen_device_limited(
-                    settings.fps as f64,
+                    effective_settings.fps as f64,
                     capture_fps,
                     outbound.outbound.frames_per_second,
                     capture_processing_ms,

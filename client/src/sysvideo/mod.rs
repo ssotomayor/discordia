@@ -9,7 +9,9 @@ mod macos;
     test
 ))]
 pub(crate) mod metrics;
-#[cfg(any(target_os = "android", target_os = "windows"))]
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod mobile_budget;
+#[cfg(any(target_os = "android", target_os = "windows", test))]
 mod pacing;
 #[cfg(target_os = "windows")]
 mod windows;
@@ -60,6 +62,13 @@ pub struct Capture {
 #[cfg(target_os = "android")]
 pub struct Capture {
     _inner: android::AndroidVideoCapture,
+}
+
+#[cfg(target_os = "android")]
+impl Capture {
+    pub(crate) fn control(&self) -> android::CaptureControl {
+        self._inner.control.clone()
+    }
 }
 
 #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
@@ -127,7 +136,24 @@ impl CodecCapabilities {
     }
 
     pub fn resolve(&self, codec: Codec, encoder: Encoder) -> Result<Codec, String> {
+        self.resolve_preference(codec, encoder, cfg!(target_os = "android"))
+    }
+
+    fn resolve_preference(
+        &self,
+        codec: Codec,
+        encoder: Encoder,
+        prefer_hardware: bool,
+    ) -> Result<Codec, String> {
         if codec == Codec::Auto {
+            if prefer_hardware
+                && encoder == Encoder::Auto
+                && let Some(codec) = [Codec::H264, Codec::Vp8]
+                    .into_iter()
+                    .find(|candidate| self.supports(*candidate, Encoder::Gpu))
+            {
+                return Ok(codec);
+            }
             [Codec::H264, Codec::Vp8]
                 .into_iter()
                 .find(|candidate| self.supports(*candidate, encoder))
@@ -243,6 +269,24 @@ mod plane_tests {
 #[cfg(test)]
 mod resolution_tests {
     use super::{Codec, CodecCapabilities, Encoder};
+
+    #[test]
+    fn automatic_prefers_a_real_hardware_codec_over_software_h264() {
+        let caps = CodecCapabilities {
+            software: vec!["H264".into(), "VP8".into()],
+            hardware: vec!["VP8".into()],
+        };
+        assert_eq!(
+            caps.resolve_preference(Codec::Auto, Encoder::Auto, true),
+            Ok(Codec::Vp8)
+        );
+        assert_eq!(
+            caps.resolve_preference(Codec::Auto, Encoder::Auto, false),
+            Ok(Codec::H264)
+        );
+        assert_eq!(caps.resolve(Codec::Auto, Encoder::Cpu), Ok(Codec::H264));
+        assert_eq!(caps.resolve(Codec::H264, Encoder::Auto), Ok(Codec::H264));
+    }
 
     #[test]
     fn automatic_codec_uses_available_encoders_without_assuming_hardware() {
