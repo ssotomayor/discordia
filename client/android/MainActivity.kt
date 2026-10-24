@@ -9,6 +9,9 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -35,6 +38,26 @@ typealias BuildConfig = com.discordia.app.BuildConfig
 
 class MainActivity : WryActivity() {
     private var appUpdater: com.discordia.app.DioxusUpdater? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    external fun onNetworkChanged()
+
+    private fun watchDefaultNetwork() {
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { onNetworkChanged() }
+            override fun onLost(network: Network) { onNetworkChanged() }
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+                onNetworkChanged()
+            }
+        }
+        try {
+            manager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (error: Exception) {
+            android.util.Log.w("Discordia", "Could not monitor network changes", error)
+        }
+    }
 
     @Suppress("DEPRECATION")
     fun installedUpdateVersion(): Long {
@@ -640,10 +663,20 @@ class MainActivity : WryActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        watchDefaultNetwork()
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
 
     override fun onDestroy() {
+        networkCallback?.let { callback ->
+            try {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(callback)
+            } catch (error: Exception) {
+                android.util.Log.w("Discordia", "Could not unregister network monitor", error)
+            }
+        }
+        networkCallback = null
         appUpdater?.cancel()
         voiceSlot = -1
         stopScreenShare()

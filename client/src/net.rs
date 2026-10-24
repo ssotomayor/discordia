@@ -8,6 +8,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use url::Url;
 
+#[cfg(any(target_os = "android", test))]
+mod background_socket;
+
 use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
 use crate::protocol::{ClientMessage, Id, ServerMessage};
@@ -624,7 +627,7 @@ async fn run_session<S>(
     links: Links<'_>,
 ) -> Result<(), String>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let Links {
         host_monitor,
@@ -692,6 +695,9 @@ where
     state.write().gateway_failure = None;
     apply(&mut state, admitted, tx, voice_tx);
 
+    #[cfg(target_os = "android")]
+    let (mut ws_tx, mut ws_rx, _transport) = background_socket::start(ws_tx, ws_rx);
+
     if let Some(local) = crate::profile::load(&params.identity.pubkey)
         && local != crate::profile::LocalProfile::default()
         && let Ok(json) = serde_json::to_string(&local.set_profile_message())
@@ -730,7 +736,7 @@ where
                 close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
                 break;
             }
-            _ = heartbeat.tick() => {
+            _ = heartbeat.tick(), if !cfg!(target_os = "android") => {
                 if last_received.elapsed() >= crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT {
                     return Err("the host stopped answering heartbeat probes".into());
                 }

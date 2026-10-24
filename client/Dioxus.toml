@@ -35,6 +35,9 @@ description = "Keeping an active video call in the background"
 [android.permissions."android.permission.WAKE_LOCK"]
 description = "Keeping call media running while the screen is off"
 
+[android.permissions."android.permission.ACCESS_NETWORK_STATE"]
+description = "Updating active connections when Android changes networks"
+
 [android.permissions."android.permission.REQUEST_INSTALL_PACKAGES"]
 description = "Installing verified Discordia updates with your confirmation"
 
