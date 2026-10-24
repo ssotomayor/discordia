@@ -155,6 +155,18 @@ def verify_release_branding(apk, env):
             raise RuntimeError(f"Final APK is missing branding resource: {name}")
 
 
+def verify_activity_mode(apk, env):
+    tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
+    aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
+    manifest = subprocess.check_output([str(aapt), "dump", "xmltree", str(apk), "AndroidManifest.xml"], text=True)
+    for activity in re.split(r"\n\s*E: activity \(", manifest)[1:]:
+        if re.search(r'android:name[^\n]*="dev\.dioxus\.main\.MainActivity"', activity):
+            if re.search(r"android:launchMode[^\n]*=\(type 0x10\)0x2\b", activity):
+                return
+            break
+    raise RuntimeError("Android main activity must use singleTask to preserve the native runtime")
+
+
 def package_resources(project):
     resources = project / "app/src/main/res"
     for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
@@ -167,6 +179,11 @@ def package_resources(project):
 
 
 def package_sources(project):
+    # Tao owns one process-wide native context; a second Activity creation aborts it.
+    for variant in ("debug", "release"):
+        manifest = project / "app/src" / variant / "AndroidManifest.xml"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "client/android/AndroidManifest.xml", manifest)
     # dx copies only the main activity; the foreground service the manifest
     # declares lives in the app's own package.
     sources = project / "app/src/main/kotlin/com/discordia/app"
@@ -264,6 +281,7 @@ def main():
     if len(apks) != 1:
         raise RuntimeError(f"Expected one APK in {apk_dir}, found {len(apks)}")
     apk = apks[0]
+    verify_activity_mode(apk, env)
     if args.release:
         verify_release_metadata(apk, env)
         verify_release_branding(apk, env)
