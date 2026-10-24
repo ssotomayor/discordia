@@ -2,6 +2,37 @@ use serde_json::Value;
 
 use crate::state::ScreenShareStats;
 
+pub(super) fn decoder_mode(implementation: Option<&str>) -> &'static str {
+    let name = implementation
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if [
+        "d3d11videodecoder",
+        "d3d12videodecoder",
+        "vaapivideodecoder",
+        "v4l2videodecoder",
+    ]
+    .iter()
+    .any(|decoder| name.contains(decoder))
+    {
+        "GPU (hardware)"
+    } else if [
+        "ffmpegvideodecoder",
+        "openh264",
+        "libvpx",
+        "dav1d",
+        "libaom",
+    ]
+    .iter()
+    .any(|decoder| name.contains(decoder))
+    {
+        "CPU (software)"
+    } else {
+        "Not reported"
+    }
+}
+
 #[cfg(any(
     target_os = "android",
     target_os = "macos",
@@ -125,6 +156,28 @@ impl WebViewStats {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decoder_mode_keeps_ambiguous_and_missing_implementations_unknown() {
+        use super::decoder_mode;
+        for name in [
+            None,
+            Some(""),
+            Some("ExternalDecoder"),
+            Some("MediaCodec"),
+            Some("VideoToolbox"),
+            Some("H264"),
+        ] {
+            assert_eq!(decoder_mode(name), "Not reported");
+        }
+        assert_eq!(
+            decoder_mode(Some("ExternalDecoder (D3D11VideoDecoder)")),
+            "GPU (hardware)"
+        );
+        assert_eq!(decoder_mode(Some("VaapiVideoDecoder")), "GPU (hardware)");
+        assert_eq!(decoder_mode(Some("FFmpegVideoDecoder")), "CPU (software)");
+        assert_eq!(decoder_mode(Some("libvpx")), "CPU (software)");
+    }
+
     #[test]
     fn device_limitation_requires_slow_frames_and_processing_pressure() {
         use super::screen_device_limited as limited;
