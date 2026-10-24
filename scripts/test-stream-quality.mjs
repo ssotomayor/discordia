@@ -213,7 +213,7 @@ test('hidden viewers pause video while only inline-watched screens subscribe', (
     ['other', participant('other', 'screen')], ['detached', participant('detached', 'screen')],
     ['self', participant('self', 'screen')], ['camera', participant('camera', 'camera')],
   ]) };
-  const visibilityContext = vm.createContext({ room, selfPreviewIdentity: 'self',
+  const visibilityContext = vm.createContext({ room, window: {}, selfPreviewIdentity: 'self',
     healthReports,
     refreshAudioWatches: () => {},
     selfPreviewEnabled: false, applySelfPreviewSubscription: () => {},
@@ -231,6 +231,13 @@ test('hidden viewers pause video while only inline-watched screens subscribe', (
   assert.equal(subscribed.get('camera'), true);
   assert.equal(subscribed.get('detached'), false, 'the detached viewer owns that screen');
   assert.ok(!subscribed.get('self'), 'the self preview is not the plain subscription');
+  visibilityContext.setMediaPanelVisibility(false);
+  assert.equal(subscribed.get('other'), false, 'leaving the guild chat pauses its screen');
+  assert.equal(subscribed.get('camera'), false, 'hidden camera previews stop receiving video');
+  assert.equal(visibilityContext.window.__dxMediaPanelVisible, false);
+  visibilityContext.setMediaPanelVisibility(true);
+  assert.equal(subscribed.get('other'), true);
+  assert.equal(subscribed.get('camera'), true);
 
   subscribed.clear();
   visibilityContext.setInlineScreens([]);
