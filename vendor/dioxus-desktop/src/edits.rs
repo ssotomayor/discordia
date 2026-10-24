@@ -298,6 +298,14 @@ impl EditWebsocket {
             }
         };
 
+        #[cfg(target_os = "android")]
+        if let Err(error) = websocket
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        {
+            tracing::warn!(%error, "Could not monitor Android edit acknowledgement delays");
+        }
+
         // Immediately send the key to authenticate the server
         if let Err(error) =
             websocket.send(tungstenite::Message::Text(hex_encoded_server_key.into()))
@@ -401,6 +409,18 @@ impl EditWebsocket {
                             break 'connection;
                         }
                         Ok(_) => {}
+                        #[cfg(target_os = "android")]
+                        Err(tungstenite::Error::Io(error))
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            tracing::warn!(
+                                webview_id = location.webview_id,
+                                "Android WebView has not acknowledged its DOM edits for 10 seconds"
+                            );
+                        }
                         Err(error) => {
                             tracing::warn!(webview_id = location.webview_id, %error, "Webview edit acknowledgement interrupted");
                             break 'connection;

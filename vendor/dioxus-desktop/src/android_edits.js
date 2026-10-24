@@ -1,5 +1,26 @@
 (() => {
   const interpreter = window.interpreter;
+  interpreter.waitForRequest = function(editsPath, requiredServerKey) {
+    const socket = new WebSocket(editsPath);
+    this.edits = socket;
+    // Blob.arrayBuffer adds asynchronous file-reading work to every DOM acknowledgement.
+    // ArrayBuffer messages can apply immediately even when background tasks are throttled.
+    socket.binaryType = 'arraybuffer';
+    let authenticated = false;
+    socket.onmessage = ({data}) => {
+      if (this.edits !== socket) return;
+      if (typeof data === 'string') {
+        if (data === requiredServerKey) authenticated = true;
+      } else if (authenticated && data instanceof ArrayBuffer) {
+        this.rafEdits(data);
+      }
+    };
+    socket.onclose = () => {
+      setTimeout(() => {
+        if (this.edits === socket) this.waitForRequest(editsPath, requiredServerKey);
+      }, 100);
+    };
+  };
   const immediate = interpreter.rafEdits;
   interpreter.rafEdits = function(bytes) {
     if (this.headless) return immediate.call(this, bytes);
