@@ -317,6 +317,21 @@ pub struct Member {
     pub roles: Vec<Id>,
     #[serde(default)]
     pub xp: u64,
+    /// This guild's dressing over the profile, which is one per key for the
+    /// whole host. Only an installed app's row carries one, copied from its install.
+    #[serde(default)]
+    pub look: GuildLook,
+}
+
+/// Each `None` shows the profile's own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GuildLook {
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1267,6 +1282,8 @@ pub struct BotInstall {
     pub app: Option<AppManifest>,
     #[serde(default)]
     pub pending: Option<AppManifest>,
+    #[serde(default)]
+    pub look: GuildLook,
 }
 
 /// NIP-89's handler kind, so a relay already knows to keep only the latest.
@@ -2278,6 +2295,14 @@ pub enum ClientMessage {
         guild_id: Id,
         bot_pubkey: String,
         may_call: Vec<String>,
+    },
+    /// Manage guild. How an installed app looks in this guild only. An empty
+    /// name goes back to the app's own; pictures are data URLs or held `media:`.
+    SetAppLook {
+        guild_id: Id,
+        bot_pubkey: String,
+        name: String,
+        look: GuildLook,
     },
     CreateRole {
         guild_id: Id,

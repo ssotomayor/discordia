@@ -300,6 +300,7 @@ impl Store {
             "ALTER TABLE bot_installs ADD COLUMN app TEXT",
             "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
             "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN look TEXT",
             "ALTER TABLE profiles ADD COLUMN hide_guild_owner INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN hide_operator INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
@@ -486,7 +487,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call FROM bot_installs")
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look FROM bot_installs")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -504,6 +505,10 @@ impl Store {
                     .and_then(|j| serde_json::from_str(&j).ok()),
                 may_call: r
                     .get::<Option<String>, _>(7)
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
+                look: r
+                    .get::<Option<String>, _>(8)
                     .and_then(|j| serde_json::from_str(&j).ok())
                     .unwrap_or_default(),
             });
@@ -1007,6 +1012,19 @@ impl Store {
                 out.insert(name.to_string());
             }
         }
+        for r in sqlx::query("SELECT look FROM bot_installs WHERE look IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let raw: String = r.get(0);
+            if let Ok(look) = serde_json::from_str::<crate::protocol::GuildLook>(&raw) {
+                for v in [look.avatar, look.banner].into_iter().flatten() {
+                    if let Some(name) = v.strip_prefix("media:") {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+        }
         // A bundle is named by its manifest's hash; the pending one is kept so
         // an admin can upload it before approving.
         for r in sqlx::query("SELECT app, pending FROM bot_installs")
@@ -1057,11 +1075,12 @@ impl Store {
         i: &BotInstall,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(guild_id, bot_pubkey) DO UPDATE SET name=excluded.name,
                permissions=excluded.permissions, intents=excluded.intents,
-               app=excluded.app, pending=excluded.pending, may_call=excluded.may_call",
+               app=excluded.app, pending=excluded.pending, may_call=excluded.may_call,
+               look=excluded.look",
         )
         .bind(i.guild_id.to_string())
         .bind(&i.bot_pubkey)
@@ -1071,6 +1090,7 @@ impl Store {
         .bind(i.app.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .bind(serde_json::to_string(&i.may_call).unwrap_or_else(|_| "[]".into()))
+        .bind(serde_json::to_string(&i.look).ok())
         .execute(executor)
         .await?;
         Ok(())

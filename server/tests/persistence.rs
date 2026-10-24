@@ -477,6 +477,20 @@ async fn every_kind_of_blob_reference_is_found() {
         })
         .await
         .unwrap();
+    // A guild's picture for an app lives only in the install's look.
+    const LOOK_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgORH1HwAEQAIu0lxEEAAAAABJRU5ErkJggg==";
+    session
+        .send(&ClientMessage::SetAppLook {
+            guild_id,
+            bot_pubkey: app.pubkey().to_string(),
+            name: String::new(),
+            look: discordia_server::protocol::GuildLook {
+                avatar: Some(LOOK_PNG.into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(400)).await;
 
@@ -496,6 +510,10 @@ async fn every_kind_of_blob_reference_is_found() {
     assert!(
         on_disk.iter().any(|n| n.ends_with(".wav")),
         "the sound was stored: {on_disk:?}"
+    );
+    assert!(
+        on_disk.iter().filter(|n| n.ends_with(".png")).count() >= 3,
+        "the app's picture was stored beside the message's and the emoji's: {on_disk:?}"
     );
     assert!(
         on_disk.iter().any(|n| n.ends_with(".dxa")),
@@ -619,4 +637,85 @@ async fn a_markdown_channel_keeps_the_setting_and_only_text_takes_it() {
     };
     assert!(channels.iter().any(|c| c.id == text && c.markdown));
     handle.abort();
+}
+
+#[tokio::test]
+async fn a_guild_s_look_for_an_app_survives_a_restart() {
+    let dir = temp_data_dir();
+    let owner_id = BotIdentity::generate();
+    let app = BotIdentity::generate();
+    let look = discordia_server::protocol::GuildLook {
+        avatar: None,
+        banner: None,
+        bio: Some("Dressed by this guild".into()),
+    };
+    let guild_id = {
+        let (url, handle) = spawn_on(&dir).await;
+        let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+            .await
+            .unwrap();
+        while !matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }) {}
+        owner
+            .send(&ClientMessage::CreateGuild {
+                name: "Looks".into(),
+                template: None,
+            })
+            .await
+            .unwrap();
+        let guild_id = loop {
+            if let ServerMessage::GuildJoined { guild, .. } = next_timeout(&mut owner).await {
+                break guild.id;
+            }
+        };
+        owner
+            .send(&ClientMessage::InstallBot {
+                guild_id,
+                bot_pubkey: app.pubkey().to_string(),
+                name: "Plain".into(),
+                permissions: vec![discordia_server::protocol::Permission::SendMessages],
+                intents: Vec::new(),
+                manifest: None,
+            })
+            .await
+            .unwrap();
+        owner
+            .send(&ClientMessage::SetAppLook {
+                guild_id,
+                bot_pubkey: app.pubkey().to_string(),
+                name: "Dressed".into(),
+                look: look.clone(),
+            })
+            .await
+            .unwrap();
+        loop {
+            if let ServerMessage::MemberJoin(m) = next_timeout(&mut owner).await
+                && m.user.username == "Dressed"
+            {
+                break;
+            }
+        }
+        handle.abort();
+        guild_id
+    };
+
+    let (url, handle) = spawn_on(&dir).await;
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
+    let members = loop {
+        if let ServerMessage::Ready { members, .. } = next_timeout(&mut owner).await {
+            break members;
+        }
+    };
+    let row = members
+        .iter()
+        .find(|m| m.guild_id == guild_id && m.user.pubkey == app.pubkey())
+        .expect("the app's row came back");
+    assert_eq!(row.user.username, "Dressed");
+    assert_eq!(
+        row.look, look,
+        "rebuilt from the install, which is its only copy"
+    );
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
 }

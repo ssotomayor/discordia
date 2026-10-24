@@ -1584,5 +1584,11 @@
   "Not enough free space to install the update.": ["No hay suficiente espacio libre para instalar la actualización.","Não há espaço livre suficiente para instalar a atualização."],
   "This update is not compatible with this device.": ["Esta actualización no es compatible con este dispositivo.","Esta atualização não é compatível com este dispositivo."],
   "Android could not install the update ({0}).": ["Android no pudo instalar la actualización ({0}).","O Android não conseguiu instalar a atualização ({0})."],
-  "Update signature verification failed: {0}": ["Falló la verificación de firma de la actualización: {0}","Falha na verificação da assinatura da atualização: {0}"]
+  "Update signature verification failed: {0}": ["Falló la verificación de firma de la actualización: {0}","Falha na verificação da assinatura da atualização: {0}"],
+  "Look in this guild": ["Apariencia en esta comunidad","Aparência nesta comunidade"],
+  "Bio on its profile card here…": ["Bio de su tarjeta de perfil aquí…","Bio do cartão de perfil aqui…"],
+  "Picture…": ["Imagen…","Imagem…"],
+  "Clear picture": ["Quitar imagen","Remover imagem"],
+  "Only this guild sees these. Anything left empty shows the app's own.": ["Solo esta comunidad ve estos cambios. Lo que quede vacío muestra lo de la app.","Só esta comunidade vê estas mudanças. O que ficar vazio mostra o do app."],
+  "Use the app's own": ["Usar los de la app","Usar os do app"]
 }

@@ -4,8 +4,8 @@ use crate::identity::{npub_of, pubkey_from_input, truncate_pubkey};
 use crate::nostr::event::Event;
 use crate::nostr::service::{NostrCmd, NostrTx};
 use crate::protocol::{
-    APP_MANIFEST_D, APP_MANIFEST_KIND, AppManifest, BotInstall, ClientMessage, Id, Intent,
-    Permission, validate_manifest,
+    APP_MANIFEST_D, APP_MANIFEST_KIND, AppManifest, BotInstall, ClientMessage, GuildLook, Id,
+    Intent, Permission, validate_manifest,
 };
 use crate::state::{use_app_state, use_gateway};
 
@@ -183,6 +183,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                     {crate::i18n::text("On a blocklist this guild follows ({0}). Consider removing it.", &[(truncate_pubkey (& npub_of (& curator))).to_string()])}
                 }
             }
+            AppLookRow { guild_id, bot: bot.clone() }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
                 BundleRow { guild_id, bot_pubkey: bot.bot_pubkey.clone(), activity }
             }
@@ -785,6 +786,174 @@ async fn download_bundle(url: &str) -> Result<Vec<u8>, String> {
         }
     }
     Ok(bytes)
+}
+
+/// A name equal to the manifest's is one the guild never chose: it follows the
+/// app's renames, so the field shows it empty.
+fn chosen_name(bot: &BotInstall) -> String {
+    match &bot.app {
+        Some(app) if app.name == bot.name => String::new(),
+        _ => bot.name.clone(),
+    }
+}
+
+/// The app's profile is one per key for the whole server, so a guild dresses
+/// its own row instead.
+#[component]
+fn AppLookRow(guild_id: Id, bot: BotInstall) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut open = use_signal(|| false);
+    let mut name = use_signal(|| chosen_name(&bot));
+    let mut avatar = use_signal(|| bot.look.avatar.clone());
+    let mut banner = use_signal(|| bot.look.banner.clone());
+    let mut bio = use_signal(|| bot.look.bio.clone().unwrap_or_default());
+    let mut note = use_signal(|| None::<String>);
+
+    let synced = bot.clone();
+    use_effect(use_reactive!(|synced| {
+        name.set(chosen_name(&synced));
+        avatar.set(synced.look.avatar.clone());
+        banner.set(synced.look.banner.clone());
+        bio.set(synced.look.bio.clone().unwrap_or_default());
+    }));
+
+    let dirty = name().trim() != chosen_name(&bot)
+        || avatar() != bot.look.avatar
+        || banner() != bot.look.banner
+        || bio().trim() != bot.look.bio.as_deref().unwrap_or_default();
+    let dressed = bot.look != GuildLook::default() || !chosen_name(&bot).is_empty();
+    let (avatar_src, banner_src) = {
+        let s = state.read();
+        let own = s.profile_of(&bot.bot_pubkey);
+        let src = |draft: Option<String>, own: Option<&String>| {
+            draft
+                .as_ref()
+                .or(own)
+                .and_then(|a| s.media_src(a).map(str::to_string))
+        };
+        (
+            src(avatar(), own.and_then(|p| p.avatar.as_ref())),
+            src(banner(), own.and_then(|p| p.banner.as_ref())),
+        )
+    };
+    let placeholder = bot
+        .app
+        .as_ref()
+        .map_or_else(|| bot.name.clone(), |a| a.name.clone());
+    let save_pk = bot.bot_pubkey.clone();
+    let save_gw = gateway.clone();
+    let reset_pk = bot.bot_pubkey.clone();
+    let button = "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors";
+
+    rsx! {
+        div { class: "text-[11px]",
+            button {
+                class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--text-muted)]",
+                onclick: move |_| open.set(!open()),
+                {crate::i18n::text("Look in this guild", &[])}
+                if open() { " ▴" } else { " ▾" }
+            }
+            if open() {
+                div { class: "mt-1.5 space-y-2",
+                    div { class: "flex items-center gap-2",
+                        if let Some(src) = avatar_src {
+                            img { class: "w-10 h-10 rounded-md object-cover border border-[var(--border)] shrink-0", src: "{src}", alt: "{placeholder}" }
+                        } else {
+                            div { class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] shrink-0" }
+                        }
+                        if let Some(src) = banner_src {
+                            img { class: "flex-1 min-w-0 h-10 rounded-md object-cover border border-[var(--border)]", src: "{src}", alt: crate::i18n::text("banner", &[]) }
+                        } else {
+                            div { class: "flex-1 h-10 rounded-md border border-dashed border-[var(--border)]" }
+                        }
+                    }
+                    input {
+                        class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
+                        maxlength: crate::protocol::MAX_APP_NAME as i64,
+                        placeholder: "{placeholder}",
+                        value: "{name}",
+                        oninput: move |e| name.set(e.value()),
+                    }
+                    textarea {
+                        class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
+                        rows: 2,
+                        maxlength: 280,
+                        placeholder: crate::i18n::text("Bio on its profile card here…", &[]),
+                        value: "{bio}",
+                        oninput: move |e| bio.set(e.value()),
+                    }
+                    div { class: "flex flex-wrap gap-2",
+                        crate::features::guild_settings::ImagePickButton {
+                            label: crate::i18n::text("Picture…", &[]),
+                            shape: crate::features::image_editor::CropShape::Square,
+                            onpicked: move |(url, n): (Option<String>, Option<String>)| {
+                                note.set(n);
+                                if url.is_some() {
+                                    avatar.set(url);
+                                }
+                            },
+                        }
+                        if avatar().is_some() {
+                            button { class: button, onclick: move |_| avatar.set(None),
+                                {crate::i18n::text("Clear picture", &[])}
+                            }
+                        }
+                        crate::features::guild_settings::ImagePickButton {
+                            label: crate::i18n::text("Banner…", &[]),
+                            shape: crate::features::image_editor::CropShape::Banner,
+                            onpicked: move |(url, n): (Option<String>, Option<String>)| {
+                                note.set(n);
+                                if url.is_some() {
+                                    banner.set(url);
+                                }
+                            },
+                        }
+                        if banner().is_some() {
+                            button { class: button, onclick: move |_| banner.set(None),
+                                {crate::i18n::text("Clear banner", &[])}
+                            }
+                        }
+                    }
+                    if let Some(n) = note() {
+                        div { class: "text-[10px] text-[var(--warn)]", "{n}" }
+                    }
+                    div { class: "text-[10px] text-[var(--text-dim)]",
+                        {crate::i18n::text("Only this guild sees these. Anything left empty shows the app's own.", &[])}
+                    }
+                    div { class: "flex gap-2",
+                        button {
+                            class: "flex-1 rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--accent)]/40 hover:bg-[var(--accent-soft)] transition-colors disabled:opacity-40 disabled:pointer-events-none",
+                            disabled: !dirty,
+                            onclick: move |_| save_gw.send(ClientMessage::SetAppLook {
+                                guild_id,
+                                bot_pubkey: save_pk.clone(),
+                                name: name().trim().to_string(),
+                                look: GuildLook {
+                                    avatar: avatar(),
+                                    banner: banner(),
+                                    bio: Some(bio().trim().to_string()).filter(|b| !b.is_empty()),
+                                },
+                            }),
+                            {crate::i18n::text("Save", &[])}
+                        }
+                        if dressed {
+                            button {
+                                class: button,
+                                onclick: move |_| gateway.send(ClientMessage::SetAppLook {
+                                    guild_id,
+                                    bot_pubkey: reset_pk.clone(),
+                                    name: String::new(),
+                                    look: GuildLook::default(),
+                                }),
+                                {crate::i18n::text("Use the app's own", &[])}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Which other apps this one may call. Each call is still held to the

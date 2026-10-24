@@ -893,6 +893,7 @@ mod tests {
             bot: false,
             roles: Vec::new(),
             xp: 0,
+            look: Default::default(),
         }
     }
 
@@ -961,6 +962,7 @@ mod tests {
         };
         let at = |pk: &str, xp: u64| Member {
             xp,
+            look: Default::default(),
             ..member(pk, gid, true)
         };
         let sorted = vec![at("a", 500), at("b", 100), at("c", 20), at("d", 3)];

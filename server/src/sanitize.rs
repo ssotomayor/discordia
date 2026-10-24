@@ -154,6 +154,9 @@ pub fn bot_install(b: &mut BotInstall) -> bool {
     b.name = name_or("bot", &b.name, BOT_NAME, "Bot");
     b.permissions
         .retain(|p| Permission::BOT_INSTALLABLE.contains(p));
+    b.look.avatar = picture(b.look.avatar.take());
+    b.look.banner = picture(b.look.banner.take());
+    b.look.bio = paragraph(b.look.bio.take(), BIO);
     !b.bot_pubkey.is_empty()
 }
 

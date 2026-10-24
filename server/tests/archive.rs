@@ -341,6 +341,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 bot: false,
                 roles: vec![],
                 xp: 0,
+                look: Default::default(),
             },
             Member {
                 user: User {
@@ -352,6 +353,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 bot: false,
                 roles: vec![],
                 xp: 0,
+                look: Default::default(),
             },
         ],
         bans: vec![hex_key('c'), "\u{202E}".into()],
@@ -365,6 +367,11 @@ async fn a_hostile_archive_is_filtered_on_import() {
             may_call: Vec::new(),
             app: None,
             pending: None,
+            look: discordia_server::protocol::GuildLook {
+                avatar: Some("https://tracker.example/pixel.png".into()),
+                banner: None,
+                bio: Some(" ".into()),
+            },
         }],
         messages: vec![(
             chan,
@@ -453,6 +460,11 @@ async fn a_hostile_archive_is_filtered_on_import() {
         .expect("bot");
     assert_eq!(bot.name, "Bot");
     assert_eq!(bot.permissions, vec![Permission::SendMessages]);
+    assert_eq!(
+        bot.look,
+        Default::default(),
+        "a link is a fetch by every viewer"
+    );
 
     let history = state
         .store

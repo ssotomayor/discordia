@@ -55,6 +55,7 @@ fn benchmark_view(export: Export) -> Element {
                 bot: false,
                 roles: vec![],
                 xp: 0,
+                look: Default::default(),
             });
             s.profiles.insert(
                 pk.clone(),

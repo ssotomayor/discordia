@@ -5,8 +5,8 @@ use base64::Engine;
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::protocol::{
-    ActivityCapability, ActivityManifest, AppManifest, BotInstall, ChannelKind, ClientMessage, Id,
-    Intent, Permission, ServerMessage,
+    ActivityCapability, ActivityManifest, AppManifest, BotInstall, ChannelKind, ClientMessage,
+    GuildLook, Id, Intent, Permission, ServerMessage,
 };
 use sha2::{Digest, Sha256};
 
@@ -555,6 +555,108 @@ async fn a_bot_connected_before_its_install_is_seated_online_and_renamed_by_its_
         integrations(&mut owner, app.pubkey()).await.name,
         "Rock Paper Lizard"
     );
+
+    handle.abort();
+}
+
+fn set_look(guild_id: Id, app: &BotIdentity, name: &str, look: GuildLook) -> ClientMessage {
+    ClientMessage::SetAppLook {
+        guild_id,
+        bot_pubkey: app.pubkey().to_string(),
+        name: name.into(),
+        look,
+    }
+}
+
+#[tokio::test]
+async fn a_guild_dresses_an_app_for_itself_alone_and_a_new_version_keeps_its_name() {
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4IbfgPwAFvgKGCAEh9QAAAABJRU5ErkJggg==";
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, guild_id) = owner_with_guild(&url).await;
+    let (mut other, other_guild) = owner_with_guild(&url).await;
+    let app = BotIdentity::generate();
+    let v1 = app.sign_manifest(&manifest(1, vec![Permission::SendMessages]));
+    for (session, guild) in [(&mut owner, guild_id), (&mut other, other_guild)] {
+        session
+            .send(&install(
+                guild,
+                &app,
+                vec![Permission::SendMessages],
+                v1.clone(),
+            ))
+            .await
+            .unwrap();
+        member_join(session, app.pubkey()).await;
+    }
+
+    owner
+        .send(&set_look(
+            guild_id,
+            &app,
+            "Our Bot",
+            GuildLook {
+                avatar: Some(PNG.into()),
+                banner: None,
+                bio: Some("  Ours  ".into()),
+            },
+        ))
+        .await
+        .unwrap();
+    let dressed = member_join(&mut owner, app.pubkey()).await;
+    assert_eq!(dressed.user.username, "Our Bot");
+    let avatar = dressed.look.avatar.clone().expect("a picture");
+    assert!(
+        avatar.starts_with("media:"),
+        "stored, not inlined: {avatar}"
+    );
+    assert_eq!(dressed.look.bio.as_deref(), Some("Ours"));
+    assert_eq!(
+        integrations(&mut owner, app.pubkey()).await.look,
+        dressed.look
+    );
+
+    other
+        .send(&set_look(guild_id, &app, "Theirs", GuildLook::default()))
+        .await
+        .unwrap();
+    assert!(next_error(&mut other).await.contains("permission"));
+
+    let mut bot = Bot::connect(&url, &app, "App").await.unwrap();
+    let mut v2 = manifest(2, vec![Permission::SendMessages]);
+    v2.name = "Rock Paper Lizard".into();
+    bot.register_manifest(&app, &v2).await.unwrap();
+    // Coming online announces the row too, still under the old name.
+    let theirs = loop {
+        let m = member_join(&mut other, app.pubkey()).await;
+        if m.user.username != "Rock Paper Scissors" {
+            break m;
+        }
+    };
+    assert_eq!(theirs.user.username, "Rock Paper Lizard");
+    assert_eq!(
+        theirs.look,
+        GuildLook::default(),
+        "only one guild dressed it"
+    );
+    let ours = loop {
+        let i = integrations(&mut owner, app.pubkey()).await;
+        if i.app.as_ref().is_some_and(|m| m.version == 2) {
+            break i;
+        }
+    };
+    assert_eq!(ours.name, "Our Bot", "the guild chose it");
+    assert_eq!(ours.look, dressed.look);
+
+    owner
+        .send(&set_look(guild_id, &app, " ", GuildLook::default()))
+        .await
+        .unwrap();
+    let plain = member_join(&mut owner, app.pubkey()).await;
+    assert_eq!(
+        plain.user.username, "Rock Paper Lizard",
+        "back to the app's own"
+    );
+    assert_eq!(plain.look, GuildLook::default());
 
     handle.abort();
 }

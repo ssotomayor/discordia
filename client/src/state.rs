@@ -1089,18 +1089,33 @@ impl AppState {
         self.activities.get(pubkey)
     }
 
-    pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
-        self.profiles
-            .get(pubkey)
-            .and_then(|p| p.avatar.as_deref())
-            .and_then(|a| self.media_src(a))
+    /// The open guild's dressing for this key, which only an app it installed
+    /// has. The profile is one per key for the whole server.
+    fn guild_look_of(&self, pubkey: &str) -> Option<&crate::protocol::GuildLook> {
+        let guild = self.selected_guild?;
+        self.members
+            .iter()
+            .find(|m| m.guild_id == guild && m.user.pubkey == pubkey)
+            .map(|m| &m.look)
     }
 
-    pub fn banner_of(&self, pubkey: &str) -> Option<&str> {
-        self.profiles
-            .get(pubkey)
-            .and_then(|p| p.banner.as_deref())
-            .and_then(|b| self.media_src(b))
+    pub fn avatar_address(&self, pubkey: &str) -> Option<&str> {
+        self.guild_look_of(pubkey)
+            .and_then(|l| l.avatar.as_deref())
+            .or_else(|| self.profiles.get(pubkey)?.avatar.as_deref())
+    }
+
+    pub fn banner_address(&self, pubkey: &str) -> Option<&str> {
+        self.guild_look_of(pubkey)
+            .and_then(|l| l.banner.as_deref())
+            .or_else(|| self.profiles.get(pubkey)?.banner.as_deref())
+    }
+
+    pub fn bio_of(&self, pubkey: &str) -> Option<&str> {
+        self.guild_look_of(pubkey)
+            .and_then(|l| l.bio.as_deref())
+            .or_else(|| self.profiles.get(pubkey)?.bio.as_deref())
+            .filter(|b| !b.trim().is_empty())
     }
 
     /// The server sends pictures as `media:` addresses and the bytes arrive
@@ -1586,10 +1601,10 @@ impl AppState {
         {
             return self.self_user.as_ref();
         }
-        self.members
-            .iter()
-            .find(|m| m.user.pubkey == pubkey)
-            .map(|m| &m.user)
+        // An app is named by each guild that installed it, so the open one wins.
+        let here = |m: &&Member| Some(m.guild_id) == self.selected_guild;
+        let rows = || self.members.iter().filter(|m| m.user.pubkey == pubkey);
+        rows().find(here).or_else(|| rows().next()).map(|m| &m.user)
     }
 }
 
@@ -1849,6 +1864,57 @@ mod tests {
     }
     use super::*;
     use crate::protocol::{Member, Profile, User};
+
+    #[test]
+    fn the_open_guild_dresses_an_app_and_elsewhere_its_profile_shows() {
+        let mut s = AppState::empty();
+        let (ours, theirs) = (Id::new_v4(), Id::new_v4());
+        let row = |guild_id, username: &str, look| Member {
+            user: User {
+                pubkey: "app".into(),
+                username: username.into(),
+            },
+            guild_id,
+            online: true,
+            bot: true,
+            roles: Vec::new(),
+            xp: 0,
+            look,
+        };
+        let dressed = crate::protocol::GuildLook {
+            avatar: Some("data:image/png;base64,ours".into()),
+            banner: None,
+            bio: Some("Ours".into()),
+        };
+        s.members = vec![
+            row(theirs, "Theirs", Default::default()),
+            row(ours, "Ours", dressed),
+        ];
+        s.profiles.insert(
+            "app".into(),
+            Profile {
+                pubkey: "app".into(),
+                avatar: Some("data:image/png;base64,own".into()),
+                banner: Some("data:image/png;base64,banner".into()),
+                bio: Some("Own".into()),
+                ..Default::default()
+            },
+        );
+
+        s.selected_guild = Some(ours);
+        assert_eq!(s.avatar_address("app"), Some("data:image/png;base64,ours"));
+        assert_eq!(
+            s.banner_address("app"),
+            Some("data:image/png;base64,banner")
+        );
+        assert_eq!(s.bio_of("app"), Some("Ours"));
+        assert_eq!(s.display_name("app"), "Ours");
+
+        s.selected_guild = Some(theirs);
+        assert_eq!(s.avatar_address("app"), Some("data:image/png;base64,own"));
+        assert_eq!(s.bio_of("app"), Some("Own"));
+        assert_eq!(s.display_name("app"), "Theirs");
+    }
 
     #[test]
     fn stream_viewers_exclude_other_channels_self_and_duplicate_identities() {
@@ -2521,6 +2587,7 @@ mod tests {
             bot: false,
             roles: Vec::new(),
             xp: 0,
+            look: Default::default(),
         }
     }
 

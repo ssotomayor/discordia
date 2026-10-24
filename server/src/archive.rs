@@ -83,6 +83,7 @@ impl Store {
                     bot,
                     roles,
                     xp,
+                    look: Default::default(),
                 }
             })
             .collect();

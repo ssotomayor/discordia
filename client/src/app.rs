@@ -352,7 +352,9 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-modal-in {
   0%   { opacity: 0; transform: scale(0.92) translateY(6px); }
   60%  { opacity: 1; transform: scale(1.02) translateY(0); }
-  100% { transform: scale(1); }
+  /* `none`, not scale(1): a transform left by `both` makes the dialog the box
+     every `fixed` overlay inside it (the crop editor) is placed in. */
+  100% { transform: none; }
 }
 .dxf-modal-in { animation: dxf-modal-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both; transform-origin: center; }
 @keyframes dxf-backdrop-in { from { opacity: 0; } to { opacity: 1; } }

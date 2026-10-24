@@ -217,6 +217,7 @@ impl AppState {
                     bot,
                     roles: role_ids,
                     xp: 0,
+                    look: Default::default(),
                 },
             );
         }
@@ -255,6 +256,13 @@ impl AppState {
             if let crate::store::Seat::Vacated = state.seat_for(&i) {
                 state.store.delete_member(i.guild_id, &i.bot_pubkey).await?;
                 state.apply_seat(&i, &crate::store::Seat::Vacated);
+            }
+            // The members table keeps no look: the install is its one copy.
+            if let Some(g) = state.members.get(&i.guild_id)
+                && let Some(mut m) = g.get_mut(&i.bot_pubkey)
+                && m.bot
+            {
+                m.look = i.look.clone();
             }
             state
                 .bot_installs
@@ -1087,6 +1095,7 @@ impl AppState {
             bot: false,
             roles: Vec::new(),
             xp: 0,
+            look: Default::default(),
         };
         durable(
             self.store
@@ -1802,6 +1811,7 @@ impl AppState {
                 bot: false,
                 roles: Vec::new(),
                 xp: 0,
+                look: Default::default(),
             });
         member.online = true;
         durable(self.store.admit_member(&member, invite).await, "member add")?;
@@ -3424,6 +3434,10 @@ impl AppState {
                 .unwrap_or_default(),
             app: app.as_ref().map(|a| a.manifest.clone()),
             pending: None,
+            look: self
+                .bot_install(guild_id, bot_pubkey)
+                .map(|i| i.look)
+                .unwrap_or_default(),
         };
         let seat = self.seat_for(&install);
         durable(self.store.install_bot(&install, &seat).await, "bot install")?;

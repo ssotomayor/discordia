@@ -85,6 +85,7 @@ mod tests {
             bot: false,
             roles: vec![],
             xp: 0,
+            look: Default::default(),
         }
     }
     fn channel(guild_id: Id) -> Channel {

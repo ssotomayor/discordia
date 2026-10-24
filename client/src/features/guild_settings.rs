@@ -837,7 +837,7 @@ fn AuditLog(guild_id: Id) -> Element {
 }
 
 #[component]
-fn ImagePickButton(
+pub(crate) fn ImagePickButton(
     #[props(into)] label: String,
     shape: crate::features::image_editor::CropShape,
     onpicked: EventHandler<(Option<String>, Option<String>)>,

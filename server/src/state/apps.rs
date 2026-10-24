@@ -1,7 +1,8 @@
 use super::{AppState, durable};
 use crate::auth::{VerifiedManifest, verify_manifest_event};
 use crate::protocol::{
-    AppManifest, BotInstall, GuildActivity, Id, Member, Permission, User, bundle_blob,
+    AppManifest, BotInstall, GuildActivity, GuildLook, Id, MAX_APP_NAME, Member, Permission, User,
+    bundle_blob, sanitize_line, sanitize_paragraph,
 };
 use crate::store::Seat;
 
@@ -115,6 +116,50 @@ impl AppState {
         Ok(seat)
     }
 
+    /// The guild's own name and pictures for an app it installed. They dress
+    /// only its row here; the app's profile stays the same everywhere else.
+    pub async fn set_app_look(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+        name: &str,
+        look: GuildLook,
+        by_pubkey: &str,
+    ) -> Result<Seat, String> {
+        let _write = self.durable_writes.lock().await;
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let mut install = self
+            .bot_install(guild_id, bot_pubkey)
+            .ok_or("that bot isn't installed here")?;
+        let picture = |what: &str, v: Option<String>| {
+            v.map(|i| self.image_reference(by_pubkey, &i))
+                .transpose()
+                .map_err(|e| format!("{what}: {e}"))
+        };
+        install.look = GuildLook {
+            avatar: picture("picture", look.avatar)?,
+            banner: picture("banner", look.banner)?,
+            bio: look
+                .bio
+                .map(|b| sanitize_paragraph(&b, 280))
+                .filter(|b| !b.is_empty()),
+        };
+        let name = sanitize_line(name, MAX_APP_NAME);
+        install.name = match (name.is_empty(), &install.app) {
+            (false, _) => name,
+            (true, Some(app)) => app.name.clone(),
+            (true, None) => "Bot".to_string(),
+        };
+        let seat = self.seat_for(&install);
+        durable(
+            self.store.update_bot_install(&install, &seat).await,
+            "app look",
+        )?;
+        self.apply_seat(&install, &seat);
+        self.put_install(install);
+        Ok(seat)
+    }
+
     /// The member row this install should have. A person's row under the same
     /// key is never taken away; only a bot's.
     pub(super) fn seat_for(&self, install: &BotInstall) -> Seat {
@@ -123,10 +168,15 @@ impl AppState {
             .get(&install.guild_id)
             .and_then(|g| g.get(&install.bot_pubkey).map(|m| m.clone()));
         match (install.seated(), current) {
-            (true, Some(m)) if m.bot && m.user.username == install.name => Seat::Unchanged,
+            (true, Some(m))
+                if m.bot && m.user.username == install.name && m.look == install.look =>
+            {
+                Seat::Unchanged
+            }
             (true, Some(mut m)) => {
                 m.bot = true;
                 m.user.username = install.name.clone();
+                m.look = install.look.clone();
                 Seat::Taken(m)
             }
             (true, None) => Seat::Taken(Member {
@@ -141,6 +191,7 @@ impl AppState {
                 bot: true,
                 roles: Vec::new(),
                 xp: 0,
+                look: install.look.clone(),
             }),
             (false, Some(m)) if m.bot => Seat::Vacated,
             (false, _) => Seat::Unchanged,
@@ -392,6 +443,7 @@ mod tests {
             may_call: Vec::new(),
             app,
             pending: None,
+            look: GuildLook::default(),
         }
     }
 

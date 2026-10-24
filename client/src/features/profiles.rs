@@ -143,17 +143,12 @@ fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<std::sync::Arc<S
     let pubkey = pubkey.to_owned();
     use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
         let s = state.read();
-        let profile = s.profile_of(&pubkey)?;
         let address = if banner {
-            profile.banner.as_deref()
+            s.banner_address(&pubkey)
         } else {
-            profile.avatar.as_deref()
+            s.avatar_address(&pubkey)
         }?;
-        let resolved = if banner {
-            s.banner_of(&pubkey)
-        } else {
-            s.avatar_of(&pubkey)
-        }?;
+        let resolved = s.media_src(address)?;
         match address.strip_prefix("media:") {
             Some(blob) => s
                 .emoji_images
@@ -208,10 +203,7 @@ pub fn ProfileCard() -> Element {
         let snapshot = state.read();
         let pubkey = snapshot.profile_card.clone()?;
         let name = snapshot.display_name(&pubkey);
-        let bio = snapshot
-            .profile_of(&pubkey)
-            .and_then(|p| p.bio.clone())
-            .filter(|b| !b.trim().is_empty());
+        let bio = snapshot.bio_of(&pubkey).map(str::to_owned);
         let status = snapshot.presence_of(&pubkey).to_string();
         let custom_status = snapshot
             .profile_of(&pubkey)

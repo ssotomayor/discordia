@@ -1265,6 +1265,27 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         }
                     }
+                    ClientMessage::SetAppLook { guild_id, bot_pubkey, name, look } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.set_app_look(guild_id, &bot_pubkey, &name, look, &u.pubkey).await {
+                            Ok(seat) => {
+                                announce_seat(&ctx.state, guild_id, &bot_pubkey, seat);
+                                share_guild_apps(&ctx.state, guild_id);
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
                     ClientMessage::ActivityStart { channel_id, app } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -3388,6 +3409,7 @@ where
             bot: false,
             roles: Vec::new(),
             xp: state.xp_of(guild_id, &joiner.pubkey),
+            look: Default::default(),
         }),
     );
     let emojis = state.emojis_of(guild_id);
