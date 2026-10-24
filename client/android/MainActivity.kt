@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
@@ -17,6 +18,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ResultReceiver
 import android.view.WindowManager
+import android.view.Display
+import android.util.DisplayMetrics
 import livekit.org.webrtc.Camera2Enumerator
 import livekit.org.webrtc.CameraVideoCapturer
 import livekit.org.webrtc.CapturerObserver
@@ -150,6 +153,8 @@ class MainActivity : WryActivity() {
     private var screenFps = 30
     private var screenMaxWidth = 1280
     private var screenMaxHeight = 720
+    private var capturedContentWidth = 0
+    private var capturedContentHeight = 0
     private var screenCapturer: VideoCapturer? = null
     private var screenHelper: SurfaceTextureHelper? = null
     private var screenEgl: EglBase? = null
@@ -253,10 +258,23 @@ class MainActivity : WryActivity() {
 
     /// A MediaProjection virtual display is created once, so it is sized to the
     /// screen's current aspect inside the share's budget rather than letterboxed.
+    @Suppress("DEPRECATION")
+    private fun captureDimensions(): Pair<Int, Int> {
+        if (capturedContentWidth > 0 && capturedContentHeight > 0) {
+            return capturedContentWidth to capturedContentHeight
+        }
+        // Activity metrics can describe a resized window rather than the mirrored display.
+        val metrics = DisplayMetrics()
+        val display = (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
+            .getDisplay(Display.DEFAULT_DISPLAY)
+        display?.getRealMetrics(metrics)
+        val fallback = resources.displayMetrics
+        return (metrics.widthPixels.takeIf { it > 0 } ?: fallback.widthPixels).coerceAtLeast(2) to
+            (metrics.heightPixels.takeIf { it > 0 } ?: fallback.heightPixels).coerceAtLeast(2)
+    }
+
     private fun captureSize(maxWidth: Int, maxHeight: Int): Pair<Int, Int> {
-        val metrics = resources.displayMetrics
-        val displayWidth = metrics.widthPixels.coerceAtLeast(2)
-        val displayHeight = metrics.heightPixels.coerceAtLeast(2)
+        val (displayWidth, displayHeight) = captureDimensions()
         val longEdge = maxOf(maxWidth, maxHeight)
         val shortEdge = minOf(maxWidth, maxHeight)
         val portrait = displayWidth < displayHeight
@@ -267,6 +285,13 @@ class MainActivity : WryActivity() {
         )
         val even = { value: Int -> (value / 2 * 2).coerceAtLeast(2) }
         return even((displayWidth * scale).toInt()) to even((displayHeight * scale).toInt())
+    }
+
+    private fun updateCapturedContentSize(slot: Int, width: Int, height: Int) {
+        if (screenSlot != slot || slot < 0 || width < 2 || height < 2) return
+        capturedContentWidth = width
+        capturedContentHeight = height
+        if (screenResult == 1) resizeScreenShare(slot, screenMaxWidth, screenMaxHeight, screenFps)
     }
 
     /// Asks for the projection on its own, so the app can flip to "sharing" only
@@ -354,6 +379,10 @@ class MainActivity : WryActivity() {
         val helper = SurfaceTextureHelper.create("discordia-screen", egl.eglBaseContext)
         screenHelper = helper
         val capturer = ScreenCapturerAndroid(grant, object : MediaProjection.Callback() {
+            override fun onCapturedContentResize(width: Int, height: Int) {
+                runOnUiThread { updateCapturedContentSize(slot, width, height) }
+            }
+
             override fun onStop() {
                 val stopped = slot
                 // The framework delivers this on its own thread; the
@@ -393,12 +422,15 @@ class MainActivity : WryActivity() {
         val capturer = screenCapturer ?: return false
         val (actualWidth, actualHeight) = captureSize(width, height)
         return try {
-            capturer.changeCaptureFormat(actualWidth, actualHeight, fps)
+            if (actualWidth != screenWidth || actualHeight != screenHeight) {
+                capturer.changeCaptureFormat(actualWidth, actualHeight, fps)
+            }
             screenMaxWidth = width
             screenMaxHeight = height
             screenWidth = actualWidth
             screenHeight = actualHeight
             screenFps = fps
+            android.util.Log.i("Discordia", "Screen capture ${capturedContentWidth}x${capturedContentHeight} -> ${actualWidth}x${actualHeight} at $fps FPS")
             true
         } catch (_: Exception) { false }
     }
@@ -417,6 +449,8 @@ class MainActivity : WryActivity() {
 
     fun stopScreenShare() {
         stopPlaybackAudio()
+        capturedContentWidth = 0
+        capturedContentHeight = 0
         screenPending = false
         screenResult = 0
         screenSlot = -1
