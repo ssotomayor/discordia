@@ -583,3 +583,10 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 |---|---|
 | Implementado | Detección por versionCode instalado; descarga APK ARM64 con minisign en streaming y límite de tamaño; PackageInstaller con permiso por fuente y confirmación; validación de paquete, versión y certificado; cancelación/reintento sin redescarga. Debug separado. |
 | Pendiente físico | El usuario pospuso USB. Probar actualización entre dos APK firmados, permiso aceptado/denegado, cancelación, identidad conservada y bloqueo durante voz/cámara/pantalla. La primera instalación del actualizador es manual. |
+
+### Cámara y navegación inicial (2026-10-23)
+
+- Primer inicio de cámara: finalizar la conexión de voz cambia el epoch de medios; el selector valida canal/ruta después de liberar la preview. Un cambio real de llamada cierra el selector en vez de dejar «Iniciando» congelado.
+- Móvil abre en Canales; la selección automática de Ready no abre Chat. Tocar un canal abre Chat aunque ya estuviera seleccionado.
+- Regresión: conexión inicial durante preview, cambio de canal/ruta y retención del compositor al alternar pestañas.
+- Moto g15/API 35, APK release firmado instalado con `adb install -r`: reconectar muestra Canales, tocar el canal seleccionado abre Chat y el primer inicio de cámara cierra el selector y llega a «Tu cámara»/«Apagar tu cámara». Se detuvo la cámara y se salió de la llamada de prueba. La carrera de epoch se cubre además con prueba unitaria; recepción desde otro equipo no medida en esta sesión.

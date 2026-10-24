@@ -92,14 +92,19 @@ mod tests {
 #[component]
 pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
     let state = use_app_state();
-    let mut tab = use_signal(|| MobileTab::Chat);
+    let mut tab = use_signal(|| MobileTab::Channels);
+    use_context_provider(move || tab);
     let selected_channel = use_memo(move || state.read().selected_channel);
     let mut previous_channel = use_signal(|| *selected_channel.peek());
     use_effect(move || {
         let current = selected_channel();
         if current != *previous_channel.peek() {
+            // Ready selects a default channel before the person has chosen to open its chat.
+            let had_channel = previous_channel.peek().is_some();
             previous_channel.set(current);
-            tab.set(MobileTab::Chat);
+            if had_channel {
+                tab.set(MobileTab::Chat);
+            }
         }
     });
     let current = tab();
