@@ -33,6 +33,18 @@ def jni_dex(defined):
 
 
 class AndroidReleaseTests(unittest.TestCase):
+    def test_main_activity_must_reuse_the_process_native_runtime(self):
+        good = '\n  E: activity (line=1)\n    A: android:name(0x01010003)="dev.dioxus.main.MainActivity"\n    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n'
+        for manifest, valid in [(good, True), (good.replace('0x2\n', '0x0\n'), False),
+                                (good.replace('dev.dioxus.main.MainActivity', 'other.Activity'), False),
+                                (good.replace('    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n', ''), False)]:
+            with patch.object(building.subprocess, 'check_output', return_value=manifest):
+                if valid:
+                    building.verify_activity_mode(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'singleTask'):
+                        building.verify_activity_mode(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
+
     def test_jni_class_must_be_defined_in_dex_not_only_referenced(self):
         for defined in (False, True):
             data = jni_dex(defined)
