@@ -1,4 +1,9 @@
 {
+  "GPU (hardware)": ["GPU (hardware)", "GPU (hardware)"],
+  "CPU (software)": ["CPU (software)", "CPU (software)"],
+  "Not reported": ["No informado", "Não informado"],
+  "Decoding: {0}": ["Decodificación: {0}", "Decodificação: {0}"],
+  "The browser did not identify the active decoder as hardware or software. Missing data does not mean CPU decoding.": ["El navegador no identificó si el decodificador activo usa hardware o software. La falta de datos no significa que decodifique por CPU.", "O navegador não identificou se o decodificador ativo usa hardware ou software. A ausência de dados não significa decodificação por CPU."],
   "Mention a user": ["Mencionar a un usuario", "Mencionar uma pessoa"],
   "Back to chat": ["Volver al chat", "Voltar ao chat"],
   "Channels": ["Canales", "Canais"],

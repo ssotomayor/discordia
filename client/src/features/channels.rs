@@ -1340,6 +1340,11 @@ fn ScreenShareStatsRow(
         &[implementation.to_owned()],
     );
     let efficiency_label = crate::i18n::text("power-efficient {0}", &[power_efficient.to_owned()]);
+    let decoder_mode = super::screen_stats::decoder_mode(stats.codec_implementation.as_deref());
+    let decoding_label = crate::i18n::text(
+        "Decoding: {0}",
+        &[crate::i18n::label(decoder_mode).to_owned()],
+    );
     let frames_label = crate::i18n::text(
         if stats.outbound {
             "{0} frames encoded"
@@ -1404,11 +1409,19 @@ fn ScreenShareStatsRow(
                 span { "{bitrate}" }
                 if let Some(target) = target_bitrate { span { "{target}" } }
                 span { "{codec_path_label}" }
+                if !stats.outbound {
+                    span { "{decoding_label}" }
+                }
                 span { "{efficiency_label}" }
                 if stats.outbound { span { {crate::i18n::text("limit {0}", &[(limitation).to_string()])} } }
                 span { "{frames_label}" }
                 span { "{packets_label}" }
                 if let Some(jitter) = jitter { span { "{jitter}" } }
+            }
+            if !stats.outbound && decoder_mode == "Not reported" {
+                div { class: "text-[var(--text-muted)] mt-0.5",
+                    {crate::i18n::text("The browser did not identify the active decoder as hardware or software. Missing data does not mean CPU decoding.", &[])}
+                }
             }
             if let Some(error) = stats.error.as_deref() {
                 div { class: "text-[var(--warn)] mt-0.5", {crate::i18n::text("Stats error: {0}", &[(error).to_string()])} }
