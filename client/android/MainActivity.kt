@@ -72,6 +72,8 @@ class MainActivity : WryActivity() {
 
     external fun onCaptureStopped(slot: Int)
 
+    external fun shouldCaptureVideoFrame(slot: Int): Boolean
+
     private var documentRequest: String? = null
     private var documentResult: String? = null
     private var documentBytes: ByteArray? = null
@@ -167,6 +169,7 @@ class MainActivity : WryActivity() {
         override fun onCapturerStopped() {}
 
         override fun onFrameCaptured(frame: VideoFrame) {
+            if (!shouldCaptureVideoFrame(slot)) return
             val source = frame.buffer
             val i420 = source.toI420() ?: return
             try {
@@ -316,6 +319,28 @@ class MainActivity : WryActivity() {
     }
 
     fun takeScreenShareResult(): Int = screenResult
+
+    fun screenCapturePressure(): Int {
+        val memory = android.app.ActivityManager.MemoryInfo()
+        (getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(memory)
+        val thermal = if (android.os.Build.VERSION.SDK_INT >= 29) {
+            (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).currentThermalStatus
+        } else 0
+        return thermal.coerceIn(0, 6) or (if (memory.lowMemory) 8 else 0)
+    }
+
+    fun resizeScreenShare(slot: Int, width: Int, height: Int, fps: Int): Boolean {
+        if (screenSlot != slot || screenResult != 1 || width < 2 || height < 2 || fps !in 1..30) return false
+        val capturer = screenCapturer ?: return false
+        val (actualWidth, actualHeight) = captureSize(width, height)
+        return try {
+            capturer.changeCaptureFormat(actualWidth, actualHeight, fps)
+            screenWidth = actualWidth
+            screenHeight = actualHeight
+            screenFps = fps
+            true
+        } catch (_: Exception) { false }
+    }
 
     fun stopScreenShareSlot(slot: Int) {
         if (screenSlot == slot) stopScreenShare()

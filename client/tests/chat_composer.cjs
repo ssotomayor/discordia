@@ -158,4 +158,28 @@ function fixture() {
   assert.equal(f.inserted.length, 6);
 }
 
+{
+  for (const [value, caret, start, end] of [
+    ['hola @Mar', 9, 5, 9],
+    ['@Álvaro', 3, 0, 7],
+    ['hola @', 6, 5, 6],
+    ['hola @Maria resto', 8, 5, 11],
+  ]) {
+    const f = fixture();
+    const node = text(value);
+    f.el.childNodes = [node];
+    const range = f.selection.getRangeAt(0);
+    range.startContainer = node;
+    range.startOffset = caret;
+    range.setStart = (_, offset) => f.operations.push(['replace-start', offset]);
+    range.setEnd = (_, offset) => f.operations.push(['replace-end', offset]);
+    f.event('selectionchange');
+    f.api.insertText('@María ', true);
+    assert(f.operations.some(op => Array.isArray(op) && op[0] === 'replace-start' && op[1] === start), value);
+    assert(f.operations.some(op => Array.isArray(op) && op[0] === 'replace-end' && op[1] === end), value);
+    assert.equal(f.inserted[0].nodeValue, '@María ');
+    assert(f.operations.includes('delete'));
+  }
+}
+
 console.log('Chat composer tests passed');

@@ -598,3 +598,20 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - En el servidor, el botón DM móvil abre la lista sin seleccionar ni marcar leída una conversación. Elegir un DM, una solicitud o una clave abre Chat explícitamente.
 - Pruebas: apertura/cierre/reapertura integrada y estado compartido entre ventanas. Las llamadas DM conservan preparación de micrófono y servicio de segundo plano; audio entre dos equipos pendiente en esta sesión.
 - APK release 881 corregido, firmado e instalado con `adb install -r`: Social muestra conversaciones, un DM abre con compositor y botón Llamar, volver/cerrar/reabrir funciona. Sin mensajes enviados ni llamadas iniciadas. Capturas locales `target/mobile-tools/discordia-social-{baseline,after,chat,reopened}.png`.
+
+### Estilo móvil (2026-10-24)
+
+- Boceto conservador: panel izquierdo compacto, bordes/separadores suaves, DM con mayor contraste e íconos de navegación uniformes. Se mantienen cabecera, audio y perfil en su ubicación; estilos limitados a Android y derivados del tema.
+- Actividades oculto en la barra Android por pedido del usuario; Canales, Chat y Miembros conservan su orden. Escritorio mantiene el acceso.
+- Barra de comunidades con el mismo fondo del panel de canales y esquinas de 12 px; revisión visual en Moto g15/API 35 con APK release firmado instalado sin borrar datos.
+- Compositor: `@` abre hasta ocho usuarios de la comunidad (solo participantes en DM), filtra nombre visible/usuario e inserta con toque o teclado. Pruebas Rust de alcance/búsqueda, puente de edición Unicode y regresión de emojis aprobadas; sin cambios de protocolo.
+- Debug actualizado con `adb install -r`: comprobados ocho resultados con `@`, filtro `@Che` a un usuario, selección que inserta `@CheleBot ` y limpieza del borrador; sin enviar mensajes. Fondo del rail `rgb(23, 21, 15)` en el tema activo y radio de 12 px verificados en el WebView.
+
+### Transmisión Android (2026-10-24)
+
+- Admisión de frames por slot antes de `toI420` y JNI; métricas incluyen conversión/copia. Perfil nuevo 720p/30, proporción conservada. Hardware enumera solo codecs hardware; Automático prefiere uno disponible y conserva fallback software.
+- Presupuesto temporal: sobrecarga sostenida baja 30→20 FPS, luego 75%/15 y 50%/15; memoria baja/temperatura crítica adelantan la reducción. Recuperación por escalones tras 30 s estables, sin modificar preferencias. El mismo VirtualDisplay se redimensiona, sin otro consentimiento.
+- Previews y visor en el sector superior del chat de su comunidad. Compartir o elegir ver medios abre ese chat; cambiar pestaña/comunidad pausa la suscripción de video sin detener publicación ni audio.
+- Moto g15/API 35: H.264 `c2.mtk.avc.encoder`, cambio real a 20 FPS registrado; preview en flujo relativo dentro de Chat y flag de recepción apagado en Canales. Muestra de 30 s: CPU mediana 194% del proceso (100%=un núcleo), PSS 491→360 MiB, estado térmico 0; no es comparación controlada ni demuestra mejora de FPS.
+- Cortes observados: release terminó con LOW_MEMORY; Debug siguió vivo, perdió heartbeat y fue expulsado de voz. El intérprete Android ahora aplica/acknowledge cada lote con fallback de 100 ms si rAF no llega; evita bloquear tareas detrás del selector o en segundo plano. Regresión cubre aplicación única y callbacks tardíos. Consentimiento valida canal/ruta, no el epoch que cambia durante la conexión inicial.
+- Usuario confirma inicio con un solo toque en Debug tras aceptar el selector Android. Suite final: 791 pruebas aprobadas, 25 ignoradas; Clippy cliente/grid con `-D warnings`, bridges JS, mutaciones y ocho pruebas de empaquetado aprobados. La carga sigue alta y no se da por resuelto el cierre de release por memoria ni se afirma estabilidad de llamadas largas.

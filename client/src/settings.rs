@@ -192,7 +192,12 @@ fn default_publish_global_level() -> bool {
 }
 
 pub fn default_screenshare_quality() -> String {
-    "smooth".into()
+    if cfg!(target_os = "android") {
+        "720"
+    } else {
+        "smooth"
+    }
+    .into()
 }
 
 fn default_screenshare_audio() -> bool {

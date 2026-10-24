@@ -122,7 +122,7 @@ std::unique_ptr<webrtc::VideoEncoderFactory>
 CreateAndroidVideoEncoderFactory() {
   JNIEnv* env = webrtc::AttachCurrentThreadIfNeeded();
   webrtc::ScopedJavaLocalRef<jclass> factory_class =
-      webrtc::GetClass(env, "livekit/org/webrtc/DefaultVideoEncoderFactory");
+      webrtc::GetClass(env, "livekit/org/webrtc/HardwareVideoEncoderFactory");
 
   jmethodID ctor = env->GetMethodID(factory_class.obj(), "<init>",
                                     "(Llivekit/org/webrtc/EglBase$Context;ZZ)V");

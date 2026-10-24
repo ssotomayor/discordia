@@ -14,6 +14,7 @@ Local changes are listed below; bundled JS remains upstream.
 | `src/desktop_context.rs`, `src/app.rs` | `DesktopService::set_visible` also hides the wry webview and drops it to WebView2's low memory target, so a window closed to the tray stops rendering. |
 | `src/edits.rs` | A disconnected edit socket never acknowledges unapplied DOM mutations. Requeue its in-flight and queued batches in order; release idle disconnected sockets. Reconnects ask the existing reader to check liveness and wait for its queue to retire before registering; live/busy duplicates cannot replace it. Handshake/registration runs per connection so a waiting window cannot block the shared listener. Native loopback regressions run in desktop CI. |
 | `src/app.rs`, `src/webview.rs`, `src/windows_diagnostics.rs` | Log webview creation, initialization, first batch acknowledgement per connection and Windows navigation/process failures without socket keys or URLs. Navigation cancellation (WebView2 status 14) is informational; other failures remain errors. |
+| `src/protocol.rs`, `src/android_edits.js` | Android edit batches use a 100 ms timer fallback when animation frames stop behind permission dialogs/background apps. Flush before acknowledging, exactly once, to keep scoped tasks and gateway heartbeats running. Bundled upstream JS remains unchanged. |
 
 On upgrades, replace the upstream files, reapply these changes and compare the
 client's Windows/macOS dependency trees. Preserve the bundled JS and `hash.txt`;

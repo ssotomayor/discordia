@@ -1465,11 +1465,12 @@ return (async function () {
   const tokenRange = (r) => {
     const n = r.startContainer;
     if (n.nodeType !== 3) return r;
-    const m = /(^|\s):([A-Za-z0-9_]*)$/.exec(n.nodeValue.slice(0, r.startOffset));
+    const m = /(^|\s)[@:]([\p{L}\p{N}_.-]*)$/u.exec(n.nodeValue.slice(0, r.startOffset));
     if (!m) return r;
     const t = document.createRange();
     t.setStart(n, r.startOffset - m[2].length - 1);
-    t.setEnd(n, r.startOffset);
+    const remaining = /^[\p{L}\p{N}_.-]*/u.exec(n.nodeValue.slice(r.startOffset))[0].length;
+    t.setEnd(n, r.startOffset + remaining);
     return t;
   };
   const insert = (nodes, replaceToken) => {
@@ -1584,18 +1585,26 @@ fn composer_call(id: &str, method: &str, args: &[Value]) {
 }
 
 #[derive(Clone, PartialEq)]
-enum EmojiPick {
+enum ComposerPick {
     Unicode(&'static str),
     Custom { code: String, url: String },
+    Mention { pubkey: String, username: String },
 }
 
 #[derive(Clone, PartialEq)]
-struct EmojiSuggestion {
+struct ComposerSuggestion {
     name: String,
-    pick: EmojiPick,
+    pick: ComposerPick,
 }
 
 const MAX_SUGGESTIONS: usize = 8;
+
+#[path = "chat_mentions.rs"]
+mod mentions;
+
+fn completion_token(before: &str) -> Option<String> {
+    mentions::active_token(before).or_else(|| active_token(before))
+}
 
 /// The `:ab…` the caret sits at the end of: two or more name characters
 /// after a colon that starts a word, so a URL or a time never opens the list.
@@ -1618,7 +1627,7 @@ fn emoji_suggestions(
     token: &str,
     guild: &[GuildEmoji],
     urls: &std::collections::HashMap<String, String>,
-) -> Vec<EmojiSuggestion> {
+) -> Vec<ComposerSuggestion> {
     let mut out = Vec::new();
     for prefix in [true, false] {
         let hit = |name: &str| {
@@ -1632,9 +1641,9 @@ fn emoji_suggestions(
             guild
                 .iter()
                 .filter(|e| hit(&e.shortcode))
-                .map(|e| EmojiSuggestion {
+                .map(|e| ComposerSuggestion {
                     name: e.shortcode.clone(),
-                    pick: EmojiPick::Custom {
+                    pick: ComposerPick::Custom {
                         code: e.shortcode.clone(),
                         url: urls.get(&e.image).cloned().unwrap_or_default(),
                     },
@@ -1644,9 +1653,9 @@ fn emoji_suggestions(
             EMOJIS
                 .iter()
                 .filter(|(_, name)| hit(name))
-                .map(|(emoji, name)| EmojiSuggestion {
+                .map(|(emoji, name)| ComposerSuggestion {
                     name: (*name).to_string(),
-                    pick: EmojiPick::Unicode(emoji),
+                    pick: ComposerPick::Unicode(emoji),
                 }),
         );
         if out.len() >= MAX_SUGGESTIONS {
@@ -1700,17 +1709,26 @@ fn suggestions_now(
     s: &crate::state::AppState,
     channel_id: Id,
     token: &str,
-) -> Vec<EmojiSuggestion> {
+) -> Vec<ComposerSuggestion> {
+    if let Some(query) = token.strip_prefix('@') {
+        return mentions::suggestions(s, channel_id, query);
+    }
     let (list, urls) = guild_emojis_of(s, channel_id);
     emoji_suggestions(token, &list, &urls)
 }
 
-/// Puts the chosen emoji where the `:token` was. A custom emoji whose picture
-/// has not arrived goes in as text, which still renders once sent.
-fn insert_pick(id: &str, pick: &EmojiPick, replace_token: bool, space: bool) {
+fn insert_pick(id: &str, pick: &ComposerPick, replace_token: bool, space: bool) {
     let tail = if space { " " } else { "" };
     match pick {
-        EmojiPick::Unicode(e) => composer_call(
+        ComposerPick::Mention { username, .. } => composer_call(
+            id,
+            "insertText",
+            &[
+                Value::String(format!("@{username}{tail}")),
+                Value::Bool(replace_token),
+            ],
+        ),
+        ComposerPick::Unicode(e) => composer_call(
             id,
             "insertText",
             &[
@@ -1718,7 +1736,7 @@ fn insert_pick(id: &str, pick: &EmojiPick, replace_token: bool, space: bool) {
                 Value::Bool(replace_token),
             ],
         ),
-        EmojiPick::Custom { code, url } if url.is_empty() => composer_call(
+        ComposerPick::Custom { code, url } if url.is_empty() => composer_call(
             id,
             "insertText",
             &[
@@ -1726,7 +1744,7 @@ fn insert_pick(id: &str, pick: &EmojiPick, replace_token: bool, space: bool) {
                 Value::Bool(replace_token),
             ],
         ),
-        EmojiPick::Custom { code, url } => composer_call(
+        ComposerPick::Custom { code, url } => composer_call(
             id,
             "insertEmoji",
             &[
@@ -1952,7 +1970,7 @@ fn Composer(
     let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
     let suggestions = caret_token()
         .as_deref()
-        .map(|t| emoji_suggestions(t, &guild_emojis, &emoji_urls))
+        .map(|t| suggestions_now(&state.read(), channel_id, t))
         .unwrap_or_default();
     let has_suggestions = use_memo(move || {
         caret_token()
@@ -2221,7 +2239,7 @@ fn Composer(
                             let token = msg
                                 .get("before")
                                 .and_then(Value::as_str)
-                                .and_then(active_token);
+                                .and_then(completion_token);
                             if *draft.peek() != text {
                                 draft.set(text.to_string());
                                 if !text.is_empty() {
@@ -2302,7 +2320,7 @@ fn Composer(
                                             class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                             title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
                                             onclick: move |_| {
-                                                insert_pick(&id, &EmojiPick::Custom { code: code.clone(), url: url.clone() }, false, false);
+                                                insert_pick(&id, &ComposerPick::Custom { code: code.clone(), url: url.clone() }, false, false);
                                                 show_emoji.set(false);
                                             },
                                             oncontextmenu: move |ev: MouseEvent| {
@@ -2330,7 +2348,7 @@ fn Composer(
                                         class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                         title: ":{name}:",
                                         onclick: move |_| {
-                                            insert_pick(&id, &EmojiPick::Unicode(emoji), false, false);
+                                            insert_pick(&id, &ComposerPick::Unicode(emoji), false, false);
                                             show_emoji.set(false);
                                         },
                                         "{emoji}"
@@ -2345,9 +2363,15 @@ fn Composer(
 
             if !suggestions.is_empty() {
                 div {
-                    class: "dxf-pop-in absolute bottom-full left-3 right-3 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+                    class: "dxf-composer-suggestions dxf-pop-in absolute bottom-full left-3 right-3 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+                    id: "dxf-suggestions-{channel_id}",
+                    role: "listbox",
                     div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-2 pb-1",
-                        {crate::i18n::text("Emoji — ↑↓ to choose, Enter or Tab to insert", &[])}
+                        if caret_token().as_deref().is_some_and(|t| t.starts_with('@')) {
+                            {crate::i18n::text("Mention a user", &[])}
+                        } else {
+                            {crate::i18n::text("Emoji — ↑↓ to choose, Enter or Tab to insert", &[])}
+                        }
                     }
                     for (i, s) in suggestions.iter().cloned().enumerate() {
                         {
@@ -2355,7 +2379,10 @@ fn Composer(
                             let mut pick = pick.clone();
                             rsx! {
                                 button {
-                                    key: "{s.name}",
+                                    key: "{i}-{s.name}",
+                                    id: "dxf-suggestion-{channel_id}-{i}",
+                                    role: "option",
+                                    aria_selected: is_selected,
                                     r#type: "button",
                                     class: if is_selected {
                                         "w-full flex items-center gap-2 px-2 h-7 rounded bg-white/[0.08] text-xs text-[var(--text)] text-left"
@@ -2367,14 +2394,24 @@ fn Composer(
                                     onclick: move |_| pick(i),
                                     span { class: "w-6 flex items-center justify-center text-base leading-none shrink-0",
                                         match &s.pick {
-                                            EmojiPick::Unicode(e) => rsx! { "{e}" },
-                                            EmojiPick::Custom { url, .. } if !url.is_empty() => rsx! {
+                                            ComposerPick::Mention { pubkey, .. } => rsx! {
+                                                crate::features::profiles::Avatar {
+                                                    pubkey: pubkey.clone(), name: s.name.clone(), size: "w-6 h-6", text: "text-[10px]"
+                                                }
+                                            },
+                                            ComposerPick::Unicode(e) => rsx! { "{e}" },
+                                            ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! {
                                                 img { src: "{url}", style: "height:1.2em;width:auto;" }
                                             },
-                                            EmojiPick::Custom { .. } => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
+                                            ComposerPick::Custom { .. } => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
                                         }
                                     }
-                                    span { class: "truncate", ":{s.name}:" }
+                                    span { class: "truncate",
+                                        if let ComposerPick::Mention { username, pubkey } = &s.pick {
+                                            "{s.name}"
+                                            span { class: "ml-2 text-[var(--text-dim)]", "@{username} · #{crate::identity::discriminator(pubkey)}" }
+                                        } else { ":{s.name}:" }
+                                    }
                                 }
                             }
                         }
@@ -2492,6 +2529,9 @@ fn Composer(
                         contenteditable: "true",
                         "data-placeholder": crate::i18n::text("Message {0}", &[composer_label.clone()]),
                         role: "textbox",
+                        aria_autocomplete: "list",
+                        aria_controls: has_suggestions().then(|| format!("dxf-suggestions-{channel_id}")),
+                        aria_activedescendant: has_suggestions().then(|| format!("dxf-suggestion-{channel_id}-{}", selected() % suggestions.len().max(1))),
                         aria_multiline: "true",
                         aria_label: crate::i18n::text("Message {0}", &[(composer_label).to_string()]),
                     }
@@ -2595,9 +2635,9 @@ mod composer_tests {
         let got = emoji_suggestions("fi", &guild, &urls);
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["fireball", "fire", "campfire"]);
-        assert!(matches!(&got[0].pick, EmojiPick::Custom { url, .. } if url == "data:x"));
-        assert!(matches!(&got[2].pick, EmojiPick::Custom { url, .. } if url.is_empty()));
-        assert!(matches!(got[1].pick, EmojiPick::Unicode("🔥")));
+        assert!(matches!(&got[0].pick, ComposerPick::Custom { url, .. } if url == "data:x"));
+        assert!(matches!(&got[2].pick, ComposerPick::Custom { url, .. } if url.is_empty()));
+        assert!(matches!(got[1].pick, ComposerPick::Unicode("🔥")));
         assert!(emoji_suggestions("zzzz", &guild, &urls).is_empty());
         assert_eq!(emoji_suggestions("_", &guild, &urls).len(), MAX_SUGGESTIONS);
     }

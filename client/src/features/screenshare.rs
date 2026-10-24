@@ -113,6 +113,7 @@ window.dxScreen = window.dxScreen || (function () {
   const attached = {};
   let viewerTargets = null;
   let viewerVisible = true;
+  let mediaPanelVisible = window.__dxMediaPanelVisible !== false;
   let detachedScreens = [];
   // The main window's inline tiles: screens it shows are subscribed, the rest
   // are left paused so a share nobody is watching is not decoded.
@@ -124,14 +125,14 @@ window.dxScreen = window.dxScreen || (function () {
     try {
       if (viewerTargets !== null) {
         // The detached viewer subscribes only the screens its tiles show.
-        pub.setSubscribed(viewerVisible && kind === 'screen' && viewerTargets.includes(identity));
+        pub.setSubscribed(viewerVisible && mediaPanelVisible && kind === 'screen' && viewerTargets.includes(identity));
         return;
       }
       if (kind !== 'screen') {
         // A camera follows the window's visibility, and only a visibility or
         // target change re-evaluates it — docking a screen must not.
-        if (restoreVideos) pub.setSubscribed(viewerVisible);
-        else if (!viewerVisible) pub.setSubscribed(false);
+        if (restoreVideos) pub.setSubscribed(viewerVisible && mediaPanelVisible);
+        else if (!viewerVisible || !mediaPanelVisible) pub.setSubscribed(false);
         return;
       }
       if (identity === selfPreviewIdentity) return; // decided by setSelfPreview
@@ -139,7 +140,7 @@ window.dxScreen = window.dxScreen || (function () {
         pub.setSubscribed(false); // the detached viewer owns it
         return;
       }
-      pub.setSubscribed(viewerVisible && inlineScreens.includes(identity));
+      pub.setSubscribed(viewerVisible && mediaPanelVisible && inlineScreens.includes(identity));
     } catch (e) { console.warn('[dxScreen] viewer subscribe toggle failed', e); }
   }
   function refreshViewerSubscriptions(restoreVideos) {
@@ -153,6 +154,10 @@ window.dxScreen = window.dxScreen || (function () {
     });
   }
   function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(true); refreshAudioWatches(); }
+  function setMediaPanelVisibility(visible) {
+    mediaPanelVisible = window.__dxMediaPanelVisible = !!visible;
+    refreshViewerSubscriptions(true);
+  }
   function setInlineScreens(identities) { inlineScreens = identities; refreshViewerSubscriptions(); refreshAudioWatches(); }
   function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); refreshAudioWatches(); }
   function setViewerVisibility(visible) {
@@ -323,7 +328,7 @@ window.dxScreen = window.dxScreen || (function () {
     const identity = baseIdentity(participant.identity);
     if (viewerTargets !== null || detachedScreens.includes(identity)) return;
     if (identity !== selfPreviewIdentity && identity !== previousIdentity) return;
-    try { pub.setSubscribed(viewerVisible && (identity === selfPreviewIdentity ? selfPreviewEnabled : true)); }
+    try { pub.setSubscribed(viewerVisible && mediaPanelVisible && (identity === selfPreviewIdentity ? selfPreviewEnabled : true)); }
     catch (e) { console.warn('[dxScreen] self preview subscribe toggle failed', e); }
   }
   function setSelfPreview(identity, enabled) {
@@ -1397,7 +1402,7 @@ window.dxScreen = window.dxScreen || (function () {
     e2eeProvider = null;
   }
   if (window.__dxfScreenStatsEnabled) setStatsEnabled(true);
-  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, senderHealth: senderHealth, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, previewCamera: previewCamera, stopCameraPreview: stopCameraPreview, setE2eeKey: setE2eeKey };
+  return { connect: connect, setMediaPanelVisibility: setMediaPanelVisibility, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, senderHealth: senderHealth, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, previewCamera: previewCamera, stopCameraPreview: stopCameraPreview, setE2eeKey: setE2eeKey };
 })();
 "#;
 
@@ -2437,6 +2442,15 @@ fn choose_source(
     }
 }
 
+#[cfg(any(target_os = "android", test))]
+fn screen_consent_matches(
+    call: (crate::protocol::Id, u64),
+    channel: Option<crate::protocol::Id>,
+    route: u64,
+) -> bool {
+    channel == Some(call.0) && route == call.1
+}
+
 pub fn open_screen_picker(
     state: Signal<crate::state::AppState>,
     gateway: crate::state::GatewayTx,
@@ -2454,7 +2468,7 @@ pub fn open_screen_picker(
                 let Some(channel) = current.server_voice_channel() else {
                     return;
                 };
-                (current.voice_session_epoch, channel)
+                (channel, current.voice_route_revision)
             };
             if let Err(error) = crate::android::request_screen_capture().await {
                 state.write().error_toast = Some(format!("Couldn't share your screen: {error}"));
@@ -2462,9 +2476,11 @@ pub fn open_screen_picker(
             }
             {
                 let current = state.peek();
-                if (current.voice_session_epoch, current.server_voice_channel())
-                    != (call.0, Some(call.1))
-                {
+                if !screen_consent_matches(
+                    call,
+                    current.server_voice_channel(),
+                    current.voice_route_revision,
+                ) {
                     return;
                 }
             }
@@ -2518,7 +2534,8 @@ fn screen_encoder_label(implementation: Option<&str>) -> String {
 }
 
 #[component]
-pub fn ScreenSelfPreview() -> Element {
+pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
+    let visible = use_memo(use_reactive((&visible,), |(visible,)| visible));
     let mut state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -2582,7 +2599,7 @@ pub fn ScreenSelfPreview() -> Element {
     let mut applied_preview = use_signal(|| None::<(Option<String>, bool)>);
     use_effect(move || {
         let identity = if sharing() { self_pk() } else { None };
-        let enabled = preview_active();
+        let enabled = preview_active() && visible();
         if !enabled {
             drag.set(None);
         }
@@ -3292,6 +3309,19 @@ fn ScreenWatchTile(
 
 #[cfg(test)]
 mod js_escaping_tests {
+    #[test]
+    fn screen_consent_survives_media_setup_but_not_a_changed_call() {
+        let channel = crate::protocol::Id::new_v4();
+        let call = (channel, 7);
+        assert!(super::screen_consent_matches(call, Some(channel), 7));
+        assert!(!super::screen_consent_matches(call, None, 7));
+        assert!(!super::screen_consent_matches(
+            call,
+            Some(crate::protocol::Id::new_v4()),
+            7
+        ));
+        assert!(!super::screen_consent_matches(call, Some(channel), 8));
+    }
     #[test]
     fn voice_only_join_keeps_video_idle_until_capture_or_viewing_needs_it() {
         let mut state = crate::state::AppState::empty();

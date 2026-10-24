@@ -149,6 +149,11 @@ fn index_request(
 fn module_loader(root_id: &str, headless: bool, edit_state: &WebviewEdits) -> String {
     let edits_path = edit_state.wry_queue.edits_path();
     let expected_key = edit_state.wry_queue.required_server_key();
+    let android_edits = if cfg!(target_os = "android") {
+        include_str!("android_edits.js")
+    } else {
+        ""
+    };
 
     format!(
         r#"
@@ -161,6 +166,7 @@ fn module_loader(root_id: &str, headless: bool, edit_state: &WebviewEdits) -> St
 
     // The native interpreter extends the sledgehammer interpreter with a few extra methods that we use for IPC
     window.interpreter = new NativeInterpreter("{BASE_URI}", {headless});
+    {android_edits}
 
     // Wait for the page to load before sending the initialize message
     window.onload = function() {{

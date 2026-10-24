@@ -201,9 +201,9 @@ pub fn ChannelsColumn() -> Element {
     let banner = if dm_mode { None } else { guild_banner };
 
     rsx! {
-        aside { class: PANEL,
+        aside { class: "dxf-channels-panel {PANEL}",
             if let Some(src) = banner {
-                div { class: "relative h-28 shrink-0 overflow-hidden border-b border-[var(--border)]",
+                div { class: "dxf-guild-banner relative h-28 shrink-0 overflow-hidden border-b border-[var(--border)]",
                     img { class: "w-full h-full object-cover block", src: "{src}", alt: crate::i18n::text("guild banner", &[]) }
                     div {
                         class: "absolute inset-0",
@@ -211,7 +211,7 @@ pub fn ChannelsColumn() -> Element {
                     }
                 }
             }
-            div { class: HEADER,
+            div { class: "dxf-channels-heading {HEADER}",
                 h2 { class: "dxf-display text-[16px] font-bold tracking-tight text-[var(--text)] truncate flex-1",
                     if dm_mode {
                         {crate::i18n::text("Direct Messages", &[])}
@@ -248,7 +248,7 @@ pub fn ChannelsColumn() -> Element {
 
             NoDrag {
             if dm_mode {
-                div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
+                div { class: "dxf-dm-list flex-1 overflow-y-auto px-2 py-3 space-y-1",
                     StartDmByKey {}
                     if requests > 0 || show_requests() {
                         button {
@@ -296,9 +296,9 @@ pub fn ChannelsColumn() -> Element {
                             rsx! {
                                 div {
                                     key: "{cid}",
-                                    class: "group w-full flex items-center gap-2 px-2 py-1 rounded text-sm transition-colors {cls}",
+                                    class: "dxf-dm-row group w-full flex items-center gap-2 px-2 py-1 rounded text-sm transition-colors {cls}",
                                     button {
-                                        class: "flex-1 min-w-0 flex items-center gap-2 text-left",
+                                        class: "dxf-dm-open flex-1 min-w-0 flex items-center gap-2 text-left",
                                         onclick: move |_| {
                                             dm_confirming.set(None);
                                             select_dm(&mut state, &g2, cid);
@@ -512,7 +512,7 @@ pub fn ChannelsColumn() -> Element {
                                 rsx! {
                                     button {
                                         key: "{cid}",
-                                        class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {cls} {dim}",
+                                        class: "dxf-text-channel relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {cls} {dim}",
                                         onpointerdown: move |e: PointerEvent| {
                                             if can_manage_channels
                                                 && e.held_buttons().contains(
@@ -1722,7 +1722,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
             }
             // Always present, so you can arrive already muted; the share and
             // camera chips join it only once there is a call to point them at.
-            div { class: "px-3 py-2 flex items-center gap-1.5",
+            div { class: "dxf-channel-audio px-3 py-2 flex items-center gap-1.5",
                     button {
                         class: if muted {
                             "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--danger)] text-[var(--danger)]"
@@ -1865,7 +1865,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     {crate::i18n::message(&(err).to_string())}
                 }
             }
-            div { class: "h-14 px-2 flex items-center gap-1 border-t border-[var(--border)]",
+            div { class: "dxf-channel-account h-14 px-2 flex items-center gap-1 border-t border-[var(--border)]",
                 crate::features::profiles::ProfileEditor {
                     class: "flex-1 min-w-0 h-11 px-1.5 flex items-center gap-2.5 rounded-lg text-left hover:bg-[var(--panel2)] transition-colors",
                     crate::features::profiles::Avatar {
@@ -2171,7 +2171,7 @@ fn StartDmByKey() -> Element {
     };
 
     rsx! {
-        div { class: "px-1 pb-2 space-y-1",
+        div { class: "dxf-dm-key-entry px-1 pb-2 space-y-1",
             input {
                 class: "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--accent)]",
                 r#type: "text",

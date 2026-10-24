@@ -147,6 +147,14 @@ console.log('Multiple streams retain independent video, audio, volume and teardo
   assert.equal(bobVideo.subscribed, false, 'removed external streams stop consuming video');
   bridge.setViewerTargets(null);
   bridge.setDetachedScreens([]);
+  bridge.setMediaPanelVisibility(false);
+  assert.equal(aliceVideo.subscribed, false, 'leaving the guild chat pauses its screen decoder');
+  assert.equal(bobVideo.subscribed, false);
+  assert.equal(aliceCamera.subscribed, false, 'hidden camera previews do not decode');
+  assert.equal(aliceAudio.subscribed, true, 'hiding video preserves watched audio');
+  bridge.setMediaPanelVisibility(true);
+  assert.equal(aliceVideo.subscribed, true, 'returning to the guild chat resumes its screen');
+  assert.equal(aliceCamera.subscribed, true);
   console.log('External viewers transfer video subscriptions without duplicating camera or audio playback.');
 }
 
