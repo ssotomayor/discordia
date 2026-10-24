@@ -139,8 +139,8 @@ jobs:
       - name: Tests (client + grid-layout)
         run: cargo test -p discordia -p dioxus-grid-layout
 
-      - name: Desktop edit channel recovery
-        run: cargo test -p dioxus-desktop --lib edits::tests
+      - name: Desktop edit channel recovery and service scheduling
+        run: cargo test -p dioxus-desktop --lib
 
       - name: Bundled SFU startup and encrypted audio
         env:
@@ -320,6 +320,8 @@ jobs:
             --version-name 'v0.1.0-pre.${{ github.run_number }}' \
             --output target/android-release/Discordia-android-arm64-unsigned.apk
           git diff --exit-code -- Cargo.lock
+      - name: Android capture geometry regression
+        run: python scripts/test-android-capture.py
       - name: Sign and verify APK
         if: github.event_name == 'push'
         env:
