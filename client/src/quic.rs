@@ -5,11 +5,16 @@ use discordia_server::quic::GATEWAY_ALPN;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 
+#[cfg(any(target_os = "android", test))]
+mod network_monitor;
+
 pub type GatewayIo = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::SendStream>;
 
 pub struct ConnectionGuard {
     _endpoint: Endpoint,
     conn: iroh::endpoint::Connection,
+    #[cfg(target_os = "android")]
+    _network_monitor: network_monitor::NetworkMonitor,
 }
 
 impl ConnectionGuard {
@@ -111,11 +116,25 @@ pub async fn dial(
     if addrs.is_empty() && !coordination.is_coordinated() {
         return Err("the host published a key but no address to reach it at".into());
     }
+    #[cfg(target_os = "android")]
+    let network_changes = crate::android::network_changes();
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(coordination.relay_mode()?)
         .bind()
         .await
         .map_err(|e| format!("quic bind: {e}"))?;
+
+    #[cfg(target_os = "android")]
+    let network_monitor = {
+        let endpoint = endpoint.clone();
+        network_monitor::NetworkMonitor::start(network_changes, move || {
+            let endpoint = endpoint.clone();
+            async move {
+                tracing::info!("Android network changed; refreshing QUIC routes");
+                endpoint.network_change().await;
+            }
+        })
+    };
 
     let addr = EndpointAddr::new(endpoint_id).with_addrs(addrs.iter().cloned());
     let conn = endpoint
@@ -133,6 +152,8 @@ pub async fn dial(
         ConnectionGuard {
             _endpoint: endpoint,
             conn,
+            #[cfg(target_os = "android")]
+            _network_monitor: network_monitor,
         },
     ))
 }
