@@ -1,6 +1,6 @@
 from pathlib import Path
 import os,subprocess,shutil
-root=Path.cwd();out=root/'target/mobile-tools/capture-geometry-test';out.mkdir(exist_ok=True)
+root=Path.cwd();out=root/'target/mobile-tools/capture-geometry-test';out.mkdir(parents=True,exist_ok=True)
 cache=Path.home()/'.gradle/caches/modules-2/files-2.1'
 def jar(group,name,version=None):
  b=cache/group/name;return str(sorted((b/version if version else b).rglob(name+'-*.jar'))[-1])
