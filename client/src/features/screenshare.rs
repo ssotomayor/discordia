@@ -2444,9 +2444,9 @@ fn choose_source(
 
 #[cfg(any(target_os = "android", test))]
 fn screen_consent_matches(
-    call: (crate::protocol::Id, u64),
+    call: (crate::protocol::Id, u32),
     channel: Option<crate::protocol::Id>,
-    route: u64,
+    route: u32,
 ) -> bool {
     channel == Some(call.0) && route == call.1
 }
