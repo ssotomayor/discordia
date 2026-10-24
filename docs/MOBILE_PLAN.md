@@ -590,3 +590,11 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - Móvil abre en Canales; la selección automática de Ready no abre Chat. Tocar un canal abre Chat aunque ya estuviera seleccionado.
 - Regresión: conexión inicial durante preview, cambio de canal/ruta y retención del compositor al alternar pestañas.
 - Moto g15/API 35, APK release firmado instalado con `adb install -r`: reconectar muestra Canales, tocar el canal seleccionado abre Chat y el primer inicio de cámara cierra el selector y llega a «Tu cámara»/«Apagar tu cámara». Se detuvo la cámara y se salió de la llamada de prueba. La carrera de epoch se cubre además con prueba unitaria; recepción desde otro equipo no medida en esta sesión.
+
+### Social en Android (2026-10-23)
+
+- Reproducido en Moto g15/API 35, release 881: abrir Social monta una segunda ventana y queda en «Cargando Discordia…».
+- Android usa una vista dentro de Home con lista, conversación, volver/cerrar y controles de llamada compartidos. La lista no marca el panel DM como visible. Escritorio conserva su ventana Social.
+- En el servidor, el botón DM móvil abre la lista sin seleccionar ni marcar leída una conversación. Elegir un DM, una solicitud o una clave abre Chat explícitamente.
+- Pruebas: apertura/cierre/reapertura integrada y estado compartido entre ventanas. Las llamadas DM conservan preparación de micrófono y servicio de segundo plano; audio entre dos equipos pendiente en esta sesión.
+- APK release 881 corregido, firmado e instalado con `adb install -r`: Social muestra conversaciones, un DM abre con compositor y botón Llamar, volver/cerrar/reabrir funciona. Sin mensajes enviados ni llamadas iniciadas. Capturas locales `target/mobile-tools/discordia-social-{baseline,after,chat,reopened}.png`.

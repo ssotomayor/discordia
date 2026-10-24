@@ -121,6 +121,13 @@ pub fn GuildsSidebar() -> Element {
                     active: dm_mode,
                     count: dm_unread,
                     onclick: move |_| {
+                        if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
+                            let mut s = state.write();
+                            s.dm_mode = true;
+                            s.selected_channel = None;
+                            tab.set(super::workspace::MobileTab::Channels);
+                            return;
+                        }
                         let mut s = state.write();
                         s.dm_mode = true;
                         let on_dm = s

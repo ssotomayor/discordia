@@ -102,7 +102,7 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
             // Ready selects a default channel before the person has chosen to open its chat.
             let had_channel = previous_channel.peek().is_some();
             previous_channel.set(current);
-            if had_channel {
+            if had_channel && current.is_some() {
                 tab.set(MobileTab::Chat);
             }
         }

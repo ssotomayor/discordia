@@ -1,18 +1,32 @@
+#[cfg(any(not(target_os = "android"), test))]
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
 
 use dioxus::prelude::*;
+#[cfg(not(target_os = "android"))]
 use tokio::sync::mpsc;
 
+use crate::state::AppState;
+#[cfg(not(target_os = "android"))]
 use crate::{
-    identity::Identity,
-    nostr::service::NostrTx,
-    settings::ClientSettings,
-    state::{AppState, GatewayTx},
+    identity::Identity, nostr::service::NostrTx, settings::ClientSettings, state::GatewayTx,
 };
 
+#[cfg(any(target_os = "android", test))]
+fn use_inline_social() -> (Signal<bool>, EventHandler<()>) {
+    let mut open = use_signal(|| false);
+    (open, EventHandler::new(move |_| open.set(true)))
+}
+
+#[cfg(target_os = "android")]
+pub(super) fn use_social_window(_state: Signal<AppState>) -> (Signal<bool>, EventHandler<()>) {
+    // Android has one activity WebView; a second desktop window never finishes mounting there.
+    use_inline_social()
+}
+
+#[cfg(not(target_os = "android"))]
 pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, EventHandler<()>) {
     let mut open = use_signal(|| false);
     let mut creating = use_signal(|| false);
@@ -112,6 +126,34 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
 mod tests {
     use super::*;
     type ExportedState = Rc<RefCell<Option<Signal<AppState>>>>;
+    type InlineExport = Rc<RefCell<Option<(Signal<bool>, EventHandler<()>)>>>;
+
+    fn inline_fixture(export: InlineExport) -> Element {
+        let (open, show) = use_inline_social();
+        *export.borrow_mut() = Some((open, show));
+        rsx! { if open() { div { "Social" } } }
+    }
+
+    #[test]
+    fn inline_social_opens_closes_and_reopens_without_a_desktop_window() {
+        let export = InlineExport::default();
+        let mut dom = VirtualDom::new_with_props(inline_fixture, export.clone());
+        dom.rebuild_in_place();
+        let (mut open, show) = export.borrow().as_ref().copied().unwrap();
+        assert!(!*open.peek());
+        for _ in 0..3 {
+            show.call(());
+            let edits = dom.render_immediate_to_vec();
+            assert!(*open.peek());
+            assert!(
+                !edits.edits.is_empty(),
+                "opening must mount the inline view"
+            );
+            open.set(false);
+            dom.render_immediate_to_vec();
+            assert!(!*open.peek());
+        }
+    }
 
     /// Counts the signal-hoisting lint, which `tracing::warn!`s from its own
     /// module, while `f` runs.
@@ -208,6 +250,7 @@ mod tests {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Clone, Props)]
 struct SocialWindowProps {
     alive: Rc<Cell<bool>>,
@@ -215,6 +258,7 @@ struct SocialWindowProps {
     generation: u64,
 }
 
+#[cfg(not(target_os = "android"))]
 impl PartialEq for SocialWindowProps {
     fn eq(&self, other: &Self) -> bool {
         self.generation == other.generation
@@ -223,6 +267,7 @@ impl PartialEq for SocialWindowProps {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[allow(non_snake_case)]
 fn SocialWindow(props: SocialWindowProps) -> Element {
     super::bookmarks::use_panel();

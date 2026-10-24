@@ -27,10 +27,10 @@ pub fn HomeView(
     provide_context(voice.clone());
     use_hook(move || voice.send(crate::features::voice::VoiceCmd::ListDevices));
 
-    let (social, open_social) = super::social_window::use_social_window(state);
+    let (mut social, open_social) = super::social_window::use_social_window(state);
     use_effect(move || {
         let mut app = state;
-        app.write().dm_pane_open = social();
+        app.write().dm_pane_open = social() && !cfg!(target_os = "android");
     });
 
     let mac_top_pad = if cfg!(target_os = "macos") {
@@ -41,12 +41,15 @@ pub fn HomeView(
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] {mac_top_pad}",
             super::bookmarks::BookmarksDialog {}
-            if !social() { crate::features::chat::ImageViewer {} }
+            if !social() || cfg!(target_os = "android") { crate::features::chat::ImageViewer {} }
             if !social() { crate::features::dm_call::CallPanel {} }
             crate::features::workspace::ErrorToast {}
             crate::features::settings_dialog::SettingsDialog {}
-            if !social() { crate::features::profiles::ProfileCard {} }
+            if !social() || cfg!(target_os = "android") { crate::features::profiles::ProfileCard {} }
             TopBar { identity: identity.clone(), social, open_social, on_rename, on_sign_out }
+            if cfg!(target_os = "android") && social() {
+                MobileSocial { on_close: move |_| social.set(false) }
+            } else {
             div { class: "flex-1 flex min-h-0",
                 div { class: "flex-1 min-w-0 flex flex-col",
                     div { class: "w-full mx-auto flex-1 min-h-0 flex flex-col", style: "max-width: 705.6px;",
@@ -71,6 +74,43 @@ pub fn HomeView(
             }
             div { class: "shrink-0 px-5 py-2 text-right text-xs text-[var(--text-dim)]",
                 {crate::version::VERSION}
+            }
+            }
+        }
+    }
+}
+
+#[component]
+fn MobileSocial(on_close: EventHandler<()>) -> Element {
+    let mut state = use_app_state();
+    let mut chat = use_signal(|| false);
+    let selected = use_memo(move || state.read().selected_channel);
+    let mut previous = use_signal(move || *selected.peek());
+    use_effect(move || {
+        let current = selected();
+        if current != *previous.peek() {
+            previous.set(current);
+            chat.set(current.is_some());
+        }
+    });
+    use_effect(move || state.write().dm_pane_open = chat());
+    rsx! {
+        div { class: "flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden", "data-mobile-social": "true",
+            if chat() {
+                div { class: "shrink-0 flex items-center gap-2 border-b border-[var(--border)] px-3 py-2",
+                    button { class: "dxf-touch-target text-sm text-[var(--accent)]", onclick: move |_| chat.set(false),
+                        "← ", {crate::i18n::text("Social", &[])}
+                    }
+                    button { class: "dxf-touch-target ml-auto text-sm", onclick: move |_| on_close.call(()),
+                        {crate::i18n::text("Close", &[])}
+                    }
+                }
+                TalkPane {}
+            } else {
+                SocialPanel { on_close, on_open: move |_| chat.set(true) }
+            }
+            div { style: "flex-shrink: 0; max-height: 40%; overflow-y: auto;",
+                super::dm_call::CallPanel { embedded: true }
             }
         }
     }
@@ -259,7 +299,10 @@ fn TopBar(
 /// Conversations and the people in them — the half that needs no server, kept
 /// out of the way until it is asked for.
 #[component]
-pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
+pub(super) fn SocialPanel(
+    on_close: EventHandler<()>,
+    #[props(default)] on_open: Option<EventHandler<()>>,
+) -> Element {
     let mut state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
@@ -356,6 +399,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                         if let Ok(peer) = crate::identity::pubkey_from_input(filter().trim()) {
                             nostr.send(crate::nostr::service::NostrCmd::Open { peer });
                             filter.set(String::new());
+                            if let Some(on_open) = on_open { on_open.call(()); }
                         }
                     },
                 }
@@ -390,7 +434,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
 
         div { class: "flex-1 overflow-y-auto px-2.5 pb-4 space-y-0.5 min-h-0",
             if tab() == Tab::Requests {
-                super::dm_requests::RequestList {}
+                super::dm_requests::RequestList { on_open }
             } else if tab() == Tab::Friends {
                 if contacts.is_empty() {
                     div { class: "px-2.5 py-3 text-[12.5px] text-[var(--text-dim)] leading-relaxed",
@@ -405,9 +449,10 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                             button {
                                 key: "ct-{pk}",
                                 class: "w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-[10px] text-left hover:bg-[var(--bg2)] transition-colors",
-                                onclick: move |_| nostr.send(
-                                    crate::nostr::service::NostrCmd::Open { peer: peer.clone() },
-                                ),
+                                onclick: move |_| {
+                                    nostr.send(crate::nostr::service::NostrCmd::Open { peer: peer.clone() });
+                                    if let Some(on_open) = on_open { on_open.call(()); }
+                                },
                                 crate::features::profiles::Avatar {
                                     pubkey: pk.clone(),
                                     name: name.clone(),
@@ -454,6 +499,8 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                         s.dm_mode = true;
                                         s.selected_channel = Some(cid);
                                         s.mark_dm_read(cid);
+                                        drop(s);
+                                        if let Some(on_open) = on_open { on_open.call(()); }
                                     },
                                     span { class: "relative shrink-0",
                                         crate::features::profiles::Avatar {

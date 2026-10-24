@@ -8,7 +8,7 @@ const ACTION: &str = "flex-1 py-1 rounded-md border text-[11px] font-semibold tr
 /// Conversations from keys we share nothing with (#311). Opening one marks it
 /// read but accepts nothing; replying, or Accept, does.
 #[component]
-pub fn RequestList() -> Element {
+pub fn RequestList(#[props(default)] on_open: Option<EventHandler<()>>) -> Element {
     let mut state = use_app_state();
     let nostr = use_context::<NostrTx>();
 
@@ -58,6 +58,8 @@ pub fn RequestList() -> Element {
                                 s.dm_mode = true;
                                 s.selected_channel = Some(cid);
                                 s.mark_dm_read(cid);
+                                drop(s);
+                                if let Some(on_open) = on_open { on_open.call(()); }
                             },
                             crate::features::profiles::Avatar {
                                 pubkey: dm.other_pubkey.clone(),

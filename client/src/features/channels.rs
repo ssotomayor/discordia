@@ -259,7 +259,13 @@ pub fn ChannelsColumn() -> Element {
                         }
                     }
                     if show_requests() {
-                        super::dm_requests::RequestList {}
+                        super::dm_requests::RequestList {
+                            on_open: move |_| {
+                                if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
+                                    tab.set(super::workspace::MobileTab::Chat);
+                                }
+                            }
+                        }
                     }
                     if dms.is_empty() {
                         div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
@@ -2155,6 +2161,10 @@ fn StartDmByKey() -> Element {
                 error.set(None);
                 input.set(String::new());
                 nostr.send(crate::nostr::service::NostrCmd::Open { peer: pubkey });
+                if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>()
+                {
+                    tab.set(super::workspace::MobileTab::Chat);
+                }
             }
             Err(e) => error.set(Some(e)),
         }
