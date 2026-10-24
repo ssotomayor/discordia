@@ -23,6 +23,8 @@ mod menubar;
 mod mobile;
 mod protocol;
 mod query;
+#[cfg(any(target_os = "android", test))]
+mod service_tasks;
 mod shortcut;
 mod waker;
 mod webview;

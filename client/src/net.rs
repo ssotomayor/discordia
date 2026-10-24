@@ -73,7 +73,7 @@ pub fn spawn_gateway(
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
-    spawn(async move {
+    crate::service_task::spawn(async move {
         let reason = match run(params, &tx, rx, state, &voice_tx, shutdown_rx).await {
             Ok(()) => "connection closed".to_string(),
             Err(e) => e,

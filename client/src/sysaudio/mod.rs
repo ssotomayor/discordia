@@ -1,5 +1,10 @@
 use tokio::sync::mpsc::UnboundedSender;
 
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(any(target_os = "android", test))]
+mod pcm;
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod frames;
 #[cfg(target_os = "macos")]
@@ -8,10 +13,19 @@ mod macos;
 mod windows;
 
 pub struct Capture {
+    #[cfg(target_os = "android")]
+    _inner: android::AndroidCapture,
     #[cfg(target_os = "macos")]
     _inner: macos::MacCapture,
     #[cfg(target_os = "windows")]
     _inner: self::windows::WinCapture,
+}
+
+#[cfg(target_os = "android")]
+impl Capture {
+    pub async fn is_active(&self) -> Result<bool, String> {
+        self._inner.is_active().await
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,7 +54,16 @@ pub fn scope() -> NativeScope {
     })
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "android")]
+pub fn scope() -> NativeScope {
+    if crate::android::playback_capture_supported() {
+        NativeScope::Always
+    } else {
+        NativeScope::Never
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "macos", target_os = "windows")))]
 pub fn scope() -> NativeScope {
     NativeScope::Never
 }
@@ -88,6 +111,7 @@ pub fn supported_for(target: Option<crate::sysvideo::Target>) -> bool {
     supported()
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn start(
     tx: crate::audio_queue::AudioSender<f32>,
     fatal: UnboundedSender<String>,
@@ -112,6 +136,20 @@ pub fn start(
         let _ = (tx, fatal, target);
         Err("system audio capture isn't implemented on this platform yet".into())
     }
+}
+
+#[cfg(target_os = "android")]
+pub async fn start_android(
+    tx: crate::audio_queue::AudioSender<f32>,
+    fatal: UnboundedSender<String>,
+    target: Option<crate::sysvideo::Target>,
+) -> Result<Capture, String> {
+    if target != Some(crate::sysvideo::Target::AndroidScreen) {
+        return Err("Android audio requires an active screen share".into());
+    }
+    Ok(Capture {
+        _inner: android::AndroidCapture::start(tx, fatal).await?,
+    })
 }
 
 pub fn captures_application(target: Option<crate::sysvideo::Target>) -> bool {

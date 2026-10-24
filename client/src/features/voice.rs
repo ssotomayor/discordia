@@ -334,7 +334,7 @@ pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd>
     let (tx, rx) = unbounded_channel::<VoiceCmd>();
     let controls = AudioControls::from_state(&state.read());
     provide_context(StreamPlaybackControls(controls.stream_gains.clone()));
-    spawn(async move {
+    crate::service_task::spawn(async move {
         if let Err(e) = service_loop(rx, state, controls).await {
             tracing::error!(error = %e, "voice service loop ended");
         }
@@ -542,8 +542,12 @@ async fn service_loop(
             }
             VoiceCmd::SetSystemAudio { enabled, target } => {
                 if let Some(active) = session.as_mut() {
+                    #[cfg(target_os = "android")]
+                    let enabled = enabled && state.peek().screen_sharing && active.screen_video.is_some();
                     if let Err(e) = active.set_system_audio(enabled, target, state).await {
                         eprintln!("[voice] system audio failed: {e}");
+                        #[cfg(target_os = "android")]
+                        { state.write().screen_native_audio = false; }
                         state.write().error_toast = Some(format!(
                             "Sharing video only — couldn't capture this computer's sound: {e}"
                         ));
@@ -889,7 +893,7 @@ impl ActiveVoice {
             tokio::sync::mpsc::unbounded_channel::<StreamAudio>();
         {
             let mut state = state;
-            dioxus::prelude::spawn(async move {
+            crate::service_task::spawn(async move {
                 while let Some(ev) = native_audio_rx.recv().await {
                     let mut s = state.write();
                     match ev {
@@ -916,7 +920,7 @@ impl ActiveVoice {
         let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel::<VoicePhase>();
         {
             let mut state = state;
-            dioxus::prelude::spawn(async move {
+            crate::service_task::spawn(async move {
                 while let Some(phase) = phase_rx.recv().await {
                     let current = state.peek().voice.clone();
                     let ours = current.channel_id == Some(channel_id)
@@ -940,7 +944,7 @@ impl ActiveVoice {
         let (quality_tx, mut quality_rx) = tokio::sync::mpsc::unbounded_channel::<QualityMsg>();
         {
             let mut state = state;
-            dioxus::prelude::spawn(async move {
+            crate::service_task::spawn(async move {
                 while let Some(msg) = quality_rx.recv().await {
                     let changed = {
                         let s = state.peek();
@@ -1187,7 +1191,14 @@ impl ActiveVoice {
                 .as_ref()
                 .is_some_and(|existing| existing.target == target)
         {
+            #[cfg(not(target_os = "android"))]
             return Ok(());
+            #[cfg(target_os = "android")]
+            if let Some(existing) = self.system_audio.as_ref()
+                && existing._capture.is_active().await?
+            {
+                return Ok(());
+            }
         }
         let had_capture = self.system_audio.is_some();
         if let Some(sa) = self.system_audio.take() {
@@ -1210,13 +1221,19 @@ impl ActiveVoice {
             tokio::task::spawn_blocking(move || crate::sysaudio::start(tx, fatal_tx, target))
                 .await
                 .map_err(|e| format!("screen-audio capture worker failed: {e}"))??;
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "android")]
+        let capture = crate::sysaudio::start_android(tx, fatal_tx, target).await?;
+        #[cfg(not(any(target_os = "android", target_os = "windows")))]
         let capture = crate::sysaudio::start(tx, fatal_tx, target)?;
         {
             let mut state = state;
-            dioxus::prelude::spawn(async move {
+            crate::service_task::spawn(async move {
                 if let Some(e) = fatal_rx.recv().await {
                     eprintln!("[voice] system audio died mid-share: {e}");
+                    #[cfg(target_os = "android")]
+                    {
+                        state.write().screen_native_audio = false;
+                    }
                     state.write().error_toast = Some(format!(
                         "This computer's sound stopped being shared: {e}. The screen is still \
                          being shared — restart the share to send sound again."
@@ -1915,7 +1932,7 @@ impl ScreenVideoRoom {
         let capture_epoch = state.read().voice_session_epoch;
         let fatal_task = {
             let mut state = state;
-            dioxus::prelude::spawn(async move {
+            crate::service_task::spawn(async move {
                 if let Some(e) = fatal_rx.recv().await {
                     eprintln!("[voice] screen capture died mid-share: {e}");
                     let mut s = state.write();
@@ -1994,10 +2011,10 @@ impl ScreenVideoRoom {
         let stats_sid = publication.sid();
         let status_room = room.clone();
         let network_task = network::spawn_video_budget(state, track.clone(), 300_000);
-        let stats_task = dioxus::prelude::spawn(async move {
+        let stats_task = crate::service_task::spawn(async move {
             #[cfg(target_os = "android")]
             let mut mobile_budget =
-                crate::sysvideo::mobile_budget::MobileBudget::new(settings, Instant::now());
+                crate::sysvideo::mobile_budget::MobileBudget::warm_start(settings, Instant::now());
             #[cfg(target_os = "android")]
             let mut pressure_at = Instant::now();
             let mut previous = None;

@@ -11,7 +11,7 @@ pub(super) fn spawn_video_budget(
     track: LocalVideoTrack,
     limit: u64,
 ) -> Task {
-    spawn(async move {
+    crate::service_task::spawn(async move {
         let mut limited = false;
         loop {
             let constrained = state.peek().voice_uplink_congested;

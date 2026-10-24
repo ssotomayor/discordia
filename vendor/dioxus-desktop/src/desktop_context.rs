@@ -56,6 +56,8 @@ pub type WeakDesktopContext = Weak<DesktopService>;
 ///     let desktop = cx.consume_context::<DesktopContext>().unwrap();
 /// ```
 pub struct DesktopService {
+    #[cfg(target_os = "android")]
+    pub(crate) service_tasks: crate::service_tasks::ServiceTasks,
     /// The wry/tao proxy to the current window
     pub webview: WebView,
 
@@ -101,6 +103,12 @@ impl DesktopService {
         }
     }
 
+    /// Keep a scoped service from this window progressing while Android suspends DOM acknowledgements.
+    #[cfg(target_os = "android")]
+    pub fn keep_alive_task(&self, task: dioxus_core::Task) {
+        self.service_tasks.insert(task);
+    }
+
     pub(crate) fn new(
         webview: WebView,
         window: Arc<Window>,
@@ -110,6 +118,8 @@ impl DesktopService {
         close_behaviour: WindowCloseBehaviour,
     ) -> Self {
         Self {
+            #[cfg(target_os = "android")]
+            service_tasks: Default::default(),
             window,
             webview,
             shared,

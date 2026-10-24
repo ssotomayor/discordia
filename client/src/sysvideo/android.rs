@@ -58,6 +58,8 @@ impl AndroidVideoCapture {
         if target != Target::AndroidScreen {
             return Err("screen capture isn't implemented for this source".into());
         }
+        let settings =
+            super::mobile_budget::MobileBudget::warm_start(settings, Instant::now()).current();
         let slot = crate::android::next_slot();
         let metrics = Arc::new(Metrics::default());
         let recorded = metrics.clone();

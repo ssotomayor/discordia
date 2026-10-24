@@ -50,6 +50,7 @@ mod quic;
 mod rawmic;
 mod rendezvous;
 mod route_reporting;
+mod service_task;
 mod session;
 mod settings;
 mod sfu_tunnel;
