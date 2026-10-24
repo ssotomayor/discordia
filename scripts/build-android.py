@@ -23,7 +23,7 @@ REQUIRED_WEBRTC_CLASSES = (
     "livekit/org/webrtc/SurfaceTextureHelper.class",
 )
 # Every one of these must reach the final DEX, wherever it came from.
-REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class",)
+REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class")
 REQUIRED_SYMBOLS = {
     "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory",
     "Java_livekit_org_webrtc_SoftwareVideoDecoderFactory_nativeCreateFactory",
@@ -32,6 +32,8 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_onVideoFrame",
     "Java_dev_dioxus_main_MainActivity_onCaptureStopped",
     "Java_dev_dioxus_main_MainActivity_shouldCaptureVideoFrame",
+    "Java_dev_dioxus_main_MainActivity_onPlaybackAudio",
+    "Java_dev_dioxus_main_MainActivity_onPlaybackAudioError",
 }
 BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
 
@@ -194,6 +196,7 @@ def package_sources(project):
         sources / "DioxusForegroundService.kt",
     )
     shutil.copy2(ROOT / "client/android/DioxusUpdater.kt", sources / "DioxusUpdater.kt")
+    shutil.copy2(ROOT / "client/android/DioxusPlaybackCapture.kt", sources / "DioxusPlaybackCapture.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 

@@ -105,7 +105,7 @@ fn capture_fatal(slot: u32) -> Option<tokio::sync::mpsc::UnboundedSender<String>
         .map(|entry| entry.fatal.clone())
 }
 
-async fn on_ui<T: Send + 'static>(
+pub(crate) async fn on_ui<T: Send + 'static>(
     action: impl FnOnce(&mut JNIEnv<'_>, &JObject<'_>) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -409,6 +409,19 @@ fn with_env<T>(action: impl FnOnce(&mut JNIEnv<'_>) -> Result<T, String>) -> Res
         env.exception_clear().map_err(system_error)?;
     }
     result.map_err(system_error)?
+}
+
+pub fn playback_capture_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        with_env(|env| {
+            env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")
+                .and_then(|value| value.i())
+                .map(|level| level >= 29)
+                .map_err(system_error)
+        })
+        .unwrap_or(false)
+    })
 }
 
 fn with_activity<T>(

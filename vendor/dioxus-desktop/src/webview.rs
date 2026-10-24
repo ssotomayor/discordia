@@ -569,8 +569,18 @@ impl WebviewInstance {
             // If we're waiting for a render, wait for it to finish before we continue
             let edits_flushed_poll = self.edits.wry_queue.poll_edits_flushed(&mut cx);
             if edits_flushed_poll.is_pending() {
+                #[cfg(target_os = "android")]
+                {
+                    let _lock = crate::android_sync_lock::android_runtime_lock();
+                    self.desktop_context
+                        .service_tasks
+                        .poll_pending(&mut self.dom, &self.waker);
+                }
                 return;
             }
+
+            #[cfg(target_os = "android")]
+            self.desktop_context.service_tasks.stop_polling();
 
             {
                 // lock the hack-ed in lock sync wry has some thread-safety issues with event handlers and async tasks

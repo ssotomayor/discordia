@@ -231,6 +231,13 @@ pub(crate) fn copy_i420_plane_into(
     if source.len() < needed {
         return Err("the captured plane is shorter than its stride".into());
     }
+    if source_stride == destination_stride as usize {
+        let output = destination
+            .get_mut(..needed)
+            .ok_or("invalid plane stride")?;
+        output.copy_from_slice(&source[..needed]);
+        return Ok(());
+    }
     for row in 0..rows {
         let from = row * source_stride;
         let to = row * destination_stride as usize;
@@ -245,6 +252,15 @@ pub(crate) fn copy_i420_plane_into(
 #[cfg(test)]
 mod plane_tests {
     use super::copy_i420_plane_into;
+
+    #[test]
+    fn contiguous_planes_copy_in_bulk_without_overwriting_the_tail() {
+        let mut output = [99; 14];
+        copy_i420_plane_into(&[3; 12], 4, 3, &mut output, 4).unwrap();
+        assert_eq!(&output[..12], &[3; 12]);
+        assert_eq!(&output[12..], &[99; 2]);
+        assert!(copy_i420_plane_into(&[3; 12], 4, 3, &mut [0; 11], 4).is_err());
+    }
 
     #[test]
     fn interleaved_chroma_copies_its_short_last_row() {

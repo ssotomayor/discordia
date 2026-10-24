@@ -1865,10 +1865,17 @@ pub fn ScreenShareBridge() -> Element {
             voice_screen_audio.send(VoiceCmd::SetScreenAudio {
                 room: now.1.clone(),
             });
+            #[cfg(target_os = "android")]
+            voice_screen_audio.send(VoiceCmd::SetScreenVideo {
+                room: now.4.clone(),
+                target: target.unwrap_or(crate::sysvideo::Target::Display(0)),
+                settings: capture_settings,
+            });
             voice_screen_audio.send(VoiceCmd::SetSystemAudio {
-                enabled: now.2,
+                enabled: now.2 && (!cfg!(target_os = "android") || now.4.is_some()),
                 target,
             });
+            #[cfg(not(target_os = "android"))]
             voice_screen_audio.send(VoiceCmd::SetScreenVideo {
                 room: now.4.clone(),
                 target: target.unwrap_or(crate::sysvideo::Target::Display(0)),

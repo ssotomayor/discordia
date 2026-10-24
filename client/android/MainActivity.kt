@@ -95,6 +95,44 @@ class MainActivity : WryActivity() {
 
     external fun onCaptureStopped(slot: Int)
 
+    external fun onPlaybackAudio(slot: Int, samples: ShortArray): Boolean
+    external fun onPlaybackAudioError(slot: Int, message: String)
+
+    private var playbackCapture: com.discordia.app.DioxusPlaybackCapture? = null
+    private var playbackSlot = -1
+
+    fun startPlaybackAudio(slot: Int): Boolean {
+        stopPlaybackAudio()
+        if (android.os.Build.VERSION.SDK_INT < 29 || screenSlot < 0) return false
+        val projection = (screenCapturer as? ScreenCapturerAndroid)?.mediaProjection ?: return false
+        return try {
+            playbackSlot = slot
+            playbackCapture = com.discordia.app.DioxusPlaybackCapture.start(
+                projection,
+                { samples -> onPlaybackAudio(slot, samples) },
+                { error -> onPlaybackAudioError(slot, error) },
+            )
+            true
+        } catch (error: Exception) {
+            playbackSlot = -1
+            android.util.Log.w("Discordia", "Could not start playback audio capture", error)
+            false
+        }
+    }
+
+    fun stopPlaybackAudioSlot(slot: Int) {
+        if (playbackSlot == slot) stopPlaybackAudio()
+    }
+
+    fun playbackAudioActive(slot: Int): Boolean =
+        playbackSlot == slot && playbackCapture?.isActive() == true
+
+    private fun stopPlaybackAudio() {
+        playbackSlot = -1
+        playbackCapture?.stop()
+        playbackCapture = null
+    }
+
     external fun shouldCaptureVideoFrame(slot: Int): Boolean
 
     private var documentRequest: String? = null
@@ -378,6 +416,7 @@ class MainActivity : WryActivity() {
     }
 
     fun stopScreenShare() {
+        stopPlaybackAudio()
         screenPending = false
         screenResult = 0
         screenSlot = -1
