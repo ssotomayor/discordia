@@ -69,6 +69,47 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
     ),
 ];
 
+fn settings_tab_visible(tab: SettingsTab, android: bool, ios: bool) -> bool {
+    match tab {
+        SettingsTab::Notifications => android,
+        SettingsTab::Video | SettingsTab::Updates => !ios,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+
+    fn menu(android: bool, ios: bool) -> Vec<SettingsTab> {
+        SETTINGS_TABS
+            .iter()
+            .map(|(_, tab, _, _)| *tab)
+            .filter(|tab| settings_tab_visible(*tab, android, ios))
+            .collect()
+    }
+
+    #[test]
+    fn android_can_reach_video_screen_and_update_settings() {
+        let tabs = menu(true, false);
+        assert!(tabs.contains(&SettingsTab::Video));
+        assert!(tabs.contains(&SettingsTab::Notifications));
+        assert!(tabs.contains(&SettingsTab::Updates));
+    }
+
+    #[test]
+    fn desktop_and_ios_keep_their_existing_navigation() {
+        let desktop = menu(false, false);
+        assert!(desktop.contains(&SettingsTab::Video));
+        assert!(desktop.contains(&SettingsTab::Updates));
+        assert!(!desktop.contains(&SettingsTab::Notifications));
+        let ios = menu(false, true);
+        assert!(!ios.contains(&SettingsTab::Video));
+        assert!(!ios.contains(&SettingsTab::Updates));
+        assert!(!ios.contains(&SettingsTab::Notifications));
+    }
+}
+
 #[component]
 pub fn SettingsDialog() -> Element {
     let mut state = use_app_state();
@@ -140,10 +181,7 @@ pub fn SettingsDialog() -> Element {
                     div { class: "dxf-settings-body flex-1 flex min-h-0",
                         div { class: "dxf-settings-nav shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
                             for (group, t, label, icon) in SETTINGS_TABS.iter().copied().filter(|(_, tab, _, _)| {
-                                (cfg!(target_os = "android") || *tab != SettingsTab::Notifications)
-                                    && (!cfg!(any(target_os = "android", target_os = "ios"))
-                                    || !matches!(tab, SettingsTab::Video | SettingsTab::Updates)
-                                    )
+                                settings_tab_visible(*tab, cfg!(target_os = "android"), cfg!(target_os = "ios"))
                             }) {
                                 {
                                     let group = crate::i18n::label(group);
