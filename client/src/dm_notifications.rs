@@ -96,6 +96,9 @@ mod native {
         resumed: jni::sys::jboolean,
     ) {
         events().send_modify(|state| state.resumed = resumed != 0);
+        if resumed != 0 {
+            crate::android::wake_nostr();
+        }
     }
 
     #[unsafe(no_mangle)]

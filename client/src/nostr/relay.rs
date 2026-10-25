@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use super::event::Event;
 
@@ -116,6 +116,7 @@ type Subscriptions = BTreeMap<String, Vec<Filter>>;
 pub struct RelayPool {
     cmd: mpsc::UnboundedSender<Command>,
     _tasks: Arc<PoolTasks>,
+    _refresh: watch::Sender<u64>,
 }
 
 struct PoolTasks(Vec<tokio::task::JoinHandle<()>>);
@@ -146,6 +147,7 @@ impl RelayPool {
 
         let mut senders = Vec::new();
         let mut tasks = Vec::new();
+        let (refresh, _) = watch::channel(0);
         for url in urls {
             let (relay_tx, relay_rx) = mpsc::unbounded_channel::<Command>();
             senders.push(relay_tx);
@@ -155,8 +157,15 @@ impl RelayPool {
                 out_tx.clone(),
                 Arc::clone(&seen),
                 Arc::clone(&subs),
+                refresh.subscribe(),
             )));
         }
+
+        #[cfg(target_os = "android")]
+        tasks.push(tokio::spawn(refresh_after_wakeups(
+            crate::android::nostr_wakeups(),
+            refresh.clone(),
+        )));
 
         tasks.push(tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
@@ -180,6 +189,7 @@ impl RelayPool {
             RelayPool {
                 cmd: cmd_tx,
                 _tasks: Arc::new(PoolTasks(tasks)),
+                _refresh: refresh,
             },
             out_rx,
         )
@@ -208,6 +218,15 @@ impl RelayPool {
             id: id.to_string(),
             filters,
         });
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+async fn refresh_after_wakeups(mut wakeups: watch::Receiver<u64>, refresh: watch::Sender<u64>) {
+    while wakeups.changed().await.is_ok() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        drop(wakeups.borrow_and_update());
+        refresh.send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 }
 
@@ -249,21 +268,33 @@ async fn run_relay(
     out: mpsc::UnboundedSender<RelayEvent>,
     seen: Arc<Mutex<SeenSet>>,
     subs: Arc<Mutex<Subscriptions>>,
+    mut refresh: watch::Receiver<u64>,
 ) {
     let mut backoff = RECONNECT_MIN;
     // Only the newest subscription per id matters; publishes are dropped rather
     // than queued to avoid stale delivery.
     loop {
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            tokio_tungstenite::connect_async(&url),
-        )
-        .await
-        {
+        let attempt = tokio::select! {
+            request = refresh.changed() => {
+                if request.is_err() { return; }
+                backoff = RECONNECT_MIN;
+                continue;
+            }
+            attempt = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(&url)) => attempt,
+        };
+        let mut renewed = false;
+        match attempt {
             Ok(Ok((stream, _))) => {
                 backoff = RECONNECT_MIN;
                 let _ = out.send(RelayEvent::Connected(url.clone()));
-                let why = serve(&url, stream, &mut cmds, &out, &seen, &subs).await;
+                let why = tokio::select! {
+                    request = refresh.changed() => {
+                        if request.is_err() { return; }
+                        renewed = true;
+                        "connection refreshed after resume or network change".into()
+                    }
+                    why = serve(&url, stream, &mut cmds, &out, &seen, &subs) => why,
+                };
                 let _ = out.send(RelayEvent::Disconnected {
                     relay: url.clone(),
                     why,
@@ -282,13 +313,47 @@ async fn run_relay(
                 });
             }
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(RECONNECT_MAX);
+        if renewed {
+            backoff = RECONNECT_MIN;
+            continue;
+        }
+        tokio::select! {
+            request = refresh.changed() => {
+                if request.is_err() { return; }
+                backoff = RECONNECT_MIN;
+            }
+            _ = tokio::time::sleep(backoff) => { backoff = (backoff * 2).min(RECONNECT_MAX); }
+        }
     }
 }
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[derive(Clone, Copy)]
+struct RelayHealth {
+    ping_every: Duration,
+    pong_wait: Duration,
+}
+
+impl Default for RelayHealth {
+    fn default() -> Self {
+        Self {
+            ping_every: Duration::from_secs(30),
+            pong_wait: Duration::from_secs(15),
+        }
+    }
+}
+
+async fn send_frame(
+    tx: &mut futures_util::stream::SplitSink<Ws, tokio_tungstenite::tungstenite::Message>,
+    message: tokio_tungstenite::tungstenite::Message,
+) -> Result<(), ()> {
+    match tokio::time::timeout(Duration::from_secs(5), tx.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(()),
+    }
+}
 
 /// Pump one live connection until it fails. Returns why it ended.
 async fn serve(
@@ -299,14 +364,26 @@ async fn serve(
     seen: &Arc<Mutex<SeenSet>>,
     subs: &Arc<Mutex<Subscriptions>>,
 ) -> String {
+    serve_with_health(url, stream, cmds, out, seen, subs, RelayHealth::default()).await
+}
+
+async fn serve_with_health(
+    url: &str,
+    stream: Ws,
+    cmds: &mut mpsc::UnboundedReceiver<Command>,
+    out: &mpsc::UnboundedSender<RelayEvent>,
+    seen: &Arc<Mutex<SeenSet>>,
+    subs: &Arc<Mutex<Subscriptions>>,
+    health: RelayHealth,
+) -> String {
     use tokio_tungstenite::tungstenite::Message;
     let (mut tx, mut rx) = stream.split();
 
     // Re-issue every standing subscription; a fresh connection without a REQ
     // receives nothing.
-    for (id, filters) in subs.lock().await.iter() {
-        if tx
-            .send(Message::Text(req_frame(id, filters)))
+    let subscriptions = subs.lock().await.clone();
+    for (id, filters) in &subscriptions {
+        if send_frame(&mut tx, Message::Text(req_frame(id, filters)))
             .await
             .is_err()
         {
@@ -314,23 +391,39 @@ async fn serve(
         }
     }
 
+    let mut heartbeat = tokio::time::interval(health.ping_every);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    heartbeat.tick().await;
+    let mut pong_due = None;
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if pong_due.is_none() {
+                    if send_frame(&mut tx, Message::Ping(vec![])).await.is_err() { return "heartbeat send failed".into(); }
+                    pong_due = Some(tokio::time::Instant::now() + health.pong_wait);
+                }
+            }
+            _ = async {
+                if let Some(due) = pong_due { tokio::time::sleep_until(due).await; }
+                else { std::future::pending::<()>().await; }
+            } => return "relay heartbeat timed out".into(),
             cmd = cmds.recv() => match cmd {
                 Some(Command::Publish(e)) => {
                     let msg = serde_json::json!(["EVENT", &*e]).to_string();
-                    if tx.send(Message::Text(msg)).await.is_err() {
+                    if send_frame(&mut tx, Message::Text(msg)).await.is_err() {
                         return "send failed".into();
                     }
                 }
                 Some(Command::Subscribe { id, filters }) => {
-                    if tx.send(Message::Text(req_frame(&id, &filters))).await.is_err() {
+                    if send_frame(&mut tx, Message::Text(req_frame(&id, &filters))).await.is_err() {
                         return "send failed".into();
                     }
                 }
                 None => return "pool shut down".into(),
             },
-            msg = rx.next() => match msg {
+            msg = rx.next() => {
+                pong_due = None;
+                match msg {
                 Some(Ok(Message::Text(text))) => {
                     handle_relay_message(url, &text, out, seen).await;
                 }
@@ -338,6 +431,7 @@ async fn serve(
                 Some(Ok(Message::Close(_))) => return "relay closed the connection".into(),
                 Some(Err(e)) => return e.to_string(),
                 None => return "stream ended".into(),
+                }
             },
         }
     }
@@ -423,6 +517,134 @@ async fn handle_relay_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn refresh_replaces_a_live_socket_and_reissues_its_subscriptions() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (received, mut subscriptions) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Ok(text) = message.to_text() {
+                        let frame: serde_json::Value = serde_json::from_str(text).unwrap();
+                        if frame[0] == "REQ" {
+                            received.send(frame).unwrap();
+                            break;
+                        }
+                    }
+                }
+                sockets.push(socket);
+            }
+        });
+        let (pool, _events) = RelayPool::connect(vec![url]);
+        pool.subscribe(
+            "dm",
+            vec![Filter {
+                kinds: Some(vec![1059]),
+                ..Default::default()
+            }],
+        );
+        let first = tokio::time::timeout(Duration::from_secs(2), subscriptions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        pool._refresh.send_modify(|revision| *revision += 1);
+        let second = tokio::time::timeout(Duration::from_secs(2), subscriptions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(second[1], "dm");
+        drop(pool);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_interrupts_connection_backoff() {
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reserved.local_addr().unwrap();
+        drop(reserved);
+        let (pool, mut events) = RelayPool::connect(vec![format!("ws://{address}")]);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(12), events.recv())
+                .await
+                .unwrap(),
+            Some(RelayEvent::Disconnected { .. })
+        ));
+        let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        pool._refresh.send_modify(|revision| *revision += 1);
+        let event = tokio::time::timeout(Duration::from_millis(1500), events.recv())
+            .await
+            .unwrap();
+        assert!(matches!(event, Some(RelayEvent::Connected(_))));
+        drop(pool);
+        drop(server.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn resume_bursts_are_coalesced_and_the_watcher_stops_with_its_owner() {
+        let (wake, receiver) = watch::channel(0);
+        let (refresh, mut changes) = watch::channel(0);
+        let task = tokio::spawn(refresh_after_wakeups(receiver, refresh));
+        wake.send_modify(|revision| *revision += 1);
+        tokio::task::yield_now().await;
+        for _ in 0..10 {
+            wake.send_modify(|revision| *revision += 1);
+        }
+        tokio::time::timeout(Duration::from_secs(1), changes.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*changes.borrow_and_update(), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), changes.changed())
+                .await
+                .is_err()
+        );
+        drop(wake);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_socket_that_stops_answering_heartbeats_is_disconnected() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let (client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let quiet_server = server.await.unwrap();
+        let (_commands, mut commands) = mpsc::unbounded_channel();
+        let (out, _events) = mpsc::unbounded_channel();
+        let reason = tokio::time::timeout(
+            Duration::from_secs(2),
+            serve_with_health(
+                &url,
+                client,
+                &mut commands,
+                &out,
+                &Arc::new(Mutex::new(SeenSet::default())),
+                &Arc::new(Mutex::new(Subscriptions::new())),
+                RelayHealth {
+                    ping_every: Duration::from_millis(20),
+                    pong_wait: Duration::from_millis(30),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reason, "relay heartbeat timed out");
+        drop(quiet_server);
+    }
 
     /// The filter has to serialize to exactly what a relay expects, and `#p` is
     /// the field a Rust identifier cannot spell — so it is the one worth
