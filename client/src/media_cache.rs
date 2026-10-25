@@ -7,7 +7,17 @@ use tokio::sync::{Notify, mpsc::UnboundedSender};
 
 use crate::protocol::ClientMessage;
 
-const BYTE_BUDGET: usize = 128 * 1024 * 1024;
+const ANDROID_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+const BYTE_BUDGET: usize = if cfg!(target_os = "android") {
+    ANDROID_BYTE_BUDGET
+} else {
+    128 * 1024 * 1024
+};
+const PENDING_BYTE_BUDGET: usize = if cfg!(target_os = "android") {
+    32 * 1024 * 1024
+} else {
+    BYTE_BUDGET
+};
 const ENTRY_BUDGET: usize = 2048;
 
 #[derive(Clone)]
@@ -21,12 +31,35 @@ struct Work {
     demanded: HashSet<String>,
     queued: HashSet<String>,
     loaded: Vec<(String, String)>,
+    loaded_bytes: usize,
 }
 
-#[derive(Default)]
 pub(crate) struct Updates {
     pub ready: Notify,
     work: Mutex<Work>,
+    byte_budget: usize,
+}
+
+impl Updates {
+    fn queue_loaded(&self, address: String, data: String) {
+        let mut work = self.work.lock();
+        if work.loaded.iter().any(|(key, _)| *key == address) {
+            return;
+        }
+        let data = if data.len() <= self.byte_budget {
+            data
+        } else {
+            String::new()
+        };
+        if data.len() > self.byte_budget.saturating_sub(work.loaded_bytes)
+            || work.loaded.len() >= ENTRY_BUDGET
+        {
+            work.queued.insert(address);
+        } else {
+            work.loaded_bytes += data.len();
+            work.loaded.push((address, data));
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -51,7 +84,11 @@ impl MediaCache {
             bytes: 0,
             byte_budget,
             clock: Arc::new(AtomicU64::new(0)),
-            updates: Arc::default(),
+            updates: Arc::new(Updates {
+                ready: Notify::new(),
+                work: Mutex::default(),
+                byte_budget: byte_budget.min(PENDING_BYTE_BUDGET),
+            }),
         }
     }
 
@@ -132,6 +169,7 @@ impl MediaCache {
 
     pub(crate) fn take_work(&self) -> (Vec<(String, String)>, Vec<String>) {
         let mut work = self.updates.work.lock();
+        work.loaded_bytes = 0;
         (
             std::mem::take(&mut work.loaded),
             work.queued.drain().collect(),
@@ -162,17 +200,13 @@ fn disk_worker() -> Option<&'static mpsc::SyncSender<DiskJob>> {
                                     continue;
                                 };
                                 let mut missing = Vec::new();
-                                let mut loaded = Vec::new();
                                 for address in addresses {
                                     match crate::emoji::load_cached(&address) {
-                                        Some(data) => loaded.push((address, data)),
+                                        Some(data) => updates.queue_loaded(address, data),
                                         None => missing.push(address),
                                     }
                                 }
-                                if !loaded.is_empty() {
-                                    updates.work.lock().loaded.extend(loaded);
-                                    updates.ready.notify_one();
-                                }
+                                updates.ready.notify_one();
                                 if !missing.is_empty()
                                     && tx
                                         .send(ClientMessage::FetchEmoji { images: missing })
@@ -310,5 +344,56 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert_eq!(cache.bytes, 0);
         assert_eq!(cache.get("a").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn disk_reads_stay_bounded_and_can_resume_after_the_ui_drains_them() {
+        let mut cache = MediaCache::with_budget(8);
+        let updates = cache.updates();
+        for index in 0..1000 {
+            updates.queue_loaded(index.to_string(), "data".into());
+            assert!(updates.work.lock().loaded_bytes <= 8);
+        }
+        let (loaded, queued) = cache.take_work();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(queued.len(), 998);
+        assert_eq!(updates.work.lock().loaded_bytes, 0);
+        for (address, data) in loaded {
+            cache.insert(address, data);
+        }
+        let retry = queued[0].clone();
+        updates.queue_loaded(retry.clone(), "next".into());
+        let (loaded, queued) = cache.take_work();
+        assert!(queued.is_empty());
+        assert_eq!(loaded, [(retry, "next".into())]);
+        assert_eq!(cache.bytes, 8);
+    }
+
+    #[test]
+    fn duplicate_disk_results_do_not_consume_the_budget_twice() {
+        let cache = MediaCache::with_budget(8);
+        let updates = cache.updates();
+        updates.queue_loaded("a".into(), "data".into());
+        updates.queue_loaded("a".into(), "data".into());
+        updates.queue_loaded("b".into(), "next".into());
+        assert_eq!(updates.work.lock().loaded_bytes, 8);
+        let (loaded, queued) = cache.take_work();
+        assert_eq!(loaded.len(), 2);
+        assert!(queued.is_empty());
+    }
+
+    #[test]
+    fn empty_disk_results_are_entry_bounded_and_oversized_data_is_not_retained() {
+        let cache = MediaCache::with_budget(8);
+        let updates = cache.updates();
+        updates.queue_loaded("large".into(), "larger than budget".into());
+        for index in 0..ENTRY_BUDGET {
+            updates.queue_loaded(index.to_string(), String::new());
+        }
+        let work = updates.work.lock();
+        assert_eq!(work.loaded_bytes, 0);
+        assert_eq!(work.loaded.len(), ENTRY_BUDGET);
+        assert_eq!(work.queued.len(), 1);
+        assert!(work.loaded[0].1.is_empty());
     }
 }
