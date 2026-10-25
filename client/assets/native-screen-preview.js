@@ -33,7 +33,10 @@ function (id, revision) {
   function schedule() {
     if (!stopped && pending === null) pending = requestAnimationFrame(report);
   }
-  const mutations = new MutationObserver(schedule);
+  const mutations = new MutationObserver(records => {
+    if (!element || !element.isConnected || records.some(record => record.type === 'childList' ||
+      record.target === element || record.target.contains(element) || record.target.closest('[role="dialog"], [aria-modal="true"], dialog'))) schedule();
+  });
   mutations.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden', 'open'] });
   document.addEventListener('scroll', schedule, true);
   document.addEventListener('visibilitychange', schedule);
