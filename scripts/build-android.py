@@ -21,9 +21,10 @@ REQUIRED_WEBRTC_CLASSES = (
     "livekit/org/webrtc/ScreenCapturerAndroid.class",
     "livekit/org/webrtc/Camera2Enumerator.class",
     "livekit/org/webrtc/SurfaceTextureHelper.class",
+    "livekit/org/webrtc/SurfaceViewRenderer.class",
 )
 # Every one of these must reach the final DEX, wherever it came from.
-REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class")
+REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class", "com/discordia/app/DioxusScreenPreview.class")
 REQUIRED_SYMBOLS = {
     "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory",
     "Java_livekit_org_webrtc_SoftwareVideoDecoderFactory_nativeCreateFactory",
@@ -208,6 +209,7 @@ def package_sources(project):
     shutil.copy2(ROOT / "client/android/DioxusUpdater.kt", sources / "DioxusUpdater.kt")
     shutil.copy2(ROOT / "client/android/DioxusPlaybackCapture.kt", sources / "DioxusPlaybackCapture.kt")
     shutil.copy2(ROOT / "client/android/DioxusDmNotifications.kt", sources / "DioxusDmNotifications.kt")
+    shutil.copy2(ROOT / "client/android/DioxusScreenPreview.kt", sources / "DioxusScreenPreview.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 

@@ -50,6 +50,8 @@ class MainActivity : WryActivity() {
     fun showDmNotification(payload: String) { dmNotifications.show(payload) }
     fun dismissDmNotification(peer: String) { dmNotifications.dismiss(peer) }
     private var navigationWebView: WebView? = null
+    private val screenPreview by lazy { com.discordia.app.DioxusScreenPreview(this) { navigationWebView } }
+    fun setScreenPreview(payload: String) { screenPreview.configure(payload) }
     private var unregisterBack: (() -> Unit)? = null
 
     private fun navigateBack() {
@@ -262,6 +264,7 @@ class MainActivity : WryActivity() {
         override fun onCapturerStopped() {}
 
         override fun onFrameCaptured(frame: VideoFrame) {
+            screenPreview.frame(slot, frame)
             if (!shouldCaptureVideoFrame(slot)) return
             val source = frame.buffer
             val conversionStarted = System.nanoTime()
@@ -405,6 +408,7 @@ class MainActivity : WryActivity() {
         val slot = screenSlot
         val egl = EglBase.create()
         screenEgl = egl
+        screenPreview.start(slot, egl.eglBaseContext)
         val helper = SurfaceTextureHelper.create("discordia-screen", egl.eglBaseContext)
         screenHelper = helper
         val capturer = ScreenCapturerAndroid(grant, object : MediaProjection.Callback() {
@@ -477,6 +481,7 @@ class MainActivity : WryActivity() {
     }
 
     fun stopScreenShare() {
+        screenPreview.stop()
         stopPlaybackAudio()
         capturedContentWidth = 0
         capturedContentHeight = 0
@@ -784,10 +789,12 @@ class MainActivity : WryActivity() {
     override fun onResume() {
         super.onResume()
         dmNotifications.onResume()
+        screenPreview.setForeground(true)
         onDmNotificationVisibility(true)
     }
 
     override fun onPause() {
+        screenPreview.setForeground(false)
         onDmNotificationVisibility(false)
         dmNotifications.resumed = false
         super.onPause()

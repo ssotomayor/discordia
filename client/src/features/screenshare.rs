@@ -2605,8 +2605,12 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
     let mut preview_task = use_signal(|| None::<dioxus::core::Task>);
     let mut applied_preview = use_signal(|| None::<(Option<String>, bool)>);
     use_effect(move || {
-        let identity = if sharing() { self_pk() } else { None };
-        let enabled = preview_active() && visible();
+        let identity = if cfg!(target_os = "android") || sharing() {
+            self_pk()
+        } else {
+            None
+        };
+        let enabled = sharing() && preview_active() && visible();
         if !enabled {
             drag.set(None);
         }
@@ -2629,8 +2633,9 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
                 sharing = identity.is_some(),
                 "self screen preview state"
             );
+            let remote_enabled = *enabled && !cfg!(target_os = "android");
             let _ = document::eval(&format!(
-                "window.dxScreen.setSelfPreview({},{enabled});",
+                "window.dxScreen.setSelfPreview({},{remote_enabled});",
                 serde_json::to_string(identity).unwrap_or_else(|_| "null".into()),
             ));
             applied_preview.set(Some(desired));
@@ -2640,6 +2645,15 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
         if let Some(task) = preview_task.write().take() {
             task.cancel();
         }
+        #[cfg(target_os = "android")]
+        {
+            let identity =
+                serde_json::to_string(&self_pk.peek().clone()).unwrap_or_else(|_| "null".into());
+            let _ = document::eval(&format!(
+                "window.dxScreen.setSelfPreview({identity},false);"
+            ));
+        }
+        #[cfg(not(target_os = "android"))]
         let _ = document::eval("window.dxScreen.setSelfPreview(null,true);");
     });
 
@@ -2760,13 +2774,9 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
                 }
             }
             div {
-                class: "relative flex-1 min-h-0 bg-black",
-                div {
-                    id: "screenshare-self",
-                    style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
-                    class: "text-[var(--text-dim)] text-[10px]",
-                    {crate::i18n::text("Starting…", &[])}
-                }
+                class: if cfg!(target_os = "android") { "relative flex-1 min-h-0 bg-black flex flex-col" } else { "relative flex-1 min-h-0 bg-black" },
+                SelfPreviewContent { visible: visible() && preview_active() }
+
                 if !preview_active() {
                     div {
                         class: "absolute inset-0 flex items-center justify-center bg-black text-[var(--text-dim)] text-[10px]",
@@ -2774,13 +2784,13 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
                     }
                 }
                 if !health_reason().is_empty() {
-                    div { class: "absolute left-2 right-2 top-2 px-2 py-1 rounded bg-black/70 pointer-events-none",
+                    div { class: if cfg!(target_os = "android") { "shrink-0 px-2 py-1 bg-black text-[10px]" } else { "absolute left-2 right-2 top-2 px-2 py-1 rounded bg-black/70 pointer-events-none" },
                         StreamQualityNotice { reason: String::new(), health_reason: health_reason() }
                     }
                 }
                 if native_capture {
                     div {
-                        class: "absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/70 text-[9px] pointer-events-none",
+                        class: if cfg!(target_os = "android") { "shrink-0 px-1.5 py-0.5 bg-black text-[9px] pointer-events-none" } else { "absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/70 text-[9px] pointer-events-none" },
                         if frames() > 0 {
                             span { class: "text-[var(--up)]", {crate::i18n::message(&actual_label)} }
                         } else {
@@ -2801,6 +2811,56 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
             }
         }
     }
+}
+
+#[component]
+fn SelfPreviewContent(visible: bool) -> Element {
+    #[cfg(target_os = "android")]
+    {
+        let revision = use_hook(crate::android::next_slot);
+        let id = format!("native-screen-preview-{revision}");
+        let element_id = id.clone();
+        use_resource(use_reactive((&visible,), move |(visible,)| {
+            let id = id.clone();
+            async move {
+                if !visible {
+                    let _ = document::eval(&format!(
+                        "if (window.__dxfNativeScreenPreview?.revision === {revision}) window.__dxfNativeScreenPreview.stop();"
+                    ));
+                    let payload =
+                        serde_json::json!({ "revision": revision, "visible": false }).to_string();
+                    if let Err(error) = crate::android::set_screen_preview(&payload) {
+                        tracing::debug!(%error, "Could not hide the local screen preview");
+                    }
+                    return;
+                }
+                let mut eval = document::eval(&format!(
+                    "({})({}, {revision})",
+                    include_str!("../../assets/native-screen-preview.js"),
+                    serde_json::to_string(&id).unwrap_or_default()
+                ));
+                while let Ok(bounds) = eval.recv::<serde_json::Value>().await {
+                    if let Err(error) = crate::android::set_screen_preview(&bounds.to_string()) {
+                        tracing::warn!(%error, "Could not update the local screen preview");
+                    }
+                }
+            }
+        }));
+        use_drop(move || {
+            let _ = document::eval(&format!(
+                "if (window.__dxfNativeScreenPreview?.revision === {revision}) window.__dxfNativeScreenPreview.stop();"
+            ));
+            let payload = serde_json::json!({ "revision": revision, "visible": false }).to_string();
+            if let Err(error) = crate::android::set_screen_preview(&payload) {
+                tracing::debug!(%error, "Could not release the local screen preview");
+            }
+        });
+        rsx! { div { id: element_id, style: "flex: 1; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center;",
+        class: "text-[var(--text-dim)] text-[10px]", {crate::i18n::text("Starting…", &[])} } }
+    }
+    #[cfg(not(target_os = "android"))]
+    rsx! { div { id: "screenshare-self", style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
+    class: "text-[var(--text-dim)] text-[10px]", {crate::i18n::text("Starting…", &[])} } }
 }
 
 fn preview_subscription_delay(
