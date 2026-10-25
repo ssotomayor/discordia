@@ -20,10 +20,22 @@ pub(crate) struct MobileBudget {
     changed_at: Instant,
 }
 
+pub(crate) fn limit_settings(mut settings: Settings) -> Settings {
+    let long = settings.width.max(settings.height).max(2) as f64;
+    let short = settings.width.min(settings.height).max(2) as f64;
+    let scale = (1920.0 / long).min(1080.0 / short).min(1.0);
+    let even = |size: u32| ((size as f64 * scale) as u32 / 2 * 2).max(2);
+    settings.width = even(settings.width);
+    settings.height = even(settings.height);
+    settings.fps = settings.fps.clamp(1, 30);
+    settings.max_bitrate = settings.max_bitrate.min(14_000_000);
+    settings
+}
+
 impl MobileBudget {
     pub fn new(original: Settings, now: Instant) -> Self {
         Self {
-            original,
+            original: limit_settings(original),
             level: 0,
             bad: 0,
             healthy_since: None,
@@ -297,5 +309,33 @@ mod tests {
         let limited = b.settings(2);
         assert_eq!((limited.width, limited.height, limited.fps), (288, 640, 15));
         assert_eq!(limited.max_bitrate, settings.max_bitrate);
+    }
+    #[test]
+    fn android_ceiling_bounds_old_presets_without_upscaling_or_changing_orientation() {
+        let now = Instant::now();
+        let mut original = crate::features::screenshare::native_settings("4k");
+        original.fps = 60;
+        let limited = MobileBudget::new(original, now).current();
+        assert_eq!(
+            (limited.width, limited.height, limited.fps),
+            (1920, 1080, 30)
+        );
+        assert_eq!(limited.max_bitrate, 14_000_000);
+        original.width = 2160;
+        original.height = 3840;
+        let portrait = MobileBudget::new(original, now).current();
+        assert_eq!(
+            (portrait.width, portrait.height, portrait.fps),
+            (1080, 1920, 30)
+        );
+        original.width = 288;
+        original.height = 640;
+        original.fps = 15;
+        let small = MobileBudget::new(original, now).current();
+        assert_eq!((small.width, small.height, small.fps), (288, 640, 15));
+        let warm =
+            MobileBudget::warm_start(crate::features::screenshare::native_settings("ultra"), now)
+                .current();
+        assert_eq!((warm.width, warm.height, warm.fps), (960, 540, 30));
     }
 }

@@ -105,7 +105,9 @@ pub fn SettingsDialog() -> Element {
     let selected_camera_id = settings.read().camera_device_id.clone();
     let available_cameras = state.read().available_cameras.clone();
 
-    let screenshare_quality = settings.read().screenshare_quality.clone();
+    let screenshare_quality =
+        crate::features::screenshare::quality_for_platform(&settings.read().screenshare_quality)
+            .to_owned();
     let screenshare_audio = settings.read().screenshare_audio;
     let screenshare_hint = crate::features::screenshare::QUALITY_PRESETS
         .iter()
@@ -248,7 +250,7 @@ pub fn SettingsDialog() -> Element {
                                     settings.set(next.clone());
                                     crate::settings::save(&next);
                                 },
-                                for (id, label, _) in crate::features::screenshare::QUALITY_PRESETS.iter() {
+                                for (id, label, _) in crate::features::screenshare::QUALITY_PRESETS.iter().filter(|(id, _, _)| crate::features::screenshare::screen_quality_supported(id)) {
                                     option {
                                         selected: screenshare_quality == *id,
                                         value: "{id}",
