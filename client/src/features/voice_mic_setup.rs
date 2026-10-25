@@ -200,7 +200,7 @@ impl Player {
         let controls = AudioControls::from_state(&state.peek());
         controls.deafened.store(false, Ordering::Relaxed);
         controls.gains.lock().clear();
-        let (reference, _rx) = crate::audio_queue::channel();
+        let (reference, _rx) = crate::audio_queue::reference_channel();
         let (fault_tx, faults) = unbounded_channel();
         let playback = PlaybackMixer::start(state, controls, reference, fault_tx);
         if !playback.is_open() {

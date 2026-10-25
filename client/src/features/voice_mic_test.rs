@@ -22,7 +22,7 @@ impl MicrophoneTest {
         controls.gains.lock().clear();
         let (input_tx, input_rx) = crate::audio_queue::channel();
         let (processed_tx, processed_rx) = crate::audio_queue::channel();
-        let (reference_tx, reference_rx) = crate::audio_queue::channel();
+        let (reference_tx, reference_rx) = crate::audio_queue::reference_channel();
         let (fault_tx, faults) = unbounded_channel();
         let meter = Arc::new(MicMeter::default());
         let stats = Arc::new(GateStats::default());

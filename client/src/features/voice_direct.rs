@@ -31,7 +31,7 @@ impl Audio {
         let track = factory.create_audio_track("dm-mic", source.clone());
         let (frame_tx, frame_rx) = crate::audio_queue::channel();
         let (gated_tx, gated_rx) = crate::audio_queue::channel();
-        let (reference_tx, reference_rx) = crate::audio_queue::channel();
+        let (reference_tx, reference_rx) = crate::audio_queue::reference_channel();
         let meter = Arc::new(MicMeter::default());
         let gate_stats = Arc::new(GateStats::default());
         let muted = Arc::new(AtomicBool::new(

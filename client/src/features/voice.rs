@@ -828,7 +828,7 @@ impl ActiveVoice {
 
         let (frame_tx, frame_rx) = crate::audio_queue::channel::<f32>();
         let (gated_tx, gated_rx) = crate::audio_queue::channel::<i16>();
-        let (reference_tx, reference_rx) = crate::audio_queue::channel::<i16>();
+        let (reference_tx, reference_rx) = crate::audio_queue::reference_channel::<i16>();
         let (faults, faults_rx) = unbounded_channel::<AudioFault>();
         let meter = Arc::new(MicMeter::default());
         let muted = Arc::new(AtomicBool::new(true));
@@ -2552,12 +2552,7 @@ fn denoise_gate_loop(
         }
         let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
         let is_muted = muted.load(Ordering::Relaxed);
-        let processed = processor.process(
-            packet.samples,
-            config,
-            50 + packet.captured.elapsed().as_millis().min(450) as i32,
-            is_muted,
-        );
+        let processed = processor.process(packet.samples, config, is_muted);
         lead_in.push(
             crate::audio_queue::Frame {
                 samples: processed.samples,
