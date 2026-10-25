@@ -805,6 +805,7 @@ impl ActiveVoice {
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
                     red,
+                    dtx: false,
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
