@@ -2,6 +2,16 @@
 
 Base: `5b853c4`, rama `mobile-platform-support`. Revisión de los adaptadores Android, captura nativa, cancelación y renderizado en reposo; no es una auditoría de todo el producto. Cambios anteriores conservados.
 
+## Memoria: escritura de medios compartida — 2026-10-25
+
+| Hallazgo | Cambio | Límite de la evidencia |
+|---|---|---|
+| Cada emoji/sonido recibido duplicaba su data URL para la cola de escritura, además de la copia en caché | Caché y trabajo de disco comparten `Arc<String>`; la expulsión no invalida una escritura pendiente y el último propietario libera los bytes | Pruebas de identidad de asignación y liberación; sin medición física de RAM Release |
+
+Presupuesto de caché, contenido, calidad y política de disco conservados. La reducción depende de los medios pendientes de escritura; no implica una reducción fija del PSS ni cubre imágenes decodificadas por WebView.
+
+Validación: seis pruebas de caché, Clippy cliente/grid con `-D warnings`, formato y check ARM64 Android aprobados; el check Android conserva warnings de plataforma fuera de estos cambios.
+
 ## Errores corregidos
 
 | Prioridad | Fallo | Corrección / evidencia |
