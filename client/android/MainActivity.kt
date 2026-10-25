@@ -199,6 +199,10 @@ class MainActivity : WryActivity() {
     private var voiceServiceResult = 0
     private var projectionActive = false
 
+    fun updateCallNotification(payload: String) {
+        com.discordia.app.DioxusForegroundService.updateControls(payload)
+    }
+
     private fun updateMediaService(ready: ResultReceiver? = null): Boolean {
         val intent = foregroundServiceIntent() ?: return false
         if (voiceSlot < 0 && cameraSlot < 0 && !projectionActive) {

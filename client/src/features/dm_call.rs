@@ -43,6 +43,7 @@ impl Phase {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallView {
+    pub call_id: Uuid,
     pub peer: String,
     pub phase: Phase,
     pub microphone_error: Option<String>,
@@ -111,7 +112,7 @@ pub fn spawn_service(
 ) -> UnboundedSender<Command> {
     let (tx, mut rx) = unbounded_channel();
     let service_tx = tx.clone();
-    spawn(async move {
+    crate::service_task::spawn(async move {
         let mut actor = Actor {
             our_key,
             device: Uuid::new_v4(),
@@ -241,6 +242,7 @@ impl Actor {
 
     fn update_view(&mut self) {
         self.state.write().dm_call = self.session.as_ref().map(|s| CallView {
+            call_id: s.id,
             peer: s.peer.clone(),
             phase: s.phase,
             microphone_error: s

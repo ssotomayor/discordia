@@ -1,4 +1,9 @@
 {
+  "Calls and sharing": ["Llamadas y transmisiones", "Chamadas e transmissões"],
+  "Camera active": ["Cámara activa", "Câmera ativa"],
+  "Unmute call audio": ["Activar audio de llamada", "Ativar áudio da chamada"],
+  "Mute call audio": ["Silenciar audio de llamada", "Silenciar áudio da chamada"],
+  "Call audio muted": ["Audio de llamada silenciado", "Áudio da chamada silenciado"],
   "image copy {0} ms/frame": ["copia de imagen {0} ms/cuadro", "cópia de imagem {0} ms/quadro"],
   "image conversion {0} ms/frame": ["conversión de imagen {0} ms/cuadro", "conversão de imagem {0} ms/quadro"],
   "Call back": ["Volver a llamar", "Ligar novamente"],

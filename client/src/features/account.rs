@@ -79,6 +79,8 @@ pub fn AccountView(
     provide_context(identity.clone());
     #[cfg(target_os = "android")]
     crate::dm_notifications::use_notifications(state, identity.pubkey.clone());
+    #[cfg(target_os = "android")]
+    crate::call_notifications::use_controls(state, nostr.clone());
     let updates = try_consume_context::<crate::update::Updates>();
     let mut update_request = use_signal(|| {
         updates
@@ -257,6 +259,7 @@ mod tests {
                 use_hook(|| {
                     let mut s = state.write();
                     s.dm_call = Some(CallView {
+                        call_id: uuid::Uuid::new_v4(),
                         peer: "peer".into(),
                         phase: Phase::Connected,
                         microphone_error: None,
