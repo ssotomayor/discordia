@@ -25,6 +25,8 @@ mod mobile_back;
 mod text_menu;
 #[macro_use]
 mod devlog;
+#[cfg(any(target_os = "android", test))]
+mod dm_notifications;
 mod emoji;
 mod features;
 mod file_dialog;

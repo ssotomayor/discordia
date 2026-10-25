@@ -23,7 +23,7 @@ REQUIRED_WEBRTC_CLASSES = (
     "livekit/org/webrtc/SurfaceTextureHelper.class",
 )
 # Every one of these must reach the final DEX, wherever it came from.
-REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class")
+REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class")
 REQUIRED_SYMBOLS = {
     "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory",
     "Java_livekit_org_webrtc_SoftwareVideoDecoderFactory_nativeCreateFactory",
@@ -34,6 +34,8 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_shouldCaptureVideoFrame",
     "Java_dev_dioxus_main_MainActivity_onPlaybackAudio",
     "Java_dev_dioxus_main_MainActivity_onPlaybackAudioError",
+    "Java_dev_dioxus_main_MainActivity_onDmNotificationOpened",
+    "Java_dev_dioxus_main_MainActivity_onDmNotificationVisibility",
 }
 BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
 
@@ -138,6 +140,14 @@ def verify_release_metadata(apk, env):
             raise RuntimeError(f"Android {field} does not match the release version")
 
 
+def verify_notification_permission(apk, env):
+    tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
+    aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
+    badging = subprocess.check_output([str(aapt), "dump", "badging", str(apk)], text=True)
+    if "uses-permission: name='android.permission.POST_NOTIFICATIONS'" not in badging:
+        raise RuntimeError("Android APK is missing DM notification permission")
+
+
 def verify_debug_metadata(apk, env):
     tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
     aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
@@ -197,6 +207,7 @@ def package_sources(project):
     )
     shutil.copy2(ROOT / "client/android/DioxusUpdater.kt", sources / "DioxusUpdater.kt")
     shutil.copy2(ROOT / "client/android/DioxusPlaybackCapture.kt", sources / "DioxusPlaybackCapture.kt")
+    shutil.copy2(ROOT / "client/android/DioxusDmNotifications.kt", sources / "DioxusDmNotifications.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 
@@ -286,6 +297,7 @@ def main():
         raise RuntimeError(f"Expected one APK in {apk_dir}, found {len(apks)}")
     apk = apks[0]
     verify_activity_mode(apk, env)
+    verify_notification_permission(apk, env)
     if args.release:
         verify_release_metadata(apk, env)
         verify_release_branding(apk, env)
