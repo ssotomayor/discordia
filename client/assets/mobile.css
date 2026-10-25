@@ -158,3 +158,25 @@
   height: min(240px, 34dvh) !important; max-height: none; min-height: 160px;
   flex: 0 0 auto; box-shadow: none; border-radius: 8px; z-index: auto !important;
 }
+.dxf-mobile-pager {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.dxf-mobile-pager::-webkit-scrollbar { display: none; }
+.dxf-mobile-pager > [data-mobile-panel] {
+  flex: 0 0 100%;
+  min-width: 0;
+  height: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+.dxf-mobile-pager :is(input, textarea, select, [contenteditable], video, audio) { touch-action: pan-y pinch-zoom; }
+.dxf-mobile-pager pre { overscroll-behavior-x: contain; }

@@ -38,12 +38,17 @@ fn open_media_chat(s: &mut crate::state::AppState) {
 }
 
 #[component]
-fn MobilePanel(active: bool, name: &'static str, children: Element) -> Element {
+fn MobilePanel(
+    active: bool,
+    name: &'static str,
+    #[props(default = false)] paged: bool,
+    children: Element,
+) -> Element {
     // Retaining layout keeps the chat virtualizer's viewport and scroll anchor valid.
-    let visibility = if active { "visible" } else { "hidden" };
+    let visibility = if active || paged { "visible" } else { "hidden" };
     rsx! {
         div {
-            class: "absolute inset-0 min-w-0 min-h-0 overflow-hidden",
+            class: if paged { "relative min-w-0 min-h-0 overflow-hidden" } else { "absolute inset-0 min-w-0 min-h-0 overflow-hidden" },
             style: "visibility: {visibility};",
             "data-mobile-panel": name,
             "inert": (!active).then_some(""),
@@ -51,6 +56,33 @@ fn MobilePanel(active: bool, name: &'static str, children: Element) -> Element {
             {children}
         }
     }
+}
+
+fn tab_index(tab: MobileTab) -> u8 {
+    match tab {
+        MobileTab::Channels => 0,
+        MobileTab::Chat => 1,
+        MobileTab::Members => 2,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn indexed_tab(index: u8) -> Option<MobileTab> {
+    match index {
+        0 => Some(MobileTab::Channels),
+        1 => Some(MobileTab::Chat),
+        2 => Some(MobileTab::Members),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PagerEvent {
+    Select { from: u8, index: u8 },
+    PreviewMembers,
+    Settled,
 }
 
 #[cfg(test)]
@@ -236,10 +268,44 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
         }
     });
     let current = tab();
+    let pager_id = use_hook(|| format!("mobile-pager-{}", uuid::Uuid::new_v4()));
+    #[allow(unused_mut)]
+    let mut members_preview = use_signal(|| false);
+    #[cfg(target_os = "android")]
+    {
+        let bridge_id = pager_id.clone();
+        use_future(move || {
+            let script = include_str!("../../assets/mobile-pager.js")
+                .replace("__PAGER_ID__", &serde_json::json!(bridge_id).to_string());
+            async move {
+                let mut bridge = document::eval(&script);
+                while let Ok(event) = bridge.recv::<PagerEvent>().await {
+                    match event {
+                        PagerEvent::Select { from, index } if from == tab_index(*tab.peek()) => {
+                            if let Some(next) = indexed_tab(index) {
+                                tab.set(next);
+                            }
+                        }
+                        PagerEvent::PreviewMembers => members_preview.set(true),
+                        PagerEvent::Settled => members_preview.set(false),
+                        _ => {}
+                    }
+                }
+            }
+        });
+        let cleanup_id = pager_id.clone();
+        use_drop(move || {
+            let _ = document::eval(&format!(
+                "window.__dxfMobilePagers?.get({})?.();",
+                serde_json::json!(cleanup_id)
+            ));
+        });
+    }
     rsx! {
         div { class: "dxf-mobile-workspace flex-1 min-h-0 min-w-0 flex flex-col h-full w-full overflow-hidden",
-            div { class: "flex-1 min-h-0 w-full overflow-hidden relative",
-                MobilePanel { active: current == MobileTab::Channels, name: "channels",
+            div { id: "{pager_id}", class: if cfg!(target_os = "android") { "dxf-mobile-pager" } else { "flex-1 min-h-0 w-full overflow-hidden relative" },
+                "data-mobile-tab": "{tab_index(current)}",
+                MobilePanel { active: current == MobileTab::Channels, name: "channels", paged: cfg!(target_os = "android"),
                     div { class: "flex h-full w-full overflow-hidden bg-[var(--bg)]",
                         div { class: "dxf-mobile-server-column w-16 shrink-0 h-full border-r border-[var(--border)] overflow-y-auto flex flex-col items-center py-2",
                             super::guilds::GuildsSidebar {}
@@ -249,7 +315,7 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
                         }
                     }
                 }
-                MobilePanel { active: current == MobileTab::Chat, name: "chat",
+                MobilePanel { active: current == MobileTab::Chat, name: "chat", paged: cfg!(target_os = "android"),
                     div { class: "flex flex-col h-full w-full overflow-hidden bg-[var(--bg)]",
                         if cfg!(target_os = "android") {
                             MobileMedia { active: current == MobileTab::Chat }
@@ -261,8 +327,9 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
                         }
                     }
                 }
-                if current == MobileTab::Members {
-                    div { class: "absolute inset-0 flex flex-col overflow-hidden bg-[var(--panel-solid)]",
+                MobilePanel { active: current == MobileTab::Members, name: "members", paged: cfg!(target_os = "android"),
+                    if current == MobileTab::Members || members_preview() {
+                    div { class: "h-full flex flex-col overflow-hidden bg-[var(--panel-solid)]",
                         div { class: "h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0",
                             button { class: "text-xs text-[var(--accent)] dxf-touch-target",
                                 onclick: move |_| tab.set(MobileTab::Chat),
@@ -270,6 +337,7 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
                             }
                         }
                         div { class: "flex-1 min-h-0 overflow-y-auto", super::members::MembersPanel {} }
+                    }
                     }
                 }
             }
