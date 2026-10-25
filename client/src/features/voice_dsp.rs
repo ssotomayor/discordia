@@ -12,6 +12,7 @@ pub(super) struct Processor {
     gate_mode: Option<(bool, bool)>,
     echo: crate::echo::Echo,
     echo_error_reported: bool,
+    limiter: crate::agc::Limiter,
 }
 
 pub(super) struct Processed {
@@ -42,6 +43,7 @@ impl Processor {
             gate_mode: None,
             echo: crate::echo::Echo::new(reference),
             echo_error_reported: false,
+            limiter: crate::agc::Limiter::default(),
         }
     }
 
@@ -144,7 +146,7 @@ impl Processor {
         for sample in &mut samples {
             *sample *= gain;
         }
-        crate::agc::limit(&mut samples);
+        self.limiter.process(&mut samples);
         let peak = peak_fixed(&samples);
         let action = if gain == 0.0 {
             self.silence();
@@ -227,13 +229,17 @@ mod tests {
                     .iter()
                     .all(|sample| sample.abs() <= 0.980_001)
             );
-            assert!((limited.samples[0] / limited.samples[1] + 2.0).abs() < 1e-6);
-            let after = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
+            assert!((limited.samples[0] / limited.samples[1] + 2.0).abs() < 1e-3);
+            // The ceiling releases over 50 ms rather than snapping back per hop.
+            let mut after = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
+            for _ in 0..30 {
+                after = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
+            }
             assert!(
                 after
                     .samples
                     .iter()
-                    .all(|sample| (*sample - expected).abs() < 1e-6)
+                    .all(|sample| (*sample - expected).abs() < 1e-3)
             );
         }
     }
