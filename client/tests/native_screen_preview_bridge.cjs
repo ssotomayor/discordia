@@ -16,7 +16,7 @@ const window = { innerWidth: 400, innerHeight: 800,
 const context = vm.createContext({ document, window, dioxus: { send: value => sent.push(value) },
   getComputedStyle: () => ({ display: 'flex', visibility: 'visible' }),
   requestAnimationFrame: callback => { raf.set(++frame, callback); return frame; }, cancelAnimationFrame: id => raf.delete(id),
-  MutationObserver: class { constructor(fn) { mutations = fn; } observe() {} disconnect() {} },
+  MutationObserver: class { constructor(fn) { mutations = (records = [{ type: 'childList' }]) => fn(records); } observe() {} disconnect() {} },
   ResizeObserver: class { constructor(fn) { resized = fn; } observe() {} disconnect() {} },
 });
 function flush() { for (const [id, callback] of [...raf]) { raf.delete(id); callback(); } }
@@ -24,6 +24,8 @@ vm.runInContext(`(${script})('preview', 1)`, context);
 assert.equal(sent.at(-1).visible, true);
 assert.equal(sent.at(-1).width, 200);
 assert.equal(raf.size, 0, 'idle preview must not run an animation loop');
+mutations([{ type: 'attributes', target: { contains: () => false, closest: () => null } }]);
+assert.equal(raf.size, 0, 'unrelated voice meter styles must not measure preview geometry');
 resized(); mutations(); resized();
 assert.equal(raf.size, 1, 'geometry updates must coalesce');
 const before = sent.length;
