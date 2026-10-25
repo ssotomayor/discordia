@@ -12,6 +12,10 @@ Presupuesto de caché, contenido, calidad y política de disco conservados. La r
 
 Validación: seis pruebas de caché, Clippy cliente/grid con `-D warnings`, formato y check ARM64 Android aprobados; el check Android conserva warnings de plataforma fuera de estos cambios.
 
+## Memoria de preview — 2026-10-25
+
+Android admite frames de preview a 5 FPS antes de convertir I420 y descarta antes de convertir si su cola está llena/cerrada. La publicación conserva la resolución/FPS elegidos. El controlador descarta la cola al terminar o fallar la captura y limpia el último JPEG/dimensiones al detenerse o cerrarse; los errores siguen disponibles. Pruebas sin cámara física cubren 32 ciclos de parada con confirmación y cierre del controlador.
+
 ## Errores corregidos
 
 | Prioridad | Fallo | Corrección / evidencia |

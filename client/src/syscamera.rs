@@ -78,6 +78,8 @@ mod android {
             slot,
             device: selected,
         };
+        let queued = preview.clone();
+        let pacer = parking_lot::Mutex::new(crate::sysvideo::pacing::FramePacer::new(5));
         crate::android::register_frame_sink(
             slot,
             Arc::new(move |frame| {
@@ -88,6 +90,14 @@ mod android {
                 });
             }),
             fatal,
+        );
+        crate::android::filter_capture_frames(
+            slot,
+            Arc::new(move || {
+                !queued.is_closed()
+                    && queued.capacity() > 0
+                    && pacer.lock().accept(std::time::Instant::now())
+            }),
         );
         crate::android::start_camera_capture(
             slot,
