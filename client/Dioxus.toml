@@ -41,6 +41,9 @@ description = "Updating active connections when Android changes networks"
 [android.permissions."android.permission.REQUEST_INSTALL_PACKAGES"]
 description = "Installing verified Discordia updates with your confirmation"
 
+[android.permissions."android.permission.POST_NOTIFICATIONS"]
+description = "Notifications for new private messages"
+
 [ios]
 deployment_target = "16.0"
 info_plist = "Info.plist"

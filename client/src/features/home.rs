@@ -28,6 +28,12 @@ pub fn HomeView(
     use_hook(move || voice.send(crate::features::voice::VoiceCmd::ListDevices));
 
     let (mut social, open_social) = super::social_window::use_social_window(state);
+    #[cfg(target_os = "android")]
+    use_effect(move || {
+        if state.read().dm_notification_open.is_some() {
+            social.set(true);
+        }
+    });
     crate::mobile_back::use_handler(crate::mobile_back::SCREEN, social(), move |_| {
         social.set(false)
     });
@@ -86,7 +92,14 @@ pub fn HomeView(
 #[component]
 fn MobileSocial(on_close: EventHandler<()>) -> Element {
     let mut state = use_app_state();
-    let mut chat = use_signal(|| false);
+    let mut chat = use_signal(move || state.peek().dm_notification_open.is_some());
+    #[cfg(target_os = "android")]
+    use_effect(move || {
+        if state.read().dm_notification_open.is_some() {
+            chat.set(true);
+            state.write().dm_notification_open = None;
+        }
+    });
     crate::mobile_back::use_handler(crate::mobile_back::SOCIAL_CHAT, chat(), move |_| {
         chat.set(false)
     });

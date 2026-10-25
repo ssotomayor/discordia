@@ -40,6 +40,15 @@ import android.webkit.WebView
 typealias BuildConfig = com.discordia.app.BuildConfig
 
 class MainActivity : WryActivity() {
+    private val dmNotifications by lazy { com.discordia.app.DioxusDmNotifications(this) }
+    external fun onDmNotificationOpened(account: String, peer: String)
+    external fun onDmNotificationVisibility(resumed: Boolean)
+    fun setDmNotificationAccount(account: String, channel: String) { dmNotifications.setAccount(account, channel) }
+    fun clearDmNotificationAccount(account: String) { dmNotifications.clearAccount(account) }
+    fun dmNotificationState(): String = dmNotifications.state()
+    fun enableDmNotifications(enabled: Boolean): String = dmNotifications.enable(enabled)
+    fun showDmNotification(payload: String) { dmNotifications.show(payload) }
+    fun dismissDmNotification(peer: String) { dmNotifications.dismiss(peer) }
     private var navigationWebView: WebView? = null
     private var unregisterBack: (() -> Unit)? = null
 
@@ -753,6 +762,7 @@ class MainActivity : WryActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dmNotifications.open(intent)
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             val callback = android.window.OnBackInvokedCallback { navigateBack() }
             onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
@@ -762,7 +772,26 @@ class MainActivity : WryActivity() {
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        dmNotifications.open(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        dmNotifications.onResume()
+        onDmNotificationVisibility(true)
+    }
+
+    override fun onPause() {
+        onDmNotificationVisibility(false)
+        dmNotifications.resumed = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        dmNotifications.resumed = false
         unregisterBack?.invoke()
         unregisterBack = null
         navigationWebView = null
@@ -818,6 +847,7 @@ class MainActivity : WryActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == com.discordia.app.DioxusDmNotifications.PERMISSION_REQUEST) dmNotifications.permissionReturned()
         if (requestCode == MICROPHONE_REQUEST) {
             microphonePermissionResult = if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) 1 else -1
         }

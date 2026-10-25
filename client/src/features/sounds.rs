@@ -30,11 +30,17 @@ pub fn MessageSounds() -> Element {
         last_notify.set(now);
     });
 
-    let dm_notify = use_memo(move || state.read().dm_notify_tick);
+    let dm_notify = use_memo(move || {
+        let current = state.read();
+        (
+            current.dm_notify_tick,
+            !cfg!(target_os = "android") || current.app_foreground,
+        )
+    });
     let mut last_dm = use_signal(|| 0u64);
     use_effect(move || {
-        let now = dm_notify();
-        if now != 0 && now != *last_dm.peek() {
+        let (now, foreground) = dm_notify();
+        if foreground && now != 0 && now != *last_dm.peek() {
             sfx("dm");
         }
         last_dm.set(now);

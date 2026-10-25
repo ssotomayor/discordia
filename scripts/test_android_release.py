@@ -33,6 +33,16 @@ def jni_dex(defined):
 
 
 class AndroidReleaseTests(unittest.TestCase):
+    def test_notification_permission_must_reach_the_packaged_manifest(self):
+        for present in (True, False):
+            badging = "uses-permission: name='android.permission.POST_NOTIFICATIONS'" if present else ""
+            with patch.object(building.subprocess, 'check_output', return_value=badging):
+                if present:
+                    building.verify_notification_permission(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'notification permission'):
+                        building.verify_notification_permission(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
+
     def test_main_activity_must_reuse_the_process_native_runtime(self):
         good = '\n  E: activity (line=1)\n    A: android:name(0x01010003)="dev.dioxus.main.MainActivity"\n    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n'
         for manifest, valid in [(good, True), (good.replace('0x2\n', '0x0\n'), False),
