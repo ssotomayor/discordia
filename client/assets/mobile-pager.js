@@ -7,25 +7,27 @@ registry.get(id)?.();
 let timer;
 let touching = false;
 let preview = false;
+let moving = false;
 let closed = false;
 let width = pager.clientWidth;
 const index = () => Math.max(0, Math.min(2, Number(pager.dataset.mobileTab) || 0));
 const send = value => { if (!closed) dioxus.send(value); };
 const clearPreview = () => {
-  if (preview) { preview = false; send({type: 'settled'}); }
+  if (preview || moving) { preview = false; moving = false; send({type: 'settled'}); }
 };
 const settle = () => {
   clearTimeout(timer);
   if (closed || touching || !pager.clientWidth) return;
   const target = Math.max(0, Math.min(2, Math.round(pager.scrollLeft / pager.clientWidth)));
   if (Math.abs(pager.scrollLeft - target * pager.clientWidth) > 1) {
-    timer = setTimeout(settle, 140);
+    pager.scrollTo({left: target * pager.clientWidth, behavior: 'auto'});
     return;
   }
   if (target !== index()) send({type: 'select', from: index(), index: target});
   clearPreview();
 };
 const scroll = () => {
+  moving = true;
   if (index() !== 2 && pager.clientWidth && pager.scrollLeft > pager.clientWidth + 1 && !preview) {
     preview = true;
     send({type: 'preview_members'});

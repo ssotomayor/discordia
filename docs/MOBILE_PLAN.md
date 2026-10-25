@@ -2,6 +2,8 @@
 
 Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discordia con Rust y Dioxus **0.7.10** (Cargo.lock). Revalidado el 2026-10-22.
 
+**Navegación, 2026-10-25:** Canales ↔ Chat ↔ Miembros con desplazamiento táctil nativo y vista parcial durante el gesto; botones y Atrás sincronizados. Borrador/scroll conservados y Miembros bajo demanda. Pruebas del bridge, retención de DOM y gestos táctiles en navegador; validación física y costo de CPU/RAM en Release pendientes.
+
 **DM, 2026-10-25:** primera base de notificaciones nativas optativas en Configuración → Notificaciones de DM. Depende de recepción Nostr con el proceso activo; sin servicio permanente ni Firebase. Validación física de permisos, segundo plano y apertura por aviso pendiente. Push con proceso terminado se sigue en [#384](https://github.com/ssotomayor/discordia/issues/384).
 
 **Android — Fase 3 en curso.** Keystore, persistencia y chat probados físicamente. Se corrige el cierre nativo de voz (§12 A); después continuar B–F. El usuario autorizó continuar hasta dejar Android funcionando. iOS queda a cargo del colaborador con macOS. Las secciones anteriores conservan decisiones históricas: prevalece el estado de §12.
