@@ -29,6 +29,8 @@ pub struct Frame {
     pub buffer: livekit::webrtc::video_frame::I420Buffer,
     pub timestamp_us: i64,
     pub rotation: livekit::webrtc::video_frame::VideoRotation,
+    pub conversion_time: std::time::Duration,
+    pub copy_time: std::time::Duration,
 }
 
 #[cfg(target_os = "macos")]

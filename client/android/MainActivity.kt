@@ -120,6 +120,7 @@ class MainActivity : WryActivity() {
         height: Int,
         rotation: Int,
         timestampNs: Long,
+        conversionNs: Long,
     )
 
     external fun onCaptureStopped(slot: Int)
@@ -263,12 +264,14 @@ class MainActivity : WryActivity() {
         override fun onFrameCaptured(frame: VideoFrame) {
             if (!shouldCaptureVideoFrame(slot)) return
             val source = frame.buffer
+            val conversionStarted = System.nanoTime()
             val i420 = source.toI420() ?: return
+            val conversionNs = System.nanoTime() - conversionStarted
             try {
                 onVideoFrame(
                     slot, i420.dataY, i420.dataU, i420.dataV,
                     i420.strideY, i420.strideU, i420.strideV,
-                    i420.width, i420.height, frame.rotation, frame.timestampNs,
+                    i420.width, i420.height, frame.rotation, frame.timestampNs, conversionNs,
                 )
             } finally {
                 // toI420 retains even when it returns the original buffer.

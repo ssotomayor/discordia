@@ -138,6 +138,8 @@ pub struct ScreenShareStats {
     pub capture_height: Option<u32>,
     pub capture_fps: Option<f64>,
     pub capture_processing_ms: Option<f64>,
+    pub capture_conversion_ms: Option<f64>,
+    pub capture_copy_ms: Option<f64>,
     pub capture_callbacks_fps: Option<f64>,
     pub capture_paced_out: Option<u64>,
     pub adapter_dropped_frames: Option<u64>,

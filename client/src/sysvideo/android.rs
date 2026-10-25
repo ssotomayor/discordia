@@ -104,7 +104,13 @@ impl AndroidVideoCapture {
             if let Some(tx) = first {
                 let _ = tx.send(());
             }
-            recorded.record(frame.buffer.width(), frame.buffer.height(), elapsed);
+            recorded.record_android(
+                frame.buffer.width(),
+                frame.buffer.height(),
+                elapsed,
+                frame.conversion_time,
+                frame.copy_time,
+            );
             sink(frame);
         });
         crate::android::register_frame_sink(slot, Arc::from(sink), fatal);

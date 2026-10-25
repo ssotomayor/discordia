@@ -1118,10 +1118,12 @@ pub extern "system" fn Java_dev_dioxus_main_MainActivity_onVideoFrame(
     height: jint,
     rotation: jint,
     timestamp_ns: jlong,
+    conversion_ns: jlong,
 ) {
     let Some(sink) = capture_sink(slot as u32) else {
         return;
     };
+    let copy_started = std::time::Instant::now();
     let frame = read_frame(
         &mut env,
         y,
@@ -1140,7 +1142,11 @@ pub extern "system" fn Java_dev_dioxus_main_MainActivity_onVideoFrame(
         tracing::warn!(%error, "Couldn't clear an Android frame exception");
     }
     match frame {
-        Ok(frame) => sink(frame),
+        Ok(mut frame) => {
+            frame.copy_time = copy_started.elapsed();
+            frame.conversion_time = std::time::Duration::from_nanos(conversion_ns.max(0) as u64);
+            sink(frame);
+        }
         Err(error) => tracing::warn!(%error, "dropped an Android video frame"),
     }
 }
@@ -1202,6 +1208,8 @@ fn read_frame(
         buffer,
         timestamp_us,
         rotation,
+        conversion_time: std::time::Duration::ZERO,
+        copy_time: std::time::Duration::ZERO,
     })
 }
 
