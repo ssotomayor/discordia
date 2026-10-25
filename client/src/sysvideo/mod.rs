@@ -12,7 +12,7 @@ pub(crate) mod metrics;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod mobile_budget;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
-mod pacing;
+pub(crate) mod pacing;
 #[cfg(target_os = "windows")]
 mod windows;
 

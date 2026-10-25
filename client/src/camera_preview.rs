@@ -39,88 +39,106 @@ pub fn preview_controller() -> (
     tokio::sync::mpsc::UnboundedSender<PreviewCommand>,
     tokio::sync::watch::Receiver<PreviewFrame>,
 ) {
-    let (commands, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let (commands, requests) = tokio::sync::mpsc::unbounded_channel();
     let (frames, receiver) = tokio::sync::watch::channel(PreviewFrame::default());
-    tokio::spawn(async move {
-        let mut next = requests.recv().await;
-        while let Some(mut command) = next {
-            while let Ok(newer) = requests.try_recv() {
-                if let PreviewCommand::Stop(done) = command {
-                    let _ = done.send(());
-                }
-                command = newer;
+    tokio::spawn(run_preview(requests, frames));
+    (commands, receiver)
+}
+
+fn clear_preview(frames: &tokio::sync::watch::Sender<PreviewFrame>) {
+    frames.send_if_modified(|frame| {
+        let image = frame.image.take().is_some();
+        let dimensions = frame.dimensions.take().is_some();
+        image || dimensions
+    });
+}
+
+async fn run_preview(
+    mut requests: tokio::sync::mpsc::UnboundedReceiver<PreviewCommand>,
+    frames: tokio::sync::watch::Sender<PreviewFrame>,
+) {
+    let mut next = requests.recv().await;
+    while let Some(mut command) = next {
+        while let Ok(newer) = requests.try_recv() {
+            if let PreviewCommand::Stop(done) = command {
+                let _ = done.send(());
             }
-            if requests.is_closed() {
-                break;
+            command = newer;
+        }
+        if requests.is_closed() {
+            break;
+        }
+        let PreviewCommand::Configure {
+            revision,
+            device,
+            quality,
+        } = command
+        else {
+            clear_preview(&frames);
+            if let PreviewCommand::Stop(done) = command {
+                let _ = done.send(());
             }
-            let PreviewCommand::Configure {
-                revision,
-                device,
-                quality,
-            } = command
-            else {
-                if let PreviewCommand::Stop(done) = command {
-                    let _ = done.send(());
-                }
+            next = requests.recv().await;
+            continue;
+        };
+        let quality = quality.normalized();
+        frames.send_replace(PreviewFrame {
+            revision,
+            ..Default::default()
+        });
+        let (raw_frames, mut stream) = tokio::sync::mpsc::channel(1);
+        let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel();
+        match super::start_preview(device, quality, raw_frames, fatal_tx).await {
+            Err(error) => {
+                drop(stream);
+                frames.send_replace(PreviewFrame {
+                    revision,
+                    error: Some(error),
+                    ..Default::default()
+                });
                 next = requests.recv().await;
-                continue;
-            };
-            let quality = quality.normalized();
-            frames.send_replace(PreviewFrame {
-                revision,
-                ..Default::default()
-            });
-            let (raw_frames, mut stream) = tokio::sync::mpsc::channel(1);
-            let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel();
-            match super::start_preview(device, quality, raw_frames, fatal_tx).await {
-                Err(error) => {
-                    frames.send_replace(PreviewFrame {
-                        revision,
-                        error: Some(error),
-                        ..Default::default()
-                    });
-                    next = requests.recv().await;
-                }
-                Ok(capture) => {
-                    let mut last = std::time::Instant::now() - Duration::from_secs(1);
-                    let mut failed = false;
-                    next = loop {
-                        tokio::select! {
-                            biased;
-                            command = requests.recv() => break command,
-                            Some(error) = fatal_rx.recv() => {
-                                frames.send_replace(PreviewFrame { revision, error: Some(error), ..Default::default() });
+            }
+            Ok(capture) => {
+                let mut last = std::time::Instant::now() - Duration::from_secs(1);
+                let mut failed = false;
+                next = loop {
+                    tokio::select! {
+                        biased;
+                        command = requests.recv() => break command,
+                        Some(error) = fatal_rx.recv() => {
+                            frames.send_replace(PreviewFrame { revision, error: Some(error), ..Default::default() });
+                            failed = true;
+                            break None;
+                        }
+                        frame = tokio::time::timeout(Duration::from_secs(12), stream.recv()) => {
+                            let frame = frame.ok().flatten();
+                            let Some(frame) = frame else {
+                                frames.send_replace(PreviewFrame { revision, error: Some("Camera preview stopped".into()), ..Default::default() });
                                 failed = true;
                                 break None;
-                            }
-                            frame = tokio::time::timeout(Duration::from_secs(12), stream.recv()) => {
-                                let frame = frame.ok().flatten();
-                                let Some(frame) = frame else {
-                                    frames.send_replace(PreviewFrame { revision, error: Some("Camera preview stopped".into()), ..Default::default() });
-                                    failed = true;
-                                    break None;
-                                };
-                                if last.elapsed() < Duration::from_millis(if cfg!(target_os = "android") { 200 } else { 125 }) { continue; }
-                                last = std::time::Instant::now();
-                                let dimensions = frame.dimensions();
-                                let encoded = tokio::task::spawn_blocking(move || preview_image(frame)).await;
-                                match encoded {
-                                    Ok(Ok(image)) => { frames.send_replace(PreviewFrame { revision, image: Some(image), dimensions: Some(dimensions), error: None }); }
-                                    result => { frames.send_replace(PreviewFrame { revision, error: Some(format!("Camera preview failed: {result:?}")), ..Default::default() }); }
-                                }
+                            };
+                            if !cfg!(target_os = "android") && last.elapsed() < Duration::from_millis(125) { continue; }
+                            last = std::time::Instant::now();
+                            let dimensions = frame.dimensions();
+                            let encoded = tokio::task::spawn_blocking(move || preview_image(frame)).await;
+                            match encoded {
+                                Ok(Ok(image)) => { frames.send_replace(PreviewFrame { revision, image: Some(image), dimensions: Some(dimensions), error: None }); }
+                                result => { frames.send_replace(PreviewFrame { revision, error: Some(format!("Camera preview failed: {result:?}")), ..Default::default() }); }
                             }
                         }
-                    };
-                    // Release the device before opening another mode or publishing it.
-                    capture.stop().await;
-                    if failed {
-                        next = requests.recv().await;
                     }
+                };
+                // Release the device before opening another mode or publishing it.
+                capture.stop().await;
+                drop(stream);
+                clear_preview(&frames);
+                if failed {
+                    next = requests.recv().await;
                 }
             }
         }
-    });
-    (commands, receiver)
+    }
+    clear_preview(&frames);
 }
 
 pub(super) fn preview_image(frame: PreviewBuffer) -> Result<String, String> {
@@ -168,6 +186,45 @@ pub(super) fn preview_image(frame: PreviewBuffer) -> Result<String, String> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[tokio::test]
+    async fn stopping_preview_releases_the_last_image_before_acknowledging() {
+        let (commands, requests) = tokio::sync::mpsc::unbounded_channel();
+        let (frames, receiver) = tokio::sync::watch::channel(PreviewFrame::default());
+        let worker = tokio::spawn(run_preview(requests, frames.clone()));
+        for revision in 1..=32 {
+            frames.send_replace(PreviewFrame {
+                revision,
+                image: Some("x".repeat(256 * 1024)),
+                dimensions: Some((480, 270)),
+                error: None,
+            });
+            let (done, stopped) = tokio::sync::oneshot::channel();
+            assert!(commands.send(PreviewCommand::Stop(done)).is_ok());
+            tokio::time::timeout(Duration::from_secs(2), stopped)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(receiver.borrow().image.is_none());
+            assert!(receiver.borrow().dimensions.is_none());
+        }
+        drop(commands);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_preview_commands_clears_a_retained_image() {
+        let (commands, requests) = tokio::sync::mpsc::unbounded_channel();
+        let (frames, receiver) = tokio::sync::watch::channel(PreviewFrame {
+            image: Some("retained preview".into()),
+            dimensions: Some((480, 270)),
+            ..Default::default()
+        });
+        drop(commands);
+        run_preview(requests, frames).await;
+        assert!(receiver.borrow().image.is_none());
+        assert!(receiver.borrow().dimensions.is_none());
+    }
 
     #[test]
     fn portrait_preview_rotates_after_bounded_conversion() {
