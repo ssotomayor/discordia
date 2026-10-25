@@ -2039,6 +2039,7 @@ impl ScreenVideoRoom {
                     .saturating_sub(capture_previous.paced_out);
                 let capture_readback_ms = captured.readback_ms_since(capture_previous);
                 let capture_conversion_ms = captured.conversion_ms_since(capture_previous);
+                let capture_copy_ms = captured.copy_ms_since(capture_previous);
                 capture_previous = captured;
                 sampled = now;
                 let Ok(report) = track.get_stats().await else {
@@ -2192,6 +2193,8 @@ impl ScreenVideoRoom {
                 stats.packets = Some(packets);
                 stats.capture_height = (captured.height > 0).then_some(captured.height);
                 stats.capture_processing_ms = capture_processing_ms;
+                stats.capture_conversion_ms = capture_conversion_ms;
+                stats.capture_copy_ms = capture_copy_ms;
                 stats.capture_callbacks_fps =
                     (captured.callbacks > 0).then_some(capture_callbacks_fps);
                 stats.capture_paced_out = (captured.callbacks > 0).then_some(captured.paced_out);
@@ -2211,6 +2214,7 @@ impl ScreenVideoRoom {
                     capture_largest_gap_ms = captured.largest_gap_us as f64 / 1000.0,
                     capture_readback_ms,
                     capture_conversion_ms,
+                    capture_copy_ms,
                     track_sid = %stats_sid,
                     key_frames_encoded = outbound.outbound.key_frames_encoded,
                     nack_count = outbound.outbound.nack_count,
@@ -2283,6 +2287,8 @@ fn native_screen_stats(
         capture_height: None,
         capture_fps: Some(capture_fps),
         capture_processing_ms: None,
+        capture_conversion_ms: None,
+        capture_copy_ms: None,
         capture_callbacks_fps: None,
         capture_paced_out: None,
         adapter_dropped_frames: None,

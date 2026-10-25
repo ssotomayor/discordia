@@ -1,4 +1,6 @@
 {
+  "image copy {0} ms/frame": ["copia de imagen {0} ms/cuadro", "cópia de imagem {0} ms/quadro"],
+  "image conversion {0} ms/frame": ["conversión de imagen {0} ms/cuadro", "conversão de imagem {0} ms/quadro"],
   "Call back": ["Volver a llamar", "Ligar novamente"],
   "Voice call answered": ["Llamada atendida", "Chamada atendida"],
   "Voice call declined": ["Llamada rechazada", "Chamada recusada"],

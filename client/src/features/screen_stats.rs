@@ -129,6 +129,8 @@ impl WebViewStats {
             capture_height: u32_field("captureHeight"),
             capture_fps: number(msg, "captureFps"),
             capture_processing_ms: None,
+            capture_conversion_ms: None,
+            capture_copy_ms: None,
             capture_callbacks_fps: None,
             capture_paced_out: None,
             adapter_dropped_frames: None,

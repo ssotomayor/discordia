@@ -1379,6 +1379,12 @@ fn ScreenShareStatsRow(
     let processing = stats
         .capture_processing_ms
         .map(|v| crate::i18n::text("capture processing {0} ms/frame", &[format!("{v:.1}")]));
+    let conversion = stats
+        .capture_conversion_ms
+        .map(|v| crate::i18n::text("image conversion {0} ms/frame", &[format!("{v:.1}")]));
+    let copy = stats
+        .capture_copy_ms
+        .map(|v| crate::i18n::text("image copy {0} ms/frame", &[format!("{v:.1}")]));
     let encoding = stats
         .encode_ms
         .map(|v| crate::i18n::text("encode {0} ms/frame", &[format!("{v:.1}")]));
@@ -1398,6 +1404,8 @@ fn ScreenShareStatsRow(
             div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[var(--text-dim)]",
                 if stats.outbound { span { "{capture_label}" } }
                 if let Some(processing) = processing { span { "{processing}" } }
+                if let Some(conversion) = conversion { span { "{conversion}" } }
+                if let Some(copy) = copy { span { "{copy}" } }
                 if let Some(encoding) = encoding { span { "{encoding}" } }
                 if let Some(callbacks) = callbacks { span { "{callbacks}" } }
                 if let Some(paced_out) = paced_out {

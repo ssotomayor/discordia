@@ -11,6 +11,10 @@ pub(crate) struct Snapshot {
     pub largest_gap_us: u64,
     pub readback_us: u64,
     pub conversion_us: u64,
+    pub copy_us: u64,
+    readback_samples: u64,
+    conversion_samples: u64,
+    copy_samples: u64,
 }
 
 #[derive(Default)]
@@ -35,12 +39,31 @@ impl Metrics {
         conversion: Duration,
     ) {
         let mut snapshot = self.0.lock();
+        snapshot.readback_samples += 1;
+        snapshot.conversion_samples += 1;
         snapshot.readback_us += readback.as_micros() as u64;
         snapshot.conversion_us += conversion.as_micros() as u64;
         snapshot.record(width, height, elapsed);
     }
 
-    #[cfg(any(target_os = "android", target_os = "macos", test))]
+    #[cfg(any(target_os = "android", test))]
+    pub fn record_android(
+        &self,
+        width: u32,
+        height: u32,
+        elapsed: Duration,
+        conversion: Duration,
+        copy: Duration,
+    ) {
+        let mut snapshot = self.0.lock();
+        snapshot.conversion_samples += 1;
+        snapshot.copy_samples += 1;
+        snapshot.conversion_us += conversion.as_micros() as u64;
+        snapshot.copy_us += copy.as_micros() as u64;
+        snapshot.record(width, height, elapsed);
+    }
+
+    #[cfg(any(target_os = "macos", test))]
     pub fn record(&self, width: u32, height: u32, elapsed: Duration) {
         let mut snapshot = self.0.lock();
         snapshot.record(width, height, elapsed);
@@ -60,17 +83,41 @@ impl Snapshot {
     }
 
     pub fn readback_ms_since(self, previous: Self) -> Option<f64> {
-        self.stage_ms_since(previous, self.readback_us, previous.readback_us)
+        Self::stage_ms_since(
+            self.readback_us,
+            previous.readback_us,
+            self.readback_samples,
+            previous.readback_samples,
+        )
     }
 
     pub fn conversion_ms_since(self, previous: Self) -> Option<f64> {
-        self.stage_ms_since(previous, self.conversion_us, previous.conversion_us)
+        Self::stage_ms_since(
+            self.conversion_us,
+            previous.conversion_us,
+            self.conversion_samples,
+            previous.conversion_samples,
+        )
     }
 
-    fn stage_ms_since(self, previous: Self, current_us: u64, previous_us: u64) -> Option<f64> {
-        let frames = self.frames.checked_sub(previous.frames)?;
+    pub fn copy_ms_since(self, previous: Self) -> Option<f64> {
+        Self::stage_ms_since(
+            self.copy_us,
+            previous.copy_us,
+            self.copy_samples,
+            previous.copy_samples,
+        )
+    }
+
+    fn stage_ms_since(
+        current_us: u64,
+        previous_us: u64,
+        samples: u64,
+        previous_samples: u64,
+    ) -> Option<f64> {
+        let frames = samples.checked_sub(previous_samples)?;
         let elapsed = current_us.checked_sub(previous_us)?;
-        (frames > 0 && self.callbacks > 0).then(|| elapsed as f64 / frames as f64 / 1000.0)
+        (frames > 0).then(|| elapsed as f64 / frames as f64 / 1000.0)
     }
 
     pub fn processing_ms_since(self, previous: Self) -> Option<f64> {
@@ -130,5 +177,38 @@ mod tests {
         assert_eq!((after.width, after.height), (1920, 1080));
         assert_eq!(after.processing_ms_since(after), None);
         assert_eq!(Snapshot::default().processing_ms_since(after), None);
+    }
+    #[test]
+    fn android_conversion_and_copy_use_measured_samples_without_inventing_readback() {
+        let metrics = Metrics::default();
+        let before = metrics.snapshot();
+        metrics.callback(Duration::ZERO, false);
+        metrics.record_android(
+            640,
+            288,
+            Duration::from_millis(8),
+            Duration::from_millis(5),
+            Duration::from_millis(2),
+        );
+        metrics.callback(Duration::from_millis(16), true);
+        metrics.callback(Duration::from_millis(16), false);
+        metrics.record_android(
+            640,
+            288,
+            Duration::from_millis(4),
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+        );
+        let after = metrics.snapshot();
+        assert_eq!(after.conversion_ms_since(before), Some(3.0));
+        assert_eq!(after.copy_ms_since(before), Some(2.0));
+        assert_eq!(after.processing_ms_since(before), Some(6.0));
+        assert_eq!(after.readback_ms_since(before), None);
+        assert_eq!(after.copy_ms_since(after), None);
+        assert_eq!(Snapshot::default().copy_ms_since(after), None);
+        let unmeasured = Metrics::default();
+        unmeasured.record(640, 288, Duration::from_millis(2));
+        assert_eq!(unmeasured.snapshot().copy_ms_since(before), None);
+        assert_eq!(unmeasured.snapshot().conversion_ms_since(before), None);
     }
 }

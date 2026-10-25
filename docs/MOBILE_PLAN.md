@@ -6,6 +6,8 @@ Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discord
 
 **Llamadas DM, 2026-10-25:** historial cifrado con tarjeta de llamada perdida y botón «Volver a llamar», compartido con escritorio. Deduplica por llamada, conserva pendientes al reiniciar y prioriza la respuesta de otro dispositivo. Intentos sin resultado vencen a los 45 s; errores de conexión se distinguen de llamadas perdidas. No agrega push con el proceso cerrado. Prueba física entre dispositivos pendiente.
 
+**Medición de video, 2026-10-25:** Diagnóstico separa conversión a I420 en Kotlin, asignación/copia a Rust y codificación. Promedios por cuadro medido; etapas sin muestras permanecen desconocidas. Pruebas de contadores, Clippy y check ARM64 aprobados; tiempos reales en Release pendientes.
+
 **Navegación, 2026-10-25:** Canales ↔ Chat ↔ Miembros con desplazamiento táctil nativo y vista parcial durante el gesto; botones y Atrás sincronizados. Borrador/scroll conservados y Miembros bajo demanda. Pruebas del bridge, retención de DOM y gestos táctiles en navegador; validación física y costo de CPU/RAM en Release pendientes.
 
 **DM, 2026-10-25:** primera base de notificaciones nativas optativas en Configuración → Notificaciones de DM. Depende de recepción Nostr con el proceso activo; sin servicio permanente ni Firebase. Validación física de permisos, segundo plano y apertura por aviso pendiente. Push con proceso terminado se sigue en [#384](https://github.com/ssotomayor/discordia/issues/384).
