@@ -381,7 +381,7 @@ pub fn AddServerButton() -> Element {
             }
             button {
                 r#type: "button",
-                class: "px-1.5 h-6 rounded-lg border border-dashed border-[var(--border)] text-[9px] whitespace-nowrap text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                class: "dxf-add-server px-1.5 h-6 rounded-lg border border-dashed border-[var(--border)] text-[9px] whitespace-nowrap text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
                 aria_label: crate::i18n::text("Add a server", &[]),
                 onmouseenter: move |e: MouseEvent| {
                     let c = e.client_coordinates();

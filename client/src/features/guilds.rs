@@ -486,7 +486,10 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
             aria_pressed: active,
             title: crate::i18n::text("Direct messages", &[]),
             onclick: move |_| onclick.call(()),
-            {crate::i18n::text("DM", &[])}
+            if cfg!(target_os = "android") {
+                span { class: "dxf-dm-icon", dangerous_inner_html: super::icons::CHAT }
+            }
+            span { {crate::i18n::text("DM", &[])} }
             if count > 0 {
                 span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
                     "{count}"
@@ -517,7 +520,7 @@ fn GuildIcon(
     // Derived from the id, not the name: a rename should not repaint the tile
     // someone has learned to find by colour.
     let tint = crate::identity::signature_accent(&id.to_string());
-    let tile = if image.is_some() {
+    let tile = if image.is_some() || cfg!(target_os = "android") {
         String::new()
     } else {
         format!("color: {tint}; background: color-mix(in srgb, {tint} 16%, transparent);")

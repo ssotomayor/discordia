@@ -175,6 +175,11 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
     #[allow(unused_mut)]
     let mut state = use_app_state();
     let mut tab = use_signal(|| MobileTab::Channels);
+    crate::mobile_back::use_handler(
+        crate::mobile_back::CONTENT,
+        tab() != MobileTab::Channels,
+        move |_| tab.set(MobileTab::Channels),
+    );
     use_context_provider(move || tab);
     #[cfg(target_os = "android")]
     {

@@ -40,6 +40,23 @@ import android.webkit.WebView
 typealias BuildConfig = com.discordia.app.BuildConfig
 
 class MainActivity : WryActivity() {
+    private var navigationWebView: WebView? = null
+    private var unregisterBack: (() -> Unit)? = null
+
+    private fun navigateBack() {
+        val webView = navigationWebView
+        if (webView == null) {
+            moveTaskToBack(true)
+            return
+        }
+        webView.evaluateJavascript("typeof window.__dxfAndroidBack === 'function' && window.__dxfAndroidBack()") { handled ->
+            if (handled != "true" && !isFinishing && !isDestroyed) moveTaskToBack(true)
+        }
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onBackPressed() { navigateBack() }
+
     private var appUpdater: com.discordia.app.DioxusUpdater? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -736,11 +753,19 @@ class MainActivity : WryActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            val callback = android.window.OnBackInvokedCallback { navigateBack() }
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
+            unregisterBack = { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(callback) }
+        }
         watchDefaultNetwork()
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
 
     override fun onDestroy() {
+        unregisterBack?.invoke()
+        unregisterBack = null
+        navigationWebView = null
         networkCallback?.let { callback ->
             try {
                 (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
@@ -763,6 +788,7 @@ class MainActivity : WryActivity() {
     // dodges the same rule with --unsafely-treat-insecure-origin-as-secure.
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
+        navigationWebView = webView
         webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
     }
 

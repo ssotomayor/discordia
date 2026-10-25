@@ -1082,6 +1082,12 @@
   .border-\[var\(--accent\)\] {
     border-color: var(--accent);
   }
+  .border-\[var\(--accent\)\]\/40 {
+    border-color: var(--accent);
+    @supports (color: color-mix(in lab, red, red)) {
+      border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+    }
+  }
   .border-\[var\(--border\)\] {
     border-color: var(--border);
   }
@@ -1815,6 +1821,13 @@
       }
     }
   }
+  .hover\:bg-\[var\(--accent-soft\)\] {
+    &:hover {
+      @media (hover: hover) {
+        background-color: var(--accent-soft);
+      }
+    }
+  }
   .hover\:bg-\[var\(--bg2\)\] {
     &:hover {
       @media (hover: hover) {
@@ -1953,6 +1966,11 @@
     &:focus {
       --tw-outline-style: none;
       outline-style: none;
+    }
+  }
+  .disabled\:pointer-events-none {
+    &:disabled {
+      pointer-events: none;
     }
   }
   .disabled\:cursor-default {

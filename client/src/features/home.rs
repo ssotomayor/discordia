@@ -28,6 +28,9 @@ pub fn HomeView(
     use_hook(move || voice.send(crate::features::voice::VoiceCmd::ListDevices));
 
     let (mut social, open_social) = super::social_window::use_social_window(state);
+    crate::mobile_back::use_handler(crate::mobile_back::SCREEN, social(), move |_| {
+        social.set(false)
+    });
     use_effect(move || {
         let mut app = state;
         app.write().dm_pane_open = social() && !cfg!(target_os = "android");
@@ -84,6 +87,9 @@ pub fn HomeView(
 fn MobileSocial(on_close: EventHandler<()>) -> Element {
     let mut state = use_app_state();
     let mut chat = use_signal(|| false);
+    crate::mobile_back::use_handler(crate::mobile_back::SOCIAL_CHAT, chat(), move |_| {
+        chat.set(false)
+    });
     let selected = use_memo(move || state.read().selected_channel);
     let mut previous = use_signal(move || *selected.peek());
     use_effect(move || {
@@ -226,6 +232,7 @@ fn TopBar(
                     super::bookmarks::BookmarksButton {}
                     button {
                         class: "flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
+                        aria_expanded: "{social()}",
                         onclick: move |_| {
                             open.set(false);
                             open_social.call(());

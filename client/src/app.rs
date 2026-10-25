@@ -154,11 +154,22 @@ fn openable(url: &str) -> Option<Url> {
 }
 
 #[component]
-pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
+pub fn DiscordiaLogo(
+    #[props(into)] class: String,
+    #[props(default = false)] compact: bool,
+) -> Element {
+    static COMPACT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        DISCORDIA_LOGO_SVG.replace("viewBox=\"0 0 1024 1024\"", "viewBox=\"200 190 650 630\"")
+    });
+    let svg = if compact {
+        COMPACT.as_str()
+    } else {
+        DISCORDIA_LOGO_SVG
+    };
     rsx! {
         div {
             class: "dxf-logo {class}",
-            dangerous_inner_html: DISCORDIA_LOGO_SVG,
+            dangerous_inner_html: svg,
         }
     }
 }
@@ -695,6 +706,7 @@ fn window_close_behavior(
 
 #[component]
 pub fn App() -> Element {
+    crate::mobile_back::use_navigation();
     let mut quitting = use_signal(|| false);
     use_context_provider(|| QuitRequest(quitting));
     let mut session = use_signal(|| None::<SessionParams>);

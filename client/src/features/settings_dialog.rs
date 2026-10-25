@@ -65,6 +65,11 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
 #[component]
 pub fn SettingsDialog() -> Element {
     let mut state = use_app_state();
+    crate::mobile_back::use_handler(
+        crate::mobile_back::SETTINGS,
+        state.read().audio_settings,
+        move |_| state.write().audio_settings = false,
+    );
     let gw_camera = crate::state::use_gateway();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
 

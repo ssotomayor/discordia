@@ -347,6 +347,10 @@ pub fn WorkspaceView(
         }));
     };
 
+    crate::mobile_back::use_handler(crate::mobile_back::SCREEN, true, move |_| {
+        leave(String::new())
+    });
+
     let (gateway_tx, gateway_shutdown, voice_tx) = use_hook(|| {
         state.write().status = ConnectionStatus::Connecting;
         let voice_tx = spawn_voice_service(state);
@@ -660,7 +664,7 @@ pub fn WorkspaceView(
                 onmousedown: move |_| crate::app::start_window_drag(),
                 if !cfg!(target_os = "windows") {
                     div { class: "dxf-workspace-brand shrink-0 flex items-center gap-2 px-1",
-                        crate::app::DiscordiaLogo { class: "w-6 h-6" }
+                        crate::app::DiscordiaLogo { class: "dxf-workspace-logo w-6 h-6", compact: cfg!(target_os = "android") }
                         span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
                     }
                 }
@@ -676,6 +680,7 @@ pub fn WorkspaceView(
                         span { class: "px-2 text-[10px] text-[var(--warn)]", {crate::i18n::text("Reconnecting…", &[])} }
                     }
                     EncryptionBadge {}
+                    if !cfg!(target_os = "android") {
                     button {
                         class: "dxf-server-disconnect h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                         title: crate::i18n::text("Disconnect from this server", &[]),
@@ -683,6 +688,7 @@ pub fn WorkspaceView(
                         onclick: move |_| leave(String::new()),
                         span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
                         span { class: "dxf-disconnect-label", {crate::i18n::text("Disconnect", &[])} }
+                    }
                     }
                 }
                 // Settings and appearance sit in the corner of the window, not
@@ -701,6 +707,15 @@ pub fn WorkspaceView(
                             state.clone().write().audio_settings = open;
                         },
                         span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
+                    }
+                    if cfg!(target_os = "android") {
+                        button {
+                            class: "dxf-server-disconnect flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--danger)]",
+                            title: crate::i18n::text("Disconnect from this server", &[]),
+                            aria_label: crate::i18n::text("Disconnect from this server", &[]),
+                            onclick: move |_| leave(String::new()),
+                            span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
+                        }
                     }
                 }
             }
@@ -1269,12 +1284,17 @@ fn TransportBadge() -> Element {
     let route_label = route.unwrap_or_else(|| label.to_string());
     rsx! {
         button {
-            class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
+            class: "dxf-transport-badge shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
             title: crate::i18n::text("{0} — click for the whole picture", &[(title).to_string()]),
             onclick: move |_| state.write().topology_open = true,
             aria_label: crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label))),
             span { class: "dxf-route-full", {crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label)))} }
-            span { class: "dxf-route-mobile", "{route_label}" }
+            span { class: "dxf-route-mobile",
+                if cfg!(target_os = "android") {
+                    span { class: "dxf-route-caption", {crate::i18n::text("Server", &[])} }
+                }
+                span { class: "dxf-route-value", "{route_label}" }
+            }
         }
     }
 }
@@ -1351,7 +1371,14 @@ fn VoiceRouteBadge() -> Element {
         button { class: "dxf-voice-route-badge shrink-0 px-2 py-1 text-[10px] text-[var(--text-muted)] border-l border-[var(--border)]", title: "{title}",
             onclick: move |_| open.toggle(),
             span { class: "dxf-route-full", {crate::i18n::text("Voice: {0} · {1}", &[(location).to_string(), (phase).to_string()])} }
-            span { class: "dxf-route-mobile", {crate::i18n::text("Voice", &[])}, ": {mobile_phase}" }
+            span { class: "dxf-route-mobile",
+                if cfg!(target_os = "android") {
+                    span { dangerous_inner_html: super::icons::SPEAKER }
+                    span { class: "dxf-voice-phase", {crate::i18n::text("Voice", &[])}, ": {mobile_phase}" }
+                } else {
+                    {crate::i18n::text("Voice", &[])}, ": {mobile_phase}"
+                }
+            }
         }
         if open() {
             div { class: "dxf-no-drag rounded-md border border-[var(--border)] bg-[var(--panel2)] p-4 text-[12px]",
