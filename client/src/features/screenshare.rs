@@ -2854,6 +2854,11 @@ fn SelfPreviewContent(visible: bool) -> Element {
                     serde_json::to_string(&id).unwrap_or_default()
                 ));
                 while let Ok(bounds) = eval.recv::<serde_json::Value>().await {
+                    if bounds.get("revision").and_then(serde_json::Value::as_u64)
+                        != Some(u64::from(revision))
+                    {
+                        continue;
+                    }
                     if let Err(error) = crate::android::set_screen_preview(&bounds.to_string()) {
                         tracing::warn!(%error, "Could not update the local screen preview");
                     }
