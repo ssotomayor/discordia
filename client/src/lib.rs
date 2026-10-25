@@ -21,6 +21,7 @@ mod denoise;
 mod e2ee;
 mod echo;
 mod mic_profile;
+mod mobile_back;
 mod text_menu;
 #[macro_use]
 mod devlog;

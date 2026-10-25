@@ -28,6 +28,15 @@ pub fn network_changes() -> tokio::sync::watch::Receiver<u64> {
         .subscribe()
 }
 
+pub async fn background_app() -> Result<(), String> {
+    on_ui(|env, activity| {
+        env.call_method(activity, "moveTaskToBack", "(Z)Z", &[JValue::Bool(1)])
+            .map_err(system_error)?;
+        Ok(())
+    })
+    .await
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_dioxus_main_MainActivity_onNetworkChanged(
     _env: JNIEnv,

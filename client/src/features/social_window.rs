@@ -17,7 +17,7 @@ use crate::{
 #[cfg(any(target_os = "android", test))]
 fn use_inline_social() -> (Signal<bool>, EventHandler<()>) {
     let mut open = use_signal(|| false);
-    (open, EventHandler::new(move |_| open.set(true)))
+    (open, EventHandler::new(move |_| open.toggle()))
 }
 
 #[cfg(target_os = "android")]
@@ -149,6 +149,16 @@ mod tests {
                 !edits.edits.is_empty(),
                 "opening must mount the inline view"
             );
+            show.call(());
+            let edits = dom.render_immediate_to_vec();
+            assert!(!*open.peek());
+            assert!(
+                !edits.edits.is_empty(),
+                "the same button must unmount Social"
+            );
+            show.call(());
+            dom.render_immediate_to_vec();
+            assert!(*open.peek());
             open.set(false);
             dom.render_immediate_to_vec();
             assert!(!*open.peek());

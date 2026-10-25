@@ -41,6 +41,7 @@ jobs:
           node scripts/test-globe.mjs
           node scripts/test-measure-android.mjs
           node scripts/test-android-edits.cjs
+          node --test scripts/test-android-back.cjs
       - name: Android release metadata and signing regressions
         run: python3 scripts/test_android_release.py
 
