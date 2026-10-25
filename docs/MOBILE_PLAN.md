@@ -2,6 +2,8 @@
 
 Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discordia con Rust y Dioxus **0.7.10** (Cargo.lock). Revalidado el 2026-10-22.
 
+**Nostr, 2026-10-25:** Android renueva sockets y suscripciones al volver al primer plano o cambiar de red; heartbeat de 30 s con límite de respuesta de 15 s y escrituras de 5 s. Trece pruebas locales cubren recuperación, backoff, suscripciones y conexiones obsoletas; Clippy y check ARM64 aprobados. Validación física del caso 0/4 pendiente.
+
 **Navegación, 2026-10-25:** Canales ↔ Chat ↔ Miembros con desplazamiento táctil nativo y vista parcial durante el gesto; botones y Atrás sincronizados. Borrador/scroll conservados y Miembros bajo demanda. Pruebas del bridge, retención de DOM y gestos táctiles en navegador; validación física y costo de CPU/RAM en Release pendientes.
 
 **DM, 2026-10-25:** primera base de notificaciones nativas optativas en Configuración → Notificaciones de DM. Depende de recepción Nostr con el proceso activo; sin servicio permanente ni Firebase. Validación física de permisos, segundo plano y apertura por aviso pendiente. Push con proceso terminado se sigue en [#384](https://github.com/ssotomayor/discordia/issues/384).

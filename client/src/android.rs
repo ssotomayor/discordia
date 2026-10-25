@@ -21,6 +21,19 @@ static MEDIA_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new(
 static PERMISSION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static DOCUMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static NETWORK_CHANGES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+static NOSTR_WAKEUPS: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+
+pub(crate) fn nostr_wakeups() -> tokio::sync::watch::Receiver<u64> {
+    NOSTR_WAKEUPS
+        .get_or_init(|| tokio::sync::watch::channel(0).0)
+        .subscribe()
+}
+
+pub(crate) fn wake_nostr() {
+    NOSTR_WAKEUPS
+        .get_or_init(|| tokio::sync::watch::channel(0).0)
+        .send_modify(|revision| *revision = revision.wrapping_add(1));
+}
 
 pub fn network_changes() -> tokio::sync::watch::Receiver<u64> {
     NETWORK_CHANGES
@@ -42,6 +55,7 @@ pub extern "system" fn Java_dev_dioxus_main_MainActivity_onNetworkChanged(
     _env: JNIEnv,
     _activity: JObject,
 ) {
+    wake_nostr();
     NETWORK_CHANGES
         .get_or_init(|| tokio::sync::watch::channel(0).0)
         .send_modify(|revision| *revision = revision.wrapping_add(1));
