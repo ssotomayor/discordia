@@ -82,7 +82,7 @@ class DioxusScreenPreview(private val activity: Activity, private val webView: (
         val width = value.optDouble("width", 0.0)
         val height = value.optDouble("height", 0.0)
         if (!listOf(viewportWidth, viewportHeight, left, top, width, height).all { it.isFinite() }
-            || viewportWidth <= 0 || viewportHeight <= 0 || width <= 0 || height <= 0
+            || viewportWidth < 1 || viewportHeight < 1 || viewportWidth > 32768 || viewportHeight > 32768 || width <= 0 || height <= 0
             || left < -0.5 || top < -0.5 || left + width > viewportWidth + 0.5 || top + height > viewportHeight + 0.5
             || web.width <= 0 || web.height <= 0) {
             releaseRenderer()
@@ -108,7 +108,7 @@ class DioxusScreenPreview(private val activity: Activity, private val webView: (
                 view.isClickable = false
                 root.addView(view)
             }
-            val layout = FrameLayout.LayoutParams((width * scaleX).roundToInt().coerceAtLeast(1), (height * scaleY).roundToInt().coerceAtLeast(1))
+            val layout = FrameLayout.LayoutParams((width * scaleX).roundToInt().coerceIn(1, web.width), (height * scaleY).roundToInt().coerceIn(1, web.height))
             layout.leftMargin = webPosition[0] - rootPosition[0] + (left * scaleX).roundToInt()
             layout.topMargin = webPosition[1] - rootPosition[1] + (top * scaleY).roundToInt()
             view.layoutParams = layout
