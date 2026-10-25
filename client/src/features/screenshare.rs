@@ -1496,10 +1496,22 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
     }
 }
 
+pub fn screen_quality_supported(id: &str) -> bool {
+    !cfg!(target_os = "android") || matches!(id, "720" | "balanced" | "crisp")
+}
+
+pub fn quality_for_platform(saved: &str) -> &str {
+    if screen_quality_supported(saved) {
+        saved
+    } else {
+        "balanced"
+    }
+}
+
 fn selected_capture_settings(
     settings: &crate::settings::ClientSettings,
 ) -> crate::sysvideo::Settings {
-    let mut capture = native_settings(&settings.screenshare_quality);
+    let mut capture = native_settings(quality_for_platform(&settings.screenshare_quality));
     capture.codec = settings.screenshare_codec;
     capture.encoder = settings.screenshare_encoder;
     capture.adaptive_quality = settings.screenshare_adaptive_quality;
@@ -1510,15 +1522,17 @@ fn selected_capture_settings(
     if capture.fps == 60 && capture.priority == crate::sysvideo::Priority::Balanced {
         capture.priority = crate::sysvideo::Priority::Motion;
     }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[cfg(target_os = "android")]
+    {
+        capture = crate::sysvideo::mobile_budget::limit_settings(capture);
+    }
+    #[cfg(target_os = "ios")]
     mobile_capture_budget(&mut capture);
     capture
 }
 
-/// A phone's capture is a GPU readback plus a copy per frame, and that cost
-/// follows the captured size rather than the encoded one: a 1080p preset gave a
-/// 1920x852 capture at 134% of the encoder's frame budget. 720p is the ceiling.
-#[cfg(any(target_os = "android", target_os = "ios"))]
+// iOS retains the conservative capture ceiling until its native cost is measured.
+#[cfg(target_os = "ios")]
 fn mobile_capture_budget(capture: &mut crate::sysvideo::Settings) {
     let scale = (1280.0 / capture.width.max(1) as f64)
         .min(720.0 / capture.height.max(1) as f64)
