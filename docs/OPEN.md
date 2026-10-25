@@ -37,6 +37,13 @@ and the decisions taken deliberately.
 - No Opus DRED. Our libwebrtc build has it compiled out, and its long
   redundancy is wasted behind a jitter buffer of about 100 ms. RED and FEC
   already cover short bursts.
+- No audio NACK. Read off the SDP (`peer_transport` at `debug`): the opus line
+  carries `useinbandfec=1` on both sides and `a=rtcp-fb:111 transport-cc`
+  only; libwebrtc does not offer `nack` for audio, and the bundled SFU
+  (`pkg/rtc/config.go`) turns audio NACK off on any RED-enabled transceiver,
+  so RED and NACK are one or the other there. We keep RED. Enabling NACK would
+  mean munging `nack` into the audio offer *and* publishing without RED, which
+  is a wire change on both legs, not a setting.
 - The Windows blob's lifetime rule is an observation, not a contract.
 - Two advisories are ignored in `.cargo/audit.toml`, each with its reason
   written beside it: `rsa` arrives through `jsonwebtoken` and never runs an RSA

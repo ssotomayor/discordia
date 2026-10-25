@@ -96,6 +96,11 @@ async fn alternate_endpoint_delivers_audio(
     use futures_util::StreamExt;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
+    // RUST_LOG=livekit::rtc_engine::peer_transport=debug prints every SDP.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let creds = discordia_server::livekit_bundle::Credentials::generate();
     let data_dir = std::env::temp_dir().join(format!("discordia-direct-{}", uuid::Uuid::new_v4()));
     let _sfu = discordia_server::livekit_bundle::spawn_livekit(
