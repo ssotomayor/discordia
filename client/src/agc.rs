@@ -71,14 +71,30 @@ fn rms(hop: &[f32]) -> f32 {
     (hop.iter().map(|s| s * s).sum::<f32>() / hop.len().max(1) as f32).sqrt()
 }
 
-pub fn limit(hop: &mut [f32]) {
-    let peak = hop
-        .iter()
-        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
-    if peak > CEILING {
-        let gain = CEILING / peak;
+const RELEASE_SECS: f32 = 0.05;
+
+/// Peak ceiling after the manual volume: the gain drops the instant a sample
+/// would pass it and recovers over `RELEASE_SECS`, carried across hops.
+pub struct Limiter {
+    gain: f32,
+    release: f32,
+}
+
+impl Default for Limiter {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            release: 1.0 - (-1.0 / (RELEASE_SECS * 48_000.0)).exp(),
+        }
+    }
+}
+
+impl Limiter {
+    pub fn process(&mut self, hop: &mut [f32]) {
         for sample in hop {
-            *sample *= gain;
+            let target = CEILING / sample.abs().max(CEILING);
+            self.gain = (self.gain + (1.0 - self.gain) * self.release).min(target);
+            *sample *= self.gain;
         }
     }
 }
@@ -282,9 +298,61 @@ pub(crate) mod tests {
     #[test]
     fn manual_boost_is_limited_without_flattening_the_waveform() {
         let mut samples = [1.6, -0.8, 0.4];
-        limit(&mut samples);
+        Limiter::default().process(&mut samples);
         assert!((samples[0] - 0.98).abs() < 1e-6);
-        assert!((samples[1] + 0.49).abs() < 1e-6);
-        assert!((samples[2] - 0.245).abs() < 1e-6);
+        assert!((samples[1] + 0.49).abs() < 1e-3);
+        assert!((samples[2] - 0.245).abs() < 1e-3);
+    }
+
+    /// One gain per 10 ms hop stepped a hundred times a second on loud speech,
+    /// which is a buzz. The gain now moves per sample, so a hop boundary is no
+    /// different from any other pair of samples.
+    #[test]
+    fn a_loud_sine_at_double_volume_sees_no_gain_step_at_hop_boundaries() {
+        let mut limiter = Limiter::default();
+        let input: Vec<f32> = (0..HOP * 100)
+            .map(|n| 0.9 * 2.0 * (std::f32::consts::TAU * 1000.0 * n as f32 / 48_000.0 + 0.3).sin())
+            .collect();
+        let mut output = input.clone();
+        for hop in output.chunks_mut(HOP) {
+            limiter.process(hop);
+        }
+        assert!(output.iter().all(|s| s.abs() <= CEILING + 1e-6));
+        let gain = |n: usize| output[n] / input[n];
+        for hop in 2..100 {
+            let at = hop * HOP;
+            let step = (gain(at) - gain(at - 1)).abs();
+            assert!(step < 1e-3, "hop {hop}: gain stepped {step}");
+        }
+        assert!(gain(HOP * 50) < 0.6, "double volume must be held down");
+    }
+
+    #[test]
+    fn the_gain_recovers_after_a_peak_instead_of_staying_down() {
+        let mut limiter = Limiter::default();
+        let mut peak = [0.1; HOP];
+        peak[0] = 1.8;
+        limiter.process(&mut peak);
+        assert!((peak[0] - CEILING).abs() < 1e-6);
+        assert!(peak[1] < 0.06);
+        let mut after = Vec::new();
+        for _ in 0..30 {
+            let mut hop = [0.1; HOP];
+            limiter.process(&mut hop);
+            after.extend_from_slice(&hop);
+        }
+        assert!(
+            after.windows(2).all(|w| w[1] >= w[0] - 1e-7),
+            "recovery is monotonic"
+        );
+        assert!(
+            (after[after.len() - 1] - 0.1).abs() < 1e-3,
+            "back to unity within 300 ms"
+        );
+        let at_50ms = after[HOP * 5];
+        assert!(
+            at_50ms > 0.08 && at_50ms < 0.1,
+            "a 50 ms release: {at_50ms}"
+        );
     }
 }

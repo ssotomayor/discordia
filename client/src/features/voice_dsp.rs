@@ -12,6 +12,7 @@ pub(super) struct Processor {
     gate_mode: Option<(bool, bool)>,
     echo: crate::echo::Echo,
     echo_error_reported: bool,
+    limiter: crate::agc::Limiter,
 }
 
 pub(super) struct Processed {
@@ -42,6 +43,7 @@ impl Processor {
             gate_mode: None,
             echo: crate::echo::Echo::new(reference),
             echo_error_reported: false,
+            limiter: crate::agc::Limiter::default(),
         }
     }
 
@@ -75,12 +77,11 @@ impl Processor {
         &mut self,
         mut samples: [f32; FRAME_SAMPLES],
         config: Config,
-        delay: i32,
         muted: bool,
     ) -> Processed {
         self.echo
             .configure(config.processing.echo, config.processing.high_pass);
-        if let Err(error) = self.echo.process(&mut samples, delay)
+        if let Err(error) = self.echo.process(&mut samples)
             && !self.echo_error_reported
         {
             tracing::warn!(%error, "microphone echo cancellation unavailable");
@@ -144,7 +145,7 @@ impl Processor {
         for sample in &mut samples {
             *sample *= gain;
         }
-        crate::agc::limit(&mut samples);
+        self.limiter.process(&mut samples);
         let peak = peak_fixed(&samples);
         let action = if gain == 0.0 {
             self.silence();
@@ -195,7 +196,7 @@ mod tests {
         processor.prepare(config);
         assert!(processor.denoiser.is_some());
         assert_eq!(processor.suppression, Some(config.suppression));
-        let output = processor.process([0.01; FRAME_SAMPLES], config, 0, false);
+        let output = processor.process([0.01; FRAME_SAMPLES], config, false);
         assert!(!output.model_loaded);
         assert_eq!(output.engine, Some(crate::denoise::Engine::DeepFilterNet));
     }
@@ -209,7 +210,7 @@ mod tests {
         let mut config = config.preset(crate::mic_profile::Profile::Natural);
         for volume in [50, 100, 200] {
             config.volume = volume;
-            let normal = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
+            let normal = processor.process([0.05; FRAME_SAMPLES], config, false);
             let expected = 0.05 * f32::from(volume) / 100.0;
             assert!(
                 normal
@@ -220,20 +221,24 @@ mod tests {
             let mut peak = [0.1; FRAME_SAMPLES];
             peak[0] = 0.9;
             peak[1] = -0.45;
-            let limited = processor.process(peak, config, 0, false);
+            let limited = processor.process(peak, config, false);
             assert!(
                 limited
                     .samples
                     .iter()
                     .all(|sample| sample.abs() <= 0.980_001)
             );
-            assert!((limited.samples[0] / limited.samples[1] + 2.0).abs() < 1e-6);
-            let after = processor.process([0.05; FRAME_SAMPLES], config, 0, false);
+            assert!((limited.samples[0] / limited.samples[1] + 2.0).abs() < 1e-3);
+            // The ceiling releases over 50 ms rather than snapping back per hop.
+            let mut after = processor.process([0.05; FRAME_SAMPLES], config, false);
+            for _ in 0..30 {
+                after = processor.process([0.05; FRAME_SAMPLES], config, false);
+            }
             assert!(
                 after
                     .samples
                     .iter()
-                    .all(|sample| (*sample - expected).abs() < 1e-6)
+                    .all(|sample| (*sample - expected).abs() < 1e-3)
             );
         }
     }
@@ -248,7 +253,7 @@ mod tests {
         for _ in 0..2 {
             let (_, reference) = crate::audio_queue::channel();
             let mut processor = Processor::new(reference);
-            let output = processor.process([0.9; FRAME_SAMPLES], config, 0, false);
+            let output = processor.process([0.9; FRAME_SAMPLES], config, false);
             assert!((output.samples[0] - 0.98).abs() < 1e-6);
             processed.push(output.samples);
         }
@@ -297,7 +302,7 @@ mod tests {
         processor.denoiser = Some(crate::denoise::Denoiser::stopped());
         let hop = [0.01; FRAME_SAMPLES];
         for _ in 0..3 {
-            let processed = processor.process(hop, config, 0, false);
+            let processed = processor.process(hop, config, false);
             assert_eq!(processed.engine, None);
             assert_eq!(
                 processor.denoise_fallback(),
@@ -305,7 +310,7 @@ mod tests {
             );
         }
         processor.retry_denoise();
-        let processed = processor.process(hop, config, 0, false);
+        let processed = processor.process(hop, config, false);
         assert_eq!(
             processed.engine,
             Some(crate::denoise::Engine::DeepFilterNet)
@@ -322,17 +327,17 @@ mod tests {
         let mut config = config.preset(crate::mic_profile::Profile::Natural);
         let samples = std::array::from_fn(|i| if i % 2 == 0 { 0.0003 } else { -0.0003 });
         for _ in 0..500 {
-            let result = processor.process(samples, config, 0, false);
+            let result = processor.process(samples, config, false);
             assert_eq!(result.samples, samples);
             assert_eq!(result.action, GateAction::Pass);
         }
         assert_eq!(
-            processor.process(samples, config, 0, true).action,
+            processor.process(samples, config, true).action,
             GateAction::Drop
         );
         config.volume = 0;
         assert_eq!(
-            processor.process(samples, config, 0, false).action,
+            processor.process(samples, config, false).action,
             GateAction::Drop
         );
     }

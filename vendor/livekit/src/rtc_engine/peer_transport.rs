@@ -30,6 +30,47 @@ use super::EngineResult;
 
 pub type OnOfferCreated = Box<dyn FnMut(SessionDescription) + Send + Sync>;
 
+/// Every description either side sets, at debug level, with the audio lines
+/// (opus fmtp and rtcp-fb) summarised first so a voice issue can be read off
+/// the log without the whole SDP.
+fn log_description(target: proto::SignalTarget, side: &str, description: &SessionDescription) {
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+    let sdp = description.to_string();
+    let mut audio_lines: Vec<String> = Vec::new();
+    let push = |audio_lines: &mut Vec<String>, line: &str| {
+        if !audio_lines.iter().any(|l| l == line) {
+            audio_lines.push(line.to_string());
+        }
+    };
+    for line in sdp.lines() {
+        let line = line.trim_end();
+        if line.starts_with("m=audio") {
+            push(&mut audio_lines, line);
+        } else if let Some(rest) = line.strip_prefix("a=rtpmap:") {
+            if rest.contains("opus/") || rest.contains("red/48000") {
+                push(&mut audio_lines, line);
+            }
+        } else if line.starts_with("a=fmtp:") || line.starts_with("a=rtcp-fb:") {
+            let pt = line.split([':', ' ']).nth(1).unwrap_or("");
+            if audio_lines
+                .iter()
+                .any(|l| l.starts_with(&format!("a=rtpmap:{pt} ")))
+            {
+                push(&mut audio_lines, line);
+            }
+        }
+    }
+    log::debug!(
+        "{:?} {side} {:?} audio: {}",
+        target,
+        description.sdp_type(),
+        audio_lines.join(" | ")
+    );
+    log::debug!("{:?} {side} {:?} sdp:\n{sdp}", target, description.sdp_type());
+}
+
 struct TransportInner {
     pending_candidates: Vec<IceCandidate>,
     renegotiate: bool,
@@ -169,11 +210,13 @@ impl PeerTransport {
         let mut inner = self.inner.lock().await;
 
         if let Some(pending_offer) = inner.pending_initial_offer.take() {
+            log_description(self.signal_target, "local", &pending_offer);
             self.peer_connection
                 .set_local_description(pending_offer)
                 .await?;
         }
 
+        log_description(self.signal_target, "remote", &remote_description);
         self.peer_connection
             .set_remote_description(remote_description)
             .await?;
@@ -218,6 +261,7 @@ impl PeerTransport {
     ) -> EngineResult<SessionDescription> {
         self.set_remote_description(offer).await?;
         let answer = self.peer_connection().create_answer(options).await?;
+        log_description(self.signal_target, "local", &answer);
         self.peer_connection()
             .set_local_description(answer.clone())
             .await?;
@@ -713,6 +757,7 @@ impl PeerTransport {
             }
         }
 
+        log_description(self.signal_target, "local", &offer);
         self.peer_connection
             .set_local_description(offer.clone())
             .await?;

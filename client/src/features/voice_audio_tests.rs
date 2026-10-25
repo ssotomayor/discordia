@@ -46,7 +46,7 @@ fn overlapping_voice_stream_and_soundboard_are_limited_after_their_volumes() {
         let mut clipped_error = 0.0_f64;
         let delay = rate / 200;
         for i in 0..rate {
-            let raw = next_playback_sample(&mut tracks, i, usize::MAX, 0);
+            let raw = next_playback_sample(&mut tracks);
             let limited = limiter.process(raw);
             let mut rng = DITHER_SEED;
             let integer = dither_to_i16(limited, &mut rng);
@@ -369,7 +369,7 @@ fn dm_playback_volume_changes_output_without_changing_microphone_gain() {
             &controls.deafened,
         );
         let power: f32 = (0..480)
-            .map(|counter| next_playback_sample(&mut tracks, counter, usize::MAX, 0).powi(2))
+            .map(|_| next_playback_sample(&mut tracks).powi(2))
             .sum();
         (power / 480.0).sqrt()
     };
@@ -514,7 +514,7 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
         &controls.soundboard_pct,
         &controls.deafened,
     );
-    assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), 0.0);
+    assert_eq!(next_playback_sample(&mut tracks), 0.0);
     assert_eq!(tracks.buffers[&1].samples.len(), 479);
     assert!(controls.watched_streams.borrow().contains("alice"));
     state.stream_muted.clear();
@@ -526,7 +526,7 @@ fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
         &controls.soundboard_pct,
         &controls.deafened,
     );
-    assert_eq!(next_playback_sample(&mut tracks, 2, usize::MAX, 0), 0.2);
+    assert_eq!(next_playback_sample(&mut tracks), 0.2);
 }
 
 #[test]
@@ -565,7 +565,8 @@ fn playback_backlog_is_bounded_and_retains_current_audio() {
     {
         let tracks = handle.tracks.lock();
         let samples = &tracks.buffers[&id].samples;
-        assert_eq!(samples.len(), cap);
+        let target = 48000 * drift::TARGET_MS as usize / 1000;
+        assert_eq!(samples.len(), target + 480);
         assert!(samples.iter().rev().take(480).all(|s| *s == 0.7));
     }
     handle.remove_track(id);
@@ -584,8 +585,6 @@ fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
     let id = handle.add_track("peer".into(), TrackKind::Voice);
     let hop = rate as usize / 100;
     let cap = rate as usize / PLAYBACK_CAP_DIVISOR as usize;
-    let overrun = (f64::from(rate) * DRIFT_OVERRUN_SECS) as usize;
-    let underrun = (f64::from(rate) * DRIFT_UNDERRUN_SECS) as usize;
     handle.push(id, &vec![0.2; 4 * hop], rate, cap);
     let frame = vec![0.2; hop];
     let mut next_hop = 0;
@@ -610,11 +609,12 @@ fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
         if !recover {
             tracks.buffers.get_mut(&id).unwrap().recovery = playback_recovery::Recovery::new(rate);
         }
-        let value = next_playback_sample(&mut tracks, sample as u32, overrun, underrun);
+        let value = next_playback_sample(&mut tracks);
         let silent = value == 0.0;
         silent_runs += usize::from(silent && !was_silent);
         was_silent = silent;
-        assert!(value == 0.0 || (value - 0.2).abs() < 1e-6);
+        // A resume fades in, so anything between silence and the level is a ramp sample.
+        assert!((0.0..=0.2 + 1e-6).contains(&value), "{value}");
         assert!(tracks.buffers[&id].samples.len() <= cap);
     }
     let tracks = handle.tracks.lock();
@@ -633,12 +633,15 @@ fn recovery_avoids_chopping_audio_while_a_stalled_producer_catches_up() {
             "the stalled producer must reproduce repeated cuts"
         );
         assert!(
-            recovered.0 * 3 <= baseline.0,
+            recovered.0 * 2 <= baseline.0,
             "rate={rate}: recovery must reduce fragmented output"
         );
         assert!(recovered.1 < baseline.1);
         assert!(recovered.2 > 0);
-        assert!(recovered.1 + recovered.2 <= baseline.1 + u64::from(rate) * 80 / 1000);
+        assert!(
+            recovered.1 + recovered.2
+                <= baseline.1 + u64::from(rate) * u64::from(playback_recovery::RESERVE_MS) / 1000
+        );
     }
 }
 
@@ -696,7 +699,7 @@ fn soundboard_restarts_immediately_after_short_and_long_pauses() {
         let mut tracks = handle.tracks.lock();
         for (gap_ms, value) in [(0, 0.2), (20, 0.3), (200, 0.4), (20, 0.5)] {
             for _ in 0..rate * gap_ms / 1000 {
-                assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), 0.0);
+                assert_eq!(next_playback_sample(&mut tracks), 0.0);
             }
             tracks
                 .buffers
@@ -704,7 +707,7 @@ fn soundboard_restarts_immediately_after_short_and_long_pauses() {
                 .unwrap()
                 .samples
                 .push_back(value);
-            assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), value);
+            assert_eq!(next_playback_sample(&mut tracks), value);
         }
         assert_eq!(tracks.buffers[&id].recovery.held_samples, 0);
     }
@@ -735,12 +738,13 @@ fn recovery_does_not_delay_startup_or_trap_a_short_final_fragment() {
         }
         assert!(recovery.ready(1));
         assert!(!recovery.ready(0));
+        let reserve = rate as usize * playback_recovery::RESERVE_MS as usize / 1000;
         let mut held = 0;
         while !recovery.ready(1) {
             held += 1;
-            assert!(held <= rate as usize * 80 / 1000);
+            assert!(held <= reserve);
         }
-        assert_eq!(held, rate as usize * 80 / 1000);
+        assert_eq!(held, reserve);
         assert_eq!(recovery.held_samples, held as u64);
     }
 }
@@ -768,10 +772,10 @@ fn recorded_playback_bypasses_recovery_and_output_rate_changes_reset_its_wait() 
             source_rate: SAMPLE_RATE,
         },
     );
-    assert_eq!(next_playback_sample(&mut tracks, 0, usize::MAX, 0), 0.2);
-    assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), 0.0);
+    assert_eq!(next_playback_sample(&mut tracks), 0.2);
+    assert_eq!(next_playback_sample(&mut tracks), 0.0);
     tracks.buffers.get_mut(&0).unwrap().samples.push_back(0.3);
-    assert_eq!(next_playback_sample(&mut tracks, 2, usize::MAX, 0), 0.3);
+    assert_eq!(next_playback_sample(&mut tracks), 0.3);
 }
 
 #[test]

@@ -110,7 +110,7 @@ fn render(
     config: Config,
     cancel: &AtomicBool,
 ) -> Result<(Vec<f32>, Metrics), String> {
-    let (_tx, reference) = crate::audio_queue::channel();
+    let (_tx, reference) = crate::audio_queue::reference_channel();
     let mut processor = dsp::Processor::new(reference);
     let mut output = Vec::with_capacity(input.len() * FRAME_SAMPLES);
     let mut lead_in = activity::LeadIn::new();
@@ -121,7 +121,7 @@ fn render(
         if cancel.load(Ordering::Relaxed) {
             return Err("Microphone adjustment cancelled.".into());
         }
-        let processed = processor.process(frame.samples, config, 0, false);
+        let processed = processor.process(frame.samples, config, false);
         gate_peaks.push(processed.gate_peak as f32 / 1000.0);
         lead_in.push(
             crate::audio_queue::Frame::new(processed.samples),

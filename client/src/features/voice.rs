@@ -30,7 +30,10 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use parking_lot::Mutex;
 use rubato::audioadapter_buffers::direct::SequentialSlice;
-use rubato::{Fft, FixedSync, Resampler, WindowFunction};
+use rubato::{
+    Async, Fft, FixedAsync, FixedSync, Resampler, SincInterpolationParameters,
+    SincInterpolationType, WindowFunction,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::{ClientMessage, IceServer, Id};
@@ -49,6 +52,8 @@ mod activity;
 mod calibration;
 #[path = "voice_direct.rs"]
 pub mod direct;
+#[path = "voice_drift.rs"]
+mod drift;
 #[path = "voice_dsp.rs"]
 mod dsp;
 #[path = "voice_mic_test.rs"]
@@ -65,15 +70,15 @@ mod subscriptions;
 const CHANNELS: u32 = 1;
 const FRAME_MS: u32 = 10;
 const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
+const _: () = assert!(FRAME_SAMPLES == crate::audio_queue::SAMPLES);
+
+/// Buffered (non-zero) means a 10 ms timer in webrtc-sys that sends silence
+/// whenever the queue runs under 10 ms, so a drifting capture clock cuts holes.
+const SOURCE_QUEUE_MS: u32 = 0;
 
 pub(crate) const RESAMPLER_CHUNK: usize = 512;
 
 const PLAYBACK_CAP_DIVISOR: u32 = 5;
-
-/// Must stay below the playback cap, or drift correction and the ring buffer
-/// fight each other.
-const DRIFT_OVERRUN_SECS: f64 = 0.12;
-const DRIFT_UNDERRUN_SECS: f64 = 0.03;
 
 const GATE_HANGOVER_FRAMES: u32 = 30;
 
@@ -788,7 +793,8 @@ impl ActiveVoice {
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let local_audio = new_muted_microphone_track(source.clone());
         let local_audio_for_mute = local_audio.clone();
         let red = !(cfg!(target_os = "android") && crate::e2ee::enabled());
@@ -799,6 +805,7 @@ impl ActiveVoice {
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
                     red,
+                    dtx: false,
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
@@ -821,7 +828,7 @@ impl ActiveVoice {
 
         let (frame_tx, frame_rx) = crate::audio_queue::channel::<f32>();
         let (gated_tx, gated_rx) = crate::audio_queue::channel::<i16>();
-        let (reference_tx, reference_rx) = crate::audio_queue::channel::<i16>();
+        let (reference_tx, reference_rx) = crate::audio_queue::reference_channel::<i16>();
         let (faults, faults_rx) = unbounded_channel::<AudioFault>();
         let meter = Arc::new(MicMeter::default());
         let muted = Arc::new(AtomicBool::new(true));
@@ -1249,7 +1256,7 @@ impl ActiveVoice {
             },
             SAMPLE_RATE,
             CHANNELS,
-            1000,
+            SOURCE_QUEUE_MS,
         );
         let track = LocalAudioTrack::create_audio_track(
             "screen-audio",
@@ -1307,7 +1314,7 @@ impl ActiveVoice {
             },
             SAMPLE_RATE,
             CHANNELS,
-            1000,
+            SOURCE_QUEUE_MS,
         );
         let track = LocalAudioTrack::create_audio_track(
             SOUNDBOARD_TRACK,
@@ -2545,12 +2552,7 @@ fn denoise_gate_loop(
         }
         let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
         let is_muted = muted.load(Ordering::Relaxed);
-        let processed = processor.process(
-            packet.samples,
-            config,
-            50 + packet.captured.elapsed().as_millis().min(450) as i32,
-            is_muted,
-        );
+        let processed = processor.process(packet.samples, config, is_muted);
         lead_in.push(
             crate::audio_queue::Frame {
                 samples: processed.samples,
@@ -2845,17 +2847,8 @@ async fn soundboard_loop(
             *pos = end;
         }
         playing.retain(|(pcm, pos)| *pos < pcm.len());
-        let data: Vec<i16> = frame
-            .iter()
-            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .collect();
-        let sent = AudioFrame {
-            data: data.into(),
-            sample_rate: SAMPLE_RATE,
-            num_channels: CHANNELS,
-            samples_per_channel: FRAME_SAMPLES as u32,
-        };
-        if let Err(e) = source.capture_frame(&sent).await {
+        let data = frame.map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+        if let Err(e) = source.capture_frame(&pcm_frame(&data)).await {
             eprintln!("[voice] soundboard capture_frame error: {e:?}");
         }
         let current = mixer.rate();
@@ -2877,6 +2870,16 @@ async fn soundboard_loop(
     mixer.remove_track(local);
 }
 
+/// The direct source takes exactly one DSP block per call; anything else is refused.
+fn pcm_frame(samples: &[i16; FRAME_SAMPLES]) -> AudioFrame<'_> {
+    AudioFrame {
+        data: std::borrow::Cow::Borrowed(samples),
+        sample_rate: SAMPLE_RATE,
+        num_channels: CHANNELS,
+        samples_per_channel: FRAME_SAMPLES as u32,
+    }
+}
+
 async fn publish_pcm(mut rx: crate::audio_queue::AudioReceiver<f32>, source: NativeAudioSource) {
     while let Some(packet) = rx.recv().await {
         if !packet.is_fresh() {
@@ -2885,13 +2888,7 @@ async fn publish_pcm(mut rx: crate::audio_queue::AudioReceiver<f32>, source: Nat
         let data = packet
             .samples
             .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
-        let frame = AudioFrame {
-            data: std::borrow::Cow::Borrowed(&data),
-            sample_rate: SAMPLE_RATE,
-            num_channels: CHANNELS,
-            samples_per_channel: FRAME_SAMPLES as u32,
-        };
-        if let Err(e) = source.capture_frame(&frame).await {
+        if let Err(e) = source.capture_frame(&pcm_frame(&data)).await {
             eprintln!("[voice] system audio capture_frame error: {e:?}");
         }
     }
@@ -2909,13 +2906,7 @@ async fn publish_loop(mut rx: crate::audio_queue::AudioReceiver<i16>, source: Na
             trace.record(packet.position, packet.captured, "stale_publish", None);
             continue;
         }
-        let frame = AudioFrame {
-            data: std::borrow::Cow::Borrowed(&packet.samples),
-            sample_rate: SAMPLE_RATE,
-            num_channels: CHANNELS,
-            samples_per_channel: FRAME_SAMPLES as u32,
-        };
-        if let Err(e) = source.capture_frame(&frame).await {
+        if let Err(e) = source.capture_frame(&pcm_frame(&packet.samples)).await {
             eprintln!("[voice] capture_frame error: {e:?}");
             trace.record(packet.position, packet.captured, "source_error", None);
             continue;
@@ -3548,11 +3539,14 @@ fn update_peak(peak: &Arc<std::sync::atomic::AtomicI32>, samples: &[f32]) {
 }
 
 pub(crate) struct AudioResampler {
-    inner: Fft<f32>,
+    inner: Box<dyn Resampler<f32>>,
     input_accum: Vec<f32>,
     chunk_in: Vec<f32>,
     scratch_out: Vec<f32>,
 }
+
+/// Room for `drift::Control`'s correction either way.
+const ADAPTIVE_RATIO_RANGE: f64 = 1.02;
 
 #[cfg(test)]
 #[path = "resampler_tests.rs"]
@@ -3574,14 +3568,47 @@ impl AudioResampler {
         )
         .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
         .ok()?;
+        Some(Self::wrap(Box::new(inner)))
+    }
+
+    /// Built even when the rates match: its ratio is what corrects the drift
+    /// between the sender's playout clock and this device.
+    pub(crate) fn adaptive(from_rate: u32, to_rate: u32) -> Option<Self> {
+        let inner = Async::<f32>::new_sinc(
+            f64::from(to_rate) / f64::from(from_rate),
+            ADAPTIVE_RATIO_RANGE,
+            &SincInterpolationParameters {
+                sinc_len: 64,
+                f_cutoff: None,
+                oversampling_factor: 128,
+                interpolation: SincInterpolationType::Linear,
+                window: WindowFunction::BlackmanHarris2,
+            },
+            FRAME_SAMPLES,
+            1,
+            FixedAsync::Input,
+        )
+        .map_err(|e| eprintln!("[voice] rubato adaptive resampler init failed: {e:?}"))
+        .ok()?;
+        Some(Self::wrap(Box::new(inner)))
+    }
+
+    fn wrap(inner: Box<dyn Resampler<f32>>) -> Self {
         let max_in = inner.input_frames_max();
         let max_out = inner.output_frames_max();
-        Some(Self {
+        Self {
             inner,
             input_accum: Vec::with_capacity(max_in * 2),
             chunk_in: Vec::with_capacity(max_in),
             scratch_out: vec![0.0; max_out],
-        })
+        }
+    }
+
+    /// Ramped over the next chunk; a fixed resampler ignores it.
+    pub(crate) fn set_relative_ratio(&mut self, ratio: f64) {
+        if let Some(adjustable) = self.inner.as_adjustable() {
+            let _ = adjustable.set_resample_ratio_relative(ratio, true);
+        }
     }
 
     pub(crate) fn process_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
@@ -3794,9 +3821,7 @@ impl PlaybackHandle {
         }
         track.recovery.set_rate(current);
         track.samples.extend(samples);
-        while track.samples.len() > cap {
-            track.samples.pop_front();
-        }
+        drift::bound(&mut track.samples, cap, current);
         Some((
             track.samples.len(),
             track.starved,
@@ -3841,54 +3866,23 @@ fn refresh_gains(
     }
 }
 
-#[inline]
-fn pop_drift_compensated(
-    buf: &mut std::collections::VecDeque<f32>,
-    counter: u32,
-    overrun: usize,
-    underrun: usize,
-) -> f32 {
-    let len = buf.len();
-    if len > overrun {
-        if counter.is_multiple_of(32) {
-            buf.pop_front();
-        }
-        buf.pop_front().unwrap_or(0.0)
-    } else if len < underrun {
-        if counter.is_multiple_of(64) {
-            buf.front().copied().unwrap_or(0.0)
-        } else {
-            buf.pop_front().unwrap_or(0.0)
-        }
-    } else {
-        buf.pop_front().unwrap_or(0.0)
-    }
-}
-
-fn next_playback_sample(
-    tracks: &mut MixerTracks,
-    counter: u32,
-    overrun: usize,
-    underrun: usize,
-) -> f32 {
+fn next_playback_sample(tracks: &mut MixerTracks) -> f32 {
     let mut total = 0.0;
     for track in tracks.buffers.values_mut() {
         if track.samples.is_empty() {
             track.starved += 1;
         }
-        if track.drift_correction
-            && track.kind != TrackKind::Soundboard
-            && !track.recovery.ready(track.samples.len())
-        {
+        let live = track.drift_correction && track.kind != TrackKind::Soundboard;
+        if live && !track.recovery.ready(track.samples.len()) {
             continue;
         }
-        let sample = if track.drift_correction {
-            pop_drift_compensated(&mut track.samples, counter, overrun, underrun)
+        let sample = track.samples.pop_front().unwrap_or(0.0);
+        let resume = if live {
+            track.recovery.resume_gain()
         } else {
-            // Recorded clips share the output clock; correcting drift would change their waveform.
-            track.samples.pop_front().unwrap_or(0.0)
+            1.0
         };
-        total += track.gain * sample;
+        total += track.gain * resume * sample;
     }
     total
 }
@@ -4001,9 +3995,6 @@ impl PlaybackMixer {
         let tracks_cb = self.handle.tracks.clone();
         let cb_counter_cb = self.callbacks.clone();
         let pulled_cb = self.pulled.clone();
-        let drift_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let drift_counter_cb = drift_counter.clone();
-        let device_rate_cb = device_rate;
         let gains_f32 = controls.gains.clone();
         let gains_i16 = controls.gains.clone();
         let stream_gains_f32 = controls.stream_gains.clone();
@@ -4053,18 +4044,9 @@ impl PlaybackMixer {
                         &board_f32,
                         &deafened_f32,
                     );
-                    let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
-                    let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
-                    let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     let mut pulled = 0u64;
                     for frame in data.chunks_mut(device_channels) {
-                        counter = counter.wrapping_add(1);
-                        let raw = next_playback_sample(
-                            &mut tracks,
-                            counter,
-                            overrun_threshold,
-                            underrun_threshold,
-                        );
+                        let raw = next_playback_sample(&mut tracks);
                         let sample = limiter.process(raw);
                         recording.push(raw, sample, limiter.gain());
                         reference_f32.push(sample);
@@ -4076,7 +4058,6 @@ impl PlaybackMixer {
                         }
                     }
                     recording.finish();
-                    drift_counter_cb.store(counter, Ordering::Relaxed);
                     pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
                 report_fault(faults),
@@ -4108,17 +4089,8 @@ impl PlaybackMixer {
                         &deafened_i16,
                     );
                     let mut pulled = 0u64;
-                    let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
-                    let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
-                    let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
-                        counter = counter.wrapping_add(1);
-                        let raw = next_playback_sample(
-                            &mut tracks,
-                            counter,
-                            overrun_threshold,
-                            underrun_threshold,
-                        );
+                        let raw = next_playback_sample(&mut tracks);
                         let sample = limiter.process(raw);
                         let s16 = dither_to_i16(sample, &mut dither_rng);
                         recording.push(raw, s16 as f32 / i16::MAX as f32, limiter.gain());
@@ -4131,7 +4103,6 @@ impl PlaybackMixer {
                         }
                     }
                     recording.finish();
-                    drift_counter_cb.store(counter, Ordering::Relaxed);
                     pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
                 report_fault(faults),
@@ -4188,7 +4159,9 @@ async fn consume_remote_track(
     let mut sample_count = 0u64;
     let mut peak_recent: i16 = 0;
     let mut rate = handle.rate();
-    let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
+    let mut resampler = remote_resampler(rate);
+    let mut drift = drift::Control::default();
+    let mut ratio = 1.0;
     let mut f32_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let who = match identity.split_once('#') {
@@ -4202,7 +4175,7 @@ async fn consume_remote_track(
     let mut recv_wav = crate::voice_record::Wav::new(&record_name, SAMPLE_RATE);
     let mut recv_csv = crate::voice_record::Csv::new(
         &record_name,
-        "samples,rate,rms_dbfs,peak,gap_ms,mixer_ms,mixer_starved_samples,gain,rebuffered_samples",
+        "samples,rate,rms_dbfs,peak,gap_ms,mixer_ms,mixer_starved_samples,gain,rebuffered_samples,ratio",
     );
     let mut arrived: Option<Instant> = None;
     let mut record_generation = 0;
@@ -4211,7 +4184,8 @@ async fn consume_remote_track(
         let current = handle.rate();
         if current != rate {
             rate = current;
-            resampler = AudioResampler::new(SAMPLE_RATE, rate);
+            resampler = remote_resampler(rate);
+            drift = drift::Control::default();
             cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
         }
         if frames == 0 {
@@ -4242,6 +4216,10 @@ async fn consume_remote_track(
             }
             None => handle.push(track_id, &f32_buf, rate, cap),
         };
+        if let (Some(r), Some((depth, ..))) = (resampler.as_mut(), mixer) {
+            ratio = drift.observe(depth as f64 * 1000.0 / f64::from(rate.max(1)));
+            r.set_relative_ratio(ratio);
+        }
         let generation = crate::voice_record::generation();
         if generation != record_generation {
             arrived = None;
@@ -4255,7 +4233,7 @@ async fn consume_remote_track(
             let (depth, starved, gain, rebuffered) = mixer.unwrap_or_default();
             recv_csv.row(|| {
                 format!(
-                    "{},{},{:.1},{frame_peak},{gap},{},{starved},{gain:.2},{rebuffered}",
+                    "{},{},{:.1},{frame_peak},{gap},{},{starved},{gain:.2},{rebuffered},{ratio:.5}",
                     frame.data.len(),
                     frame.sample_rate,
                     crate::voice_record::rms_dbfs(&f32_buf),
@@ -4280,6 +4258,12 @@ async fn consume_remote_track(
     eprintln!("[voice] remote-track {who} stream ended after {frames} frames");
 }
 
+/// Adaptive first; the fixed converter is the fallback, and at a matching
+/// rate that means no correction at all rather than no audio.
+fn remote_resampler(rate: u32) -> Option<AudioResampler> {
+    AudioResampler::adaptive(SAMPLE_RATE, rate).or_else(|| AudioResampler::new(SAMPLE_RATE, rate))
+}
+
 struct RemotePlaybackGuard(PlaybackHandle, u64);
 
 impl Drop for RemotePlaybackGuard {
@@ -4292,9 +4276,33 @@ impl Drop for RemotePlaybackGuard {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn direct_sources_take_one_dsp_block_per_call_and_refuse_other_sizes() {
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
+        source
+            .capture_frame(&pcm_frame(&[0; FRAME_SAMPLES]))
+            .await
+            .unwrap();
+        for wrong in [FRAME_SAMPLES - 1, FRAME_SAMPLES + 1, FRAME_SAMPLES * 2] {
+            let data = vec![0_i16; wrong];
+            let frame = AudioFrame {
+                data: std::borrow::Cow::Borrowed(&data),
+                sample_rate: SAMPLE_RATE,
+                num_channels: CHANNELS,
+                samples_per_channel: wrong as u32,
+            };
+            assert!(
+                source.capture_frame(&frame).await.is_err(),
+                "{wrong} samples"
+            );
+        }
+    }
+
     #[test]
     fn microphone_track_starts_muted_before_publication() {
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let track = new_muted_microphone_track(source);
         assert!(track.is_muted());
         assert!(!track.is_enabled());
@@ -4302,7 +4310,8 @@ mod tests {
 
     #[test]
     fn microphone_mute_updates_dsp_native_track_and_publication_state() {
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let track = new_muted_microphone_track(source);
         let muted = AtomicBool::new(true);
         for value in [true, false, true] {

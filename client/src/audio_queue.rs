@@ -39,6 +39,15 @@ pub fn channel<T>() -> (AudioSender<T>, AudioReceiver<T>) {
     tokio::sync::mpsc::channel(CAPACITY)
 }
 
+/// The echo canceller's render reference: AEC3 re-estimates the delay at
+/// every gap, so this holds 500 ms rather than dropping what the capture
+/// side was late to read.
+pub const REFERENCE_CAPACITY: usize = 50;
+
+pub fn reference_channel<T>() -> (AudioSender<T>, AudioReceiver<T>) {
+    tokio::sync::mpsc::channel(REFERENCE_CAPACITY)
+}
+
 // A stalled publisher must not block the device callback or grow a delayed audio backlog.
 pub fn offer<T>(tx: &AudioSender<T>, frame: Frame<T>) -> Result<bool, ()> {
     match tx.try_send(frame) {

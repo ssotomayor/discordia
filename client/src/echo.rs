@@ -1,4 +1,6 @@
 use crate::audio_queue::{AudioReceiver, AudioSender, Frame, SAMPLES};
+#[cfg(test)]
+use std::time::{Duration, Instant};
 
 pub struct Reference {
     tx: AudioSender<i16>,
@@ -38,6 +40,15 @@ impl Reference {
     }
 }
 
+/// Past this backlog the oldest frames are dropped in one block, so the
+/// reference keeps its order and has one gap instead of one per late frame.
+const REFERENCE_BACKLOG: usize = 30;
+const REFERENCE_KEEP: usize = 10;
+
+/// A constant: AEC3 estimates the delay itself, and a hint that moved with
+/// every frame's queue age made it re-estimate.
+const STREAM_DELAY_HINT_MS: i32 = 50;
+
 pub struct Echo {
     apm: libwebrtc::native::apm::AudioProcessingModule,
     reference: AudioReceiver<i16>,
@@ -61,20 +72,24 @@ impl Echo {
         }
     }
 
-    pub fn process(&mut self, samples: &mut [f32; SAMPLES], delay_ms: i32) -> Result<(), String> {
+    pub fn process(&mut self, samples: &mut [f32; SAMPLES]) -> Result<(), String> {
         if self.enabled == (false, false) {
             while self.reference.try_recv().is_ok() {}
             return Ok(());
         }
-        while let Ok(mut frame) = self.reference.try_recv() {
-            if frame.is_fresh() {
-                self.apm
-                    .process_reverse_stream(&mut frame.samples, 48_000, 1)
-                    .map_err(|error| error.to_string())?;
+        let backlog = self.reference.len();
+        if backlog > REFERENCE_BACKLOG {
+            for _ in REFERENCE_KEEP..backlog {
+                let _ = self.reference.try_recv();
             }
         }
+        while let Ok(mut frame) = self.reference.try_recv() {
+            self.apm
+                .process_reverse_stream(&mut frame.samples, 48_000, 1)
+                .map_err(|error| error.to_string())?;
+        }
         self.apm
-            .set_stream_delay_ms(delay_ms.clamp(0, 500))
+            .set_stream_delay_ms(STREAM_DELAY_HINT_MS)
             .map_err(|error| error.to_string())?;
         let mut pcm = samples.map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
         self.apm
@@ -94,7 +109,7 @@ mod tests {
     #[test]
     fn output_reference_is_resampled_and_bounded() {
         for rate in [44_100, 48_000, 96_000] {
-            let (tx, mut rx) = crate::audio_queue::channel();
+            let (tx, mut rx) = crate::audio_queue::reference_channel();
             let mut writer = Reference::new(tx, rate);
             for _ in 0..rate / 100 {
                 writer.push(0.25);
@@ -110,13 +125,37 @@ mod tests {
             for _ in 0..rate {
                 writer.push(0.25);
             }
-            assert_eq!(rx.len(), 8);
+            assert_eq!(rx.len(), crate::audio_queue::REFERENCE_CAPACITY);
         }
+    }
+
+    /// A reference frame that waited is still the reference; only a backlog
+    /// past what AEC3 can align is cut, once, keeping the newest.
+    #[test]
+    fn a_late_reference_is_kept_and_a_deep_backlog_is_trimmed_in_one_block() {
+        let (tx, rx) = crate::audio_queue::reference_channel();
+        let mut echo = Echo::new(rx);
+        for _ in 0..REFERENCE_BACKLOG {
+            tx.try_send(Frame {
+                samples: [100; SAMPLES],
+                captured: Instant::now() - Duration::from_millis(400),
+                position: None,
+            })
+            .unwrap();
+        }
+        echo.process(&mut [0.0; SAMPLES]).unwrap();
+        assert_eq!(echo.reference.len(), 0, "late frames feed the render path");
+        for _ in 0..REFERENCE_BACKLOG + 5 {
+            tx.try_send(Frame::new([100; SAMPLES])).unwrap();
+        }
+        assert_eq!(echo.reference.len(), REFERENCE_BACKLOG + 5);
+        echo.process(&mut [0.0; SAMPLES]).unwrap();
+        assert_eq!(echo.reference.len(), 0);
     }
 
     #[test]
     fn acoustic_echo_is_attenuated_after_convergence() {
-        let (tx, rx) = crate::audio_queue::channel();
+        let (tx, rx) = crate::audio_queue::reference_channel();
         let mut echo = Echo::new(rx);
         let mut history = std::collections::VecDeque::from(vec![[0.0; SAMPLES]; 5]);
         let mut seed = 79u32;
@@ -140,7 +179,7 @@ mod tests {
                     .map(|sample| (*sample as f64).powi(2))
                     .sum::<f64>();
             }
-            echo.process(&mut mic, 50).unwrap();
+            echo.process(&mut mic).unwrap();
             if hop > 1000 {
                 after += mic
                     .iter()
