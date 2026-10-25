@@ -16,6 +16,19 @@ Validación: seis pruebas de caché, Clippy cliente/grid con `-D warnings`, form
 
 Android admite frames de preview a 5 FPS antes de convertir I420 y descarta antes de convertir si su cola está llena/cerrada. La publicación conserva la resolución/FPS elegidos. El controlador descarta la cola al terminar o fallar la captura y limpia el último JPEG/dimensiones al detenerse o cerrarse; los errores siguen disponibles. Pruebas sin cámara física cubren 32 ciclos de parada con confirmación y cierre del controlador.
 
+## Presupuesto de caché Android — 2026-10-25
+
+| Memoria de datos codificados | Android | Escritorio |
+|---|---:|---:|
+| Entradas LRU | 64 MiB | 128 MiB |
+| Lecturas de disco pendientes de aplicar | 32 MiB | 128 MiB |
+
+Ambos son límites independientes de payload, no del PSS: excluyen imágenes decodificadas, referencias visibles, escrituras pendientes y la lectura individual en curso. El presupuesto móvil es inicial, no un óptimo medido. La expulsión puede aumentar recargas; no cambia calidad ni borra archivos guardados.
+
+La lectura entrega cada imagen por separado, sin acumular otro lote de resultados. La lista pendiente deduplica direcciones y limita también entradas vacías a 2.048; cuando se llena conserva la dirección para reintento con el mecanismo existente. Pruebas simulan 1.000 lecturas sin consumo, drenaje/reanudación, duplicados, datos sobredimensionados y límite de entradas vacías. Medición Release en teléfono pendiente.
+
+Validación conjunta: 12 pruebas relacionadas con preview, una de pacing, dos de cola de audio y nueve de caché aprobadas; Clippy cliente/grid con `-D warnings`, formato y check ARM64 Android aprobados. No se instaló un APK ni se midió el dispositivo.
+
 ## Errores corregidos
 
 | Prioridad | Fallo | Corrección / evidencia |
