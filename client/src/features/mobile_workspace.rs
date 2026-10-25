@@ -162,23 +162,39 @@ mod tests {
     }
 
     fn panel_fixture(
-        (active_export, draft_export, counts): (Export<bool>, Export<String>, Rc<Counts>),
+        (active_export, draft_export, counts, paged): (
+            Export<bool>,
+            Export<String>,
+            Rc<Counts>,
+            bool,
+        ),
     ) -> Element {
         let active = use_signal(|| true);
         *active_export.borrow_mut() = Some(active);
-        rsx! { MobilePanel { active: active(), name: "chat",
+        rsx! { MobilePanel { active: active(), name: "chat", paged,
             DraftEditor { counts, export: draft_export }
         } }
     }
 
     #[test]
     fn tab_switches_retain_editor_state_and_disable_the_hidden_panel() {
+        for paged in [false, true] {
+            retain_editor_state(paged);
+        }
+    }
+
+    fn retain_editor_state(paged: bool) {
         let active_export = Export::default();
         let draft_export = Export::default();
         let counts = Rc::new(Counts::default());
         let mut dom = VirtualDom::new_with_props(
             panel_fixture,
-            (active_export.clone(), draft_export.clone(), counts.clone()),
+            (
+                active_export.clone(),
+                draft_export.clone(),
+                counts.clone(),
+                paged,
+            ),
         );
         dom.rebuild_in_place();
         let mut active = active_export.borrow().unwrap();
@@ -280,10 +296,17 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
     let pager_id = use_hook(|| format!("mobile-pager-{}", uuid::Uuid::new_v4()));
     #[allow(unused_mut)]
     let mut members_preview = use_signal(|| false);
+    // Keep the outgoing members page alive until native scrolling settles.
+    let retained_members = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(false)));
+    if cfg!(target_os = "android") && current == MobileTab::Members {
+        retained_members.set(true);
+    }
     #[cfg(target_os = "android")]
     {
         let bridge_id = pager_id.clone();
+        let retained = retained_members.clone();
         use_future(move || {
+            let retained = retained.clone();
             let script = include_str!("../../assets/mobile-pager.js")
                 .replace("__PAGER_ID__", &serde_json::json!(bridge_id).to_string());
             async move {
@@ -296,7 +319,12 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
                             }
                         }
                         PagerEvent::PreviewMembers => members_preview.set(true),
-                        PagerEvent::Settled => members_preview.set(false),
+                        PagerEvent::Settled => {
+                            if *tab.peek() != MobileTab::Members {
+                                retained.set(false);
+                            }
+                            members_preview.set(false);
+                        }
                         _ => {}
                     }
                 }
@@ -337,7 +365,7 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
                     }
                 }
                 MobilePanel { active: current == MobileTab::Members, name: "members", paged: cfg!(target_os = "android"),
-                    if current == MobileTab::Members || members_preview() {
+                    if current == MobileTab::Members || members_preview() || retained_members.get() {
                     div { class: "h-full flex flex-col overflow-hidden bg-[var(--panel-solid)]",
                         div { class: "h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0",
                             button { class: "text-xs text-[var(--accent)] dxf-touch-target",

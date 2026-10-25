@@ -83,6 +83,19 @@ test('a vertical gesture or tap does not change pages', async () => {
   await f.close();
 });
 
+test('interrupted scrolling snaps once instead of polling while idle', async () => {
+  const f = await fixture();
+  f.pager.scrollLeft = 170;
+  f.fire('scroll');
+  f.tick();
+  assert.equal(f.calls.at(-1).left, 0);
+  assert.equal(f.calls.at(-1).behavior, 'auto');
+  assert.equal(f.timers.size, 0);
+  f.fire('scrollend');
+  assert.deepEqual(f.sent, [{type: 'settled'}]);
+  await f.close();
+});
+
 test('button and Back changes animate without echoing a second selection', async () => {
   const f = await fixture();
   f.pager.dataset.mobileTab = '2';
@@ -90,7 +103,7 @@ test('button and Back changes animate without echoing a second selection', async
   assert.equal(f.calls.at(-1).left, 800);
   assert.equal(f.calls.at(-1).behavior, 'smooth');
   f.fire('scroll'); f.fire('scrollend');
-  assert.deepEqual(f.sent, []);
+  assert.deepEqual(f.sent, [{type: 'settled'}]);
   f.pager.dataset.mobileTab = '0';
   f.observers[0].callback();
   assert.equal(f.calls.at(-1).left, 0);
@@ -106,6 +119,15 @@ test('resize preserves the selected page and reduced motion avoids smooth animat
   f.pager.dataset.mobileTab = '1';
   f.observers[0].callback();
   assert.equal(f.calls.at(-1).behavior, 'auto');
+  await f.close();
+});
+
+test('leaving members with a button releases its retained content after scrolling', async () => {
+  const f = await fixture(2);
+  f.pager.dataset.mobileTab = '1';
+  f.observers[0].callback();
+  f.fire('scroll'); f.fire('scrollend');
+  assert.deepEqual(f.sent, [{type: 'settled'}]);
   await f.close();
 });
 
