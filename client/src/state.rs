@@ -354,6 +354,7 @@ pub struct AppState {
     pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
+    pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
     pub pending_edits: HashSet<Id>,
     pub dm_call: Option<crate::features::dm_call::CallView>,
@@ -566,6 +567,7 @@ impl AppState {
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
             dm_delivery: HashMap::new(),
+            dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
             dm_call: None,
             contacts: Default::default(),
@@ -1256,6 +1258,10 @@ impl AppState {
     }
 
     fn drop_conversation(&mut self, cid: Id) {
+        if let Some(peer) = self.dm_of(cid).map(|dm| dm.other_pubkey.clone()) {
+            self.dm_call_history
+                .retain(|_, entry| entry.record.caller != peer && entry.record.callee != peer);
+        }
         self.dms.retain(|d| d.channel_id != cid);
         self.messages.remove(&cid);
         self.dm_unread.remove(&cid);
@@ -1493,6 +1499,15 @@ impl AppState {
             .into_iter()
             .flatten()
             .map(|m| m.created_at.timestamp())
+            .chain(
+                self.dm_call_history
+                    .values()
+                    .filter(|entry| {
+                        entry.confirmed
+                            && (entry.record.caller == peer || entry.record.callee == peer)
+                    })
+                    .filter_map(|entry| entry.missed_at),
+            )
             .max();
         if let Some(at) = newest {
             let mark = self.dm_read_at.entry(peer).or_insert(at);

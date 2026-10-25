@@ -73,6 +73,7 @@ pub fn wrap_both(
     Ok((theirs, ours))
 }
 
+#[cfg(test)]
 pub fn open_chat(
     our_secret: &SecretKey,
     our_pubkey: &str,
