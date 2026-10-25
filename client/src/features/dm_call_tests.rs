@@ -403,11 +403,67 @@ fn repeated_terminal_signals_do_not_grow_memory_without_bound() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn native_peer_connections_deliver_encoded_audio_without_a_voice_server() {
-    let factory = PeerConnectionFactory::default();
     let mut config = RtcConfiguration::default();
     config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
-    let alice = TestPeer(factory.create_peer_connection(config.clone()).unwrap());
-    let bob = TestPeer(factory.create_peer_connection(config).unwrap());
+    assert_native_peer_audio(config.clone(), config).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unresponsive_stun_does_not_prevent_a_reachable_direct_call() {
+    let socket = tokio::net::UdpSocket::bind(std::net::SocketAddr::new(
+        local_ip_address::local_ip().unwrap(),
+        0,
+    ))
+    .await
+    .unwrap();
+    let address = socket.local_addr().unwrap();
+    let (seen, received) = tokio::sync::oneshot::channel();
+    let sink = tokio::spawn(async move {
+        let mut seen = Some(seen);
+        let mut packet = [0; 2048];
+        while socket.recv_from(&mut packet).await.is_ok() {
+            if let Some(seen) = seen.take() {
+                let _ = seen.send(());
+            }
+        }
+    });
+    let caller =
+        parse_ice_configuration(&format!(r#"[{{"urls":["stun:{address}"]}}]"#), false).unwrap();
+    let callee = parse_ice_configuration("[]", false).unwrap();
+    assert_native_peer_audio(caller, callee).await;
+    tokio::time::timeout(Duration::from_secs(1), received)
+        .await
+        .unwrap()
+        .unwrap();
+    sink.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_without_candidates_does_not_send_an_empty_description() {
+    let factory = PeerConnectionFactory::default();
+    let mut config = RtcConfiguration::default();
+    config.ice_transport_type = IceTransportsType::Relay;
+    let peer = TestPeer(factory.create_peer_connection(config).unwrap());
+    let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 100);
+    peer.0
+        .add_track(
+            factory.create_audio_track("test", source).into(),
+            &["voice"],
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(12), local_description(&peer.0, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        result.unwrap_err(),
+        "No network route was found for the voice call. Try another network."
+    );
+}
+
+async fn assert_native_peer_audio(caller: RtcConfiguration, callee: RtcConfiguration) {
+    let factory = PeerConnectionFactory::default();
+    let alice = TestPeer(factory.create_peer_connection(caller).unwrap());
+    let bob = TestPeer(factory.create_peer_connection(callee).unwrap());
     let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 100);
     let alice_track = factory.create_audio_track("alice", source.clone());
     alice.0.add_track(alice_track.into(), &["voice"]).unwrap();
