@@ -13,6 +13,8 @@ mod audio_device;
 mod audio_diag;
 mod audio_queue;
 mod bookmarks;
+#[cfg(any(target_os = "android", test))]
+mod call_notifications;
 mod camera_quality;
 mod chat_image;
 mod clipboard;

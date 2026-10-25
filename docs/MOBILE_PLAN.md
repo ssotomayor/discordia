@@ -677,3 +677,11 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - Atrás predictivo y clásico priorizan Configuración, conversación Social, lista Social/pestañas móviles y desconexión ordenada del servidor. Desde Inicio sin otra pantalla abierta, manda la tarea a segundo plano sin destruir la actividad.
 - El botón Social de Inicio alterna abrir/cerrar la vista Android, también desde una conversación; cerrar la vista conserva la llamada DM y sus controles vuelven a Inicio. Escritorio conserva abrir/enfocar su ventana Social.
 - Verificados: estilos reales en 320/360/390/430 px, voz y cifrado Debug, logo y controles de 44 px, estilos inferiores conservados; pruebas de prioridad y limpieza del puente JavaScript, traducciones y Clippy aprobados. Prueba física pospuesta por el usuario.
+
+### Controles de llamada en la notificación (2026-10-25)
+
+- Tres acciones: micrófono, audio de llamada y colgar. Silenciar audio también silencia el micrófono; reactivarlo restaura su estado anterior.
+- Servicio nativo con CallStyle, PendingIntent explícito e inmutable y validación por cuenta, llamada/ruta, epoch y estado. No abre la Activity para ejecutar acciones. Colgar usa el teardown existente de voz/DM; cámara y pantalla conservan sus propietarios.
+- Controlador y actor DM registrados como tareas de servicio para progresar con el WebView suspendido. Sin sondeo del controlador cuando no hay llamada; durante llamada compara el estado cada 500 ms y publica solo cambios.
+- Validación física pendiente: tres botones con pantalla bloqueada, sincronización con controles de la app, colgar con cámara/pantalla y llamada DM, y rechazo de botones antiguos tras cambiar llamada/cuenta. No se conectó teléfono en esta sesión.
+- Validación local: cinco pruebas de acciones/identidad/restauración, Clippy del cliente y grid, check ARM64, catálogo y diez pruebas de empaquetado aprobados. APK Debug generado con Kotlin, recursos y export JNI verificados; sin instalación física.

@@ -26,6 +26,7 @@ REQUIRED_WEBRTC_CLASSES = (
 # Every one of these must reach the final DEX, wherever it came from.
 REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class", "com/discordia/app/DioxusScreenPreview.class")
 REQUIRED_SYMBOLS = {
+    "Java_com_discordia_app_DioxusForegroundService_onCallAction",
     "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory",
     "Java_livekit_org_webrtc_SoftwareVideoDecoderFactory_nativeCreateFactory",
     "Java_dev_dioxus_main_MainActivity_initializeWebRtc",

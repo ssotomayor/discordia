@@ -363,6 +363,11 @@ pub fn WorkspaceView(
     provide_context(gateway_tx.clone());
     crate::route_reporting::use_route_reports(state, gateway_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
+    #[cfg(target_os = "android")]
+    crate::call_notifications::use_guild_route(
+        gateway_tx.clone(),
+        crate::features::voice::VoiceTx(voice_tx.clone()),
+    );
     provide_context(state);
     provide_context(params.identity.clone());
     provide_context(params.mode.clone());

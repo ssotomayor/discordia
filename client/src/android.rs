@@ -398,12 +398,14 @@ impl BackgroundCall {
         })
         .await
         .map_err(|_| "Android call foreground service timed out.".to_string())??;
+        crate::call_notifications::wake();
         Ok(guard)
     }
 }
 
 impl Drop for BackgroundCall {
     fn drop(&mut self) {
+        crate::call_notifications::wake();
         let slot = self.slot;
         crate::platform::wry::prelude::dispatch(move |env, activity, _| {
             if let Err(error) = env.call_method(
