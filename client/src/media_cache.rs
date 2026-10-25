@@ -83,13 +83,17 @@ impl MediaCache {
     }
 
     pub fn insert(&mut self, address: String, data: String) {
+        self.insert_shared(address, Arc::new(data));
+    }
+
+    pub(crate) fn insert_shared(&mut self, address: String, data: Arc<String>) {
         if let Some(previous) = self.entries.remove(&address) {
             self.bytes -= previous.data.len();
         }
         let data = if data.len() <= self.byte_budget {
             data
         } else {
-            String::new()
+            Arc::new(String::new())
         };
         while self.bytes + data.len() > self.byte_budget || self.entries.len() >= ENTRY_BUDGET {
             let oldest = self
@@ -111,7 +115,7 @@ impl MediaCache {
         self.entries.insert(
             address,
             Entry {
-                data: Arc::new(data),
+                data,
                 touched: Arc::new(AtomicU64::new(self.clock.fetch_add(1, Ordering::Relaxed))),
             },
         );
@@ -137,7 +141,7 @@ impl MediaCache {
 
 enum DiskJob {
     Load(Vec<String>, UnboundedSender<ClientMessage>, Weak<Updates>),
-    Store(String, String),
+    Store(String, Arc<String>),
 }
 
 fn disk_worker() -> Option<&'static mpsc::SyncSender<DiskJob>> {
@@ -212,10 +216,10 @@ pub(crate) fn load(
     }
 }
 
-pub(crate) fn store(address: &str, data: &str) {
+pub(crate) fn store(address: &str, data: Arc<String>) {
     if let Some(worker) = disk_worker()
         && worker
-            .try_send(DiskJob::Store(address.into(), data.into()))
+            .try_send(DiskJob::Store(address.into(), data))
             .is_err()
     {
         tracing::debug!("media disk cache queue full; keeping memory copy");
@@ -272,5 +276,39 @@ mod tests {
         cache.insert("b".into(), "too large to cache".into());
         assert_eq!(cache.bytes, 2);
         assert_eq!(cache.get("b").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn queued_disk_writes_share_bytes_and_release_them_after_eviction() {
+        let mut cache = MediaCache::with_budget(8);
+        let (tx, rx) = mpsc::sync_channel(1);
+        let data = Arc::new("12345678".to_string());
+        let weak = Arc::downgrade(&data);
+        cache.insert_shared("a".into(), data.clone());
+        assert!(tx.try_send(DiskJob::Store("a".into(), data)).is_ok());
+
+        let DiskJob::Store(_, queued) = rx.recv().unwrap() else {
+            panic!("expected store job");
+        };
+        let visible = cache.get_shared("a").unwrap();
+        assert!(Arc::ptr_eq(&queued, &visible));
+        cache.insert("b".into(), "abcdefgh".into());
+        assert!(!cache.contains_key("a"));
+        assert_eq!(queued.as_str(), "12345678");
+        drop(visible);
+        assert!(weak.upgrade().is_some());
+        drop(queued);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn oversized_shared_image_is_released_by_the_cache() {
+        let mut cache = MediaCache::with_budget(4);
+        let data = Arc::new("12345678".to_string());
+        let weak = Arc::downgrade(&data);
+        cache.insert_shared("a".into(), data);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(cache.bytes, 0);
+        assert_eq!(cache.get("a").map(String::as_str), Some(""));
     }
 }

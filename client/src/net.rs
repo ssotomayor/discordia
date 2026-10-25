@@ -1827,17 +1827,16 @@ fn apply(
             }
         }
         ServerMessage::EmojiBlobs { blobs } => {
-            // Only emoji and sounds reach the disk cache: they are shared by a
-            // whole guild and asked for again on every connect. A message
-            // picture is neither.
+            // Guild emoji and sounds are reused across connections; message pictures aren't.
             let mut shared = emoji_addresses(&s);
             shared.extend(sound_addresses(&s));
             for blob in blobs {
-                if !blob.data_url.is_empty() && shared.contains(&blob.image) {
-                    crate::media_cache::store(&blob.image, &blob.data_url);
+                let data = std::sync::Arc::new(blob.data_url);
+                if !data.is_empty() && shared.contains(&blob.image) {
+                    crate::media_cache::store(&blob.image, data.clone());
                 }
                 s.emoji_requested.remove(&blob.image);
-                s.emoji_images.insert(blob.image, blob.data_url);
+                s.emoji_images.insert_shared(blob.image, data);
             }
         }
         ServerMessage::MemberUpdate(member) => {
