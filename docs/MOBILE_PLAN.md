@@ -8,6 +8,8 @@ Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discord
 
 **Medición de video, 2026-10-25:** Diagnóstico separa conversión a I420 en Kotlin, asignación/copia a Rust y codificación. Promedios por cuadro medido; etapas sin muestras permanecen desconocidas. Pruebas de contadores, Clippy y check ARM64 aprobados; tiempos reales en Release pendientes.
 
+**Preview local, 2026-10-25:** superficie Android sobre la textura original, limitada a 15 FPS, sin JPEG, descarga SFU ni decodificación de la propia publicación. Se oculta en segundo plano, fuera del chat visible, durante desplazamientos parciales y bajo diálogos; libera el renderer antes del contexto de captura. Medidas y avisos quedan fuera de la superficie. Bridge JS, Clippy y check ARM64 aprobados; empaquetado y validación gráfica física pendientes.
+
 **Navegación, 2026-10-25:** Canales ↔ Chat ↔ Miembros con desplazamiento táctil nativo y vista parcial durante el gesto; botones y Atrás sincronizados. Borrador/scroll conservados y Miembros bajo demanda. Pruebas del bridge, retención de DOM y gestos táctiles en navegador; validación física y costo de CPU/RAM en Release pendientes.
 
 **DM, 2026-10-25:** primera base de notificaciones nativas optativas en Configuración → Notificaciones de DM. Depende de recepción Nostr con el proceso activo; sin servicio permanente ni Firebase. Validación física de permisos, segundo plano y apertura por aviso pendiente. Push con proceso terminado se sigue en [#384](https://github.com/ssotomayor/discordia/issues/384).

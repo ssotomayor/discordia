@@ -471,6 +471,20 @@ fn activity_string(method: &str) -> Result<String, String> {
     })
 }
 
+pub fn set_screen_preview(payload: &str) -> Result<(), String> {
+    with_activity(|env, activity| {
+        let payload = env.new_string(payload).map_err(system_error)?;
+        env.call_method(
+            activity,
+            "setScreenPreview",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&payload)],
+        )
+        .map(|_| ())
+        .map_err(system_error)
+    })
+}
+
 pub fn system_language() -> String {
     activity_string("systemLanguage").unwrap_or_else(|error| {
         tracing::warn!(%error, "Couldn't read Android language");

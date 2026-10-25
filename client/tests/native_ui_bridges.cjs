@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+require('./native_screen_preview_bridge.cjs');
 const root = path.join(__dirname, '..');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
