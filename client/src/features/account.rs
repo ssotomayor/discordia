@@ -77,6 +77,8 @@ pub fn AccountView(
     provide_context(state);
     provide_context(nostr.clone());
     provide_context(identity.clone());
+    #[cfg(target_os = "android")]
+    crate::dm_notifications::use_notifications(state, identity.pubkey.clone());
     let updates = try_consume_context::<crate::update::Updates>();
     let mut update_request = use_signal(|| {
         updates

@@ -133,7 +133,7 @@ pub fn spawn_nostr(
     let (tx, mut rx) = unbounded_channel::<NostrCmd>();
     let handle = NostrTx(tx);
 
-    spawn(async move {
+    crate::service_task::spawn(async move {
         let mut state = state;
         let our_pubkey = identity.pubkey.clone();
         let secret = identity.secret_key();
@@ -949,6 +949,9 @@ fn insert_message(
     if !fresh {
         return;
     }
+
+    #[cfg(target_os = "android")]
+    crate::dm_notifications::received(&s, msg, our_pubkey, live && source == Source::Relay);
 
     if msg.author != our_pubkey {
         s.note_dm_arrival(cid, &msg.peer, created_at);

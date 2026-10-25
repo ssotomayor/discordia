@@ -175,6 +175,15 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
     #[allow(unused_mut)]
     let mut state = use_app_state();
     let mut tab = use_signal(|| MobileTab::Channels);
+    #[cfg(target_os = "android")]
+    use_effect(move || {
+        if state.read().dm_notification_open.is_some() {
+            tab.set(MobileTab::Chat);
+            state.write().dm_notification_open = None;
+        }
+    });
+    #[cfg(target_os = "android")]
+    use_effect(move || state.write().dm_pane_open = tab() == MobileTab::Chat);
     crate::mobile_back::use_handler(
         crate::mobile_back::CONTENT,
         tab() != MobileTab::Channels,

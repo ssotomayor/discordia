@@ -14,6 +14,7 @@ use crate::state::use_app_state;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    Notifications,
     Audio,
     Video,
     Activity,
@@ -24,6 +25,12 @@ pub enum SettingsTab {
 /// The empty group label means "same group as the row above" — the heading is
 /// drawn by the first tab that opens one.
 const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
+    (
+        "",
+        SettingsTab::Notifications,
+        "DM notifications",
+        crate::features::icons::CHAT,
+    ),
     (
         "",
         SettingsTab::General,
@@ -131,8 +138,10 @@ pub fn SettingsDialog() -> Element {
                     div { class: "dxf-settings-body flex-1 flex min-h-0",
                         div { class: "dxf-settings-nav shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
                             for (group, t, label, icon) in SETTINGS_TABS.iter().copied().filter(|(_, tab, _, _)| {
-                                !cfg!(any(target_os = "android", target_os = "ios"))
+                                (cfg!(target_os = "android") || *tab != SettingsTab::Notifications)
+                                    && (!cfg!(any(target_os = "android", target_os = "ios"))
                                     || !matches!(tab, SettingsTab::Video | SettingsTab::Updates)
+                                    )
                             }) {
                                 {
                                     let group = crate::i18n::label(group);
@@ -174,6 +183,7 @@ pub fn SettingsDialog() -> Element {
                             h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
                             div { class: "mt-4", crate::i18n::LanguageSelector {} }
                         }
+                        if settings_tab() == SettingsTab::Notifications { { android_notification_settings() } }
                         if settings_tab() == SettingsTab::Updates { crate::update::UpdatePanel {} }
                         if settings_tab() == SettingsTab::Audio {
                             super::settings_microphone::MicrophoneSettings {}
@@ -422,6 +432,17 @@ pub fn SettingsDialog() -> Element {
                     }
             }
         }
+    }
+}
+
+fn android_notification_settings() -> Element {
+    #[cfg(target_os = "android")]
+    {
+        rsx! { crate::dm_notifications::NotificationSettings {} }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        rsx! {}
     }
 }
 

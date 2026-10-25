@@ -374,6 +374,8 @@ pub struct AppState {
     /// home drawer closes over a DM that stays selected, and a message arriving
     /// behind it is unread however selected it is.
     pub dm_pane_open: bool,
+    pub app_foreground: bool,
+    pub dm_notification_open: Option<Id>,
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
     pub catalog_revision: u64,
@@ -574,6 +576,8 @@ impl AppState {
             nostr_names: HashMap::new(),
             dm_mode: false,
             dm_pane_open: true,
+            app_foreground: !cfg!(target_os = "android"),
+            dm_notification_open: None,
             catalog: Vec::new(),
             catalog_total: 0,
             catalog_revision: 0,
@@ -1453,8 +1457,10 @@ impl AppState {
     /// history on every launch and `dm_unread` is rebuilt from it, so a message
     /// only ever read live would come back as unread on the next one.
     pub fn note_dm_arrival(&mut self, channel_id: Id, peer: &str, at: i64) {
-        let viewing =
-            self.dm_pane_open && self.selected_channel == Some(channel_id) && self.dm_mode;
+        let viewing = self.app_foreground
+            && self.dm_pane_open
+            && self.selected_channel == Some(channel_id)
+            && self.dm_mode;
         if viewing {
             let mark = self.dm_read_at.entry(peer.to_string()).or_insert(at);
             *mark = (*mark).max(at);
