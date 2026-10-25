@@ -12,6 +12,8 @@ Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discord
 
 **Tope Android, 2026-10-25:** envío de pantalla hasta 1920×1080/30, con proporción y orientación conservadas, sin ampliar fuentes pequeñas. También limita preferencias antiguas y el presupuesto adaptativo; ajustes generales ofrecen 720p30, 1080p30 y 1080p15. Compartir sigue usando el consentimiento Android, sin selector nuevo de calidad. El perfil predeterminado permanece en 720p; escritorio e iOS conservan sus límites previos. APK Debug compilado; comportamiento físico pendiente.
 
+**Subida adaptativa, 2026-10-25:** requiere 20 s estables, captura y codificación al menos al 90% de los FPS objetivo, tiempos válidos de preparación/codificación y 20% de margen estimado para el nivel siguiente. No sube por datos ausentes o captura inactiva. Conserva la guarda de 10 s tras cada cambio y las protecciones de memoria/temperatura; la red adapta la codificación por separado.
+
 **Navegación, 2026-10-25:** Canales ↔ Chat ↔ Miembros con desplazamiento táctil nativo y vista parcial durante el gesto; botones y Atrás sincronizados. Borrador/scroll conservados y Miembros bajo demanda. Pruebas del bridge, retención de DOM y gestos táctiles en navegador; validación física y costo de CPU/RAM en Release pendientes.
 
 **DM, 2026-10-25:** primera base de notificaciones nativas optativas en Configuración → Notificaciones de DM. Depende de recepción Nostr con el proceso activo; sin servicio permanente ni Firebase. Validación física de permisos, segundo plano y apertura por aviso pendiente. Push con proceso terminado se sigue en [#384](https://github.com/ssotomayor/discordia/issues/384).

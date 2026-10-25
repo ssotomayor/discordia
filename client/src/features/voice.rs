@@ -2107,6 +2107,9 @@ impl ScreenVideoRoom {
                     if let Ok(pressure) = crate::android::screen_capture_pressure().await {
                         let input = crate::sysvideo::mobile_budget::Pressure {
                             active_frames: capture_fps >= mobile_budget.current().fps as f64 * 0.5,
+                            sustaining_fps: capture_fps >= mobile_budget.current().fps as f64 * 0.9
+                                && outbound.outbound.frames_per_second
+                                    >= mobile_budget.current().fps as f64 * 0.9,
                             thermal: pressure & 7,
                             low_memory: pressure & 8 != 0,
                             cpu_limited: outbound.outbound.quality_limitation_reason

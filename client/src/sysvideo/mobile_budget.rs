@@ -5,6 +5,7 @@ use super::Settings;
 #[derive(Default)]
 pub(crate) struct Pressure {
     pub active_frames: bool,
+    pub sustaining_fps: bool,
     pub thermal: u8,
     pub low_memory: bool,
     pub cpu_limited: bool,
@@ -97,7 +98,7 @@ impl MobileBudget {
             (self.level + 1).min(4)
         } else if self
             .healthy_since
-            .is_some_and(|since| now.duration_since(since) >= Duration::from_secs(30))
+            .is_some_and(|since| now.duration_since(since) >= Duration::from_secs(20))
         {
             self.level.saturating_sub(1)
         } else {
@@ -107,14 +108,20 @@ impl MobileBudget {
     }
 
     fn can_recover(&self, pressure: &Pressure) -> bool {
+        if !pressure.active_frames || !pressure.sustaining_fps {
+            return false;
+        }
+        let (Some(processing), Some(encoding)) = (pressure.processing_ms, pressure.encode_ms)
+        else {
+            return false;
+        };
         let current = self.current();
         let next = self.settings(self.level.saturating_sub(1));
         let pixels = |settings: Settings| f64::from(settings.width) * f64::from(settings.height);
         let growth = pixels(next) / pixels(current);
         let available_ms = 1000.0 / next.fps.max(1) as f64 * 0.8;
-        [pressure.processing_ms, pressure.encode_ms]
+        [processing, encoding]
             .into_iter()
-            .flatten()
             .all(|ms| ms.is_finite() && ms >= 0.0 && ms * growth <= available_ms)
     }
 
@@ -131,6 +138,15 @@ mod tests {
     use super::*;
     fn budget(now: Instant) -> MobileBudget {
         MobileBudget::new(crate::features::screenshare::native_settings("720"), now)
+    }
+    fn healthy() -> Pressure {
+        Pressure {
+            active_frames: true,
+            sustaining_fps: true,
+            processing_ms: Some(1.0),
+            encode_ms: Some(1.0),
+            ..Default::default()
+        }
     }
     #[test]
     fn warm_start_prioritizes_fps_without_exceeding_the_requested_rate() {
@@ -176,7 +192,7 @@ mod tests {
                 Pressure {
                     active_frames: true,
                     encode_ms: Some(20.0),
-                    ..Default::default()
+                    ..healthy()
                 }
             )
             .is_none()
@@ -187,7 +203,7 @@ mod tests {
                 Pressure {
                     active_frames: true,
                     encode_ms: Some(20.0),
-                    ..Default::default()
+                    ..healthy()
                 }
             )
             .unwrap()
@@ -198,11 +214,11 @@ mod tests {
         b.applied(2, now);
         assert!(!b.can_recover(&Pressure {
             encode_ms: Some(30.0),
-            ..Default::default()
+            ..healthy()
         }));
         assert!(b.can_recover(&Pressure {
             encode_ms: Some(10.0),
-            ..Default::default()
+            ..healthy()
         }));
     }
     #[test]
@@ -286,15 +302,15 @@ mod tests {
                 .is_none()
         );
         assert!(
-            b.sample(start + Duration::from_secs(22), Pressure::default())
+            b.sample(start + Duration::from_secs(22), healthy())
                 .is_none()
         );
         assert!(
-            b.sample(start + Duration::from_secs(44), Pressure::default())
+            b.sample(start + Duration::from_secs(41), healthy())
                 .is_none()
         );
         let (level, next) = b
-            .sample(start + Duration::from_secs(52), Pressure::default())
+            .sample(start + Duration::from_secs(42), healthy())
             .unwrap();
         assert_eq!((level, next.fps), (2, 30));
         assert_eq!(b.current().fps, 20);
@@ -337,5 +353,59 @@ mod tests {
             MobileBudget::warm_start(crate::features::screenshare::native_settings("ultra"), now)
                 .current();
         assert_eq!((warm.width, warm.height, warm.fps), (960, 540, 30));
+    }
+    #[test]
+    fn recovery_requires_twenty_measured_seconds_without_fps_loss_or_missing_counters() {
+        let now = Instant::now();
+        let mut budget =
+            MobileBudget::warm_start(crate::features::screenshare::native_settings("720"), now);
+        for seconds in [12, 33, 66] {
+            assert!(
+                budget
+                    .sample(now + Duration::from_secs(seconds), Pressure::default())
+                    .is_none()
+            );
+        }
+        for pressure in [
+            Pressure {
+                processing_ms: None,
+                ..healthy()
+            },
+            Pressure {
+                encode_ms: None,
+                ..healthy()
+            },
+            Pressure {
+                sustaining_fps: false,
+                ..healthy()
+            },
+            Pressure {
+                active_frames: false,
+                ..healthy()
+            },
+            Pressure {
+                processing_ms: Some(f64::NAN),
+                ..healthy()
+            },
+        ] {
+            assert!(!budget.can_recover(&pressure));
+        }
+        assert!(
+            budget
+                .sample(now + Duration::from_secs(100), healthy())
+                .is_none()
+        );
+        assert!(
+            budget
+                .sample(now + Duration::from_secs(119), healthy())
+                .is_none()
+        );
+        let (level, settings) = budget
+            .sample(now + Duration::from_secs(120), healthy())
+            .unwrap();
+        assert_eq!(
+            (level, settings.width, settings.height, settings.fps),
+            (1, 960, 540, 30)
+        );
     }
 }
