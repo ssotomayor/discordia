@@ -75,6 +75,8 @@ pub enum NativeEvent {
 
 struct Session {
     id: Uuid,
+    incoming: bool,
+    started_at: i64,
     peer: String,
     remote_device: Option<Uuid>,
     phase: Phase,
@@ -105,6 +107,7 @@ pub fn spawn_service(
     our_key: String,
     state: Signal<AppState>,
     outgoing: UnboundedSender<(String, CallSignal)>,
+    records: UnboundedSender<crate::nostr::call_history::Record>,
 ) -> UnboundedSender<Command> {
     let (tx, mut rx) = unbounded_channel();
     let service_tx = tx.clone();
@@ -114,6 +117,7 @@ pub fn spawn_service(
             device: Uuid::new_v4(),
             state,
             outgoing,
+            records,
             tx: service_tx,
             session: None,
             finished: HashMap::new(),
@@ -172,6 +176,7 @@ struct Actor {
     device: Uuid,
     state: Signal<AppState>,
     outgoing: UnboundedSender<(String, CallSignal)>,
+    records: UnboundedSender<crate::nostr::call_history::Record>,
     tx: UnboundedSender<Command>,
     session: Option<Session>,
     finished: HashMap<(String, Uuid), Instant>,
@@ -213,7 +218,14 @@ impl Actor {
             call_id: id,
             device: self.device,
             target,
-            sent_at: chrono::Utc::now().timestamp(),
+            sent_at: if matches!(body, Body::Invite) {
+                self.session
+                    .as_ref()
+                    .map(|session| session.started_at)
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp())
+            } else {
+                chrono::Utc::now().timestamp()
+            },
             body,
         };
         if self.outgoing.send((peer.into(), signal)).is_err() {
@@ -238,7 +250,59 @@ impl Actor {
         });
     }
 
+    fn history(&mut self, outcome: crate::nostr::call_history::Outcome) {
+        use crate::nostr::call_history::{self, Outcome, Record};
+        let Some(session) = &self.session else {
+            return;
+        };
+        let record = Record {
+            version: 1,
+            call_id: session.id,
+            started_at: session.started_at,
+            outcome,
+            caller: if session.incoming {
+                session.peer.clone()
+            } else {
+                self.our_key.clone()
+            },
+            callee: if session.incoming {
+                self.our_key.clone()
+            } else {
+                session.peer.clone()
+            },
+        };
+        let author = if outcome == Outcome::Failed {
+            &self.our_key
+        } else if matches!(outcome, Outcome::Started | Outcome::Missed) {
+            &record.caller
+        } else {
+            &record.callee
+        };
+        call_history::merge(
+            &mut self.state.write(),
+            &self.our_key,
+            record.clone(),
+            author,
+            chrono::Utc::now().timestamp(),
+        );
+        if author == &self.our_key {
+            let _ = self.records.send(record);
+        }
+    }
+
     fn finish(&mut self, reason: EndReason, error: Option<&str>) {
+        use crate::nostr::call_history::Outcome;
+        if let Some(session) = &self.session {
+            match (session.phase, reason) {
+                (_, EndReason::Failed) => self.history(Outcome::Failed),
+                (Phase::Ringing, EndReason::Timeout | EndReason::Hangup) => {
+                    self.history(Outcome::Missed)
+                }
+                (Phase::Incoming, EndReason::Declined) => self.history(Outcome::Declined),
+                (Phase::Incoming, EndReason::Timeout) => self.history(Outcome::Missed),
+                _ => {}
+            }
+        }
         self.send(Body::End { reason });
         self.clear();
         if let Some(error) = error {
@@ -277,8 +341,11 @@ impl Actor {
                 if peer == self.our_key || peer.len() != 64 || hex::decode(&peer).is_err() {
                     return;
                 }
+                self.state.write().dm_accepted.insert(peer.clone());
                 self.session = Some(Session {
                     id: Uuid::new_v4(),
+                    incoming: false,
+                    started_at: chrono::Utc::now().timestamp(),
                     peer,
                     remote_device: None,
                     phase: Phase::Ringing,
@@ -290,6 +357,7 @@ impl Actor {
                     #[cfg(target_os = "android")]
                     _background_call: None,
                 });
+                self.history(crate::nostr::call_history::Outcome::Started);
                 self.send(Body::Invite);
                 self.update_view();
             }
@@ -303,6 +371,7 @@ impl Actor {
                 {
                     s.phase = Phase::Connecting;
                     s.deadline = Some(Instant::now() + Duration::from_secs(60));
+                    self.history(crate::nostr::call_history::Outcome::Answered);
                     self.send(Body::Accept);
                     self.update_view();
                 }
@@ -381,6 +450,14 @@ impl Actor {
                 self.finish(EndReason::Hangup, None);
             }
             if self.session.is_some() || guild_busy(&self.state.peek()) {
+                let _ = self.records.send(crate::nostr::call_history::Record {
+                    version: 1,
+                    call_id: signal.call_id,
+                    caller: author.clone(),
+                    callee: self.our_key.clone(),
+                    started_at: signal.sent_at,
+                    outcome: crate::nostr::call_history::Outcome::Busy,
+                });
                 self.emit(
                     &author,
                     signal.call_id,
@@ -394,6 +471,8 @@ impl Actor {
             }
             self.session = Some(Session {
                 id: signal.call_id,
+                incoming: true,
+                started_at: signal.sent_at,
                 peer: author,
                 remote_device: Some(signal.device),
                 phase: Phase::Incoming,
@@ -405,6 +484,7 @@ impl Actor {
                 #[cfg(target_os = "android")]
                 _background_call: None,
             });
+            self.history(crate::nostr::call_history::Outcome::Started);
             self.update_view();
             return;
         }
@@ -430,6 +510,7 @@ impl Actor {
                 s.remote_device = Some(signal.device);
                 s.phase = Phase::Connecting;
                 s.deadline = Some(Instant::now() + Duration::from_secs(60));
+                self.history(crate::nostr::call_history::Outcome::Answered);
                 self.negotiate(None);
             }
             Body::Offer { sdp } if s.phase == Phase::Connecting && s.connection.is_none() => {
@@ -460,6 +541,16 @@ impl Actor {
                 }
             }
             Body::End { reason } => {
+                use crate::nostr::call_history::Outcome;
+                match reason {
+                    EndReason::Failed => self.history(Outcome::Failed),
+                    EndReason::Busy => self.history(Outcome::Busy),
+                    EndReason::Declined => self.history(Outcome::Declined),
+                    EndReason::Hangup | EndReason::Timeout if s.phase == Phase::Incoming => {
+                        self.history(Outcome::Missed)
+                    }
+                    _ => {}
+                }
                 self.clear();
                 if matches!(
                     reason,
@@ -803,7 +894,7 @@ async fn local_description(
 }
 
 #[component]
-pub fn CallButton(peer: String) -> Element {
+pub fn CallButton(peer: String, #[props(default)] redial: bool) -> Element {
     let state = use_app_state();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
     let unavailable = state.read().dm_call.is_some() || guild_busy(&state.read());
@@ -816,8 +907,53 @@ pub fn CallButton(peer: String) -> Element {
             title: if unavailable { crate::i18n::text("End your current voice session to start a call", &[]) } else { crate::i18n::text("Start a private voice call", &[]) },
             onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::Start(peer.clone()))),
             span { style: "display: flex;", aria_hidden: "true", dangerous_inner_html: super::icons::PHONE }
-            {crate::i18n::text("Call", &[])}
+            {crate::i18n::text(if redial { "Call back" } else { "Call" }, &[])}
         } }
+    }
+}
+
+#[component]
+pub fn CallHistoryRow(message: crate::protocol::Message) -> Element {
+    let state = use_app_state();
+    let snapshot = state.read();
+    let Some(entry) = snapshot.dm_call_history.get(&message.id) else {
+        return rsx! {};
+    };
+    let Some(account) = snapshot.self_user.as_ref().map(|user| user.pubkey.as_str()) else {
+        return rsx! {};
+    };
+    let Some(peer) = entry.record.peer(account).map(str::to_owned) else {
+        return rsx! {};
+    };
+    let outcome = entry.outcome(
+        chrono::Utc::now().timestamp(),
+        snapshot.clock_offset(&entry.record.caller),
+    );
+    let label = crate::nostr::call_history::Record {
+        outcome,
+        ..entry.record.clone()
+    }
+    .label(account);
+    let label = crate::i18n::text(label, &[]);
+    let color = if outcome == crate::nostr::call_history::Outcome::Missed {
+        "var(--danger, #e57373)"
+    } else {
+        "var(--text-muted)"
+    };
+    let time = message
+        .created_at
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string();
+    rsx! {
+        div { style: "display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; background-color: var(--bg2);",
+            span { style: "display: flex; color: {color};", aria_hidden: "true", dangerous_inner_html: super::icons::PHONE }
+            span { style: "flex: 1; color: {color}; font-size: 13px;", "{label}" }
+            time { style: "font-size: 11px; color: var(--text-dim);", "{time}" }
+            if outcome != crate::nostr::call_history::Outcome::Started {
+                CallButton { peer, redial: true }
+            }
+        }
     }
 }
 

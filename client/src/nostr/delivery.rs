@@ -450,4 +450,48 @@ mod tests {
             Delivery::Failed
         );
     }
+    #[test]
+    fn call_history_outbox_survives_reload_without_exposing_its_metadata() {
+        use super::super::call_history::{self, Outcome, Record};
+        let secret = secp256k1::SecretKey::from_slice(&[1; 32]).unwrap();
+        let recipient = secp256k1::SecretKey::from_slice(&[2; 32]).unwrap();
+        let record = Record {
+            version: 1,
+            call_id: uuid::Uuid::new_v4(),
+            caller: event::xonly_hex(&secret),
+            callee: event::xonly_hex(&recipient),
+            started_at: 100,
+            outcome: Outcome::Missed,
+        };
+        let rumor = call_history::rumor(&record.caller, &record, 145).unwrap();
+        let (theirs, ours) = nip17::wrap_both(&secret, &record.callee, &rumor, 145).unwrap();
+        let serialized = serde_json::to_string(&vec![Stored {
+            peer: record.callee.clone(),
+            theirs,
+            ours,
+        }])
+        .unwrap();
+        assert!(!serialized.contains(&record.call_id.to_string()));
+        assert!(!serialized.contains("Missed"));
+        let path = std::env::temp_dir().join(format!(
+            "discordia-call-outbox-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        crate::identity::write_private(&path, &serialized).unwrap();
+        let reloaded = load_from(path.clone());
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        let (peer, theirs, ours) = &reloaded[0];
+        assert_eq!(peer, &record.callee);
+        for (account, key, wrapped) in [
+            (&record.caller, &secret, ours),
+            (&record.callee, &recipient, theirs),
+        ] {
+            let rumor = super::super::nip59::unwrap(key, wrapped).unwrap();
+            assert_eq!(
+                call_history::open(account, &rumor).unwrap(),
+                Some(record.clone())
+            );
+        }
+    }
 }

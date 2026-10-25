@@ -4,6 +4,8 @@ Documento vivo de memoria y seguimiento para la compatibilidad móvil de Discord
 
 **Nostr, 2026-10-25:** Android renueva sockets y suscripciones al volver al primer plano o cambiar de red; heartbeat de 30 s con límite de respuesta de 15 s y escrituras de 5 s. Trece pruebas locales cubren recuperación, backoff, suscripciones y conexiones obsoletas; Clippy y check ARM64 aprobados. Validación física del caso 0/4 pendiente.
 
+**Llamadas DM, 2026-10-25:** historial cifrado con tarjeta de llamada perdida y botón «Volver a llamar», compartido con escritorio. Deduplica por llamada, conserva pendientes al reiniciar y prioriza la respuesta de otro dispositivo. Intentos sin resultado vencen a los 45 s; errores de conexión se distinguen de llamadas perdidas. No agrega push con el proceso cerrado. Prueba física entre dispositivos pendiente.
+
 **Navegación, 2026-10-25:** Canales ↔ Chat ↔ Miembros con desplazamiento táctil nativo y vista parcial durante el gesto; botones y Atrás sincronizados. Borrador/scroll conservados y Miembros bajo demanda. Pruebas del bridge, retención de DOM y gestos táctiles en navegador; validación física y costo de CPU/RAM en Release pendientes.
 
 **DM, 2026-10-25:** primera base de notificaciones nativas optativas en Configuración → Notificaciones de DM. Depende de recepción Nostr con el proceso activo; sin servicio permanente ni Firebase. Validación física de permisos, segundo plano y apertura por aviso pendiente. Push con proceso terminado se sigue en [#384](https://github.com/ssotomayor/discordia/issues/384).

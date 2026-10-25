@@ -485,7 +485,7 @@ fn MessagePage(
                     {
                         let msg = &messages[i];
                         let new_day = i == 0 || day_of(&messages[i - 1]) != day_of(msg);
-                        let grouped = !new_day && i > 0 && groups_with(&messages[i - 1], msg);
+                        let grouped = !new_day && i > 0 && !snapshot.dm_call_history.contains_key(&messages[i - 1].id) && groups_with(&messages[i - 1], msg);
                         let day = new_day.then(|| day_label(day_of(msg)));
                         let mut message = msg.clone();
                         if is_dm { message.author.username = snapshot.display_name(&message.author.pubkey); }
@@ -498,7 +498,11 @@ fn MessagePage(
                                         div { class: "flex-1", style: "height:1px; background: var(--border);" }
                                     }
                                 }
-                                MessageRow { message, grouped }
+                                if is_dm && snapshot.dm_call_history.get(&msg.id).is_some_and(|entry| entry.confirmed) {
+                                    super::dm_call::CallHistoryRow { message }
+                                } else {
+                                    MessageRow { message, grouped }
+                                }
                             }
                         }
                     }

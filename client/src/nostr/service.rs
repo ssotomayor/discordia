@@ -138,8 +138,13 @@ pub fn spawn_nostr(
         let our_pubkey = identity.pubkey.clone();
         let secret = identity.secret_key();
         let (call_outgoing, mut call_signals) = unbounded_channel();
-        let calls =
-            crate::features::dm_call::spawn_service(our_pubkey.clone(), state, call_outgoing);
+        let (record_tx, mut call_records) = unbounded_channel();
+        let calls = crate::features::dm_call::spawn_service(
+            our_pubkey.clone(),
+            state,
+            call_outgoing,
+            record_tx,
+        );
         let (pool, mut events) = RelayPool::connect(relays.clone());
 
         // No author filter: gift wraps are signed by ephemeral keys. `p` is
@@ -210,8 +215,10 @@ pub fn spawn_nostr(
         let mut routes = super::delivery::Routes::default();
         let mut senders = super::delivery::Senders::new();
         let mut outbox = super::delivery::Outbox::new();
+        let mut system_deliveries = std::collections::HashMap::<Id, u8>::new();
         for (peer, theirs, ours) in super::delivery::load(&our_pubkey).await {
-            if let Ok(msg) = nip17::open_chat(&secret, &our_pubkey, &ours)
+            if let Ok(rumor) = nip59::unwrap(&secret, &ours)
+                && let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor)
                 && msg.author == our_pubkey
                 && msg.peer == peer
                 && theirs
@@ -219,8 +226,26 @@ pub fn spawn_nostr(
                     .iter()
                     .any(|tag| tag.first().is_some_and(|t| t == "p") && tag.get(1) == Some(&peer))
             {
-                insert_message(&msg, &our_pubkey, &mut state, Source::Ours, false);
+                let Ok(history) = super::call_history::open(&our_pubkey, &rumor) else {
+                    continue;
+                };
+                let system = history.is_some();
+                if let Some(record) = history {
+                    insert_call_record(
+                        record,
+                        &rumor.pubkey,
+                        &our_pubkey,
+                        &mut state,
+                        Source::Ours,
+                        rumor.created_at,
+                    );
+                } else {
+                    insert_message(&msg, &our_pubkey, &mut state, Source::Ours, false);
+                }
                 let id = message_id(&msg.id);
+                if system {
+                    system_deliveries.insert(id, 0);
+                }
                 state
                     .write()
                     .dm_delivery
@@ -232,7 +257,7 @@ pub fn spawn_nostr(
                         theirs,
                         ours,
                         due: std::time::Instant::now(),
-                        started: true,
+                        started: !system,
                     },
                 );
             }
@@ -320,6 +345,7 @@ pub fn spawn_nostr(
                         };
                         pool.publish(nip02::contact_list_event(&secret, &next, now()));
                         state.write().contacts = next;
+                        super::call_history::reconcile(&mut state.write(), &our_pubkey, now());
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     Some(NostrCmd::SetMute { peer, mute }) => {
@@ -367,6 +393,39 @@ pub fn spawn_nostr(
                     }
                     None => break,
                 },
+                record = call_records.recv() => {
+                    if let Some(record) = record {
+                        insert_call_record(record.clone(), &our_pubkey, &our_pubkey, &mut state, Source::Ours, now());
+                        if outbox.len() >= 128 {
+                            state.write().error_toast = Some("Too many pending messages to save call history.".into());
+                            continue;
+                        }
+                        let result = super::call_history::rumor(&our_pubkey, &record, now()).and_then(|rumor| {
+                            let peer = record.peer(&our_pubkey).ok_or("Invalid call participants")?.to_owned();
+                            let (theirs, ours) = nip17::wrap_both(&secret, &peer, &rumor, now())?;
+                            Ok((message_id(&rumor.id), super::delivery::Pending {
+                                peer, theirs, ours, due: std::time::Instant::now(), started: false,
+                            }))
+                        });
+                        match result {
+                            Ok((id, pending)) => {
+                                outbox.insert(id, pending);
+                                system_deliveries.insert(id, 0);
+                                if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
+                                    outbox.remove(&id);
+                                    system_deliveries.remove(&id);
+                                    state.write().error_toast = Some(format!("Could not save call history: {error}"));
+                                }
+                            }
+                            Err(error) => state.write().error_toast = Some(error),
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(
+                    super::call_history::next_expiry(&state.peek()).map(|at| at.saturating_sub(now()).max(0) as u64).unwrap_or(3600)
+                )), if super::call_history::next_expiry(&state.peek()).is_some() => {
+                    super::call_history::expire(&mut state.write(), &our_pubkey, now());
+                }
                 outgoing = call_signals.recv() => {
                     if let Some((peer, signal)) = outgoing {
                         let wrap = super::calls::rumor(&our_pubkey, &peer, &signal)
@@ -401,6 +460,7 @@ pub fn spawn_nostr(
                         if slots == 0 { break; }
                         if pending.started || pending.due > std::time::Instant::now() { continue; }
                         pending.started = true;
+                        state.write().dm_delivery.insert(*id, super::delivery::Delivery::Pending);
                         slots -= 1;
                         let delivery = senders.publish(pending.theirs.clone(), routes.targets(&pending.peer, &relays));
                         let id = *id;
@@ -425,8 +485,20 @@ pub fn spawn_nostr(
                 result = delivery_rx.recv() => {
                     if let Some((id, status)) = result {
                         state.write().dm_delivery.insert(id, status);
+                        if status == super::delivery::Delivery::Failed
+                            && let Some(attempt) = system_deliveries.get_mut(&id)
+                            && *attempt < 5
+                            && let Some(pending) = outbox.get_mut(&id)
+                        {
+                            *attempt += 1;
+                            pending.started = false;
+                            pending.due = std::time::Instant::now() + std::time::Duration::from_secs(15 << *attempt);
+                        }
                         if status == super::delivery::Delivery::Accepted {
                             outbox.remove(&id);
+                            if system_deliveries.remove(&id).is_some() {
+                                state.write().dm_delivery.remove(&id);
+                            }
                             if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                 state.write().error_toast = Some(format!("Could not update pending messages: {error}"));
                             }
@@ -445,6 +517,7 @@ pub fn spawn_nostr(
                         nip17::KIND_DM_RELAYS => routes.note(&event),
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
+                            super::call_history::reconcile(&mut state.write(), &our_pubkey, now());
                             request_names(&pool, &state, &our_pubkey, &mut named);
                         }
                         nip51::KIND_MUTE_LIST if event.pubkey == our_pubkey => {
@@ -529,6 +602,13 @@ pub fn spawn_nostr(
                                 let sender_now = super::calls::sender_now(now(), offset);
                                 match super::calls::open(&rumor, &our_pubkey, sender_now) {
                                     Ok(signal) => {
+                                        if matches!(signal.body, super::calls::Body::Invite) {
+                                            insert_call_record(super::call_history::Record {
+                                                version: 1, call_id: signal.call_id, caller: rumor.pubkey.clone(),
+                                                callee: our_pubkey.clone(), started_at: signal.sent_at,
+                                                outcome: super::call_history::Outcome::Started,
+                                            }, &rumor.pubkey, &our_pubkey, &mut state, Source::Relay, rumor.created_at);
+                                        }
                                         if calls.send(crate::features::dm_call::Command::Incoming(crate::features::dm_call::Incoming { author: rumor.pubkey, signal })).is_err() {
                                             tracing::debug!("Call service stopped");
                                         }
@@ -536,6 +616,15 @@ pub fn spawn_nostr(
                                     Err(reason) => tracing::warn!(%reason, clock_offset = offset, age_secs = sender_now.saturating_sub(rumor.created_at), "Rejected incoming DM call signal"),
                                 }
                                 continue;
+                            }
+                            match super::call_history::open(&our_pubkey, &rumor) {
+                                Ok(Some(record)) => {
+                                    insert_call_record(record, &rumor.pubkey, &our_pubkey, &mut state, Source::Relay, rumor.created_at);
+                                    request_names(&pool, &state, &our_pubkey, &mut named);
+                                    continue;
+                                }
+                                Err(error) => { tracing::warn!(%error, "Rejected call history record"); continue; }
+                                Ok(None) => {},
                             }
                             let live = every_relay_replayed(&state, &replayed);
                             if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
@@ -551,6 +640,15 @@ pub fn spawn_nostr(
                         // is replaying again until it says otherwise.
                         replayed.remove(&url);
                         state.write().nostr_relays_up.insert(url);
+                        for (id, attempt) in &mut system_deliveries {
+                            if state.peek().dm_delivery.get(id) == Some(&super::delivery::Delivery::Failed)
+                                && let Some(pending) = outbox.get_mut(id)
+                            {
+                                *attempt = 0;
+                                pending.started = false;
+                                pending.due = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                            }
+                        }
                     }
                     Some(RelayEvent::Disconnected { relay, why }) => {
                         // Pool retries automatically; this is the only source
@@ -732,6 +830,9 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     }
     s.dm_mode = true;
     s.selected_channel = Some(cid);
+    if let Some(account) = s.self_user.as_ref().map(|user| user.pubkey.clone()) {
+        super::call_history::reconcile(&mut s, &account, now());
+    }
     s.mark_dm_read(cid);
 }
 
@@ -869,6 +970,33 @@ fn withdraw_held(state: &mut Signal<AppState>, peer: &str, key: &str) {
     s.dm_delivery.remove(&mid);
     s.nostr_event_ids.remove(&mid);
     s.dm_emoji.remove(&mid);
+}
+
+fn insert_call_record(
+    record: super::call_history::Record,
+    author: &str,
+    account: &str,
+    state: &mut Signal<AppState>,
+    source: Source,
+    published_at: i64,
+) {
+    let Some(peer) = record.peer(account) else {
+        return;
+    };
+    let snapshot = state.peek();
+    let created_at = record
+        .started_at
+        .saturating_sub(snapshot.clock_offset(&record.caller));
+    if hidden_by_delete(&snapshot, peer, created_at, source) {
+        return;
+    }
+    let at = if record.outcome == super::call_history::Outcome::Missed {
+        published_at.saturating_sub(snapshot.clock_offset(author))
+    } else {
+        now()
+    };
+    drop(snapshot);
+    super::call_history::merge(&mut state.write(), account, record, author, at);
 }
 
 fn insert_message(
@@ -1254,5 +1382,40 @@ mod tests {
         assert_eq!(filed_at(998, Some(1_000), false), 998);
         let long_ago = 1_000 - CLOCK_DEADBAND_SECS - 1;
         assert_eq!(filed_at(long_ago, Some(1_000), true), long_ago);
+    }
+    #[test]
+    fn call_history_versions_use_independent_delivery_ids() {
+        use super::super::call_history::{self, Outcome, Record};
+        let key = |byte| secp256k1::SecretKey::from_slice(&[byte; 32]).unwrap();
+        let record = Record {
+            version: 1,
+            call_id: uuid::Uuid::new_v4(),
+            caller: super::super::event::xonly_hex(&key(1)),
+            callee: super::super::event::xonly_hex(&key(2)),
+            started_at: 100,
+            outcome: Outcome::Started,
+        };
+        let started = call_history::rumor(&record.caller, &record, 100).unwrap();
+        let missed = call_history::rumor(
+            &record.caller,
+            &Record {
+                outcome: Outcome::Missed,
+                ..record.clone()
+            },
+            145,
+        )
+        .unwrap();
+        assert_ne!(message_id(&started.id), message_id(&missed.id));
+        let mut pending = std::collections::HashMap::from([
+            (message_id(&started.id), started),
+            (message_id(&missed.id), missed),
+        ]);
+        let missed_id = pending
+            .iter()
+            .find(|(_, rumor)| rumor.created_at == 145)
+            .map(|(id, _)| *id)
+            .unwrap();
+        pending.retain(|id, _| *id == missed_id);
+        assert!(pending.contains_key(&missed_id));
     }
 }

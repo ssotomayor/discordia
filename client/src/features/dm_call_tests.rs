@@ -28,6 +28,7 @@ fn harness(
             device: Uuid::new_v4(),
             state,
             outgoing,
+            records: unbounded_channel().0,
             tx,
             session: None,
             finished: HashMap::new(),
@@ -212,6 +213,7 @@ fn cancellation_and_decline_dismiss_both_peers_and_replayed_invites() {
             device: Uuid::new_v4(),
             state: Signal::new(initial),
             outgoing,
+            records: unbounded_channel().0,
             tx: actor.tx.clone(),
             session: None,
             finished: HashMap::new(),
@@ -583,4 +585,63 @@ async fn assert_native_peer_audio(caller: RtcConfiguration, callee: RtcConfigura
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn unanswered_outgoing_call_emits_one_durable_missed_outcome() {
+    use crate::nostr::call_history::Outcome;
+    harness(|actor, signals| {
+        let (records, mut output) = unbounded_channel();
+        actor.records = records;
+        actor.action(Action::Start("22".repeat(32)));
+        let started = output.try_recv().unwrap();
+        assert_eq!(started.outcome, Outcome::Started);
+        assert_eq!(signals.try_recv().unwrap().1.sent_at, started.started_at);
+        actor.finish(EndReason::Timeout, None);
+        let missed = output.try_recv().unwrap();
+        assert_eq!(missed.outcome, Outcome::Missed);
+        assert_eq!(started.id(), missed.id());
+        actor.finish(EndReason::Timeout, None);
+        assert!(output.try_recv().is_err());
+    });
+}
+
+#[test]
+fn rejecting_or_accepting_an_incoming_call_is_never_published_as_missed() {
+    use crate::nostr::call_history::Outcome;
+    for accept in [false, true] {
+        harness(|actor, _| {
+            let (records, mut output) = unbounded_channel();
+            actor.records = records;
+            actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
+            assert!(output.try_recv().is_err());
+            actor.action(if accept { Action::Accept } else { Action::End });
+            assert_eq!(
+                output.try_recv().unwrap().outcome,
+                if accept {
+                    Outcome::Answered
+                } else {
+                    Outcome::Declined
+                }
+            );
+            if accept {
+                actor.finish(EndReason::Timeout, None);
+            }
+            assert!(output.try_recv().is_err());
+        });
+    }
+}
+
+#[test]
+fn failed_signaling_ends_with_a_failure_record_instead_of_a_missed_call() {
+    use crate::nostr::call_history::Outcome;
+    harness(|actor, _| {
+        let (records, mut output) = unbounded_channel();
+        actor.records = records;
+        actor.action(Action::Start("22".repeat(32)));
+        assert_eq!(output.try_recv().unwrap().outcome, Outcome::Started);
+        actor.finish(EndReason::Failed, None);
+        assert_eq!(output.try_recv().unwrap().outcome, Outcome::Failed);
+        assert!(output.try_recv().is_err());
+    });
 }

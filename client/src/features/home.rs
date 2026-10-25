@@ -346,6 +346,20 @@ pub(super) fn SocialPanel(
             Row {
                 name: snapshot.display_name(&dm.other_pubkey),
                 preview: last.map(|m| {
+                    if let Some(entry) = snapshot.dm_call_history.get(&m.id) {
+                        let outcome = entry.outcome(
+                            chrono::Utc::now().timestamp(),
+                            snapshot.clock_offset(&entry.record.caller),
+                        );
+                        return crate::i18n::text(
+                            crate::nostr::call_history::Record {
+                                outcome,
+                                ..entry.record.clone()
+                            }
+                            .label(&self_pk),
+                            &[],
+                        );
+                    }
                     let body = if m.content.trim().is_empty() && m.image.is_some() {
                         crate::i18n::text("📎 image", &[])
                     } else {

@@ -1,4 +1,12 @@
 {
+  "Call back": ["Volver a llamar", "Ligar novamente"],
+  "Voice call answered": ["Llamada atendida", "Chamada atendida"],
+  "Voice call declined": ["Llamada rechazada", "Chamada recusada"],
+  "Voice call: busy": ["Llamada: ocupado", "Chamada: ocupado"],
+  "Voice call failed": ["No se pudo conectar la llamada", "Não foi possível conectar a chamada"],
+  "Missed voice call": ["Llamada perdida", "Chamada perdida"],
+  "Voice call not answered": ["Llamada sin respuesta", "Chamada não atendida"],
+  "Voice call": ["Llamada de voz", "Chamada de voz"],
   "New private message": ["Nuevo mensaje privado", "Nova mensagem privada"],
   "Private messages": ["Mensajes privados", "Mensagens privadas"],
   "DM notifications": ["Notificaciones de DM", "Notificações de DM"],

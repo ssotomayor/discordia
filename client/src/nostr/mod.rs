@@ -27,6 +27,7 @@
 //!   `net::spawn_gateway` deliberately.
 
 pub mod blossom;
+pub mod call_history;
 pub mod calls;
 pub mod delivery;
 pub mod event;
