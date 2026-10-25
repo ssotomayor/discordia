@@ -88,6 +88,8 @@ peer's IP, and a proxy makes every host the same peer.
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
 | `DISCORDIA_VOICE_RECORD` | off | a directory: start Diagnostics → *Record calls* at launch, writing there instead of `<config dir>/voice-recordings` |
 
+DM calls wait up to 10 s for ICE gathering before trying the candidates already collected. No candidates produces an explicit connection error; a partial list does not guarantee connectivity through NAT. The default is STUN only: networks requiring a relay still need a configured TURN server.
+
 Guild migration: `cargo run -p discordia-server -- export --guild <uuid> f.json`
 then `import f.json` on the target. Fresh ids, pubkeys preserved.
 

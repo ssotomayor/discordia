@@ -770,15 +770,32 @@ async fn local_description(
     peer.set_local_description(description)
         .await
         .map_err(|e| e.to_string())?;
-    while peer.ice_gathering_state() != IceGatheringState::Complete {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    // An unreachable STUN server must not prevent trying already collected routes.
+    let complete = tokio::time::timeout(Duration::from_secs(10), async {
+        while peer.ice_gathering_state() != IceGatheringState::Complete {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let candidates = candidates.lock();
+    if candidates.is_empty() {
+        return Err("No network route was found for the voice call. Try another network.".into());
     }
-    for candidate in candidates.lock().iter() {
+    if !complete {
+        tracing::warn!(
+            candidates = candidates.len(),
+            "DM ICE discovery still pending; trying collected candidates"
+        );
+    }
+    for candidate in candidates.iter() {
         description_text.push_str("a=");
         description_text.push_str(candidate);
         description_text.push_str("\r\n");
     }
-    description_text.push_str("a=end-of-candidates\r\n");
+    if complete {
+        description_text.push_str("a=end-of-candidates\r\n");
+    }
     if description_text.len() > crate::nostr::calls::MAX_SDP {
         return Err("Voice description is too large".into());
     }

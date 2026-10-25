@@ -684,6 +684,7 @@
   "I already forwarded the ports": ["Ya redirigí los puertos","Já redirecionei as portas"],
   "I've saved my phrase — continue": ["Guardé mi frase — continuar","Salvei minha frase — continuar"],
   "ICE discovery timed out. Check your STUN/TURN configuration.": ["La búsqueda ICE agotó el tiempo. Revisa la configuración de STUN/TURN.","A descoberta ICE excedeu o tempo. Confira a configuração de STUN/TURN."],
+  "No network route was found for the voice call. Try another network.": ["No se encontró una ruta de red para la llamada. Probá con otra red.","Não foi encontrada uma rota de rede para a chamada. Tente outra rede."],
   "Icon": ["Icono","Ícone"],
   "Icon: square works best. Banner: wide (about 4:1). ": ["Icono: mejor cuadrado. Banner: ancho (aprox. 4:1). ","Ícone: de preferência quadrado. Banner: largo (aprox. 4:1). "],
   "Icon…": ["Icono…","Ícone…"],
