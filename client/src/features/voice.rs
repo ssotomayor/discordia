@@ -65,6 +65,11 @@ mod subscriptions;
 const CHANNELS: u32 = 1;
 const FRAME_MS: u32 = 10;
 const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
+const _: () = assert!(FRAME_SAMPLES == crate::audio_queue::SAMPLES);
+
+/// Buffered (non-zero) means a 10 ms timer in webrtc-sys that sends silence
+/// whenever the queue runs under 10 ms, so a drifting capture clock cuts holes.
+const SOURCE_QUEUE_MS: u32 = 0;
 
 pub(crate) const RESAMPLER_CHUNK: usize = 512;
 
@@ -788,7 +793,8 @@ impl ActiveVoice {
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let local_audio = new_muted_microphone_track(source.clone());
         let local_audio_for_mute = local_audio.clone();
         let red = !(cfg!(target_os = "android") && crate::e2ee::enabled());
@@ -1249,7 +1255,7 @@ impl ActiveVoice {
             },
             SAMPLE_RATE,
             CHANNELS,
-            1000,
+            SOURCE_QUEUE_MS,
         );
         let track = LocalAudioTrack::create_audio_track(
             "screen-audio",
@@ -1307,7 +1313,7 @@ impl ActiveVoice {
             },
             SAMPLE_RATE,
             CHANNELS,
-            1000,
+            SOURCE_QUEUE_MS,
         );
         let track = LocalAudioTrack::create_audio_track(
             SOUNDBOARD_TRACK,
@@ -2845,17 +2851,8 @@ async fn soundboard_loop(
             *pos = end;
         }
         playing.retain(|(pcm, pos)| *pos < pcm.len());
-        let data: Vec<i16> = frame
-            .iter()
-            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .collect();
-        let sent = AudioFrame {
-            data: data.into(),
-            sample_rate: SAMPLE_RATE,
-            num_channels: CHANNELS,
-            samples_per_channel: FRAME_SAMPLES as u32,
-        };
-        if let Err(e) = source.capture_frame(&sent).await {
+        let data = frame.map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+        if let Err(e) = source.capture_frame(&pcm_frame(&data)).await {
             eprintln!("[voice] soundboard capture_frame error: {e:?}");
         }
         let current = mixer.rate();
@@ -2877,6 +2874,16 @@ async fn soundboard_loop(
     mixer.remove_track(local);
 }
 
+/// The direct source takes exactly one DSP block per call; anything else is refused.
+fn pcm_frame(samples: &[i16; FRAME_SAMPLES]) -> AudioFrame<'_> {
+    AudioFrame {
+        data: std::borrow::Cow::Borrowed(samples),
+        sample_rate: SAMPLE_RATE,
+        num_channels: CHANNELS,
+        samples_per_channel: FRAME_SAMPLES as u32,
+    }
+}
+
 async fn publish_pcm(mut rx: crate::audio_queue::AudioReceiver<f32>, source: NativeAudioSource) {
     while let Some(packet) = rx.recv().await {
         if !packet.is_fresh() {
@@ -2885,13 +2892,7 @@ async fn publish_pcm(mut rx: crate::audio_queue::AudioReceiver<f32>, source: Nat
         let data = packet
             .samples
             .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
-        let frame = AudioFrame {
-            data: std::borrow::Cow::Borrowed(&data),
-            sample_rate: SAMPLE_RATE,
-            num_channels: CHANNELS,
-            samples_per_channel: FRAME_SAMPLES as u32,
-        };
-        if let Err(e) = source.capture_frame(&frame).await {
+        if let Err(e) = source.capture_frame(&pcm_frame(&data)).await {
             eprintln!("[voice] system audio capture_frame error: {e:?}");
         }
     }
@@ -2909,13 +2910,7 @@ async fn publish_loop(mut rx: crate::audio_queue::AudioReceiver<i16>, source: Na
             trace.record(packet.position, packet.captured, "stale_publish", None);
             continue;
         }
-        let frame = AudioFrame {
-            data: std::borrow::Cow::Borrowed(&packet.samples),
-            sample_rate: SAMPLE_RATE,
-            num_channels: CHANNELS,
-            samples_per_channel: FRAME_SAMPLES as u32,
-        };
-        if let Err(e) = source.capture_frame(&frame).await {
+        if let Err(e) = source.capture_frame(&pcm_frame(&packet.samples)).await {
             eprintln!("[voice] capture_frame error: {e:?}");
             trace.record(packet.position, packet.captured, "source_error", None);
             continue;
@@ -4292,9 +4287,33 @@ impl Drop for RemotePlaybackGuard {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn direct_sources_take_one_dsp_block_per_call_and_refuse_other_sizes() {
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
+        source
+            .capture_frame(&pcm_frame(&[0; FRAME_SAMPLES]))
+            .await
+            .unwrap();
+        for wrong in [FRAME_SAMPLES - 1, FRAME_SAMPLES + 1, FRAME_SAMPLES * 2] {
+            let data = vec![0_i16; wrong];
+            let frame = AudioFrame {
+                data: std::borrow::Cow::Borrowed(&data),
+                sample_rate: SAMPLE_RATE,
+                num_channels: CHANNELS,
+                samples_per_channel: wrong as u32,
+            };
+            assert!(
+                source.capture_frame(&frame).await.is_err(),
+                "{wrong} samples"
+            );
+        }
+    }
+
     #[test]
     fn microphone_track_starts_muted_before_publication() {
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let track = new_muted_microphone_track(source);
         assert!(track.is_muted());
         assert!(!track.is_enabled());
@@ -4302,7 +4321,8 @@ mod tests {
 
     #[test]
     fn microphone_mute_updates_dsp_native_track_and_publication_state() {
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let track = new_muted_microphone_track(source);
         let muted = AtomicBool::new(true);
         for value in [true, false, true] {

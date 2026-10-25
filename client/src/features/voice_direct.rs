@@ -26,7 +26,8 @@ pub struct Audio {
 impl Audio {
     pub fn start(factory: &PeerConnectionFactory, state: Signal<AppState>) -> Result<Self, String> {
         let controls = AudioControls::from_state(&state.peek());
-        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 100);
+        let source =
+            NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, SOURCE_QUEUE_MS);
         let track = factory.create_audio_track("dm-mic", source.clone());
         let (frame_tx, frame_rx) = crate::audio_queue::channel();
         let (gated_tx, gated_rx) = crate::audio_queue::channel();
