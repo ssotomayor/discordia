@@ -187,10 +187,8 @@ mod tests {
         monitor.await.unwrap();
         let tracks = handle.tracks.lock();
         let samples = &tracks.buffers[&track].samples;
-        assert_eq!(
-            samples.len(),
-            SAMPLE_RATE as usize / PLAYBACK_CAP_DIVISOR as usize
-        );
+        assert!(samples.len() <= SAMPLE_RATE as usize / PLAYBACK_CAP_DIVISOR as usize);
+        assert!(samples.len() >= SAMPLE_RATE as usize * drift::TARGET_MS as usize / 1000);
         assert!(samples.iter().all(|sample| *sample == 0.25));
     }
 

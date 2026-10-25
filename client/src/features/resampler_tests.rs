@@ -1,5 +1,4 @@
 use super::{AudioResampler, RESAMPLER_CHUNK};
-use rubato::Resampler;
 use rubato_legacy::{FftFixedIn, Resampler as LegacyResampler};
 
 const RATES: &[(u32, u32)] = &[

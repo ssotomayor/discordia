@@ -591,12 +591,7 @@ mod tests {
                 }
                 let mut tracks = handle.tracks.lock();
                 for _ in 0..requested.min(queued) {
-                    actual.push(next_playback_sample(
-                        &mut tracks,
-                        actual.len() as u32,
-                        (rate as f64 * DRIFT_OVERRUN_SECS) as usize,
-                        (rate as f64 * DRIFT_UNDERRUN_SECS) as usize,
-                    ));
+                    actual.push(next_playback_sample(&mut tracks));
                 }
                 step += 1;
                 assert!(step < 100);

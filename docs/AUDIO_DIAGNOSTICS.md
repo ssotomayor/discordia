@@ -9,6 +9,7 @@ capture reopens create suffixed files. All microphone PCM is mono 48 kHz.
 | `mic-processed.wav` / `mic-processing.csv` | Gated DSP output; closed/stale input blocks are silence. Model-load discards have metadata without waveform samples |
 | `mic-accepted.wav` / `mic-publication.csv` | Only blocks accepted by `NativeAudioSource::capture_frame`; this is not proof of network transmission or remote playback |
 | `mic-dsp.csv` | Stage levels, gate, gain, model, speech probability and processing settings, including `voice_detection`; `processed_dbfs` describes DSP output before lead-in routing |
+| `recv-<who>-<kind>.wav` / `.csv` | Each remote track as decoded, before resampling and mixing. `mixer_ms` is the queue depth after the push, `rebuffered_samples` what recovery held, `ratio` the drift controller's resample ratio (1 ± 0.01) |
 | `net-*.csv` | Cumulative transport statistics in guild voice; not available for direct calls |
 
 `mic-sent.wav` belongs to older recordings and described pre-publication DSP
