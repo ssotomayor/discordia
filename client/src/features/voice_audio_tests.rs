@@ -195,7 +195,9 @@ fn recorded_voice_detection_replay_exports_audio_and_frame_decisions() {
     let mut accepted = std::collections::HashSet::new();
     for frame in &frames {
         let first = frame.position.unwrap().first_sample as usize;
-        accepted.insert(first / FRAME_SAMPLES);
+        if frame.samples.iter().any(|s| *s != 0) {
+            accepted.insert(first / FRAME_SAMPLES);
+        }
         for (slot, sample) in output[first..first + FRAME_SAMPLES]
             .iter_mut()
             .zip(frame.samples)
@@ -261,7 +263,12 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
                 .all(|pair| pair[0].position.unwrap().first_sample
                     < pair[1].position.unwrap().first_sample)
         );
-        assert!(voiced.last().unwrap().position.unwrap().first_sample < SAMPLE_RATE as u64 * 9);
+        let audible: Vec<_> = voiced
+            .iter()
+            .filter(|f| f.samples.iter().any(|s| *s != 0))
+            .collect();
+        assert!(audible.len() > 100);
+        assert!(audible.last().unwrap().position.unwrap().first_sample < SAMPLE_RATE as u64 * 9);
         let mut seed = 79_u32;
         let noise: Vec<f32> = (0..SAMPLE_RATE as usize * 10)
             .map(|_| {
@@ -277,7 +284,11 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
             false,
         );
         assert!(
-            unvoiced.len() < voiced.len() / 2,
+            unvoiced
+                .iter()
+                .filter(|f| f.samples.iter().any(|s| *s != 0))
+                .count()
+                < audible.len() / 2,
             "noise was transmitted as speech: {} vs {}",
             unvoiced.len(),
             voiced.len()
@@ -295,9 +306,10 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
 
 #[test]
 fn native_pipeline_honors_mute_and_zero_microphone_volume() {
-    for (gain, muted) in [(100, true), (0, false)] {
-        assert!(processed(&[0.2; 150], gain, false, muted).is_empty());
-    }
+    assert!(processed(&[0.2; 150], 100, false, true).is_empty());
+    let silent = processed(&[0.2; 150], 0, false, false);
+    assert_eq!(silent.len(), 150);
+    assert!(silent.iter().all(|f| f.samples.iter().all(|s| *s == 0)));
 }
 
 #[test]
@@ -310,7 +322,9 @@ fn sensitivity_gates_before_microphone_volume_and_automatic_gain() {
             state.mic_volume = gain;
             state.mic_sensitivity = 30;
             let controls = AudioControls::from_state(&state);
-            assert!(processed_controls(&[0.015; 200], controls, false).is_empty());
+            let silent = processed_controls(&[0.015; 200], controls, false);
+            assert_eq!(silent.len(), 200);
+            assert!(silent.iter().all(|f| f.samples.iter().all(|s| *s == 0)));
             state.mic_sensitivity = 1;
             let controls = AudioControls::from_state(&state);
             let frames = processed_controls(&[0.015; 200], controls, false);

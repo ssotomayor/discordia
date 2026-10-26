@@ -35,7 +35,7 @@ delivery cannot be reconstructed from these indices.
 | Stage | Outcomes |
 |---|---|
 | Capture | `queued`, `capture_full`, `capture_closed` |
-| DSP | `queued`, `lead_in_queued`, `gate_drop`, `stale_input`, `stale_processed`, `model_load_discard`, `publisher_full`, `publisher_closed` |
+| DSP | `queued`, `lead_in_queued`, `gate_silence_queued`, `gate_drop`, `stale_input`, `stale_processed`, `model_load_discard`, `publisher_full`, `publisher_closed` |
 | Publication | `accepted`, `stale_publish`, `source_error` |
 
 The device callback sends fixed blocks to a bounded diagnostic queue. A slow
@@ -45,9 +45,12 @@ offsets. Queue losses become visible in the next successful row; a final loss
 without a later row has no trailing counter. Disk errors remain possible and
 are not evidence of live-audio failure.
 
+Closed gates queue digital silence to preserve the direct source's capture clock;
+explicit mute stops publication. `gate_silence_queued` contains no microphone sound.
+
 With voice detection enabled, a previously closed block can later be queued as
 lead-in. Its capture position stays unchanged; the processing WAV may therefore
-contain both its earlier silent `gate_drop` and its later `lead_in_queued` audio.
+contain both its earlier `gate_silence_queued` and its later `lead_in_queued` audio.
 Publication rows distinguish which blocks were actually accepted by WebRTC.
 
 ## Startup and device changes

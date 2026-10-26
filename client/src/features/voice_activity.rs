@@ -63,6 +63,40 @@ impl LeadIn {
         self.pending.clear();
     }
 
+    pub fn push_clocked(
+        &mut self,
+        frame: Frame<f32>,
+        action: GateAction,
+        config: Config,
+        muted: bool,
+        output: &mut Vec<Frame<f32>>,
+    ) {
+        let retained =
+            config.processing.gate && config.processing.voice_detection && config.volume > 0;
+        let silence_source = if retained && action == GateAction::Drop {
+            self.pending.front().filter(|old| {
+                self.pending.len() == LEAD_IN
+                    && self.config == Some(config)
+                    && old.position.map(|p| p.capture_id) == frame.position.map(|p| p.capture_id)
+            })
+        } else {
+            Some(&frame)
+        };
+        let silence = silence_source.map(|frame| Frame {
+            samples: [0.0; FRAME_SAMPLES],
+            captured: frame.captured,
+            position: frame.position,
+        });
+        self.push(frame, action, config, muted, output);
+        // Silence follows the VAD lead-in so reopening cannot replay older capture positions.
+        if output.is_empty()
+            && !muted
+            && let Some(silence) = silence
+        {
+            output.push(silence);
+        }
+    }
+
     pub fn push(
         &mut self,
         mut frame: Frame<f32>,
@@ -114,6 +148,47 @@ impl LeadIn {
 mod tests {
     use super::*;
     use crate::audio_queue::CapturePosition;
+
+    #[test]
+    fn a_closed_gate_keeps_the_live_clock_without_sending_captured_sound() {
+        for detection in [false, true] {
+            let mut lead = LeadIn::new();
+            let mut output = Vec::new();
+            let mut config = config();
+            config.processing.voice_detection = detection;
+            for hop in 1..100 {
+                lead.push_clocked(frame(1, hop), GateAction::Drop, config, false, &mut output);
+                if detection && hop <= LEAD_IN as u64 {
+                    assert!(output.is_empty());
+                    continue;
+                }
+                assert_eq!(output.len(), 1);
+                assert!(output[0].samples.iter().all(|s| *s == 0.0));
+                assert_eq!(
+                    output[0].position.unwrap().first_sample,
+                    (hop - if detection { LEAD_IN as u64 } else { 0 }) * FRAME_SAMPLES as u64
+                );
+            }
+            lead.push_clocked(frame(1, 100), GateAction::Drop, config, true, &mut output);
+            assert!(output.is_empty());
+            lead.push_clocked(
+                frame(1, 101),
+                GateAction::RampIn,
+                config,
+                false,
+                &mut output,
+            );
+            assert_eq!(
+                output.len(),
+                1,
+                "muting must discard retained microphone samples"
+            );
+            config.volume = 0;
+            lead.push_clocked(frame(1, 102), GateAction::Drop, config, false, &mut output);
+            assert_eq!(output.len(), 1);
+            assert!(output[0].samples.iter().all(|s| *s == 0.0));
+        }
+    }
 
     #[test]
     fn loud_non_speech_and_single_confidence_spikes_do_not_open_transmission() {

@@ -2,6 +2,25 @@ use super::*;
 use livekit::webrtc::stats::{InboundRtpStats, OutboundRtpStats, RemoteInboundRtpStats};
 
 #[test]
+fn silent_concealment_is_not_reported_as_lost_speech() {
+    let now = Instant::now();
+    let mut window = ReceiveWindow::default();
+    let mut stats = InboundRtpStats::default();
+    window.sample(&stats, now);
+    stats.received.packets_received = 50;
+    stats.inbound.total_samples_received = 48_000;
+    stats.inbound.concealed_samples = 48_000;
+    stats.inbound.silent_concealed_samples = 48_000;
+    let silent = window.sample(&stats, now + Duration::from_secs(1)).unwrap();
+    assert_eq!(silent.concealed_pct, 0.0);
+    stats.received.packets_received += 50;
+    stats.inbound.total_samples_received += 48_000;
+    stats.inbound.concealed_samples += 12_000;
+    let speech = window.sample(&stats, now + Duration::from_secs(2)).unwrap();
+    assert_eq!(speech.concealed_pct, 25.0);
+}
+
+#[test]
 fn recent_reception_distinguishes_loss_late_packets_and_concealment() {
     let now = Instant::now();
     let mut window = ReceiveWindow::default();
@@ -141,7 +160,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
         Room::connect(&url, &token("listener"), RoomOptions::default())
             .await
             .unwrap();
-    let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 100);
+    let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 0);
     let audio = LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
     let publication = sender
         .local_participant()
@@ -149,6 +168,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
             LocalTrack::Audio(audio.clone()),
             TrackPublishOptions {
                 source: TrackSource::Microphone,
+                dtx: false,
                 audio_encoding: Some(AudioEncoding {
                     max_bitrate: 64_000,
                 }),
@@ -174,28 +194,38 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
             }
         }
     });
+    let gate_closed = Arc::new(AtomicBool::new(false));
+    let closed = gate_closed.clone();
     let pump = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut seed = 42_u32;
+        let mut lead = activity::LeadIn::new();
+        let config = crate::mic_profile::Config::from_state(&AppState::empty());
+        let mut output = Vec::new();
         loop {
             tick.tick().await;
-            let samples: Vec<i16> = (0..FRAME_SAMPLES)
-                .map(|_| {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 17;
-                    seed ^= seed << 5;
-                    ((seed as f64 / u32::MAX as f64 - 0.5) * 16_000.0) as i16
-                })
-                .collect();
-            source
-                .capture_frame(&AudioFrame {
-                    data: std::borrow::Cow::Owned(samples),
-                    sample_rate: SAMPLE_RATE,
-                    num_channels: CHANNELS,
-                    samples_per_channel: FRAME_SAMPLES as u32,
-                })
-                .await
-                .unwrap();
+            let samples = std::array::from_fn(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                (seed as f32 / u32::MAX as f32 - 0.5) * 0.5
+            });
+            lead.push_clocked(
+                crate::audio_queue::Frame::new(samples),
+                if closed.load(Ordering::Relaxed) {
+                    GateAction::Drop
+                } else {
+                    GateAction::Pass
+                },
+                config,
+                false,
+                &mut output,
+            );
+            for frame in output.drain(..) {
+                let samples = frame.samples.map(|s| (s * i16::MAX as f32) as i16);
+                source.capture_frame(&pcm_frame(&samples)).await.unwrap();
+            }
         }
     });
     let mut dom = VirtualDom::new(|| rsx! {});
@@ -264,6 +294,21 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
         "decoded audio stalled during the live update"
     );
     assert_eq!(audio.sid(), publication.sid());
+    gate_closed.store(true, Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let silent_stats = audio.get_stats().await.unwrap();
+    let silent_packets = silent_stats
+        .iter()
+        .find_map(|s| match s {
+            RtcStats::OutboundRtp(s) => Some(s.sent.packets_sent),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        silent_packets >= out.sent.packets_sent + 100,
+        "closing the gate stopped the live RTP clock: {silent_packets} vs {}",
+        out.sent.packets_sent
+    );
     dom.in_scope(ScopeId::ROOT, || task.cancel());
     pump.abort();
     listen.abort();

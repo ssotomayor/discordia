@@ -724,6 +724,7 @@ window.dxScreen = window.dxScreen || (function () {
         return;
       }
       const codec = inbound.codecId ? stats.get(inbound.codecId) : null;
+      const playback = playbackSample(track);
       post('screen-stats-in', {
         active: true,
         trackSid: track.sid || null,
@@ -733,6 +734,14 @@ window.dxScreen = window.dxScreen || (function () {
         nackCount: Number.isFinite(inbound.nackCount) ? inbound.nackCount : null,
         pliCount: Number.isFinite(inbound.pliCount) ? inbound.pliCount : null,
         keyFramesDecoded: Number.isFinite(inbound.keyFramesDecoded) ? inbound.keyFramesDecoded : null,
+        totalDecodeTime: inbound.totalDecodeTime,
+        playbackId: playback.playbackId,
+        renderFrames: playback.renderFrames,
+        renderDropped: playback.renderDropped,
+        jitterBufferDelay: inbound.jitterBufferDelay,
+        jitterBufferEmittedCount: inbound.jitterBufferEmittedCount,
+        totalAssemblyTime: inbound.totalAssemblyTime,
+        framesAssembledFromMultiplePackets: inbound.framesAssembledFromMultiplePackets,
         encodedWidth: inbound.frameWidth || null,
         encodedHeight: inbound.frameHeight || null,
         encodedFps: inbound.framesPerSecond,

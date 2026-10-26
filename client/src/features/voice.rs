@@ -2326,6 +2326,7 @@ fn native_screen_stats(
         packets: Some(o.sent.packets_sent),
         packets_lost: None,
         jitter_ms: None,
+        reception: None,
         error: None,
     }
 }
@@ -2553,7 +2554,7 @@ fn denoise_gate_loop(
         let raw_dbfs = crate::voice_record::rms_dbfs(&packet.samples);
         let is_muted = muted.load(Ordering::Relaxed);
         let processed = processor.process(packet.samples, config, is_muted);
-        lead_in.push(
+        lead_in.push_clocked(
             crate::audio_queue::Frame {
                 samples: processed.samples,
                 captured: packet.captured,
@@ -2648,16 +2649,18 @@ fn denoise_gate_loop(
             )
         });
         if processed.action == GateAction::Drop {
-            trace.record_float(
-                packet.position,
-                packet.captured,
-                "gate_drop",
-                &[0.0; FRAME_SAMPLES],
-            );
+            if transmission.is_empty() {
+                trace.record_float(
+                    packet.position,
+                    packet.captured,
+                    "gate_drop",
+                    &[0.0; FRAME_SAMPLES],
+                );
+            }
             stats.dropped.fetch_add(1, Ordering::Relaxed);
-            continue;
+        } else {
+            stats.passed.fetch_add(1, Ordering::Relaxed);
         }
-        stats.passed.fetch_add(1, Ordering::Relaxed);
         let total = transmission.len();
         for (index, outgoing) in transmission.drain(..).enumerate() {
             let data = outgoing
@@ -2672,7 +2675,9 @@ fn denoise_gate_loop(
             let outcome = if packet.is_fresh() {
                 match crate::audio_queue::offer(&out_tx, packet) {
                     Ok(true) => {
-                        if index + 1 < total {
+                        if processed.action == GateAction::Drop {
+                            "gate_silence_queued"
+                        } else if index + 1 < total {
                             "lead_in_queued"
                         } else {
                             "queued"

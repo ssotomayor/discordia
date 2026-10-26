@@ -67,6 +67,46 @@ struct Sample {
     timestamp_ms: f64,
     bytes: u64,
     frames: Option<u64>,
+    counters: Value,
+}
+
+fn reception_delta(old: &Value, new: &Value) -> crate::state::VideoReceptionStats {
+    let delta = |key| {
+        let before = number(old, key)?;
+        let after = number(new, key)?;
+        (after >= before).then_some(after - before)
+    };
+    let ratio = |amount: Option<f64>, total: Option<f64>, scale| {
+        amount
+            .zip(total)
+            .and_then(|(a, t)| (t > 0.0).then_some(scale * a / t))
+    };
+    let frames = delta("frames");
+    let dropped = delta("framesDropped");
+    let packets = delta("packets");
+    let lost = delta("packetsLost");
+    let same_view = new.get("playbackId").and_then(Value::as_str).is_some()
+        && old.get("playbackId") == new.get("playbackId");
+    crate::state::VideoReceptionStats {
+        decode_ms: ratio(delta("totalDecodeTime"), frames, 1000.0),
+        dropped_pct: ratio(dropped, frames.zip(dropped).map(|(a, b)| a + b), 100.0),
+        render_dropped_pct: same_view
+            .then(|| ratio(delta("renderDropped"), delta("renderFrames"), 100.0))
+            .flatten(),
+        loss_pct: ratio(lost, packets.zip(lost).map(|(a, b)| a + b), 100.0),
+        freezes: delta("freezeCount"),
+        frozen_ms: delta("freezeDurationSeconds").map(|s| s * 1000.0),
+        buffer_ms: ratio(
+            delta("jitterBufferDelay"),
+            delta("jitterBufferEmittedCount"),
+            1000.0,
+        ),
+        assembly_ms: ratio(
+            delta("totalAssemblyTime"),
+            delta("framesAssembledFromMultiplePackets"),
+            1000.0,
+        ),
+    }
 }
 
 fn number(msg: &Value, key: &str) -> Option<f64> {
@@ -104,6 +144,7 @@ impl WebViewStats {
                 timestamp_ms: number(msg, "timestampMs")?,
                 bytes: u64_field("bytes")?,
                 frames: u64_field("frames"),
+                counters: msg.clone(),
             })
         })();
         let delta = previous
@@ -122,6 +163,12 @@ impl WebViewStats {
                 Some(new.frames?.checked_sub(old.frames?)? as f64 * 1000.0 / elapsed)
             })
             .filter(|v| v.is_finite());
+        let reception = (!outbound)
+            .then(|| {
+                let (old, new, elapsed) = delta?;
+                (elapsed <= 3000.0).then(|| reception_delta(&old.counters, &new.counters))
+            })
+            .flatten();
         *previous = current;
         Some(ScreenShareStats {
             outbound,
@@ -151,6 +198,7 @@ impl WebViewStats {
             jitter_ms: number(msg, "jitterSeconds")
                 .map(|v| v * 1000.0)
                 .filter(|v| v.is_finite()),
+            reception,
             error: text_field("error"),
         })
     }
@@ -158,6 +206,56 @@ impl WebViewStats {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reception_distinguishes_decode_display_loss_and_freezes_using_recent_deltas() {
+        let mut stats = super::WebViewStats::default();
+        let mut first = sample("a", 1000.0, 1000, 100);
+        first["totalDecodeTime"] = serde_json::json!(10.0);
+        first["framesDropped"] = serde_json::json!(10);
+        first["playbackId"] = serde_json::json!("view");
+        first["renderFrames"] = serde_json::json!(100);
+        first["renderDropped"] = serde_json::json!(10);
+        first["packets"] = serde_json::json!(1000);
+        first["packetsLost"] = serde_json::json!(100);
+        first["freezeCount"] = serde_json::json!(3);
+        first["freezeDurationSeconds"] = serde_json::json!(2.0);
+        assert!(stats.update(&first, false).unwrap().reception.is_none());
+        let mut next = first.clone();
+        next["timestampMs"] = serde_json::json!(2000);
+        next["frames"] = serde_json::json!(150);
+        next["totalDecodeTime"] = serde_json::json!(10.5);
+        next["framesDropped"] = serde_json::json!(10);
+        next["renderFrames"] = serde_json::json!(150);
+        next["renderDropped"] = serde_json::json!(15);
+        next["packets"] = serde_json::json!(2000);
+        next["freezeCount"] = serde_json::json!(4);
+        next["freezeDurationSeconds"] = serde_json::json!(2.25);
+        let r = stats.update(&next, false).unwrap().reception.unwrap();
+        assert_eq!(r.decode_ms, Some(10.0));
+        assert_eq!(r.dropped_pct, Some(0.0));
+        assert_eq!(r.render_dropped_pct, Some(10.0));
+        assert_eq!(r.loss_pct, Some(0.0));
+        assert_eq!(r.freezes, Some(1.0));
+        assert_eq!(r.frozen_ms, Some(250.0));
+        assert_eq!(r.buffer_ms, None);
+        next["timestampMs"] = serde_json::json!(3000);
+        next["playbackId"] = serde_json::json!("replacement");
+        assert_eq!(
+            stats
+                .update(&next, false)
+                .unwrap()
+                .reception
+                .unwrap()
+                .render_dropped_pct,
+            None
+        );
+        next["timestampMs"] = serde_json::json!(10000);
+        assert!(stats.update(&next, false).unwrap().reception.is_none());
+        next["sampleKey"] = serde_json::json!("b");
+        next["timestampMs"] = serde_json::json!(11000);
+        assert!(stats.update(&next, false).unwrap().reception.is_none());
+    }
+
     #[test]
     fn decoder_mode_keeps_ambiguous_and_missing_implementations_unknown() {
         use super::decoder_mode;

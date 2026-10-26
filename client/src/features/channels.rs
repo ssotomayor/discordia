@@ -1201,6 +1201,9 @@ pub(crate) fn ConnectionStats() -> Element {
                 div { key: "{name}", class: "flex flex-wrap items-baseline gap-1.5 text-[10px] font-mono py-0.5",
                     span { class: "truncate flex-1 text-[var(--text-muted)]", "{name}" }
                     match st {
+                        crate::state::TrackStats::Unavailable => rsx! {
+                            span { class: "text-[var(--text-dim)]", {crate::i18n::label("Audio statistics temporarily unavailable")} }
+                        },
                         crate::state::TrackStats::Inbound { loss_pct, recent_loss_pct, discarded_packets, concealed_pct, jitter_ms, buffer_ms, concealment_events } => rsx! {
                             span {
                                 class: if recent_loss_pct.is_some_and(|v| v >= 1.0) { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
@@ -1214,7 +1217,7 @@ pub(crate) fn ConnectionStats() -> Element {
                             }
                             span {
                                 class: if concealed_pct.is_some_and(|v| v >= 1.0) { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
-                                title: crate::i18n::text("Audio concealed over the last 5 seconds: {0}%. Total concealment events: {1}.", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}")), concealment_events.to_string()]),
+                                title: crate::i18n::text("Non-silent audio concealed over the last 5 seconds: {0}%. Silent concealment is excluded. Total concealment events: {1}.", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}")), concealment_events.to_string()]),
                                 {crate::i18n::text("{0}% concealed", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}"))])}
                             }
                             span { class: "text-[var(--text-dim)]", title: crate::i18n::text("Network jitter", &[]), {crate::i18n::text("{0}ms jit", &[format!("{0:.0}" , jitter_ms)])} }
@@ -1225,7 +1228,7 @@ pub(crate) fn ConnectionStats() -> Element {
                             }
                             span {
                                 class: "text-[var(--text-dim)]",
-                                title: crate::i18n::text("Audio concealed over the last 5 seconds: {0}%. Total concealment events: {1}.", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}")), concealment_events.to_string()]),
+                                title: crate::i18n::text("Non-silent audio concealed over the last 5 seconds: {0}%. Silent concealment is excluded. Total concealment events: {1}.", &[concealed_pct.map_or("—".into(), |v| format!("{v:.1}")), concealment_events.to_string()]),
                                 {crate::i18n::text("{0} conc", &[(concealment_events).to_string()])}
                             }
                         },
@@ -1397,6 +1400,21 @@ fn ScreenShareStatsRow(
     let adapter_dropped = stats
         .adapter_dropped_frames
         .map(|v| crate::i18n::text("WebRTC adapter dropped {0} total", &[v.to_string()]));
+    let reception: Vec<String> = stats.reception.as_ref().map_or_else(Vec::new, |r| {
+        [
+            ("decode {0} ms/frame", r.decode_ms),
+            ("video dropped {0}%", r.dropped_pct),
+            ("display dropped {0}%", r.render_dropped_pct),
+            ("recent video loss {0}%", r.loss_pct),
+            ("freezes {0}", r.freezes),
+            ("frozen {0} ms", r.frozen_ms),
+            ("video buffer {0} ms", r.buffer_ms),
+            ("frame assembly {0} ms", r.assembly_ms),
+        ]
+        .into_iter()
+        .filter_map(|(label, value)| value.map(|v| crate::i18n::text(label, &[format!("{v:.1}")])))
+        .collect()
+    });
 
     rsx! {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] font-mono",
@@ -1429,6 +1447,12 @@ fn ScreenShareStatsRow(
             if !stats.outbound && decoder_mode == "Not reported" {
                 div { class: "text-[var(--text-muted)] mt-0.5",
                     {crate::i18n::text("The browser did not identify the active decoder as hardware or software. Missing data does not mean CPU decoding.", &[])}
+                }
+            }
+            if !reception.is_empty() {
+                div { class: "text-[var(--text-dim)] mt-0.5",
+                    title: crate::i18n::label("Receiver measurements for the latest sample interval; missing counters are not estimated."),
+                    {reception.join(" · ")}
                 }
             }
             if let Some(error) = stats.error.as_deref() {
@@ -1496,7 +1520,7 @@ fn VoiceOccupant(
             onclick: move |_| state.write().profile_card = Some(pk_card.clone()),
             oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
-                span { class: "shrink-0 flex", title: health_label.unwrap_or_default(),
+                span { class: "shrink-0 flex", title: crate::i18n::label(health_label.unwrap_or_default()),
                     crate::features::profiles::Avatar {
                         pubkey: pubkey.clone(),
                         name: name.clone(),
