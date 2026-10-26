@@ -6,11 +6,6 @@ ignore = [
     # is in RSA private-key operations; LiveKit access tokens are HS256, so no
     # RSA operation ever runs. There is no fixed release to move to.
     "RUSTSEC-2023-0071",
-    # tract-nnef. The overflow is in the NNEF model parser, and the only model
-    # this app parses is the one compiled into the binary. The version is
-    # pinned deliberately: DeepFilterNet's model does not load on a newer tract
-    # (see client/Cargo.toml).
-    "RUSTSEC-2026-0217",
     # webpki-roots 0.26.11, reached through tokio-tungstenite (still `^0.26`
     # at 0.30) and ureq 2. The crate is a semver shim over webpki-roots 1.x --
     # `pub use parent::TLS_SERVER_ROOTS` and nothing else -- so the fixed

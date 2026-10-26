@@ -47,8 +47,8 @@ and the decisions taken deliberately.
 - The Windows blob's lifetime rule is an observation, not a contract.
 - Two advisories are ignored in `.cargo/audit.toml`, each with its reason
   written beside it: `rsa` arrives through `jsonwebtoken` and never runs an RSA
-  operation here, and `tract-nnef` is pinned by a model that will not load on a
-  newer one. Ignores without a reason are bugs.
+  operation here, and `webpki-roots` 0.26 is a shim over the fixed 1.x roots.
+  Ignores without a reason are bugs.
 - A sender's clock is corrected, not trusted (trap 18), and only from a message
   that arrived once every connected relay had finished replaying. A relay that
   is down at launch and comes up later replays into a session already counted
