@@ -206,12 +206,54 @@ fn TopBar(
     let mut open = use_signal(|| false);
     let npub = identity.npub();
     let short = format!("{}…{}", &npub[..9.min(npub.len())], &npub[npub.len() - 3..]);
-    let settings_top = if cfg!(target_os = "macos") { 16 } else { 8 };
+    let mac_header = if cfg!(target_os = "macos") {
+        "dxf-home-macos"
+    } else {
+        ""
+    };
+
+    let settings_button = rsx! { button {
+        class: "dxf-home-settings dxf-no-drag w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+        title: crate::i18n::text("Settings", &[]),
+        aria_label: crate::i18n::text("Settings", &[]),
+        onmousedown: move |e| e.stop_propagation(),
+        onclick: move |_| {
+            open.set(false);
+            let mut app = state;
+            app.write().audio_settings = true;
+        },
+        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
+    } };
+    let account_button = rsx! { button {
+        class: "dxf-home-account flex items-center gap-2.5 px-2 py-1.5 rounded-lg border border-transparent text-left hover:bg-[var(--panel2)] hover:border-[var(--border-strong)] transition-colors",
+        title: crate::i18n::text("Account", &[]),
+        aria_label: crate::i18n::text("Account", &[]),
+        aria_expanded: "{open()}",
+        onclick: move |e| {
+            e.stop_propagation();
+            let now = open();
+            open.set(!now);
+        },
+        crate::features::profiles::Avatar {
+            pubkey: identity.pubkey.clone(),
+            name: identity.display_name.clone(),
+            size: "w-8 h-8",
+            text: "text-xs",
+        }
+        div { class: "dxf-home-account-details min-w-0 max-w-40 leading-tight hidden min-[1060px]:block",
+            div { class: "text-sm font-semibold text-[var(--text)] truncate",
+                "{identity.display_name}"
+            }
+            div { class: "text-[10.5px] font-mono tracking-wide text-[var(--text-dim)] truncate",
+                "{short}"
+            }
+        }
+    } };
 
     rsx! {
         div { class: "dxf-home-bar relative shrink-0 z-50",
             div {
-                class: "dxf-home-header dxf-drag-region relative z-50 h-[58px] pl-5 pr-2 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
+                class: "dxf-home-header {mac_header} dxf-drag-region relative z-50 h-[58px] pl-5 pr-2 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
                 onclick: move |_| open.set(false),
                 if !cfg!(target_os = "windows") {
@@ -243,7 +285,7 @@ fn TopBar(
                     onmousedown: move |e| e.stop_propagation(),
                     button {
                         class: "dxf-home-social flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
-                        aria_label: crate::i18n::text("Social", &[]),
+                        aria_label: if unread > 0 { format!("{} {unread}", crate::i18n::text("Social", &[])) } else { crate::i18n::text("Social", &[]) },
                         aria_expanded: "{social()}",
                         onclick: move |_| {
                             open.set(false);
@@ -258,43 +300,12 @@ fn TopBar(
                             span { class: "text-[var(--accent)] font-semibold", "{unread}" }
                         }
                     }
-                    button {
-                        class: "dxf-home-settings dxf-no-drag w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                        style: if cfg!(target_os = "android") { String::new() } else { format!("position: absolute; top: {settings_top}px; right: 8px;") },
-                        title: crate::i18n::text("Settings", &[]),
-                        aria_label: crate::i18n::text("Settings", &[]),
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| {
-                            open.set(false);
-                            let mut app = state;
-                            app.write().audio_settings = true;
-                        },
-                        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
-                    }
-                    button {
-                        class: "dxf-home-account flex items-center gap-2.5 px-2 py-1.5 rounded-lg border border-transparent text-left hover:bg-[var(--panel2)] hover:border-[var(--border-strong)] transition-colors",
-                        title: crate::i18n::text("Account", &[]),
-                        aria_label: crate::i18n::text("Account", &[]),
-                        aria_expanded: "{open()}",
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            let now = open();
-                            open.set(!now);
-                        },
-                        crate::features::profiles::Avatar {
-                            pubkey: identity.pubkey.clone(),
-                            name: identity.display_name.clone(),
-                            size: "w-8 h-8",
-                            text: "text-xs",
-                        }
-                        div { class: "dxf-home-account-details min-w-0 max-w-40 leading-tight hidden min-[1060px]:block",
-                            div { class: "text-sm font-semibold text-[var(--text)] truncate",
-                                "{identity.display_name}"
-                            }
-                            div { class: "text-[10.5px] font-mono tracking-wide text-[var(--text-dim)] truncate",
-                                "{short}"
-                            }
-                        }
+                    if cfg!(any(target_os = "android", target_os = "ios")) {
+                        {settings_button}
+                        {account_button}
+                    } else {
+                        {account_button}
+                        {settings_button}
                     }
                 }
             }
@@ -692,6 +703,37 @@ impl Row {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn home_exposes_unread_count_in_the_accessible_name() {
+        use crate::state::AppState;
+        use dioxus::core::{AttributeValue, Mutation};
+        use dioxus::prelude::*;
+        let mut dom = VirtualDom::new(|| {
+            let state = use_signal(|| {
+                let mut state = AppState::empty();
+                let id = crate::protocol::Id::new_v4();
+                state.dms.push(crate::state::DmInfo {
+                    channel_id: id,
+                    other_pubkey: "peer".into(),
+                });
+                state.dm_unread.insert(id, 3);
+                state.dm_accepted.insert("peer".into());
+                state
+            });
+            provide_context(state);
+            use_context_provider(|| Signal::new(crate::settings::ClientSettings::default()));
+            let social = use_signal(|| false);
+            let mut identity =
+                crate::identity::Identity::restore_from_private_key("01".repeat(32), "Test")
+                    .unwrap();
+            identity.pubkey = "self".into();
+            rsx! { super::TopBar { identity, social, open_social: |_| {}, on_rename: |_| {}, on_sign_out: |_| {} } }
+        });
+        let edits = dom.rebuild_to_vec().edits;
+        assert!(edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "aria-label", value: AttributeValue::Text(label), .. } if label.ends_with(" 3")
+        )));
+    }
     use super::*;
     use crate::protocol::Id;
 
