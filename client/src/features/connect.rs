@@ -944,13 +944,6 @@ pub fn IdentityCard(
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
-    let initial = identity
-        .display_name
-        .chars()
-        .next()
-        .unwrap_or('?')
-        .to_ascii_uppercase()
-        .to_string();
     let tag = crate::identity::discriminator(&identity.pubkey).to_string();
     let file_path = identity.file_path_display();
 
@@ -966,9 +959,11 @@ pub fn IdentityCard(
     rsx! {
         div { class: "rounded-2xl border border-[var(--edge)] bg-[var(--panel2)] p-4 space-y-3",
             div { class: "flex items-center gap-3 text-xs",
-                div { class: "w-11 h-11 rounded-xl border border-[var(--edge)] flex items-center justify-center text-[var(--accent)] font-semibold text-lg shrink-0",
-                    style: "background: var(--bg2);",
-                    "{initial}"
+                super::profiles::Avatar {
+                    pubkey: identity.pubkey.clone(),
+                    name: identity.display_name.clone(),
+                    size: "w-11 h-11",
+                    text: "text-lg",
                 }
                 div { class: "flex flex-col flex-1 min-w-0",
                     if editing() {

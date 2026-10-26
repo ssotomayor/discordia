@@ -46,6 +46,21 @@ impl LocalProfile {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Pictures {
+    pub avatar: Option<std::sync::Arc<String>>,
+    pub banner: Option<std::sync::Arc<String>>,
+}
+
+impl From<LocalProfile> for Pictures {
+    fn from(profile: LocalProfile) -> Self {
+        Self {
+            avatar: profile.avatar.map(std::sync::Arc::new),
+            banner: profile.banner.map(std::sync::Arc::new),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Stored {
     version: u32,

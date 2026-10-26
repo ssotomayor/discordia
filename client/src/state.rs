@@ -334,6 +334,7 @@ pub struct AppState {
     /// Bumped when another device's profile is adopted, so the connected
     /// server gets it too; `net` sends the account cache only on connect.
     pub profile_synced_at: i64,
+    pub account_pictures: Option<(String, crate::profile::Pictures)>,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
@@ -562,6 +563,7 @@ impl AppState {
             messages: BTreeMap::new(),
             history_loaded: HashSet::new(),
             profile_synced_at: 0,
+            account_pictures: None,
             message_search: None,
             file_upload_result: None,
             server_chat_tools: false,
@@ -1125,13 +1127,33 @@ impl AppState {
     pub fn avatar_address(&self, pubkey: &str) -> Option<&str> {
         self.guild_look_of(pubkey)
             .and_then(|l| l.avatar.as_deref())
-            .or_else(|| self.profiles.get(pubkey)?.avatar.as_deref())
+            .or_else(|| match self.profiles.get(pubkey) {
+                Some(profile) => profile.avatar.as_deref(),
+                None => self
+                    .account_pictures
+                    .as_ref()
+                    .filter(|(owner, _)| owner == pubkey)?
+                    .1
+                    .avatar
+                    .as_deref()
+                    .map(String::as_str),
+            })
     }
 
     pub fn banner_address(&self, pubkey: &str) -> Option<&str> {
         self.guild_look_of(pubkey)
             .and_then(|l| l.banner.as_deref())
-            .or_else(|| self.profiles.get(pubkey)?.banner.as_deref())
+            .or_else(|| match self.profiles.get(pubkey) {
+                Some(profile) => profile.banner.as_deref(),
+                None => self
+                    .account_pictures
+                    .as_ref()
+                    .filter(|(owner, _)| owner == pubkey)?
+                    .1
+                    .banner
+                    .as_deref()
+                    .map(String::as_str),
+            })
     }
 
     pub fn bio_of(&self, pubkey: &str) -> Option<&str> {
@@ -1871,6 +1893,49 @@ pub fn use_gateway() -> GatewayTx {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn account_pictures_survive_server_teardown_without_leaking_to_other_users() {
+        let mut app = AppState::empty();
+        app.account_pictures = Some((
+            "self".into(),
+            crate::profile::LocalProfile {
+                avatar: Some("data:image/png;base64,YXZhdGFy".into()),
+                banner: Some("data:image/png;base64,YmFubmVy".into()),
+                ..Default::default()
+            }
+            .into(),
+        ));
+        app.clear_server_session();
+        assert_eq!(
+            app.avatar_address("self"),
+            Some("data:image/png;base64,YXZhdGFy")
+        );
+        assert_eq!(
+            app.banner_address("self"),
+            Some("data:image/png;base64,YmFubmVy")
+        );
+        assert_eq!(app.avatar_address("other"), None);
+        app.profiles.insert(
+            "self".into(),
+            Profile {
+                pubkey: "self".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            app.avatar_address("self"),
+            None,
+            "server removal is authoritative"
+        );
+        app.clear_server_session();
+        app.account_pictures.as_mut().unwrap().1.avatar = None;
+        assert_eq!(
+            app.avatar_address("self"),
+            None,
+            "removing the saved image restores the initial"
+        );
+    }
 
     /// `short.png` fails `emoji::safe_name`, so nothing touches the disk.
     #[test]
