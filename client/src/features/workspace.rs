@@ -161,12 +161,7 @@ pub(crate) const STOP_WEBVIEW_MEDIA_JS: &str = r#"
 })();
 "#;
 
-/// Whether a guild's accent gets written onto the workspace element.
-///
-/// It matters that this can answer "no": the style lands on a *descendant* of
-/// the one `app.rs` puts the personal accent on, so anything written here wins
-/// the cascade. Declining to write it is the only way to let the personal one
-/// through, which is what `keep_my_accent` asks for.
+// The nearer workspace override must yield to the app's personal theme outside guilds.
 fn guild_accent_to_apply(
     dm_mode: bool,
     keep_my_accent: bool,
@@ -176,6 +171,15 @@ fn guild_accent_to_apply(
         return None;
     }
     guild_accent
+}
+
+fn workspace_accent_style(accent: Option<String>) -> String {
+    accent
+        .map(|a| crate::app::accent_vars(&a))
+        .unwrap_or_else(|| {
+            // Dioxus restores omitted style properties, so explicitly reset every guild override.
+            "--accent: inherit; --accent-strong: inherit; --accent-soft: inherit;".into()
+        })
 }
 
 /// The layout control: templates, hand-rearranging, and the way back. Its own
@@ -543,9 +547,7 @@ pub fn WorkspaceView(
                 .find(|g| g.id == gid)
                 .and_then(|g| g.accent.clone())
         });
-        guild_accent_to_apply(s.dm_mode, keep_mine, guild_accent)
-            .map(|a| crate::app::accent_vars(&a))
-            .unwrap_or_default()
+        workspace_accent_style(guild_accent_to_apply(s.dm_mode, keep_mine, guild_accent))
     };
 
     use_future(move || async move {
@@ -1450,7 +1452,7 @@ fn GuildDialogHost() -> Element {
 
 #[cfg(test)]
 mod accent_tests {
-    use super::guild_accent_to_apply;
+    use super::{guild_accent_to_apply, workspace_accent_style};
 
     const GUILD: Option<String> = None;
 
@@ -1481,5 +1483,24 @@ mod accent_tests {
     fn an_unbranded_guild_overrides_nothing_either_way() {
         assert_eq!(guild_accent_to_apply(false, false, GUILD), None);
         assert_eq!(guild_accent_to_apply(false, true, GUILD), None);
+    }
+
+    #[test]
+    fn leaving_a_branded_guild_explicitly_resets_every_accent_property() {
+        for (dm, keep_mine, accent) in [
+            (true, false, branded()),
+            (false, true, branded()),
+            (false, false, None),
+        ] {
+            let branded_style = workspace_accent_style(branded());
+            let reset = workspace_accent_style(guild_accent_to_apply(dm, keep_mine, accent));
+            for declaration in branded_style.split(';').filter(|s| !s.trim().is_empty()) {
+                let property = declaration.split_once(':').unwrap().0.trim();
+                assert!(
+                    reset.contains(&format!("{property}: inherit;")),
+                    "{property}"
+                );
+            }
+        }
     }
 }
