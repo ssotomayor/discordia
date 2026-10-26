@@ -46,15 +46,32 @@ impl VoiceGate {
     }
 }
 
+/// One frame out per frame in. The encoder's RTP clock advances only with
+/// what is pushed, so a shut gate sends zeros rather than nothing (trap 38).
+pub(super) struct Outgoing {
+    pub frame: Frame<f32>,
+    pub silent: bool,
+    pub lead_in: bool,
+}
+
+struct Held {
+    frame: Frame<f32>,
+    voiced: bool,
+    lead_in: bool,
+}
+
+/// With voice detection the stream runs `LEAD_IN` frames behind capture, so
+/// the frames before an opening go out as audio instead of the zeros they
+/// would otherwise have been. Positions and stamps stay the capture's.
 pub(super) struct LeadIn {
-    pending: VecDeque<Frame<f32>>,
+    pending: VecDeque<Held>,
     config: Option<Config>,
 }
 
 impl LeadIn {
     pub fn new() -> Self {
         Self {
-            pending: VecDeque::with_capacity(LEAD_IN),
+            pending: VecDeque::with_capacity(LEAD_IN + 1),
             config: None,
         }
     }
@@ -69,44 +86,64 @@ impl LeadIn {
         action: GateAction,
         config: Config,
         muted: bool,
-        output: &mut Vec<Frame<f32>>,
+        output: &mut Vec<Outgoing>,
     ) {
         output.clear();
         let changed_capture = self.pending.back().is_some_and(|old| {
-            old.position.map(|p| p.capture_id) != frame.position.map(|p| p.capture_id)
+            old.frame.position.map(|p| p.capture_id) != frame.position.map(|p| p.capture_id)
         });
         if self.config != Some(config) || changed_capture || muted || config.volume == 0 {
             self.clear();
             self.config = Some(config);
         }
-        if muted || config.volume == 0 {
-            return;
-        }
-        if !config.processing.gate || !config.processing.voice_detection {
-            self.clear();
-            if action != GateAction::Drop {
-                output.push(frame);
+        let silent = muted || config.volume == 0 || action == GateAction::Drop;
+        if muted
+            || config.volume == 0
+            || !config.processing.gate
+            || !config.processing.voice_detection
+        {
+            if silent {
+                frame.samples = [0.0; FRAME_SAMPLES];
             }
-            return;
-        }
-        if action == GateAction::Drop {
-            if self.pending.len() == LEAD_IN {
-                let _ = self.pending.pop_front();
-            }
-            self.pending.push_back(frame);
+            output.push(Outgoing {
+                frame,
+                silent,
+                lead_in: false,
+            });
             return;
         }
         if action == GateAction::RampIn {
-            if let Some(first) = self.pending.front_mut() {
-                ramp(&mut first.samples, true);
-            } else {
+            let mut first = true;
+            for held in &mut self.pending {
+                if !held.voiced {
+                    held.voiced = true;
+                    held.lead_in = true;
+                    if first {
+                        ramp(&mut held.frame.samples, true);
+                    }
+                }
+                first = false;
+            }
+            if first {
                 ramp(&mut frame.samples, true);
             }
-            output.extend(self.pending.drain(..));
-        } else {
-            self.clear();
         }
-        output.push(frame);
+        self.pending.push_back(Held {
+            frame,
+            voiced: action != GateAction::Drop,
+            lead_in: false,
+        });
+        if self.pending.len() > LEAD_IN {
+            let mut held = self.pending.pop_front().expect("just pushed");
+            if !held.voiced {
+                held.frame.samples = [0.0; FRAME_SAMPLES];
+            }
+            output.push(Outgoing {
+                frame: held.frame,
+                silent: !held.voiced,
+                lead_in: held.lead_in,
+            });
+        }
     }
 }
 
@@ -161,34 +198,93 @@ mod tests {
         frame
     }
 
+    fn drain(
+        lead: &mut LeadIn,
+        hops: impl IntoIterator<Item = (u64, u64, GateAction)>,
+        config: Config,
+    ) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let mut step = Vec::with_capacity(1);
+        for (id, hop, action) in hops {
+            lead.push(frame(id, hop), action, config, false, &mut step);
+            out.append(&mut step);
+        }
+        out
+    }
+
     #[test]
-    fn lead_in_preserves_only_the_last_three_hops_with_their_original_capture_positions() {
+    fn lead_in_releases_the_last_three_hops_as_audio_and_every_hop_before_as_silence() {
         let mut lead = LeadIn::new();
-        let mut output = Vec::with_capacity(4);
-        for hop in 0..5 {
-            lead.push(
-                frame(1, hop),
-                GateAction::Drop,
-                config(),
-                false,
-                &mut output,
-            );
-            assert!(output.is_empty());
-        }
-        let current = frame(1, 5);
-        let captured = current.captured;
-        lead.push(current, GateAction::RampIn, config(), false, &mut output);
-        assert_eq!(output.len(), 4);
-        assert_eq!(output[0].samples[0], 0.0);
-        assert_eq!(output[1].samples[0], 0.3);
-        assert_eq!(output[3].samples[0], 0.5);
-        assert_eq!(output[3].captured, captured);
-        for (index, packet) in output.iter().enumerate() {
+        let hops = (0..5).map(|hop| (1, hop, GateAction::Drop));
+        let out = drain(&mut lead, hops, config());
+        assert_eq!(out.len(), 2, "a 30 ms delay line");
+        assert!(out.iter().all(|o| o.silent && o.frame.samples[0] == 0.0));
+        let out = drain(&mut lead, [(1, 5, GateAction::RampIn)], config());
+        assert_eq!(out.len(), 1);
+        assert!(out[0].lead_in && !out[0].silent);
+        assert_eq!(
+            out[0].frame.samples[0], 0.0,
+            "the first released hop ramps in"
+        );
+        assert_eq!(
+            out[0].frame.position.unwrap().first_sample,
+            2 * FRAME_SAMPLES as u64
+        );
+        let out = drain(
+            &mut lead,
+            (6..9).map(|hop| (1, hop, GateAction::Pass)),
+            config(),
+        );
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].frame.samples[0], 0.3);
+        assert!(out[0].lead_in && out[1].lead_in && !out[2].lead_in);
+        assert_eq!(out[2].frame.samples[0], 0.5);
+        for (index, packet) in out.iter().enumerate() {
             assert_eq!(
-                packet.position.unwrap().first_sample,
-                (index as u64 + 2) * FRAME_SAMPLES as u64
+                packet.frame.position.unwrap().first_sample,
+                (index as u64 + 3) * FRAME_SAMPLES as u64
             );
         }
+    }
+
+    #[test]
+    fn every_hop_goes_out_once_in_capture_order_whatever_the_gate_does() {
+        let mut lead = LeadIn::new();
+        let mut rng = 7u32;
+        let hops = (0..400).map(|hop| {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            let action = match rng % 4 {
+                0 => GateAction::Drop,
+                1 => GateAction::RampIn,
+                2 => GateAction::Pass,
+                _ => GateAction::RampOut,
+            };
+            (1, hop, action)
+        });
+        let out = drain(&mut lead, hops, config());
+        assert_eq!(out.len(), 400 - LEAD_IN);
+        for (index, packet) in out.iter().enumerate() {
+            assert_eq!(
+                packet.frame.position.unwrap().first_sample,
+                index as u64 * FRAME_SAMPLES as u64
+            );
+            assert_eq!(
+                packet.silent,
+                packet.frame.samples.iter().all(|s| *s == 0.0) && index > 0
+            );
+        }
+        let mut plain = config();
+        plain.processing.voice_detection = false;
+        let mut lead = LeadIn::new();
+        let out = drain(
+            &mut lead,
+            (0..10).map(|hop| (1, hop, GateAction::Drop)),
+            plain,
+        );
+        assert_eq!(out.len(), 10, "without voice detection nothing is delayed");
+        assert!(out.iter().all(|o| o.silent));
     }
 
     #[test]
@@ -198,11 +294,19 @@ mod tests {
             let mut output = Vec::with_capacity(4);
             let mut config = config();
             lead.push(frame(1, 1), GateAction::Drop, config, false, &mut output);
+            assert!(output.is_empty());
             match reset {
-                0 => lead.push(frame(1, 2), GateAction::Drop, config, true, &mut output),
+                0 => {
+                    lead.push(frame(1, 2), GateAction::Drop, config, true, &mut output);
+                    assert!(
+                        output.len() == 1 && output[0].silent,
+                        "muted hops still go out"
+                    );
+                }
                 1 => {
                     config.volume = 0;
                     lead.push(frame(1, 2), GateAction::Drop, config, false, &mut output);
+                    assert!(output.len() == 1 && output[0].silent);
                     config.volume = 100;
                 }
                 2 => {
@@ -211,12 +315,23 @@ mod tests {
                 _ => {}
             }
             let id = if reset == 3 { 2 } else { 1 };
-            lead.push(frame(id, 3), GateAction::RampIn, config, false, &mut output);
-            assert_eq!(output.len(), 1, "retained audio survived reset {reset}");
+            let mut out = Vec::new();
+            for hop in 3..7 {
+                lead.push(
+                    frame(id, hop),
+                    GateAction::RampIn,
+                    config,
+                    false,
+                    &mut output,
+                );
+                out.append(&mut output);
+            }
+            assert_eq!(out.len(), 1, "retained audio survived reset {reset}");
             assert_eq!(
-                output[0].position.unwrap().first_sample,
+                out[0].frame.position.unwrap().first_sample,
                 3 * FRAME_SAMPLES as u64
             );
+            assert!(!out[0].silent && !out[0].lead_in);
         }
     }
 }

@@ -35,7 +35,7 @@ delivery cannot be reconstructed from these indices.
 | Stage | Outcomes |
 |---|---|
 | Capture | `queued`, `capture_full`, `capture_closed` |
-| DSP | `queued`, `lead_in_queued`, `gate_drop`, `stale_input`, `stale_processed`, `model_load_discard`, `publisher_full`, `publisher_closed` |
+| DSP | `queued`, `lead_in_queued`, `gate_drop` (a silent block, still queued: the encoder's clock must not stop), `stale_input`, `stale_processed`, `model_load_discard`, `publisher_full`, `publisher_closed` |
 | Publication | `accepted`, `stale_publish`, `source_error` |
 
 The device callback sends fixed blocks to a bounded diagnostic queue. A slow
