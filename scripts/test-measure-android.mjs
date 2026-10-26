@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { processCounters, memoryCounters, frameCounters, frameDelta } from './measure-android.mjs';
+import { androidPackage, processCounters, memoryCounters, frameCounters, frameDelta } from './measure-android.mjs';
 
 const stat = '42 (app worker (1)) S 0 0 0 0 0 0 0 0 0 0 123 45 999 999 0';
 assert.equal(processCounters(stat), 168);
@@ -12,3 +12,7 @@ assert.equal(frameDelta({ frames: 100, janky: 10 }, { frames: 1, janky: 0 }), nu
 assert.equal(frameDelta({ frames: 100, janky: 10 }, { frames: 100, janky: 10 }), null);
 assert.equal(frameDelta(frameCounters('unavailable'), { frames: 120, janky: 12 }), null);
 console.log('Android measurement parsers: process names, CPU fields, memory formats, frame deltas and counter resets passed.');
+
+assert.equal(androidPackage(), 'com.discordia.app');
+assert.equal(androidPackage('com.discordia.app.debug'), 'com.discordia.app.debug');
+assert.throws(() => androidPackage('com.android.settings'));

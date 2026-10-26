@@ -6,6 +6,12 @@ import { pathToFileURL } from 'node:url';
 
 const exec = promisify(execFile);
 
+export function androidPackage(value = 'com.discordia.app') {
+  if (!['com.discordia.app', 'com.discordia.app.debug'].includes(value)) throw new Error('Choose the Discordia release or debug package');
+  return value;
+}
+
+
 export function processCounters(text) {
   const end = text.lastIndexOf(')');
   const fields = text.slice(end + 2).trim().split(/\s+/);
@@ -158,14 +164,14 @@ export async function cdp(url) {
 async function main() {
   const args = process.argv.slice(2), options = {};
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--adb', '--seconds', '--label', '--out', '--serial', '--scenario'].includes(args[i]) || !args[i+1]) throw new Error('Usage: node scripts/measure-android.mjs [--adb PATH] [--seconds 30] [--label idle] [--out target/android-perf] [--serial SERIAL] [--scenario passive|settings|navigation]');
+    if (!['--adb', '--seconds', '--label', '--out', '--serial', '--scenario', '--package'].includes(args[i]) || !args[i+1]) throw new Error('Usage: node scripts/measure-android.mjs [--adb PATH] [--seconds 30] [--label idle] [--out target/android-perf] [--serial SERIAL] [--scenario passive|settings|navigation] [--package com.discordia.app.debug]');
     options[args[i].slice(2)] = args[i+1];
   }
   const seconds = Number(options.seconds ?? 30);
   if (!Number.isFinite(seconds) || seconds < 5 || seconds > 300) throw new Error('Use 5–300 seconds');
   if (options.scenario && !['passive', 'settings', 'navigation'].includes(options.scenario)) throw new Error('Unknown scenario');
   if (options.scenario && options.scenario !== 'passive' && seconds < 15) throw new Error('Interactive scenario needs at least 15 seconds');
-  const adbPath = options.adb ?? 'adb', pkg = 'com.discordia.app';
+  const adbPath = options.adb ?? 'adb', pkg = androidPackage(options.package);
   const adb = async (...command) => (await exec(adbPath, [...(options.serial ? ['-s', options.serial] : []), ...command], { maxBuffer: 8*1024*1024, timeout: 20000 })).stdout.trim();
   const devices = (await adb('devices')).split(/\r?\n/).filter(line => /\tdevice$/.test(line));
   if (!options.serial && devices.length !== 1) throw new Error(`Expected one authorized USB device; found ${devices.length}`);
