@@ -203,7 +203,7 @@ struct MicMeter {
     peak_pre: AtomicI32,
     gate_peak: AtomicI32,
     open: AtomicBool,
-    /// 0 none, 1 lighter, 2 off.
+    /// 0 normal, 2 paused.
     denoise_fallback: AtomicU8,
 }
 
@@ -216,7 +216,7 @@ struct GateStats {
     peak_after: AtomicI32,
     threshold: AtomicI32,
     atten_lim_applied: AtomicU32,
-    /// 0 off, 1 DeepFilterNet, 2 RNNoise.
+    /// 0 off, 2 RNNoise.
     engine: AtomicU8,
     speaking: AtomicU64,
 }
@@ -2565,20 +2565,9 @@ fn denoise_gate_loop(
             is_muted,
             &mut transmission,
         );
-        if processed.model_loaded {
-            while let Ok(discarded) = frame_rx.try_recv() {
-                trace.record(
-                    discarded.position,
-                    discarded.captured,
-                    "model_load_discard",
-                    None,
-                );
-            }
-        }
         meter.denoise_fallback.store(
             match processor.denoise_fallback() {
                 None => 0,
-                Some(crate::denoise::Fallback::Lighter) => 1,
                 Some(crate::denoise::Fallback::Off) => 2,
             },
             Ordering::Relaxed,
@@ -2605,7 +2594,6 @@ fn denoise_gate_loop(
         stats.engine.store(
             match processed.engine {
                 None => 0,
-                Some(crate::denoise::Engine::DeepFilterNet) => 1,
                 Some(crate::denoise::Engine::RNNoise) => 2,
             },
             Ordering::Relaxed,
@@ -2638,9 +2626,7 @@ fn denoise_gate_loop(
                     .engine
                     .map_or("off", crate::denoise::Engine::label),
                 processed.speech,
-                processed
-                    .lsnr_db
-                    .map_or(String::new(), |db| format!("{db:.1}")),
+                "",
                 config.processing.echo,
                 config.processing.high_pass,
                 config.processing.gate,
@@ -2941,7 +2927,6 @@ impl MicMeter {
 
     fn denoise_fallback(&self) -> Option<crate::denoise::Fallback> {
         match self.denoise_fallback.load(Ordering::Relaxed) {
-            1 => Some(crate::denoise::Fallback::Lighter),
             2 => Some(crate::denoise::Fallback::Off),
             _ => None,
         }
@@ -3416,7 +3401,6 @@ impl MicCapture {
                         gate_stats.engine.load(Ordering::Relaxed),
                         gate_stats.atten_lim_applied.load(Ordering::Relaxed),
                     ) {
-                        (1, db) => format!(" nc=DeepFilterNet atten={db}dB"),
                         (2, db) => format!(" nc=RNNoise atten={db}dB"),
                         _ => String::new(),
                     },

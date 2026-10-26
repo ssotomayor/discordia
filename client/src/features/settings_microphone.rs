@@ -175,17 +175,18 @@ pub(super) fn MicrophoneSettings() -> Element {
                 label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.agc, aria_label: crate::i18n::text("Automatic gain control", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.agc = e.checked(); manual(next); } } {crate::i18n::text("Automatic gain control", &[])} }
                 label { class: "dxf-settings-check", input { r#type: "checkbox", checked: config.denoise, aria_label: crate::i18n::text("Noise cancellation", &[]), onchange: move |e| { let mut next = Config::from_state(&state.peek()); next.denoise = e.checked(); manual(next); } } {crate::i18n::text("Noise cancellation", &[])} }
                 if config.denoise {
+                    p { class: "text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Noise filter: RNNoise", &[])} }
                     div { class: "dxf-settings-control",
                         label { r#for: "mic-suppression", {crate::i18n::text("Suppression strength", &[])} }
                         output { "for": "mic-suppression", {crate::i18n::text("{0} dB max", &[config.suppression.to_string()])} }
                         input { id: "mic-suppression", aria_label: crate::i18n::text("Suppression strength", &[]), r#type: "range", min: "6", max: "60", value: "{config.suppression}", oninput: move |e| { let mut next = Config::from_state(&state.peek()); next.suppression = e.value().parse().unwrap_or(config.suppression); slide(next); }, onchange: persist }
                     }
                     p { class: "text-[12px] text-[var(--text-dim)]", {crate::i18n::text("Lower keeps more of your voice, and more of the room with it.", &[])} }
+                    p { class: "text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Strength blends filtered audio with the time-aligned original; it does not change microphone volume.", &[])} }
                     if let Some(fallback) = state.read().denoise_fallback {
                         div { class: "flex items-center justify-between gap-3 text-[12px]", role: "status",
                             span { style: "color: var(--warn);",
                                 match fallback {
-                                    crate::denoise::Fallback::Lighter => crate::i18n::text("Noise cancellation is using a lighter filter because the full one couldn't run smoothly.", &[]),
                                     crate::denoise::Fallback::Off => crate::i18n::text("Noise cancellation paused because no filter could run smoothly.", &[]),
                                 }
                             }

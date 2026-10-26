@@ -1,4 +1,6 @@
 {
+  "Noise filter: RNNoise": ["Filtro de ruido: RNNoise", "Filtro de ruído: RNNoise"],
+  "Strength blends filtered audio with the time-aligned original; it does not change microphone volume.": ["La intensidad mezcla el audio filtrado con el original alineado en el tiempo; no cambia el volumen del micrófono.", "A intensidade mistura o áudio filtrado com o original alinhado no tempo; não altera o volume do microfone."],
   "The server reports reduced media quality for this participant": ["El servidor informa calidad de audio o video reducida para este participante", "O servidor informa qualidade de áudio ou vídeo reduzida para este participante"],
   "The server reports reduced media quality for your sent or received tracks": ["El servidor informa calidad reducida en el audio o video que enviás o recibís", "O servidor informa qualidade reduzida no áudio ou vídeo que você envia ou recebe"],
   "The server is missing media or feedback for one of this participant's tracks": ["El servidor no recibe medios o informes de una de las pistas de este participante", "O servidor não recebe mídia ou relatórios de uma das faixas deste participante"],

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use df::tract::{DfParams, DfTract, RuntimeParams};
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::track::{LocalAudioTrack, LocalTrack, TrackSource};
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::prelude::{AudioSourceOptions, RtcAudioSource};
 use livekit_api::access_token::{AccessToken, VideoGrants};
+use nnnoiseless::DenoiseState;
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
@@ -563,12 +563,11 @@ fn spawn_tone(
         let mut phase = 0.0f32;
         let step = 2.0 * std::f32::consts::PI * TONE_HZ / SAMPLE_RATE as f32;
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
-        let mut model = denoise.map(|db| {
-            let params = RuntimeParams::default_with_ch(1).with_atten_lim(db);
-            DfTract::new(DfParams::default(), &params).expect("load DeepFilterNet")
-        });
-        let mut noisy = ndarray::Array2::<f32>::zeros((1, FRAME));
-        let mut enh = ndarray::Array2::<f32>::zeros((1, FRAME));
+        let mut model = denoise.map(|_| DenoiseState::new());
+        let original_mix = denoise.map_or(0.0, |db| 10f32.powf(-db / 20.0));
+        let mut noisy = [0.0; FRAME];
+        let mut enhanced = [0.0; FRAME];
+        let mut previous = [0.0; FRAME];
         let mut applied = Applied::default();
         let mut next_frame = Instant::now();
         while !flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -589,13 +588,18 @@ fn spawn_tone(
 
             if let Some(m) = model.as_mut() {
                 let before = rms(&hop);
-                noisy
-                    .as_slice_mut()
-                    .expect("contiguous")
-                    .copy_from_slice(&hop);
-                m.process(noisy.view(), enh.view_mut())
-                    .expect("denoise hop");
-                hop.copy_from_slice(enh.as_slice().expect("contiguous"));
+                for (input, sample) in noisy.iter_mut().zip(&hop) {
+                    *input = sample * 32_768.0;
+                }
+                m.process_frame(&mut enhanced, &noisy);
+                for ((sample, filtered), original) in
+                    hop.iter_mut().zip(enhanced).zip(&mut previous)
+                {
+                    let current = *sample;
+                    let filtered = filtered / 32_768.0;
+                    *sample = filtered + (*original - filtered) * original_mix;
+                    *original = current;
+                }
                 let after = rms(&hop);
                 if applied.skipped < WARMUP_HOPS {
                     applied.skipped += 1;
@@ -1066,7 +1070,7 @@ fn report(label: &str, m: &Metrics) {
         m.h2, m.h3
     );
     if let Some(db) = m.applied_db {
-        println!("DeepFilterNet      : {db:+.2} dB applied per hop, mean");
+        println!("RNNoise            : {db:+.2} dB applied per hop, mean");
     }
 }
 
@@ -1109,7 +1113,7 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
             },
         ),
         (
-            "noise 0.15, DFN 30 dB",
+            "noise 0.15, RNNoise 30 dB",
             Config {
                 noise: 0.15,
                 denoise: Some(30.0),
@@ -1117,7 +1121,7 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
             },
         ),
         (
-            "noise 0.15, DFN 12 dB",
+            "noise 0.15, RNNoise 12 dB",
             Config {
                 noise: 0.15,
                 denoise: Some(12.0),
@@ -1125,7 +1129,7 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
             },
         ),
         (
-            "noise 0.15, DFN 100 dB",
+            "noise 0.15, RNNoise 100 dB",
             Config {
                 noise: 0.15,
                 denoise: Some(100.0),
@@ -1150,7 +1154,7 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
     println!();
     println!(
         "{:<24} {:>9} {:>10} {:>10} {:>9} {:>11}",
-        "configuration", "level dB", "band ±40", "purity", "h2", "DFN applied"
+        "configuration", "level dB", "band ±40", "purity", "h2", "RNNoise applied"
     );
     for (label, m) in &measured {
         let applied = match m.applied_db {

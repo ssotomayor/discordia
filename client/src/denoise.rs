@@ -1,34 +1,22 @@
 use std::time::{Duration, Instant};
 
-use df::tract::{DfParams, DfTract, RuntimeParams};
-use ndarray::Array2;
 use nnnoiseless::DenoiseState;
 
-/// Fixed by the model. `features::voice::FRAME_SAMPLES` must agree, and one
-/// `Denoiser` must serve one continuous stream — it carries state across hops.
 pub const HOP: usize = 480;
-
 const ATTEN_LIM_DB: f32 = 30.0;
-
-/// 60% of a 10 ms hop: echo, AGC and the encoder share the rest of the deadline.
+// Echo, AGC and encoding share the rest of each 10 ms capture deadline.
 const HOP_BUDGET: Duration = Duration::from_micros(6_000);
-/// Net hops over budget, so a sustained overload trips it and stray spikes decay.
 const OVERRUN_TRIP: u32 = 100;
-const FAILURE_TRIP: u32 = 5;
-
-/// RNNoise works in 16-bit sample units.
 const PCM_SCALE: f32 = 32_768.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
-    DeepFilterNet,
     RNNoise,
 }
 
 impl Engine {
     pub fn label(self) -> &'static str {
         match self {
-            Self::DeepFilterNet => "DeepFilterNet",
             Self::RNNoise => "RNNoise",
         }
     }
@@ -36,55 +24,23 @@ impl Engine {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fallback {
-    Lighter,
     Off,
 }
 
-/// Steps down from DeepFilterNet to RNNoise, then to nothing, when a model
-/// cannot keep up or keeps failing — Krisp's CPU and failure thresholds.
 pub struct Denoiser {
-    model: Option<Model>,
-    atten_lim_db: f32,
+    model: Option<Box<RnNoise>>,
+    original_mix: f32,
     budget: Duration,
     overruns: u32,
-    failures: u32,
-}
-
-enum Model {
-    Deep(Box<Deep>),
-    Light(Box<Light>),
-}
-
-pub struct Hop {
-    pub lsnr_db: Option<f32>,
 }
 
 impl Denoiser {
     pub fn new() -> Self {
-        let model = match Deep::new() {
-            Ok(deep) => Model::Deep(Box::new(deep)),
-            Err(error) => {
-                tracing::warn!(%error, "DeepFilterNet unavailable; denoising with RNNoise");
-                Model::Light(Box::new(Light::new()))
-            }
-        };
         Self {
-            model: Some(model),
-            atten_lim_db: ATTEN_LIM_DB,
+            model: Some(Box::new(RnNoise::new())),
+            original_mix: 10f32.powf(-ATTEN_LIM_DB / 20.0),
             budget: HOP_BUDGET,
             overruns: 0,
-            failures: 0,
-        }
-    }
-
-    #[cfg(test)]
-    fn light() -> Self {
-        Self {
-            model: Some(Model::Light(Box::new(Light::new()))),
-            atten_lim_db: ATTEN_LIM_DB,
-            budget: HOP_BUDGET,
-            overruns: 0,
-            failures: 0,
         }
     }
 
@@ -92,124 +48,49 @@ impl Denoiser {
     pub fn stopped() -> Self {
         Self {
             model: None,
-            ..Self::light()
+            ..Self::new()
         }
     }
 
     pub fn engine(&self) -> Option<Engine> {
-        match self.model.as_ref()? {
-            Model::Deep(_) => Some(Engine::DeepFilterNet),
-            Model::Light(_) => Some(Engine::RNNoise),
-        }
+        self.model.as_ref().map(|_| Engine::RNNoise)
     }
 
     pub fn fallback(&self) -> Option<Fallback> {
-        match self.model {
-            Some(Model::Deep(_)) => None,
-            Some(Model::Light(_)) => Some(Fallback::Lighter),
-            None => Some(Fallback::Off),
-        }
+        self.model.is_none().then_some(Fallback::Off)
     }
 
     pub fn set_atten_lim(&mut self, db: f32) {
-        self.atten_lim_db = db;
-        if let Some(Model::Deep(deep)) = &mut self.model {
-            deep.model.set_atten_lim(db);
-        }
+        let db = if db.is_finite() {
+            db.clamp(0.0, 100.0)
+        } else {
+            ATTEN_LIM_DB
+        };
+        self.original_mix = 10f32.powf(-db / 20.0);
     }
 
-    pub fn process_hop(&mut self, frame: &mut [f32]) -> Hop {
+    pub fn process_hop(&mut self, frame: &mut [f32]) {
         let Ok(frame) = <&mut [f32; HOP]>::try_from(frame) else {
-            return Hop { lsnr_db: None };
+            return;
+        };
+        let Some(model) = self.model.as_mut() else {
+            return;
         };
         let started = Instant::now();
-        let (lsnr_db, failed) = match &mut self.model {
-            None => return Hop { lsnr_db: None },
-            Some(Model::Deep(deep)) => match deep.process(frame) {
-                Ok(lsnr) => (Some(lsnr), false),
-                Err(error) => {
-                    tracing::debug!(%error, "denoise hop failed");
-                    (None, true)
-                }
-            },
-            Some(Model::Light(light)) => {
-                light.process(frame, self.atten_lim_db);
-                (None, false)
-            }
-        };
-        self.failures = if failed { self.failures + 1 } else { 0 };
+        model.process(frame, self.original_mix);
         self.overruns = if started.elapsed() > self.budget {
             self.overruns + 1
         } else {
             self.overruns.saturating_sub(1)
         };
-        if self.failures >= FAILURE_TRIP || self.overruns >= OVERRUN_TRIP {
-            self.step_down();
+        if self.overruns >= OVERRUN_TRIP {
+            self.model = None;
+            tracing::warn!("RNNoise paused after sustained processing overload");
         }
-        Hop { lsnr_db }
-    }
-
-    fn step_down(&mut self) {
-        let reason = if self.failures >= FAILURE_TRIP {
-            "keeps failing"
-        } else {
-            "cannot keep up"
-        };
-        let from = self.engine().map_or("none", Engine::label);
-        self.model = match self.model {
-            Some(Model::Deep(_)) => Some(Model::Light(Box::new(Light::new()))),
-            _ => None,
-        };
-        self.overruns = 0;
-        self.failures = 0;
-        tracing::warn!(
-            from,
-            to = self.engine().map_or("off", Engine::label),
-            reason,
-            "noise suppression stepped down"
-        );
     }
 }
 
-struct Deep {
-    model: DfTract,
-    noisy: Array2<f32>,
-    enh: Array2<f32>,
-}
-
-impl Deep {
-    fn new() -> Result<Self, String> {
-        let params = RuntimeParams::default_with_ch(1).with_atten_lim(ATTEN_LIM_DB);
-        let model = DfTract::new(DfParams::default(), &params)
-            .map_err(|e| format!("load DeepFilterNet model: {e}"))?;
-        if model.hop_size != HOP || model.sr != 48_000 {
-            return Err(format!(
-                "model expects {} Hz / {} sample hops, pipeline produces 48000 Hz / {HOP}",
-                model.sr, model.hop_size
-            ));
-        }
-        Ok(Self {
-            noisy: Array2::zeros((1, HOP)),
-            enh: Array2::zeros((1, HOP)),
-            model,
-        })
-    }
-
-    fn process(&mut self, frame: &mut [f32; HOP]) -> Result<f32, String> {
-        self.noisy
-            .as_slice_mut()
-            .expect("contiguous")
-            .copy_from_slice(frame);
-        let lsnr = self
-            .model
-            .process(self.noisy.view(), self.enh.view_mut())
-            .map_err(|e| e.to_string())?;
-        frame.copy_from_slice(self.enh.as_slice().expect("contiguous"));
-        Ok(lsnr)
-    }
-}
-
-struct Light {
+struct RnNoise {
     state: Box<DenoiseState<'static>>,
     input: [f32; HOP],
     output: [f32; HOP],
@@ -217,7 +98,7 @@ struct Light {
     previous: [f32; HOP],
 }
 
-impl Light {
+impl RnNoise {
     fn new() -> Self {
         Self {
             state: DenoiseState::new(),
@@ -227,12 +108,11 @@ impl Light {
         }
     }
 
-    fn process(&mut self, frame: &mut [f32; HOP], atten_lim_db: f32) {
+    fn process(&mut self, frame: &mut [f32; HOP], keep: f32) {
         for (scaled, sample) in self.input.iter_mut().zip(frame.iter()) {
             *scaled = sample * PCM_SCALE;
         }
         self.state.process_frame(&mut self.output, &self.input);
-        let keep = 10f32.powf(-atten_lim_db / 20.0);
         for ((sample, enhanced), noisy) in frame.iter_mut().zip(self.output).zip(&mut self.previous)
         {
             let enhanced = enhanced / PCM_SCALE;
@@ -243,8 +123,7 @@ impl Light {
     }
 }
 
-/// RNNoise's speech probability, kept apart from whichever model denoises so
-/// it means the same after a step-down — Discord runs Krisp VAD the same way.
+// VAD must keep its history when noise suppression is toggled or paused.
 pub struct Vad {
     state: Box<DenoiseState<'static>>,
     input: [f32; HOP],
@@ -308,16 +187,15 @@ mod tests {
         output
     }
 
-    fn engines() -> [Denoiser; 2] {
-        [Denoiser::new(), Denoiser::light()]
+    fn engines() -> [Denoiser; 1] {
+        [Denoiser::new()]
     }
 
     #[test]
     fn model_loads_with_the_pipeline_geometry() {
-        let deep = Deep::new().expect("embedded DeepFilterNet model should load");
-        assert_eq!(deep.model.sr, 48_000);
-        assert_eq!(deep.model.hop_size, HOP);
-        assert_eq!(Denoiser::new().engine(), Some(Engine::DeepFilterNet));
+        assert_eq!(HOP, 480);
+        assert_eq!(Denoiser::new().engine(), Some(Engine::RNNoise));
+        assert_eq!(Denoiser::new().fallback(), None);
     }
 
     #[test]
@@ -337,30 +215,25 @@ mod tests {
     #[test]
     fn suppression_strength_changes_residual_noise() {
         let input = fan(HOP * 300, 0.1);
-        for engine in [Engine::DeepFilterNet, Engine::RNNoise] {
-            let levels: Vec<_> = [9.0, 30.0]
-                .into_iter()
-                .map(|strength| {
-                    let mut denoiser = match engine {
-                        Engine::DeepFilterNet => Denoiser::new(),
-                        Engine::RNNoise => Denoiser::light(),
-                    };
-                    denoiser.set_atten_lim(strength);
-                    rms(&run(&mut denoiser, &input)[HOP * 100..])
-                })
-                .collect();
-            eprintln!("{engine:?} noise RMS at 9/30 dB suppression: {levels:?}");
-            assert!(
-                levels[1] < levels[0] * 0.7,
-                "{engine:?}: stronger suppression must reduce noise: {levels:?}"
-            );
-        }
+        let levels: Vec<_> = [9.0, 30.0]
+            .into_iter()
+            .map(|strength| {
+                let mut denoiser = Denoiser::new();
+                denoiser.set_atten_lim(strength);
+                rms(&run(&mut denoiser, &input)[HOP * 100..])
+            })
+            .collect();
+        eprintln!("RNNoise noise RMS at 9/30 dB suppression: {levels:?}");
+        assert!(
+            levels[1] < levels[0] * 0.7,
+            "RNNoise: stronger suppression must reduce noise: {levels:?}"
+        );
     }
 
     #[test]
     fn rnnoise_limit_mixes_back_the_hop_it_returns() {
         let input = noise(HOP * 20, 0.0000001);
-        let mut denoiser = Denoiser::light();
+        let mut denoiser = Denoiser::new();
         denoiser.set_atten_lim(0.0);
         let output = run(&mut denoiser, &input);
         for (lag, expected) in [(HOP, true), (0, false)] {
@@ -373,7 +246,21 @@ mod tests {
     }
 
     #[test]
-    fn overloaded_models_step_down_then_stop() {
+    fn strength_changes_preserve_finite_output_and_the_same_filter_history() {
+        let input = noise(HOP * 20, 0.1);
+        let mut denoiser = Denoiser::new();
+        for strength in [6.0, 15.0, 30.0, 60.0, f32::NAN, f32::INFINITY, -10.0] {
+            denoiser.set_atten_lim(strength);
+            assert!(denoiser.original_mix.is_finite());
+            let output = run(&mut denoiser, &input);
+            assert!(output.iter().all(|s| s.is_finite()));
+            assert_eq!(denoiser.engine(), Some(Engine::RNNoise));
+            assert_eq!(denoiser.fallback(), None);
+        }
+    }
+
+    #[test]
+    fn sustained_overload_pauses_rnnoise_until_explicit_retry() {
         let mut denoiser = Denoiser::new();
         denoiser.budget = Duration::ZERO;
         let hop = noise(HOP, 0.1);
@@ -384,10 +271,7 @@ mod tests {
                 steps.push(denoiser.engine());
             }
         }
-        assert_eq!(
-            steps,
-            [Some(Engine::DeepFilterNet), Some(Engine::RNNoise), None]
-        );
+        assert_eq!(steps, [Some(Engine::RNNoise), None]);
         assert_eq!(denoiser.fallback(), Some(Fallback::Off));
         let mut untouched = hop.clone();
         denoiser.process_hop(&mut untouched);
@@ -396,7 +280,7 @@ mod tests {
 
     #[test]
     fn a_spike_now_and_then_does_not_trip_the_guard() {
-        let mut denoiser = Denoiser::light();
+        let mut denoiser = Denoiser::new();
         let hop = noise(HOP, 0.1);
         for i in 0..10 * OVERRUN_TRIP {
             denoiser.budget = if i % 3 == 0 {

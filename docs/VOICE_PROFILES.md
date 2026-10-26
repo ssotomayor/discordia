@@ -13,7 +13,7 @@ proposes a configuration, and lets the person compare and apply it.
 
 A profile is a processing preset. Calibration estimates useful settings.
 Speaker-specific isolation requires a model capable of separating speakers; the current
-DeepFilterNet integration supplies noise reduction, so these presets must not promise
+RNNoise integration supplies noise reduction, so these presets must not promise
 to identify the owner or remove every background voice.
 
 ## Comparison
@@ -42,7 +42,7 @@ starting points, to be validated with listening tests.
 | Existing code | Consequence |
 |---|---|
 | `features/voice_mic_test.rs` opens local capture/playback and uses the production DSP; it is unavailable during guild/DM calls | Reuse the same exclusive microphone session and teardown rules |
-| `features/voice.rs::denoise_gate_loop`: echo/high-pass processing → DeepFilterNet → gate measurement → AGC → manual gain → limiter → gate output | Capture measurements before processing and at the actual gate stage; avoid deriving thresholds from the AGC-amplified output |
+| `features/voice.rs::denoise_gate_loop`: echo/high-pass processing → RNNoise → gate measurement → AGC → manual gain → limiter → gate output | Capture measurements before processing and at the actual gate stage; avoid deriving thresholds from the AGC-amplified output |
 | `echo.rs::Echo::new` enables echo cancellation and high-pass filtering unconditionally | Add explicit processing controls before offering a minimal-processing profile |
 | `agc.rs`: target RMS 0.126, gain up to 10x, rise 6 dB/s | Calibration should first try fixed gain, addressing the previously observed audible volume ramp without retuning AGC blindly |
 | `MicMeter` exposes integer peaks/open state, not distributions, RMS or clipping counts | Add bounded worker-side analysis; UI meter values are insufficient for calibration |

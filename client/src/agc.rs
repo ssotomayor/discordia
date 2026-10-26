@@ -1,5 +1,5 @@
 //! Automatic gain control for the microphone: libwebrtc's AGC2, run on its own
-//! after DeepFilterNet. Issue #170 has why the APM on the pushed source never runs.
+//! after noise suppression. Issue #170 has why the APM on the pushed source never runs.
 
 use cxx::UniquePtr;
 use webrtc_sys::apm::ffi;
