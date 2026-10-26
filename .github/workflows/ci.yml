@@ -322,8 +322,10 @@ jobs:
             --version-name 'v0.1.0-pre.${{ github.run_number }}' \
             --output target/android-release/Discordia-android-arm64-unsigned.apk
           git diff --exit-code -- Cargo.lock
-      - name: Android capture geometry regression
-        run: python scripts/test-android-capture.py
+      - name: Android capture and network regressions
+        run: |
+          python scripts/test-android-capture.py
+          python scripts/test-android-network.py
       - name: Sign and verify APK
         if: github.event_name == 'push'
         env:

@@ -78,6 +78,10 @@ class MainActivity : WryActivity() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { onNetworkChanged() }
             override fun onLost(network: Network) { onNetworkChanged() }
+            override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
+                android.util.Log.i("Discordia", "App network access blocked=$blocked")
+                if (!blocked) onNetworkChanged()
+            }
             override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
                 onNetworkChanged()
             }

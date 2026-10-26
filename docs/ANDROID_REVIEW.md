@@ -154,3 +154,20 @@ Validación local: 14 pruebas DM (audio Opus incluido, sockets locales fuera del
 APK con servicio unificado instalado a las 10:40:18 locales, datos conservados. Kotlin, manifest con los tres tipos/permisos, DEX/JNI, Clippy con `-D warnings`, formato y regresiones JS aprobados. Las mediciones de navegación/arranque preceden ese servicio (que solo arranca al activar medios), no son un benchmark de voz/video.
 
 Benchmark Windows debug existente (`benchmark_selective_ui`): 200 miembros, 200 cambios, siete muestras; voz ~7–8 ms/cambio de Virtual DOM. Excluye WebView/pintado y no sustituye medición Android. La compilación y pruebas JS no validan físicamente cámara/MediaProjection ni las carreras Kotlin; esa cobertura sigue dentro de las fases A/E del [plan](MOBILE_PLAN.md).
+
+## Inicio y reanudación — Moto g15/API 35, Debug (2026-10-25)
+
+USB, misma cuenta, sin llamadas/transmisiones en el teléfono. `master` e5941cd + callback local de desbloqueo de red; instalado con `adb install -r`. No equivale a consumo de Release. CPU del proceso principal (100%=un núcleo), PSS de la app; excluye el renderer aislado. ADB muestrea cada ~2 s y puede alterar suspensión del sistema.
+
+| Medición | Resultado |
+|---|---|
+| Debug anterior, 50 s fuera de la app | 4/4 → 0/4 al volver; seguía en 0/4 diez segundos después; sockets abortados y errores DNS |
+| Debug de master, misma pausa | 4/4 a los 2,1 s del regreso y diez segundos después |
+| Debug con callback, 180 s fuera | Mismo PID; 4/4 a los 2,3 s y diez segundos después. Android registró acceso desbloqueado y los cuatro relays reconectaron |
+| Inicio frío (3 muestras de master) | Activity 1143–1495 ms, mediana 1172; Inicio observado con inspector 3387–3825 ms, mediana 3495 |
+| Regreso caliente final (1 muestra) | Activity 158 ms; interfaz visible 510 ms con inspector |
+| Inicio final, antes / después de pausa | CPU mediana 2,97 / 3,79%; PSS mediana 293,0 / 231,2 MiB (5 muestras por tramo) |
+| Segundo plano final (74 muestras) | CPU mediana 5,74%, máximo 12,98%; PSS mediana 219,6 MiB |
+| Configuración, 10 aperturas/cierres de master | Mediana 108,6 / 57,7 ms; clic sintético + dos frames, excluye toque físico. CPU de la muestra 21,01%, PSS 342,5 MiB; incluye inspector/escenario |
+
+Archivos locales: `target/mobile-tools/home-resume-{baseline,updated,final-180s}.json`, `debug-home-startup.json`, `target/android-perf/*debug-master-home-settings/report.json`, `*debug-final-home-warm/report.json`. No se mantuvo CDP conectado durante las pausas. No prueba entrega mientras Android bloquea la red o mata el proceso ni garantiza que el 0/4 reportado en Release esté resuelto.
