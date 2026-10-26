@@ -805,7 +805,8 @@ impl ActiveVoice {
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
                     red,
-                    dtx: false,
+                    // The gate sends zeros, not nothing (trap 38); DTX makes them 2.5 packets/s.
+                    dtx: true,
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
@@ -1330,7 +1331,7 @@ impl ActiveVoice {
                     audio_encoding: Some(
                         livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone(),
                     ),
-                    dtx: false,
+                    dtx: true,
                     ..Default::default()
                 },
             )
@@ -2647,44 +2648,34 @@ fn denoise_gate_loop(
                 config.processing.voice_detection,
             )
         });
-        if processed.action == GateAction::Drop {
-            trace.record_float(
-                packet.position,
-                packet.captured,
-                "gate_drop",
-                &[0.0; FRAME_SAMPLES],
-            );
-            stats.dropped.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        stats.passed.fetch_add(1, Ordering::Relaxed);
-        let total = transmission.len();
-        for (index, outgoing) in transmission.drain(..).enumerate() {
+        for outgoing in transmission.drain(..) {
+            if outgoing.silent {
+                stats.dropped.fetch_add(1, Ordering::Relaxed);
+            } else {
+                stats.passed.fetch_add(1, Ordering::Relaxed);
+            }
             let data = outgoing
+                .frame
                 .samples
                 .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
             let packet = crate::audio_queue::Frame {
                 samples: data,
-                captured: outgoing.captured,
-                position: outgoing.position,
+                captured: outgoing.frame.captured,
+                position: outgoing.frame.position,
             };
             let (position, captured) = (packet.position, packet.captured);
             let outcome = if packet.is_fresh() {
                 match crate::audio_queue::offer(&out_tx, packet) {
-                    Ok(true) => {
-                        if index + 1 < total {
-                            "lead_in_queued"
-                        } else {
-                            "queued"
-                        }
-                    }
+                    Ok(true) if outgoing.silent => "gate_drop",
+                    Ok(true) if outgoing.lead_in => "lead_in_queued",
+                    Ok(true) => "queued",
                     Ok(false) => "publisher_full",
                     Err(()) => "publisher_closed",
                 }
             } else {
                 "stale_processed"
             };
-            trace.record_float(position, captured, outcome, &outgoing.samples);
+            trace.record_float(position, captured, outcome, &outgoing.frame.samples);
             if outcome == "publisher_closed" {
                 return;
             }
@@ -2809,8 +2800,9 @@ impl Drop for SoundboardTrack {
     }
 }
 
-/// Frames go out only while something plays, as the mic's do while its gate is
-/// shut. The player hears the same mix locally: nobody is sent their own track.
+/// Silence goes out between sounds so the track's RTP clock keeps running
+/// (trap 38); DTX keeps that cheap. The player hears the same mix locally:
+/// nobody is sent their own track.
 async fn soundboard_loop(
     mut rx: UnboundedReceiver<Arc<[f32]>>,
     source: NativeAudioSource,
@@ -2823,16 +2815,19 @@ async fn soundboard_loop(
     let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
     let mut resampled: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut playing: Vec<(Arc<[f32]>, usize)> = Vec::new();
+    let mut was_playing = false;
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS as u64));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        if playing.is_empty() {
-            let Some(pcm) = rx.recv().await else { break };
-            playing.push((pcm, 0));
-            tick.reset_immediately();
-        }
-        while let Ok(pcm) = rx.try_recv() {
-            playing.push((pcm, 0));
+        loop {
+            match rx.try_recv() {
+                Ok(pcm) => playing.push((pcm, 0)),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    mixer.remove_track(local);
+                    return;
+                }
+            }
         }
         if playing.len() > MAX_OVERLAPPING_SOUNDS {
             playing.drain(..playing.len() - MAX_OVERLAPPING_SOUNDS);
@@ -2851,6 +2846,10 @@ async fn soundboard_loop(
         if let Err(e) = source.capture_frame(&pcm_frame(&data)).await {
             eprintln!("[voice] soundboard capture_frame error: {e:?}");
         }
+        if playing.is_empty() && !was_playing {
+            continue;
+        }
+        was_playing = !playing.is_empty();
         let current = mixer.rate();
         if current != rate {
             rate = current;
@@ -2867,7 +2866,6 @@ async fn soundboard_loop(
             }
         }
     }
-    mixer.remove_track(local);
 }
 
 /// The direct source takes exactly one DSP block per call; anything else is refused.

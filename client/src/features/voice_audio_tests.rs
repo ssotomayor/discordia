@@ -119,7 +119,20 @@ fn processed_speech(pcm: &[f32], gain: i32) -> Vec<crate::audio_queue::Frame<i16
     processed_hops(pcm.as_chunks::<FRAME_SAMPLES>().0.to_vec(), controls, false)
 }
 
+/// Only the frames carrying audio: the gate sends silence for the rest so the
+/// encoder's clock keeps running, and the pipeline tests ask about the voice.
 fn processed_hops(
+    hops: Vec<[f32; FRAME_SAMPLES]>,
+    controls: AudioControls,
+    muted: bool,
+) -> Vec<crate::audio_queue::Frame<i16>> {
+    every_processed_hop(hops, controls, muted)
+        .into_iter()
+        .filter(|frame| frame.samples.iter().any(|s| *s != 0))
+        .collect()
+}
+
+fn every_processed_hop(
     hops: Vec<[f32; FRAME_SAMPLES]>,
     controls: AudioControls,
     muted: bool,
@@ -290,6 +303,44 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
             )
             .is_empty()
         );
+    }
+}
+
+/// Measured on a three-person call: a sender whose gate stopped pushing had
+/// NetEq on every receiver targeting 1.5 s of delay, because the RTP clock
+/// had stood still through each pause.
+#[test]
+fn a_shut_gate_and_a_mute_still_send_one_silent_frame_per_captured_frame() {
+    for (gain, muted, voice_detection) in [
+        (100, true, false),
+        (0, false, false),
+        (100, false, false),
+        (100, false, true),
+    ] {
+        let mut state = AppState::empty();
+        state.noise_cancellation = false;
+        state.mic_volume = gain;
+        state.mic_sensitivity = 30;
+        let controls = AudioControls::from_state(&state);
+        let mut config = crate::mic_profile::Config::from_state(&state);
+        config.processing.echo = false;
+        config.processing.gate = true;
+        config.processing.voice_detection = voice_detection;
+        controls.apply_mic(config);
+        let frames = every_processed_hop(vec![[0.002; FRAME_SAMPLES]; 200], controls, muted);
+        let delay = if voice_detection { 3 } else { 0 };
+        assert_eq!(
+            frames.len(),
+            200 - delay,
+            "gain {gain} muted {muted} vad {voice_detection}"
+        );
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(
+                frame.position.unwrap().first_sample,
+                (index * FRAME_SAMPLES) as u64
+            );
+            assert!(frame.samples.iter().all(|s| *s == 0));
+        }
     }
 }
 
