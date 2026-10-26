@@ -42,48 +42,6 @@ iroh-relay = { version = "1.3", default-features = false, features = ["server"] 
 [profile.dev.package.sha2]
 opt-level = 3
 
-# Unoptimised tract fails its own self-consistency check and is orders of
-# magnitude slower — the DeepFilterNet model will not load without these.
-[profile.dev.package.deep_filter]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-core]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-data]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-linalg]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-nnef]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-onnx]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-onnx-opl]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-hir]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-pulse]
-opt-level = 3
-debug-assertions = false
-
-[profile.dev.package.tract-pulse-opl]
-opt-level = 3
-debug-assertions = false
-
 # A key file is opened with scrypt at 2^16; unoptimised that is seconds per
 # key on every launch of a dev build.
 [profile.dev.package.scrypt]

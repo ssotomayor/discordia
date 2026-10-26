@@ -58,6 +58,7 @@ struct Held {
     frame: Frame<f32>,
     voiced: bool,
     lead_in: bool,
+    eligible: bool,
 }
 
 /// With voice detection the stream runs `LEAD_IN` frames behind capture, so
@@ -92,16 +93,26 @@ impl LeadIn {
         let changed_capture = self.pending.back().is_some_and(|old| {
             old.frame.position.map(|p| p.capture_id) != frame.position.map(|p| p.capture_id)
         });
-        if self.config != Some(config) || changed_capture || muted || config.volume == 0 {
+        if changed_capture {
             self.clear();
+        }
+        if self.config != Some(config) || muted || config.volume == 0 {
+            // Discard retained sound without discarding the encoder time represented by it.
+            for held in &mut self.pending {
+                held.frame.samples.fill(0.0);
+                held.voiced = false;
+                held.lead_in = false;
+                held.eligible = false;
+            }
             self.config = Some(config);
         }
         let silent = muted || config.volume == 0 || action == GateAction::Drop;
-        if muted
-            || config.volume == 0
-            || !config.processing.gate
-            || !config.processing.voice_detection
-        {
+        if !config.processing.gate || !config.processing.voice_detection {
+            output.extend(self.pending.drain(..).map(|held| Outgoing {
+                frame: held.frame,
+                silent: !held.voiced,
+                lead_in: held.lead_in,
+            }));
             if silent {
                 frame.samples = [0.0; FRAME_SAMPLES];
             }
@@ -112,9 +123,12 @@ impl LeadIn {
             });
             return;
         }
-        if action == GateAction::RampIn {
+        if action == GateAction::RampIn && !silent {
             let mut first = true;
             for held in &mut self.pending {
+                if !held.eligible {
+                    continue;
+                }
                 if !held.voiced {
                     held.voiced = true;
                     held.lead_in = true;
@@ -128,10 +142,14 @@ impl LeadIn {
                 ramp(&mut frame.samples, true);
             }
         }
+        if muted || config.volume == 0 {
+            frame.samples.fill(0.0);
+        }
         self.pending.push_back(Held {
             frame,
-            voiced: action != GateAction::Drop,
+            voiced: !silent,
             lead_in: false,
+            eligible: !muted && config.volume > 0,
         });
         if self.pending.len() > LEAD_IN {
             let mut held = self.pending.pop_front().expect("just pushed");
@@ -187,6 +205,66 @@ mod tests {
         config.processing.voice_detection = true;
         config.processing.gate = true;
         config
+    }
+
+    #[test]
+    fn settings_and_mute_changes_preserve_every_captured_block() {
+        let mut lead = LeadIn::new();
+        let mut config = config();
+        let mut step = Vec::new();
+        let mut output = Vec::new();
+        let mut reset_at = 0;
+        for hop in 0..1000 {
+            if hop % 10 == 0 {
+                config.threshold = 1 + hop as u32;
+                reset_at = hop;
+            }
+            let muted = hop % 17 == 0;
+            if muted {
+                reset_at = hop;
+            }
+            lead.push(frame(1, hop), GateAction::RampIn, config, muted, &mut step);
+            for out in &step {
+                if out.frame.position.unwrap().first_sample < reset_at * FRAME_SAMPLES as u64 {
+                    assert!(out.silent && out.frame.samples.iter().all(|s| *s == 0.0));
+                }
+            }
+            output.append(&mut step);
+        }
+        assert_eq!(output.len(), 1000 - LEAD_IN);
+        for (hop, out) in output.iter().enumerate() {
+            assert_eq!(
+                out.frame.position.unwrap().first_sample,
+                hop as u64 * FRAME_SAMPLES as u64
+            );
+        }
+    }
+
+    #[test]
+    fn mode_changes_flush_silence_without_losing_capture_positions() {
+        let mut lead = LeadIn::new();
+        let mut config = config();
+        let mut step = Vec::new();
+        let mut emitted = 0;
+        for hop in 0..1000 {
+            config.processing.voice_detection = (hop / 11) % 2 == 0;
+            config.volume = if hop % 7 == 0 { 0 } else { 100 };
+            lead.push(
+                frame(1, hop),
+                GateAction::RampIn,
+                config,
+                hop % 13 == 0,
+                &mut step,
+            );
+            for out in &step {
+                assert_eq!(
+                    out.frame.position.unwrap().first_sample,
+                    emitted * FRAME_SAMPLES as u64
+                );
+                emitted += 1;
+            }
+            assert_eq!(emitted + lead.pending.len() as u64, hop + 1);
+        }
     }
 
     fn frame(capture_id: u64, hop: u64) -> Frame<f32> {
@@ -298,15 +376,12 @@ mod tests {
             match reset {
                 0 => {
                     lead.push(frame(1, 2), GateAction::Drop, config, true, &mut output);
-                    assert!(
-                        output.len() == 1 && output[0].silent,
-                        "muted hops still go out"
-                    );
+                    assert!(output.iter().all(|o| o.silent));
                 }
                 1 => {
                     config.volume = 0;
                     lead.push(frame(1, 2), GateAction::Drop, config, false, &mut output);
-                    assert!(output.len() == 1 && output[0].silent);
+                    assert!(output.iter().all(|o| o.silent));
                     config.volume = 100;
                 }
                 2 => {
@@ -326,12 +401,13 @@ mod tests {
                 );
                 out.append(&mut output);
             }
-            assert_eq!(out.len(), 1, "retained audio survived reset {reset}");
+            let audible: Vec<_> = out.iter().filter(|o| !o.silent).collect();
+            assert_eq!(audible.len(), 1, "retained audio survived reset {reset}");
             assert_eq!(
-                out[0].frame.position.unwrap().first_sample,
+                audible[0].frame.position.unwrap().first_sample,
                 3 * FRAME_SAMPLES as u64
             );
-            assert!(!out[0].silent && !out[0].lead_in);
+            assert!(!audible[0].lead_in);
         }
     }
 }

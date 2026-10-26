@@ -21,10 +21,8 @@ pub(super) struct Processed {
     pub gate_peak: i32,
     pub peak: i32,
     pub action: GateAction,
-    pub model_loaded: bool,
     pub engine: Option<crate::denoise::Engine>,
     pub speech: f32,
-    pub lsnr_db: Option<f32>,
     pub echoed_dbfs: f32,
     pub denoised_dbfs: f32,
     pub agc_gain_db: f32,
@@ -94,36 +92,33 @@ impl Processor {
             self.gate_mode = Some(mode);
         }
         let echoed_dbfs = crate::voice_record::rms_dbfs(&samples);
-        if muted {
+        if muted || config.volume == 0 {
             self.silence();
+            // RNNoise retains a previous hop; resuming must not reveal audio from before mute.
+            self.retry_denoise();
             return Processed {
-                samples,
+                samples: [0.0; FRAME_SAMPLES],
                 pre,
-                gate_peak: pre,
-                peak: pre,
+                gate_peak: 0,
+                peak: 0,
                 action: GateAction::Drop,
-                model_loaded: false,
                 engine: None,
                 speech: 0.0,
-                lsnr_db: None,
                 echoed_dbfs,
-                denoised_dbfs: echoed_dbfs,
+                denoised_dbfs: -120.0,
                 agc_gain_db: 0.0,
             };
         }
         let speech = self.vad.speech(&samples);
-        let mut model_loaded = false;
-        let mut lsnr_db = None;
         if config.denoise {
-            let denoiser = self.denoiser.get_or_insert_with(|| {
-                model_loaded = true;
-                crate::denoise::Denoiser::new()
-            });
+            let denoiser = self
+                .denoiser
+                .get_or_insert_with(crate::denoise::Denoiser::new);
             if self.suppression != Some(config.suppression) {
                 denoiser.set_atten_lim(config.suppression as f32);
                 self.suppression = Some(config.suppression);
             }
-            lsnr_db = denoiser.process_hop(&mut samples).lsnr_db;
+            denoiser.process_hop(&mut samples);
         } else {
             self.denoiser = None;
             self.suppression = None;
@@ -169,13 +164,11 @@ impl Processor {
             gate_peak,
             peak,
             action,
-            model_loaded,
             engine: self
                 .denoiser
                 .as_ref()
                 .and_then(crate::denoise::Denoiser::engine),
             speech,
-            lsnr_db,
             echoed_dbfs,
             denoised_dbfs,
             agc_gain_db: self.agc.as_ref().map_or(0.0, crate::agc::Agc::gain_db),
@@ -188,6 +181,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mute_and_zero_gain_clear_rnnoise_history_before_resuming() {
+        for mute in [false, true] {
+            let (_, reference) = crate::audio_queue::channel();
+            let mut processor = Processor::new(reference);
+            let mut config = Config::from_state(&AppState::empty());
+            config.processing.echo = false;
+            config.processing.high_pass = false;
+            config.processing.gate = false;
+            config.agc = false;
+            config.volume = 100;
+            config.denoise = true;
+            processor.process([0.2; FRAME_SAMPLES], config, false);
+            processor.process([0.2; FRAME_SAMPLES], config, false);
+            if !mute {
+                config.volume = 0;
+            }
+            let muted = processor.process([0.9; FRAME_SAMPLES], config, mute);
+            assert!(muted.samples.iter().all(|s| *s == 0.0));
+            assert!(processor.denoiser.is_none());
+            config.volume = 100;
+            let resumed = processor.process([0.0; FRAME_SAMPLES], config, false);
+            assert_eq!(resumed.engine, Some(crate::denoise::Engine::RNNoise));
+            assert!(
+                resumed.samples.iter().all(|s| *s == 0.0),
+                "audio survived the privacy boundary"
+            );
+        }
+    }
+
+    #[test]
     fn preparing_the_denoiser_keeps_model_loading_out_of_the_first_captured_frame() {
         let (_, reference) = crate::audio_queue::channel();
         let mut processor = Processor::new(reference);
@@ -197,8 +220,7 @@ mod tests {
         assert!(processor.denoiser.is_some());
         assert_eq!(processor.suppression, Some(config.suppression));
         let output = processor.process([0.01; FRAME_SAMPLES], config, false);
-        assert!(!output.model_loaded);
-        assert_eq!(output.engine, Some(crate::denoise::Engine::DeepFilterNet));
+        assert_eq!(output.engine, Some(crate::denoise::Engine::RNNoise));
     }
 
     #[test]
@@ -311,10 +333,7 @@ mod tests {
         }
         processor.retry_denoise();
         let processed = processor.process(hop, config, false);
-        assert_eq!(
-            processed.engine,
-            Some(crate::denoise::Engine::DeepFilterNet)
-        );
+        assert_eq!(processed.engine, Some(crate::denoise::Engine::RNNoise));
         assert_eq!(processor.denoise_fallback(), None);
     }
 

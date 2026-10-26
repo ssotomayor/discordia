@@ -13,7 +13,7 @@ PR base refreshed to `origin/master` at `65d2a18`; rebase completed without conf
 | `consume_remote_track` | 48 kHz to output-device rate; reconstructs resampler when playback rate changes; used for remote voice and shared audio |
 | `soundboard_loop` | 48 kHz to output-device rate for local soundboard monitoring; published audio remains 48 kHz |
 | `client/src/sound_decode.rs`: `decode` | Decoded file rate to 48 kHz; pads 1024 input samples to flush the tail, then caps at 5.5 seconds |
-| `client/Cargo.toml`, `Cargo.lock` | App uses Rubato 5.0.1; 0.16.2 is a test-only reference; DeepFilterNet separately retains 0.14.1 |
+| `client/Cargo.toml`, `Cargo.lock` | App uses Rubato 5.0.1; 0.16.2 is a test-only reference; the later RNNoise migration removed DeepFilterNet and its 0.14.1 dependency |
 
 Notification synthesis uses the selected output rate directly. Screen capture
 has its own upstream conversion; this plan concerns consumers of `AudioResampler`.
@@ -88,7 +88,7 @@ Neither capability alone establishes better sound or lower CPU in this app.
 | Adapter bounds | Mono slices sized from `input_frames_next` / `output_frames_next`; output max reserved; zero-output blocks supported; consumed frames drained only after successful processing |
 | Caller lifecycle | Both playback loops reconstruct on device-rate changes; capture conversion precedes the 480-sample frame cutter; file padding and duration cap retained |
 | Compatibility | New crates require Rust 1.87; repository already uses `as_chunks` (1.88) and stable CI toolchains. New processing code has no platform-specific branches or native dependencies |
-| Production graph | `cargo tree -e normal` confirms 5.0.1 is the app dependency and 0.16.2 is absent; 0.14.1 remains under DeepFilterNet |
+| Production graph | `cargo tree -e normal` confirms 5.0.1 is the app dependency and 0.16.2 is absent; 0.14.1 was retained for DeepFilterNet at this audit; the later RNNoise migration removes it |
 | Scope | No CPAL, DSP, codec, bitrate, transport or vendor patch changes; additional tests and documentation only since the migration |
 
 No new runtime regression identified. macOS/Linux compilation and physical

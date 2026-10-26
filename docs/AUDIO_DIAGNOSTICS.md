@@ -35,7 +35,7 @@ delivery cannot be reconstructed from these indices.
 | Stage | Outcomes |
 |---|---|
 | Capture | `queued`, `capture_full`, `capture_closed` |
-| DSP | `queued`, `lead_in_queued`, `gate_drop` (a silent block, still queued: the encoder's clock must not stop), `stale_input`, `stale_processed`, `model_load_discard`, `publisher_full`, `publisher_closed` |
+| DSP | `queued`, `lead_in_queued`, `gate_drop` (a silent block, still queued: the encoder's clock must not stop), `stale_input`, `stale_processed`, `publisher_full`, `publisher_closed` |
 | Publication | `accepted`, `stale_publish`, `source_error` |
 
 The device callback sends fixed blocks to a bounded diagnostic queue. A slow
@@ -45,18 +45,19 @@ offsets. Queue losses become visible in the next successful row; a final loss
 without a later row has no trailing counter. Disk errors remain possible and
 are not evidence of live-audio failure.
 
-With voice detection enabled, a previously closed block can later be queued as
-lead-in. Its capture position stays unchanged; the processing WAV may therefore
-contain both its earlier silent `gate_drop` and its later `lead_in_queued` audio.
-Publication rows distinguish which blocks were actually accepted by WebRTC.
+Closed gates, mute and zero gain feed digital silence to preserve the encoder clock.
+Voice detection holds a 30 ms delay line; each retained frame is emitted once,
+as lead-in audio or silence. Capture stamps remain ordered and DTX limits idle RTP.
+Settings, mute and zero gain erase retained sound without erasing its clock time.
+Leaving voice detection flushes retained blocks as silence before the current hop.
 
 ## Startup and device changes
 
 The DSP worker prepares enabled suppression before capture opens. Channel calls
 and local monitoring wait asynchronously, bounded at 20 seconds; direct calls
 open capture from their maintenance loop after the worker reports readiness.
-Explicit noise-suppression retries during a call can still discard queued audio;
-the processing trace identifies those blocks.
+RNNoise is the sole suppressor; the legacy `lsnr_db` CSV slot stays empty.
+Mute and zero gain clear its retained hop before resuming.
 
 Windows RAW capture observes the default capture endpoint by stable endpoint ID,
 including a change while the previous endpoint stays connected. A selected

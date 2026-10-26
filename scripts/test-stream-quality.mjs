@@ -400,3 +400,31 @@ test('browser sender shares authenticated track status without enabling Diagnost
   assert.equal(await senderContext.senderHealth(null), '');
   assert.equal(sent.length, 2, 'a report awaited in an old room cannot publish into its replacement');
 });
+
+test('receiver diagnostics forward decoding, rendering and freeze counters from the active track', async () => {
+  const posted = [];
+  const track = { sid: 'current-screen' };
+  const stats = new Map([['in', { type: 'inbound-rtp', kind: 'video', id: 'in', timestamp: 2000,
+    framesDecoded: 100, totalDecodeTime: 0.8, framesDropped: 2, freezeCount: 1,
+    totalFreezesDuration: 0.3, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 100,
+    totalAssemblyTime: 0.2, framesAssembledFromMultiplePackets: 100 }]]);
+  const scope = vm.createContext({ screenStatsEnabled: true, remoteStatsInFlight: false,
+    remoteShareVideoTrack: track, statsEpoch: 1, tracks: {},
+    videoStatsReport: async () => stats,
+    playbackSample: () => ({ playbackId: 'tile', renderFrames: 100, renderDropped: 3 }),
+    statsSampleKey: () => 'track/1/in', post: (kind, data) => posted.push({ kind, data }) });
+  const begin = bridge.indexOf('  async function pollRemoteScreenStats()');
+  const finish = bridge.indexOf('  function setStatsEnabled(', begin);
+  assert.ok(finish > begin);
+  vm.runInContext(bridge.slice(begin, finish), scope);
+  await scope.pollRemoteScreenStats();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].data.totalDecodeTime, 0.8);
+  assert.equal(posted[0].data.renderDropped, 3);
+  assert.equal(posted[0].data.freezeDurationSeconds, 0.3);
+  assert.equal(posted[0].data.jitterBufferDelay, 0.5);
+  assert.equal(posted[0].data.totalAssemblyTime, 0.2);
+  scope.videoStatsReport = async () => { scope.remoteShareVideoTrack = {}; return stats; };
+  await scope.pollRemoteScreenStats();
+  assert.equal(posted.length, 1, 'a replaced track must not publish stale receiver statistics');
+});

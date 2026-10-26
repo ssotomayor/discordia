@@ -94,20 +94,21 @@ impl ConnectionHealth {
     pub fn dot(self, is_self: bool) -> Option<(&'static str, &'static str)> {
         match (self, is_self) {
             (Self::Excellent | Self::Good, _) => None,
-            (Self::Poor, false) => {
-                Some(("var(--warn)", "Weak connection — their audio may drop out"))
-            }
+            (Self::Poor, false) => Some((
+                "var(--warn)",
+                "The server reports reduced media quality for this participant",
+            )),
             (Self::Poor, true) => Some((
                 "var(--warn)",
-                "Your connection is weak — others may hear you drop out",
+                "The server reports reduced media quality for your sent or received tracks",
             )),
             (Self::Lost, false) => Some((
                 "var(--danger)",
-                "Connection lost — the server has stopped hearing them",
+                "The server is missing media or feedback for one of this participant's tracks",
             )),
             (Self::Lost, true) => Some((
                 "var(--danger)",
-                "Connection lost — the server has stopped hearing you",
+                "The server is missing media or feedback for one of your sent or received tracks",
             )),
         }
     }
@@ -115,6 +116,7 @@ impl ConnectionHealth {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrackStats {
+    Unavailable,
     Inbound {
         loss_pct: f32,
         recent_loss_pct: Option<f32>,
@@ -129,6 +131,18 @@ pub enum TrackStats {
         packets_per_sec: Option<u32>,
         target_kbps: u32,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoReceptionStats {
+    pub decode_ms: Option<f64>,
+    pub dropped_pct: Option<f64>,
+    pub render_dropped_pct: Option<f64>,
+    pub loss_pct: Option<f64>,
+    pub freezes: Option<f64>,
+    pub frozen_ms: Option<f64>,
+    pub buffer_ms: Option<f64>,
+    pub assembly_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +172,7 @@ pub struct ScreenShareStats {
     pub packets: Option<u64>,
     pub packets_lost: Option<i64>,
     pub jitter_ms: Option<f64>,
+    pub reception: Option<VideoReceptionStats>,
     pub error: Option<String>,
 }
 

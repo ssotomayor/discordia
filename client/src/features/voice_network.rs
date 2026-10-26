@@ -33,6 +33,7 @@ struct Reception {
     lost: u64,
     discarded: u64,
     concealed: u64,
+    silent_concealed: u64,
     samples: u64,
 }
 
@@ -68,6 +69,7 @@ impl ReceiveWindow {
             lost: s.received.packets_lost.max(0) as u64,
             discarded: s.inbound.packets_discarded,
             concealed: s.inbound.concealed_samples,
+            silent_concealed: s.inbound.silent_concealed_samples,
             samples: s.inbound.total_samples_received,
         };
         let stream = (s.rtc.id.clone(), s.stream.ssrc);
@@ -93,7 +95,14 @@ impl ReceiveWindow {
         if total == 0 {
             return None;
         }
-        let samples = current.samples - previous.samples;
+        let silent = current
+            .silent_concealed
+            .saturating_sub(previous.silent_concealed);
+        let samples = (current.samples - previous.samples).saturating_sub(silent);
+        let concealed = current
+            .concealed
+            .saturating_sub(previous.concealed)
+            .saturating_sub(silent);
         Some(RecentReception {
             loss_pct: 100.0 * lost as f32 / total as f32,
             // NetEq also counts redundant RED blocks, so RTP packets are not a valid denominator.
@@ -101,9 +110,7 @@ impl ReceiveWindow {
             concealed_pct: if samples == 0 {
                 0.0
             } else {
-                (100.0 * current.concealed.saturating_sub(previous.concealed) as f32
-                    / samples as f32)
-                    .min(100.0)
+                (100.0 * concealed as f32 / samples as f32).min(100.0)
             },
         })
     }
@@ -327,6 +334,10 @@ pub(super) fn spawn_stats_task(
                     {
                         continue;
                     }
+                    live.insert(publication.sid().to_string());
+                    if display {
+                        next.insert(identity.0.clone(), TrackStats::Unavailable);
+                    }
                     let Some(RemoteTrack::Audio(track)) = publication.track() else {
                         continue;
                     };
@@ -353,7 +364,6 @@ pub(super) fn spawn_stats_task(
                 }) else {
                     continue;
                 };
-                live.insert(sid.clone());
                 recv_csv.row(|| {
                     let i = &inbound.inbound;
                     format!(

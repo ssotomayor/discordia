@@ -45,15 +45,6 @@ base64 = "0.22"
 
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
-deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", rev = "d375b2d", default-features = false, features = ["tract", "default-model"] }
-# Pinned: DeepFilterNet asks for ^0.21.4 and the model does not load at all on
-# a newer tract. See the [profile.dev.package] note in the workspace root.
-tract-core = "=0.21.4"
-tract-onnx = "=0.21.4"
-tract-pulse = "=0.21.4"
-tract-hir = "=0.21.4"
-ndarray = "0.15"
-
 rubato = "=5.0.1"
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "all-meta"] }
 # symphonia demuxes Ogg Opus but cannot decode it. A libopus port in Rust, so no
@@ -151,7 +142,7 @@ dispatch2 = "0.3"
 coreaudio-sys = "0.2"
 
 [package.metadata.cargo-machete]
-ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir", "libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "livekit-data-stream", "livekit-protocol", "livekit-datatrack"]
+ignored = ["libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "livekit-data-stream", "livekit-protocol", "livekit-datatrack"]
 
 [dev-dependencies]
 rubato-legacy = { package = "rubato", version = "=0.16.2" }
