@@ -1,4 +1,7 @@
 {
+  "Leaving voice channel…": ["Saliendo del canal de voz…", "Saindo do canal de voz…"],
+  "Accepting leaves your voice channel and stops its camera and screen share.": ["Al aceptar saldrás del canal de voz y se detendrán su cámara y transmisión de pantalla.", "Ao aceitar, você sairá do canal de voz e a câmera e o compartilhamento de tela serão interrompidos."],
+  "Stopping voice channel media before connecting your private call.": ["Deteniendo los medios del canal de voz antes de conectar tu llamada privada.", "Encerrando a mídia do canal de voz antes de conectar sua chamada privada."],
   "Calls and sharing": ["Llamadas y transmisiones", "Chamadas e transmissões"],
   "Camera active": ["Cámara activa", "Câmera ativa"],
   "Unmute call audio": ["Activar audio de llamada", "Ativar áudio da chamada"],

@@ -62,6 +62,7 @@ pub fn AccountView(
     let settings = use_context::<Signal<ClientSettings>>();
     let mut state = use_account_state(settings);
     crate::bookmarks::use_bookmarks(&identity, state);
+    crate::voice_handoff::use_bridge();
     let nostr = use_hook(|| {
         let saved = settings.peek();
         let relays = if saved.dm_relays.is_empty() {

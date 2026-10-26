@@ -32,10 +32,12 @@ enum Call {
 }
 
 fn current_call(state: &AppState) -> Option<Call> {
-    if let Some(call) = &state.dm_call
-        && call.phase != Phase::Incoming
-    {
-        return Some(Call::Dm(call.call_id));
+    if let Some(call) = &state.dm_call {
+        match call.phase {
+            Phase::Incoming => {}
+            Phase::Switching => return None,
+            _ => return Some(Call::Dm(call.call_id)),
+        }
     }
     if matches!(
         state.voice.phase,
@@ -526,5 +528,22 @@ mod tests {
         state.dm_call.as_mut().unwrap().phase = Phase::Incoming;
         assert!(token(owner, None, &state).is_none());
         assert!(token(owner, None, &AppState::empty()).is_none());
+    }
+    #[test]
+    fn incoming_preserves_guild_controls_but_switching_rejects_them() {
+        let mut state = guild();
+        let owner = Uuid::new_v4();
+        let route = Some(Uuid::new_v4());
+        let key = token(owner, route, &state).unwrap();
+        state.dm_call = Some(CallView {
+            call_id: Uuid::new_v4(),
+            peer: "peer".into(),
+            phase: Phase::Incoming,
+            microphone_error: None,
+        });
+        assert_eq!(token(owner, route, &state).as_deref(), Some(key.as_str()));
+        state.dm_call.as_mut().unwrap().phase = Phase::Switching;
+        assert!(token(owner, route, &state).is_none());
+        assert!(apply(&mut state, owner, route, &key, ControlAction::Hangup).is_none());
     }
 }

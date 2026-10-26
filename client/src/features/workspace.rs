@@ -154,7 +154,7 @@ const LEAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Closes the webview's LiveKit room — camera, screen share and the E2EE
 /// worker with it — and answers when it is really gone rather than when the
 /// call was made.
-const STOP_WEBVIEW_MEDIA_JS: &str = r#"
+pub(crate) const STOP_WEBVIEW_MEDIA_JS: &str = r#"
 (async () => {
   try { await window.dxScreen.disconnect(); } catch (e) {}
   dioxus.send(true);
@@ -363,6 +363,10 @@ pub fn WorkspaceView(
     provide_context(gateway_tx.clone());
     crate::route_reporting::use_route_reports(state, gateway_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
+    crate::voice_handoff::use_route(
+        gateway_tx.clone(),
+        crate::features::voice::VoiceTx(voice_tx.clone()),
+    );
     #[cfg(target_os = "android")]
     crate::call_notifications::use_guild_route(
         gateway_tx.clone(),
