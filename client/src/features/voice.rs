@@ -2820,6 +2820,7 @@ async fn soundboard_loop(
             playing.drain(..playing.len() - MAX_OVERLAPPING_SOUNDS);
         }
         tick.tick().await;
+        let playing_this_frame = !playing.is_empty();
         let mut frame = [0.0f32; FRAME_SAMPLES];
         for (pcm, pos) in playing.iter_mut() {
             let end = (*pos + FRAME_SAMPLES).min(pcm.len());
@@ -2833,10 +2834,10 @@ async fn soundboard_loop(
         if let Err(e) = source.capture_frame(&pcm_frame(&data)).await {
             eprintln!("[voice] soundboard capture_frame error: {e:?}");
         }
-        if playing.is_empty() && !was_playing {
+        if !playing_this_frame && !was_playing {
             continue;
         }
-        was_playing = !playing.is_empty();
+        was_playing = playing_this_frame;
         let current = mixer.rate();
         if current != rate {
             rate = current;

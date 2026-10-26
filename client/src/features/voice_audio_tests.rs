@@ -1,4 +1,44 @@
 use super::*;
+use std::time::Duration;
+
+#[tokio::test]
+async fn a_sound_finishing_in_its_first_hop_is_still_heard_locally() {
+    for length in [1, FRAME_SAMPLES - 1, FRAME_SAMPLES, FRAME_SAMPLES + 1] {
+        let controls = AudioControls::from_state(&AppState::empty());
+        let handle = PlaybackHandle {
+            tracks: Arc::new(Mutex::new(MixerTracks::default())),
+            device_rate: Arc::new(AtomicU32::new(SAMPLE_RATE)),
+            gains: controls.gains,
+            stream_gains: controls.stream_gains,
+            soundboard_pct: controls.soundboard_pct,
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Arc::<[f32]>::from(vec![0.2; length])).unwrap();
+        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 0);
+        let task = tokio::spawn(soundboard_loop(rx, source, handle.clone(), "self".into()));
+        let audible = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if handle
+                    .tracks
+                    .lock()
+                    .buffers
+                    .values()
+                    .any(|b| b.samples.iter().any(|s| s.abs() > 0.01))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .is_ok();
+        task.abort();
+        assert!(
+            audible,
+            "a {length}-sample sound never reached local playback"
+        );
+    }
+}
 
 #[test]
 fn stream_controls_reach_the_mixer_without_polling_the_voice_command_loop() {

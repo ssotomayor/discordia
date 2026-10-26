@@ -48,6 +48,8 @@ are not evidence of live-audio failure.
 Closed gates, mute and zero gain feed digital silence to preserve the encoder clock.
 Voice detection holds a 30 ms delay line; each retained frame is emitted once,
 as lead-in audio or silence. Capture stamps remain ordered and DTX limits idle RTP.
+Settings, mute and zero gain erase retained sound without erasing its clock time.
+Leaving voice detection flushes retained blocks as silence before the current hop.
 
 ## Startup and device changes
 
