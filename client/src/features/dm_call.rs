@@ -23,6 +23,7 @@ use crate::state::{AppState, VoicePhase, use_app_state};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Incoming,
+    Switching,
     Ringing,
     Connecting,
     Connected,
@@ -33,6 +34,7 @@ impl Phase {
     fn label(self) -> &'static str {
         match self {
             Self::Incoming => "Incoming voice call",
+            Self::Switching => "Leaving voice channel…",
             Self::Ringing => "Calling…",
             Self::Connecting => "Connecting…",
             Self::Connected => "Voice call connected",
@@ -62,9 +64,19 @@ pub struct Incoming {
 
 pub enum Command {
     Action(Action),
+    HandoffReady {
+        call_id: Uuid,
+        result: Result<(), String>,
+    },
     Incoming(Incoming),
-    Published { call_id: Uuid, accepted: bool },
-    Native { call_id: Uuid, event: NativeEvent },
+    Published {
+        call_id: Uuid,
+        accepted: bool,
+    },
+    Native {
+        call_id: Uuid,
+        event: NativeEvent,
+    },
 }
 
 pub enum NativeEvent {
@@ -110,6 +122,7 @@ pub fn spawn_service(
     outgoing: UnboundedSender<(String, CallSignal)>,
     records: UnboundedSender<crate::nostr::call_history::Record>,
 ) -> UnboundedSender<Command> {
+    let handoff = try_consume_context::<crate::voice_handoff::Bridge>().unwrap_or_default();
     let (tx, mut rx) = unbounded_channel();
     let service_tx = tx.clone();
     crate::service_task::spawn(async move {
@@ -129,34 +142,25 @@ pub fn spawn_service(
             tokio::select! {
                 command = rx.recv() => match command {
                     Some(Command::Action(action)) => {
-                        #[cfg(target_os = "android")]
-                        let start_voice = actor.needs_voice_start(&action);
-                        #[cfg(target_os = "android")]
-                        if start_voice
-                            && let Err(error) = crate::android::prepare_voice().await
-                        {
-                            if matches!(action, Action::Accept) {
-                                actor.finish(EndReason::Failed, Some(&error));
-                            } else {
-                                actor.state.write().error_toast = Some(error);
+                        if matches!(action, Action::Accept) && actor.session.as_ref().is_some_and(|s| s.phase == Phase::Switching) { continue; }
+                        if matches!(action, Action::Accept) && guild_busy(&actor.state.peek()) {
+                            if let Some(call_id) = actor.prepare_handoff() {
+                                let bridge = handoff.clone();
+                                let state = actor.state;
+                                let tx = actor.tx.clone();
+                                let job = crate::service_task::spawn(async move {
+                                    let result = bridge.leave(state).await;
+                                    let _ = tx.send(Command::HandoffReady { call_id, result });
+                                });
+                                if let Some(session) = &mut actor.session { session.job = Some(job); }
                             }
-                            continue;
+                        } else {
+                            actor.perform_action(action).await;
                         }
-                        actor.action(action);
-                        #[cfg(target_os = "android")]
-                        if start_voice && actor.session.as_ref().is_some_and(|session| {
-                            matches!(session.phase, Phase::Ringing | Phase::Connecting)
-                                && session._background_call.is_none()
-                        })
-                        {
-                            match crate::android::BackgroundCall::start().await {
-                                Ok(guard) => {
-                                    if let Some(session) = &mut actor.session {
-                                        session._background_call = Some(guard);
-                                    }
-                                }
-                                Err(error) => actor.finish(EndReason::Failed, Some(&error)),
-                            }
+                    },
+                    Some(Command::HandoffReady { call_id, result }) => {
+                        if actor.complete_handoff(call_id, result) {
+                            actor.perform_action(Action::Accept).await;
                         }
                     },
                     Some(Command::Incoming(incoming)) => actor.incoming(incoming),
@@ -193,6 +197,77 @@ fn guild_busy(state: &AppState) -> bool {
 }
 
 impl Actor {
+    async fn perform_action(&mut self, action: Action) {
+        #[cfg(target_os = "android")]
+        let start_voice = self.needs_voice_start(&action);
+        #[cfg(target_os = "android")]
+        if start_voice && let Err(error) = crate::android::prepare_voice().await {
+            if matches!(action, Action::Accept) {
+                self.finish(EndReason::Failed, Some(&error));
+            } else {
+                self.state.write().error_toast = Some(error);
+            }
+            return;
+        }
+        self.action(action);
+        #[cfg(target_os = "android")]
+        if start_voice
+            && self.session.as_ref().is_some_and(|session| {
+                matches!(session.phase, Phase::Ringing | Phase::Connecting)
+                    && session._background_call.is_none()
+            })
+        {
+            match crate::android::BackgroundCall::start().await {
+                Ok(guard) => {
+                    if let Some(session) = &mut self.session {
+                        session._background_call = Some(guard);
+                    }
+                }
+                Err(error) => self.finish(EndReason::Failed, Some(&error)),
+            }
+        }
+    }
+
+    fn prepare_handoff(&mut self) -> Option<Uuid> {
+        let session = self.session.as_mut()?;
+        if session.phase != Phase::Incoming {
+            return None;
+        }
+        session.phase = Phase::Switching;
+        let id = session.id;
+        self.update_view();
+        Some(id)
+    }
+
+    fn complete_handoff(&mut self, call_id: Uuid, result: Result<(), String>) -> bool {
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        if session.id != call_id || session.phase != Phase::Switching {
+            return false;
+        }
+        session.job = None;
+        if session
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.finish(EndReason::Timeout, None);
+            return false;
+        }
+        if let Err(error) = result {
+            self.finish(EndReason::Failed, Some(&error));
+            return false;
+        }
+        if guild_busy(&self.state.peek()) {
+            self.finish(
+                EndReason::Failed,
+                Some("Could not leave the voice channel."),
+            );
+            return false;
+        }
+        true
+    }
+
     #[cfg(any(target_os = "android", test))]
     fn needs_voice_start(&self, action: &Action) -> bool {
         if guild_busy(&self.state.peek()) {
@@ -208,7 +283,7 @@ impl Actor {
             Action::Accept => self
                 .session
                 .as_ref()
-                .is_some_and(|s| s.phase == Phase::Incoming),
+                .is_some_and(|s| matches!(s.phase, Phase::Incoming | Phase::Switching)),
             Action::End => false,
         }
     }
@@ -301,7 +376,9 @@ impl Actor {
                     self.history(Outcome::Missed)
                 }
                 (Phase::Incoming, EndReason::Declined) => self.history(Outcome::Declined),
-                (Phase::Incoming, EndReason::Timeout) => self.history(Outcome::Missed),
+                (Phase::Incoming | Phase::Switching, EndReason::Timeout) => {
+                    self.history(Outcome::Missed)
+                }
                 _ => {}
             }
         }
@@ -369,7 +446,7 @@ impl Actor {
                     return;
                 }
                 if let Some(s) = &mut self.session
-                    && s.phase == Phase::Incoming
+                    && matches!(s.phase, Phase::Incoming | Phase::Switching)
                 {
                     s.phase = Phase::Connecting;
                     s.deadline = Some(Instant::now() + Duration::from_secs(60));
@@ -418,7 +495,10 @@ impl Actor {
                 && self.session.as_ref().is_some_and(|s| {
                     s.id == signal.call_id
                         && s.peer == author
-                        && matches!(s.phase, Phase::Incoming | Phase::Connecting)
+                        && matches!(
+                            s.phase,
+                            Phase::Incoming | Phase::Switching | Phase::Connecting
+                        )
                 })
             {
                 self.clear();
@@ -451,7 +531,7 @@ impl Actor {
             {
                 self.finish(EndReason::Hangup, None);
             }
-            if self.session.is_some() || guild_busy(&self.state.peek()) {
+            if self.session.is_some() {
                 let _ = self.records.send(crate::nostr::call_history::Record {
                     version: 1,
                     call_id: signal.call_id,
@@ -548,7 +628,9 @@ impl Actor {
                     EndReason::Failed => self.history(Outcome::Failed),
                     EndReason::Busy => self.history(Outcome::Busy),
                     EndReason::Declined => self.history(Outcome::Declined),
-                    EndReason::Hangup | EndReason::Timeout if s.phase == Phase::Incoming => {
+                    EndReason::Hangup | EndReason::Timeout
+                        if matches!(s.phase, Phase::Incoming | Phase::Switching) =>
+                    {
                         self.history(Outcome::Missed)
                     }
                     _ => {}
@@ -713,7 +795,12 @@ impl Actor {
                 EndReason::Timeout,
                 Some("The call timed out. The contact may be offline or unreachable."),
             );
-        } else if self.session.is_some() && guild_busy(&self.state.peek()) {
+        } else if self
+            .session
+            .as_ref()
+            .is_some_and(|s| !matches!(s.phase, Phase::Incoming | Phase::Switching))
+            && guild_busy(&self.state.peek())
+        {
             self.finish(
                 EndReason::Busy,
                 Some("DM call ended because a voice channel was joined."),
@@ -1029,7 +1116,11 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
         _ => "var(--accent)",
     };
     let hint = match call.phase {
+        Phase::Incoming if guild_busy(&state.read()) => {
+            "Accepting leaves your voice channel and stops its camera and screen share."
+        }
         Phase::Incoming => "Your microphone stays off until you accept.",
+        Phase::Switching => "Stopping voice channel media before connecting your private call.",
         Phase::Ringing => "Waiting for an answer.",
         Phase::Connecting => "Establishing a secure voice connection.",
         Phase::Connected => "Only you and this contact can hear this call.",
@@ -1077,6 +1168,9 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                             on_press: move |_| accept.send(crate::nostr::service::NostrCmd::Call(Action::Accept)) }
                         CallControl { icon: super::icons::PHONE_HANGUP, label: crate::i18n::text("Decline", &[]), tone: "danger",
                             on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
+                    } else if call.phase == Phase::Switching {
+                        CallControl { icon: super::icons::PHONE_HANGUP, label: crate::i18n::text("Cancel", &[]), tone: "danger",
+                            on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
                     } else {
                         CallControl {
                             icon: if muted || deafened { super::icons::MIC_OFF } else { super::icons::MIC },
@@ -1099,7 +1193,7 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                             on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
                     }
                 }
-                if call.phase != Phase::Incoming {
+                if !matches!(call.phase, Phase::Incoming | Phase::Switching) {
                     div { style: "padding: 12px 16px; border-top-width: 1px; border-top-style: solid; border-top-color: var(--border); background-color: var(--bg2);",
                         div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px;",
                             label { r#for: "dm-microphone-volume", style: "color: var(--text-muted);", {crate::i18n::text("Microphone volume", &[])} }

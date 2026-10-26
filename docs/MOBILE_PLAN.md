@@ -685,3 +685,10 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - Controlador y actor DM registrados como tareas de servicio para progresar con el WebView suspendido. Sin sondeo del controlador cuando no hay llamada; durante llamada compara el estado cada 500 ms y publica solo cambios.
 - Validación física pendiente: tres botones con pantalla bloqueada, sincronización con controles de la app, colgar con cámara/pantalla y llamada DM, y rechazo de botones antiguos tras cambiar llamada/cuenta. No se conectó teléfono en esta sesión.
 - Validación local: cinco pruebas de acciones/identidad/restauración, Clippy del cliente y grid, check ARM64, catálogo y diez pruebas de empaquetado aprobados. APK Debug generado con Kotlin, recursos y export JNI verificados; sin instalación física.
+
+### Aceptar DM desde un canal de voz — Android y escritorio (2026-10-25)
+
+- Las llamadas entrantes pueden sonar dentro de un canal. Aceptar muestra «Saliendo del canal de voz», detiene medios WebView/nativos y espera la salida del servidor antes de aceptar el DM. No abandona la comunidad.
+- Rechazo/vencimiento conservan el canal. Cancelación remota durante la salida, ruta reemplazada, fallos de medios y resultados antiguos no conectan otra llamada. No se permiten dos llamadas activas; iniciar un DM saliente desde voz conserva el bloqueo anterior.
+- Prueba real Android/PC pendiente: audio en ambos sentidos al aceptar desde voz, con cámara/transmisión activas, y cancelación durante la salida.
+- Validación local: 21 pruebas DM, dos de salida y seis de notificación aprobadas; Clippy de cliente/grid, check ARM64 Android y catálogo aprobados. Sin instalación ni llamada física en esta sesión.

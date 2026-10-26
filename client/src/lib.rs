@@ -71,6 +71,7 @@ mod tzgeo;
 mod ui_size;
 mod update;
 mod version;
+mod voice_handoff;
 mod voice_record;
 #[cfg(target_os = "windows")]
 mod webview2;
