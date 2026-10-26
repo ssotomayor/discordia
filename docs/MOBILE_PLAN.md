@@ -692,3 +692,4 @@ Sin dependencias nuevas. Check workspace previo al último ajuste de audio: exit
 - Rechazo/vencimiento conservan el canal. Cancelación remota durante la salida, ruta reemplazada, fallos de medios y resultados antiguos no conectan otra llamada. No se permiten dos llamadas activas; iniciar un DM saliente desde voz conserva el bloqueo anterior.
 - Prueba real Android/PC pendiente: audio en ambos sentidos al aceptar desde voz, con cámara/transmisión activas, y cancelación durante la salida.
 - Validación local: 21 pruebas DM, dos de salida y seis de notificación aprobadas; Clippy de cliente/grid, check ARM64 Android y catálogo aprobados. Sin instalación ni llamada física en esta sesión.
+- Review #391: durante Switching la acción dice «Terminar llamada», con aviso explícito de que no reconecta al canal. Aceptar ya inicia la salida; terminar el DM impide su conexión y no revierte esa salida. Rechazar antes de aceptar conserva el canal.

@@ -1120,7 +1120,9 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
             "Accepting leaves your voice channel and stops its camera and screen share."
         }
         Phase::Incoming => "Your microphone stays off until you accept.",
-        Phase::Switching => "Stopping voice channel media before connecting your private call.",
+        Phase::Switching => {
+            "Leaving your voice channel to answer this private call. Ending this call will not rejoin the channel."
+        }
         Phase::Ringing => "Waiting for an answer.",
         Phase::Connecting => "Establishing a secure voice connection.",
         Phase::Connected => "Only you and this contact can hear this call.",
@@ -1169,7 +1171,7 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                         CallControl { icon: super::icons::PHONE_HANGUP, label: crate::i18n::text("Decline", &[]), tone: "danger",
                             on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
                     } else if call.phase == Phase::Switching {
-                        CallControl { icon: super::icons::PHONE_HANGUP, label: crate::i18n::text("Cancel", &[]), tone: "danger",
+                        CallControl { icon: super::icons::PHONE_HANGUP, label: crate::i18n::text("End call", &[]), tone: "danger",
                             on_press: move |_| nostr.send(crate::nostr::service::NostrCmd::Call(Action::End)) }
                     } else {
                         CallControl {
