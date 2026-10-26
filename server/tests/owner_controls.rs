@@ -1710,7 +1710,10 @@ async fn a_reconnect_is_announced_with_the_xp_already_earned() {
             break m;
         }
     };
-    assert_eq!(heard_by_the_joiner.xp, 1, "the fresh session keeps the point");
+    assert_eq!(
+        heard_by_the_joiner.xp, 1,
+        "the fresh session keeps the point"
+    );
 
     handle.abort();
 }
