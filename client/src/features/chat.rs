@@ -989,10 +989,12 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     }
                     if can_pin {
                         button {
+                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center transition-colors",
                             title: if pinned { crate::i18n::text("Unpin message", &[]) } else { crate::i18n::text("Pin message", &[]) },
+                            aria_pressed: pinned.to_string(),
                             "data-context-action": "pin",
                             onclick: { let g = gateway.clone(); move |_| g.send(ClientMessage::PinMessage { channel_id, message_id, pinned: !pinned }) },
-                            "📌"
+                            span { dangerous_inner_html: if pinned { super::icons::PIN_FILLED } else { super::icons::PIN } }
                         }
                     }
                     if can_delete {
