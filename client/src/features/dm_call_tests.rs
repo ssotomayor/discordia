@@ -751,3 +751,25 @@ fn unanswered_incoming_call_keeps_the_existing_voice_channel() {
         );
     });
 }
+
+#[test]
+fn ending_private_call_during_handoff_does_not_rejoin_or_accept_it_later() {
+    harness(|actor, output| {
+        actor.state.write().voice.phase = VoicePhase::Connected;
+        let id = Uuid::new_v4();
+        actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
+        assert_eq!(actor.prepare_handoff(), Some(id));
+        actor.state.write().end_voice_locally();
+        actor.action(Action::End);
+        assert!(actor.session.is_none());
+        assert_eq!(actor.state.peek().voice.phase, VoicePhase::Idle);
+        assert_eq!(
+            output.try_recv().unwrap().1.body,
+            Body::End {
+                reason: EndReason::Hangup
+            }
+        );
+        assert!(!actor.complete_handoff(id, Ok(())));
+        assert!(output.try_recv().is_err());
+    });
+}
