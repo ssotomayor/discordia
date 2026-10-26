@@ -168,7 +168,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
             LocalTrack::Audio(audio.clone()),
             TrackPublishOptions {
                 source: TrackSource::Microphone,
-                dtx: false,
+                dtx: true,
                 audio_encoding: Some(AudioEncoding {
                     max_bitrate: 64_000,
                 }),
@@ -211,7 +211,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
                 seed ^= seed << 5;
                 (seed as f32 / u32::MAX as f32 - 0.5) * 0.5
             });
-            lead.push_clocked(
+            lead.push(
                 crate::audio_queue::Frame::new(samples),
                 if closed.load(Ordering::Relaxed) {
                     GateAction::Drop
@@ -223,7 +223,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
                 &mut output,
             );
             for frame in output.drain(..) {
-                let samples = frame.samples.map(|s| (s * i16::MAX as f32) as i16);
+                let samples = frame.frame.samples.map(|s| (s * i16::MAX as f32) as i16);
                 source.capture_frame(&pcm_frame(&samples)).await.unwrap();
             }
         }
@@ -294,6 +294,18 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
         "decoded audio stalled during the live update"
     );
     assert_eq!(audio.sid(), publication.sid());
+    let source_duration = |stats: &[RtcStats]| {
+        stats
+            .iter()
+            .find_map(|s| match s {
+                RtcStats::MediaSource(s) if s.source.kind == "audio" => {
+                    Some(s.audio.total_samples_duration)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let before_silence = source_duration(&stats);
     gate_closed.store(true, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(3)).await;
     let silent_stats = audio.get_stats().await.unwrap();
@@ -305,9 +317,13 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
         })
         .unwrap();
     assert!(
-        silent_packets >= out.sent.packets_sent + 100,
+        silent_packets >= out.sent.packets_sent + 3,
         "closing the gate stopped the live RTP clock: {silent_packets} vs {}",
         out.sent.packets_sent
+    );
+    assert!(
+        source_duration(&silent_stats) >= before_silence + 2.5,
+        "DTX must reduce packets without stopping the source clock"
     );
     dom.in_scope(ScopeId::ROOT, || task.cancel());
     pump.abort();

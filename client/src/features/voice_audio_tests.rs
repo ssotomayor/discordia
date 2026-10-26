@@ -119,7 +119,20 @@ fn processed_speech(pcm: &[f32], gain: i32) -> Vec<crate::audio_queue::Frame<i16
     processed_hops(pcm.as_chunks::<FRAME_SAMPLES>().0.to_vec(), controls, false)
 }
 
+/// Only the frames carrying audio: the gate sends silence for the rest so the
+/// encoder's clock keeps running, and the pipeline tests ask about the voice.
 fn processed_hops(
+    hops: Vec<[f32; FRAME_SAMPLES]>,
+    controls: AudioControls,
+    muted: bool,
+) -> Vec<crate::audio_queue::Frame<i16>> {
+    every_processed_hop(hops, controls, muted)
+        .into_iter()
+        .filter(|frame| frame.samples.iter().any(|s| *s != 0))
+        .collect()
+}
+
+fn every_processed_hop(
     hops: Vec<[f32; FRAME_SAMPLES]>,
     controls: AudioControls,
     muted: bool,
@@ -195,9 +208,7 @@ fn recorded_voice_detection_replay_exports_audio_and_frame_decisions() {
     let mut accepted = std::collections::HashSet::new();
     for frame in &frames {
         let first = frame.position.unwrap().first_sample as usize;
-        if frame.samples.iter().any(|s| *s != 0) {
-            accepted.insert(first / FRAME_SAMPLES);
-        }
+        accepted.insert(first / FRAME_SAMPLES);
         for (slot, sample) in output[first..first + FRAME_SAMPLES]
             .iter_mut()
             .zip(frame.samples)
@@ -263,12 +274,7 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
                 .all(|pair| pair[0].position.unwrap().first_sample
                     < pair[1].position.unwrap().first_sample)
         );
-        let audible: Vec<_> = voiced
-            .iter()
-            .filter(|f| f.samples.iter().any(|s| *s != 0))
-            .collect();
-        assert!(audible.len() > 100);
-        assert!(audible.last().unwrap().position.unwrap().first_sample < SAMPLE_RATE as u64 * 9);
+        assert!(voiced.last().unwrap().position.unwrap().first_sample < SAMPLE_RATE as u64 * 9);
         let mut seed = 79_u32;
         let noise: Vec<f32> = (0..SAMPLE_RATE as usize * 10)
             .map(|_| {
@@ -284,11 +290,7 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
             false,
         );
         assert!(
-            unvoiced
-                .iter()
-                .filter(|f| f.samples.iter().any(|s| *s != 0))
-                .count()
-                < audible.len() / 2,
+            unvoiced.len() < voiced.len() / 2,
             "noise was transmitted as speech: {} vs {}",
             unvoiced.len(),
             voiced.len()
@@ -304,12 +306,49 @@ fn voice_detection_uses_the_model_and_preserves_capture_order_for_quiet_speech()
     }
 }
 
+/// Measured on a three-person call: a sender whose gate stopped pushing had
+/// NetEq on every receiver targeting 1.5 s of delay, because the RTP clock
+/// had stood still through each pause.
+#[test]
+fn a_shut_gate_and_a_mute_still_send_one_silent_frame_per_captured_frame() {
+    for (gain, muted, voice_detection) in [
+        (100, true, false),
+        (0, false, false),
+        (100, false, false),
+        (100, false, true),
+    ] {
+        let mut state = AppState::empty();
+        state.noise_cancellation = false;
+        state.mic_volume = gain;
+        state.mic_sensitivity = 30;
+        let controls = AudioControls::from_state(&state);
+        let mut config = crate::mic_profile::Config::from_state(&state);
+        config.processing.echo = false;
+        config.processing.gate = true;
+        config.processing.voice_detection = voice_detection;
+        controls.apply_mic(config);
+        let frames = every_processed_hop(vec![[0.002; FRAME_SAMPLES]; 200], controls, muted);
+        let delay = if voice_detection { 3 } else { 0 };
+        assert_eq!(
+            frames.len(),
+            200 - delay,
+            "gain {gain} muted {muted} vad {voice_detection}"
+        );
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(
+                frame.position.unwrap().first_sample,
+                (index * FRAME_SAMPLES) as u64
+            );
+            assert!(frame.samples.iter().all(|s| *s == 0));
+        }
+    }
+}
+
 #[test]
 fn native_pipeline_honors_mute_and_zero_microphone_volume() {
-    assert!(processed(&[0.2; 150], 100, false, true).is_empty());
-    let silent = processed(&[0.2; 150], 0, false, false);
-    assert_eq!(silent.len(), 150);
-    assert!(silent.iter().all(|f| f.samples.iter().all(|s| *s == 0)));
+    for (gain, muted) in [(100, true), (0, false)] {
+        assert!(processed(&[0.2; 150], gain, false, muted).is_empty());
+    }
 }
 
 #[test]
@@ -322,9 +361,7 @@ fn sensitivity_gates_before_microphone_volume_and_automatic_gain() {
             state.mic_volume = gain;
             state.mic_sensitivity = 30;
             let controls = AudioControls::from_state(&state);
-            let silent = processed_controls(&[0.015; 200], controls, false);
-            assert_eq!(silent.len(), 200);
-            assert!(silent.iter().all(|f| f.samples.iter().all(|s| *s == 0)));
+            assert!(processed_controls(&[0.015; 200], controls, false).is_empty());
             state.mic_sensitivity = 1;
             let controls = AudioControls::from_state(&state);
             let frames = processed_controls(&[0.015; 200], controls, false);

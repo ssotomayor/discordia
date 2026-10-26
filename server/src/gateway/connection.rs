@@ -284,6 +284,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             .collect();
                         for (gid, member) in joins {
                             let targets = ctx.state.guild_member_pubkeys(gid);
+                            let member = ctx.state.stamp_xp(member);
                             ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
                         }
                         let client_version = sanitize_client_version(&client_version);

@@ -117,26 +117,26 @@ fn render(
     let mut transmission = Vec::with_capacity(4);
     let mut gate_peaks = Vec::with_capacity(input.len());
     let mut metrics = Metrics::new();
-    for frame in input {
+    for (index, frame) in input.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("Microphone adjustment cancelled.".into());
         }
         let processed = processor.process(frame.samples, config, false);
         gate_peaks.push(processed.gate_peak as f32 / 1000.0);
-        lead_in.push(
-            crate::audio_queue::Frame::new(processed.samples),
-            processed.action,
-            config,
-            false,
-            &mut transmission,
-        );
+        let mut staged = crate::audio_queue::Frame::new(processed.samples);
+        staged.position = Some(crate::audio_queue::CapturePosition {
+            capture_id: 1,
+            first_sample: (index * FRAME_SAMPLES) as u64,
+        });
+        lead_in.push(staged, processed.action, config, false, &mut transmission);
         output.extend_from_slice(&[0.0; FRAME_SAMPLES]);
-        let start = output.len() - transmission.len() * FRAME_SAMPLES;
-        for (slot, outgoing) in output[start..]
-            .chunks_mut(FRAME_SAMPLES)
-            .zip(transmission.drain(..))
-        {
-            slot.copy_from_slice(&outgoing.samples);
+        // Voice detection releases a frame 30 ms after its capture; it lands at its own position.
+        for outgoing in transmission.drain(..) {
+            let at = outgoing
+                .frame
+                .position
+                .map_or(0, |p| p.first_sample as usize);
+            output[at..at + FRAME_SAMPLES].copy_from_slice(&outgoing.frame.samples);
         }
     }
     for ((frame, samples), peak) in input
