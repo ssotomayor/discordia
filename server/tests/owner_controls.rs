@@ -1666,6 +1666,55 @@ async fn message_xp_is_per_guild_and_not_a_message_count() {
     handle.abort();
 }
 
+/// A client replaces its member row with whatever `MemberJoin` carries, and
+/// the server announces every reconnect with one — so the row it sends must
+/// carry the XP, or every launch shows the person at zero until the next point.
+#[tokio::test]
+async fn a_reconnect_is_announced_with_the_xp_already_earned() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Grinder").await;
+    let (guild_id, text) = create_guild(&mut owner, "XP Farm").await;
+
+    owner.send_message(text, "one point").await.unwrap();
+    loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
+            && m.user.pubkey == owner_id.pubkey()
+            && m.xp == 1
+        {
+            break;
+        }
+    }
+
+    let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder")
+        .await
+        .unwrap();
+    let mine = |m: &discordia_server::protocol::Member| {
+        m.guild_id == guild_id && m.user.pubkey == owner_id.pubkey()
+    };
+
+    let heard_by_the_first = loop {
+        if let ServerMessage::MemberJoin(m) = next_timeout(&mut owner).await
+            && mine(&m)
+        {
+            break m;
+        }
+    };
+    assert_eq!(heard_by_the_first.xp, 1, "the open session keeps the point");
+
+    let heard_by_the_joiner = loop {
+        if let ServerMessage::MemberJoin(m) = next_timeout(&mut second).await
+            && mine(&m)
+        {
+            break m;
+        }
+    };
+    assert_eq!(heard_by_the_joiner.xp, 1, "the fresh session keeps the point");
+
+    handle.abort();
+}
+
 use discordia_server::protocol::JoinGate;
 
 fn solve_pow(challenge: &str, bits: u32) -> String {
