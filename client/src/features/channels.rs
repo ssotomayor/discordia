@@ -1463,6 +1463,93 @@ fn ScreenShareStatsRow(
     }
 }
 
+fn occupant_diagnostics_tooltip(
+    health: Option<crate::state::ConnectionHealth>,
+    stats: Option<crate::state::TrackStats>,
+    is_self: bool,
+) -> String {
+    let mut lines = Vec::new();
+    let quality_desc = match health {
+        Some(crate::state::ConnectionHealth::Excellent) => {
+            crate::i18n::text("Connection quality: Excellent", &[])
+        }
+        Some(crate::state::ConnectionHealth::Good) => {
+            crate::i18n::text("Connection quality: Good", &[])
+        }
+        Some(crate::state::ConnectionHealth::Poor) => {
+            if is_self {
+                crate::i18n::text(
+                    "Connection quality: Reduced (your sent/received audio)",
+                    &[],
+                )
+            } else {
+                crate::i18n::text("Connection quality: Reduced", &[])
+            }
+        }
+        Some(crate::state::ConnectionHealth::Lost) => {
+            crate::i18n::text("Connection quality: Disrupted", &[])
+        }
+        None => crate::i18n::text("Connection quality: Normal", &[]),
+    };
+    lines.push(quality_desc);
+
+    match stats {
+        Some(crate::state::TrackStats::Inbound {
+            loss_pct,
+            recent_loss_pct,
+            jitter_ms,
+            buffer_ms,
+            concealed_pct,
+            ..
+        }) => {
+            if let Some(recent) = recent_loss_pct {
+                lines.push(crate::i18n::text(
+                    "Packet loss: {0}% (recent) · {1}% (total)",
+                    &[format!("{recent:.1}"), format!("{loss_pct:.1}")],
+                ));
+            } else {
+                lines.push(crate::i18n::text(
+                    "Packet loss: {0}%",
+                    &[format!("{loss_pct:.1}")],
+                ));
+            }
+            lines.push(crate::i18n::text(
+                "Jitter: {0} ms",
+                &[format!("{jitter_ms:.0}")],
+            ));
+            if buffer_ms > 0.0 {
+                lines.push(crate::i18n::text(
+                    "Buffer delay: {0} ms",
+                    &[format!("{buffer_ms:.0}")],
+                ));
+            }
+            if let Some(concealed) = concealed_pct.filter(|c| *c >= 0.5) {
+                lines.push(crate::i18n::text(
+                    "Concealed speech: {0}%",
+                    &[format!("{concealed:.1}")],
+                ));
+            }
+        }
+        Some(crate::state::TrackStats::Outbound {
+            bitrate_kbps,
+            packets_per_sec,
+            target_kbps,
+        }) => {
+            if let Some(kbps) = bitrate_kbps {
+                lines.push(crate::i18n::text(
+                    "Outbound audio: {0} kbps (target: {1} kbps)",
+                    &[kbps.to_string(), target_kbps.to_string()],
+                ));
+            }
+            if let Some(pps) = packets_per_sec {
+                lines.push(crate::i18n::text("Rate: {0} pkt/s", &[pps.to_string()]));
+            }
+        }
+        _ => {}
+    }
+    lines.join("\n")
+}
+
 #[component]
 fn VoiceOccupant(
     channel_id: Id,
@@ -1494,7 +1581,29 @@ fn VoiceOccupant(
         .copied()
         .filter(|_| same_channel);
     let health_label = health.and_then(|h| h.dot(is_self)).map(|(_, label)| label);
+    let track_stats = state
+        .read()
+        .voice_stats
+        .get(&pubkey)
+        .copied()
+        .filter(|_| same_channel);
     let ring = crate::state::talk_ring(same_channel && speaking && !locally_muted, health);
+    let (signal_icon, signal_color) = match health {
+        Some(crate::state::ConnectionHealth::Excellent | crate::state::ConnectionHealth::Good) => {
+            (crate::features::icons::SIGNAL_GOOD, "text-[var(--success)]")
+        }
+        Some(crate::state::ConnectionHealth::Poor) => {
+            (crate::features::icons::SIGNAL_POOR, "text-[var(--warn)]")
+        }
+        Some(crate::state::ConnectionHealth::Lost) => {
+            (crate::features::icons::SIGNAL_LOST, "text-[var(--danger)]")
+        }
+        None => (
+            crate::features::icons::SIGNAL_GOOD,
+            "text-[var(--text-dim)]",
+        ),
+    };
+    let signal_tooltip = occupant_diagnostics_tooltip(health, track_stats, is_self);
     // Volume, local mute and disconnect live in the right-click menu, mounted
     // at the workspace root (trap 22); the row only shows what is set.
     let open_menu = {
@@ -1538,6 +1647,15 @@ fn VoiceOccupant(
                 span { class: "truncate flex-1",
                     "{name}"
                     if is_self { {crate::i18n::text(" (you)", &[])} }
+                }
+                if same_channel {
+                    span {
+                        class: "inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {signal_color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
+                        role: "img",
+                        title: "{signal_tooltip}",
+                        aria_label: "{signal_tooltip}",
+                        dangerous_inner_html: signal_icon,
+                    }
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
@@ -1733,6 +1851,14 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 v_audio.send(crate::features::voice::VoiceCmd::ListDevices);
                 crate::features::camera::refresh_cameras(state);
             }
+        });
+    }
+    {
+        let v_stats = voice.clone();
+        use_effect(move || {
+            v_stats.send(crate::features::voice::VoiceCmd::SetStatsPolling {
+                enabled: show_banner,
+            });
         });
     }
 
@@ -2195,6 +2321,51 @@ mod tests {
         let gone = Id::new_v4();
         assert!(reorder_positions(&g, g[0].id, gone).is_empty());
         assert!(reorder_positions(&g, gone, g[0].id).is_empty());
+    }
+
+    #[test]
+    fn occupant_diagnostics_tooltip_formats_inbound_stats() {
+        let text = occupant_diagnostics_tooltip(
+            Some(crate::state::ConnectionHealth::Good),
+            Some(crate::state::TrackStats::Inbound {
+                loss_pct: 1.5,
+                recent_loss_pct: Some(0.8),
+                discarded_packets: None,
+                concealed_pct: Some(1.2),
+                jitter_ms: 24.0,
+                buffer_ms: 12.0,
+                concealment_events: 0,
+            }),
+            false,
+        );
+        assert!(text.contains("Connection quality: Good"));
+        assert!(text.contains("Packet loss: 0.8% (recent) · 1.5% (total)"));
+        assert!(text.contains("Jitter: 24 ms"));
+        assert!(text.contains("Buffer delay: 12 ms"));
+        assert!(text.contains("Concealed speech: 1.2%"));
+    }
+
+    #[test]
+    fn occupant_diagnostics_tooltip_formats_outbound_stats() {
+        let text = occupant_diagnostics_tooltip(
+            Some(crate::state::ConnectionHealth::Excellent),
+            Some(crate::state::TrackStats::Outbound {
+                bitrate_kbps: Some(64),
+                packets_per_sec: Some(50),
+                target_kbps: 64,
+            }),
+            true,
+        );
+        assert!(text.contains("Connection quality: Excellent"));
+        assert!(text.contains("Outbound audio: 64 kbps (target: 64 kbps)"));
+        assert!(text.contains("Rate: 50 pkt/s"));
+    }
+
+    #[test]
+    fn occupant_diagnostics_tooltip_self_reduced() {
+        let text =
+            occupant_diagnostics_tooltip(Some(crate::state::ConnectionHealth::Poor), None, true);
+        assert!(text.contains("Connection quality: Reduced (your sent/received audio)"));
     }
 }
 
