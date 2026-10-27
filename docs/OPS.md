@@ -79,6 +79,7 @@ peer's IP, and a proxy makes every host the same peer.
 | Var | Default | Meaning |
 |---|---|---|
 | `DISCORDIA_CONFIG_DIR` | OS config dir | identity, settings, release log; a pre-rename `dioxusfun` folder is moved here once |
+| `DISCORDIA_WEBVIEW_DEBUG_PORT` | off | Windows Debug only: opt-in loopback WebView diagnostics on a nonzero TCP port; release builds ignore it |
 | `DISCORDIA_VAULT` | chosen on first run | `keychain` or `file`: where the passphrase that locks key files lives; changing it later means re-importing every key |
 | `DISCORDIA_RENDEZVOUS_URL` | `ws://rendezvous.discordia.world:7700` | presets the rendezvous; plain `ws://` because the rendezvous is never behind TLS |
 | `DISCORDIA_DM_ICE_SERVERS` | `[{"urls":["stun:stun.cloudflare.com:3478"]}]` | JSON list of STUN/TURN servers for private DM calls; each entry accepts `urls`, `username`, `password`. Credentials stay local and are never sent through Nostr |

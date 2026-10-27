@@ -138,7 +138,7 @@ pub(crate) fn embed_image(cropped: String) -> (Option<String>, Option<String>) {
     (Some(cropped), None)
 }
 
-fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<std::sync::Arc<String>>> {
+fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<crate::image_assets::ImageSource>> {
     let state = use_app_state();
     let pubkey = pubkey.to_owned();
     use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
@@ -161,16 +161,17 @@ fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<std::sync::Arc<S
                 .as_ref()
                 .filter(|data| std::ptr::eq(data.as_str(), address))
             {
-                return Some(data.clone());
+                return Some(crate::image_assets::source(data.clone()));
             }
         }
-        match address.strip_prefix("media:") {
+        let data = match address.strip_prefix("media:") {
             Some(blob) => s
                 .emoji_images
                 .get_shared(blob)
                 .filter(|data| !data.is_empty()),
             None => Some(std::sync::Arc::new(resolved.to_owned())),
-        }
+        }?;
+        Some(crate::image_assets::source(data))
     }))
 }
 

@@ -1641,5 +1641,10 @@
   "Picture…": ["Imagen…","Imagem…"],
   "Clear picture": ["Quitar imagen","Remover imagem"],
   "Only this guild sees these. Anything left empty shows the app's own.": ["Solo esta comunidad ve estos cambios. Lo que quede vacío muestra lo de la app.","Só esta comunidade vê estas mudanças. O que ficar vazio mostra o do app."],
-  "Use the app's own": ["Usar los de la app","Usar os do app"]
+  "Use the app's own": ["Usar los de la app","Usar os do app"],
+  "Image viewer": ["Visor de imágenes", "Visualizador de imagens"],
+  "Image zoom": ["Zoom de imagen", "Zoom da imagem"],
+  "Zoom in": ["Acercar", "Ampliar"],
+  "Zoom out": ["Alejar", "Reduzir"],
+  "Reset zoom": ["Restablecer zoom", "Redefinir zoom"]
 }

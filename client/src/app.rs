@@ -1023,11 +1023,13 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
 /// Prop-less so Dioxus memoizes it — re-evaluating it warns "Changing the
 /// props of Style/Script is not supported".
 pub(crate) fn AppHead() -> Element {
+    crate::image_assets::use_image_assets();
     rsx! {
         document::Style { {include_str!("../assets/stream-viewer.css")} }
         document::Style { {include_str!("../assets/accent-palette.css")} }
         document::Style { {include_str!("../assets/guild-hub.css")} }
         document::Style { {include_str!("../assets/text-menu.css")} }
+        document::Style { {include_str!("../assets/image-viewer.css")} }
         crate::text_menu::TextMenu {}
         crate::i18n::LanguageDocument {}
         document::Script { {LIVEKIT_JS} }
