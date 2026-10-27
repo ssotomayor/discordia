@@ -664,7 +664,7 @@ fn playback_backlog_is_bounded_and_retains_current_audio() {
     assert!(handle.tracks.lock().buffers.is_empty());
 }
 
-fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
+fn replay_stalled_delivery(rate: u32, kind: TrackKind, recover: bool) -> (usize, u64, u64) {
     let controls = AudioControls::from_state(&AppState::empty());
     let handle = PlaybackHandle {
         tracks: Arc::new(Mutex::new(MixerTracks::default())),
@@ -673,7 +673,7 @@ fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
         stream_gains: controls.stream_gains,
         soundboard_pct: controls.soundboard_pct,
     };
-    let id = handle.add_track("peer".into(), TrackKind::Voice);
+    let id = handle.add_track("peer".into(), kind);
     let hop = rate as usize / 100;
     let cap = rate as usize / PLAYBACK_CAP_DIVISOR as usize;
     handle.push(id, &vec![0.2; 4 * hop], rate, cap);
@@ -715,10 +715,13 @@ fn replay_stalled_delivery(rate: u32, recover: bool) -> (usize, u64, u64) {
 
 #[test]
 fn recovery_avoids_chopping_audio_while_a_stalled_producer_catches_up() {
-    for rate in [44_100, 48_000, 96_000] {
-        let baseline = replay_stalled_delivery(rate, false);
-        let recovered = replay_stalled_delivery(rate, true);
-        eprintln!("rate={rate}: before={baseline:?}, after={recovered:?}");
+    for (rate, kind) in [44_100, 48_000, 96_000]
+        .into_iter()
+        .flat_map(|rate| [(rate, TrackKind::Voice), (rate, TrackKind::Soundboard)])
+    {
+        let baseline = replay_stalled_delivery(rate, kind, false);
+        let recovered = replay_stalled_delivery(rate, kind, true);
+        eprintln!("rate={rate} {kind:?}: before={baseline:?}, after={recovered:?}");
         assert!(
             baseline.0 > 1,
             "the stalled producer must reproduce repeated cuts"
@@ -775,7 +778,7 @@ fn output_rate_changes_flush_old_pcm_and_reject_in_flight_old_rate_blocks() {
 }
 
 #[test]
-fn soundboard_restarts_immediately_after_short_and_long_pauses() {
+fn own_soundboard_restarts_immediately_after_short_and_long_pauses() {
     for rate in [44_100, 48_000, 96_000] {
         let controls = AudioControls::from_state(&AppState::empty());
         controls.soundboard_pct.store(100, Ordering::Relaxed);
@@ -786,7 +789,7 @@ fn soundboard_restarts_immediately_after_short_and_long_pauses() {
             stream_gains: controls.stream_gains,
             soundboard_pct: controls.soundboard_pct,
         };
-        let id = handle.add_track("peer".into(), TrackKind::Soundboard);
+        let id = handle.add_local_soundboard("me".into());
         let mut tracks = handle.tracks.lock();
         for (gap_ms, value) in [(0, 0.2), (20, 0.3), (200, 0.4), (20, 0.5)] {
             for _ in 0..rate * gap_ms / 1000 {
