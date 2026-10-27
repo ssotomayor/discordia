@@ -295,6 +295,13 @@ fn Nodes(nodes: Vec<Node>, guild_id: Option<Id>, extra: Vec<(String, String)>) -
     }
 }
 
+fn rich_word(word: &str) -> bool {
+    word.starts_with("http://")
+        || word.starts_with("https://")
+        || (word.starts_with('@') && word.len() > 1)
+        || crate::emoji::needs_rendering(word)
+}
+
 #[component]
 fn PlainRun(text: String, guild_id: Option<Id>, extra: Vec<(String, String)>) -> Element {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -302,9 +309,11 @@ fn PlainRun(text: String, guild_id: Option<Id>, extra: Vec<(String, String)>) ->
     rsx! {
         for (li, line) in lines.iter().enumerate() {
             {
-                let words: Vec<&str> = line.split(' ').collect();
+                let rich = line.split(' ').any(rich_word);
+                let words: Vec<&str> = if rich { line.split(' ').collect() } else { Vec::new() };
                 let lastw = words.len().saturating_sub(1);
                 rsx! {
+                    if !rich { "{line}" }
                     for (wi, word) in words.iter().enumerate() {
                         {
                             let w = word.to_string();
@@ -347,6 +356,54 @@ fn PlainRun(text: String, guild_id: Option<Id>, extra: Vec<(String, String)>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_mentions_and_emoji_keep_their_rich_rendering() {
+        for word in [
+            "http://example.com",
+            "https://example.com",
+            "@someone",
+            ":fire:",
+            "🔥",
+        ] {
+            assert!(rich_word(word), "{word}");
+        }
+        for word in ["ordinary", "chat", "text", "@", "someone@example.com", ""] {
+            assert!(!rich_word(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn ordinary_paragraphs_keep_a_bounded_dom_when_opening_a_chat() {
+        let line = "ordinary chat text ".repeat(200);
+        let started = std::time::Instant::now();
+        let mut dom = VirtualDom::new_with_props(
+            |text: String| rsx! { PlainRun { text, guild_id: None, extra: Vec::new() } },
+            format!("{line}\nsecond line"),
+        );
+        let edits = dom.rebuild_to_vec().edits;
+        let templates = edits
+            .iter()
+            .filter(|edit| matches!(edit, dioxus::core::Mutation::LoadTemplate { .. }))
+            .count();
+        eprintln!(
+            "ordinary paragraph: {templates} template instances, {:?}",
+            started.elapsed()
+        );
+        let text: String = edits
+            .iter()
+            .filter_map(|edit| match edit {
+                dioxus::core::Mutation::CreateTextNode { value, .. } => Some(value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains(&line));
+        assert!(text.contains("second line"));
+        assert!(
+            templates < 8,
+            "plain text must not create one element per word: {templates}"
+        );
+    }
 
     fn t(s: &str) -> Node {
         Node::Text(s.into())

@@ -43,6 +43,7 @@ jobs:
           node scripts/test-android-edits.cjs
           node --test scripts/test-android-back.cjs
           node --test scripts/test-mobile-pager.cjs
+          node --test scripts/test-chat-scroll.cjs
       - name: Android release metadata and signing regressions
         run: python3 scripts/test_android_release.py
 

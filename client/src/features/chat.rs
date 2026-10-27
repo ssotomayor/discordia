@@ -48,6 +48,7 @@ return (async function () {
       if (observer) { observer.disconnect(); observed.clear(); observer.observe(node); }
     }
     if (channel !== cid) anchor = null;
+    if (mode === 'channel') el.scrollTop = el.scrollHeight;
     channel = cid;
     const pages = el.querySelectorAll ? Array.from(el.querySelectorAll('[data-chat-page]')) : [];
     for (const old of observed) {
@@ -2004,7 +2005,11 @@ fn Composer(
         .filter(|_| !is_dm && state.read().server_chat_tools);
     let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
     use_saved_emoji_pictures();
-    let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
+    let (guild_emojis, emoji_urls) = if show_emoji() {
+        guild_emojis_of(&state.read(), channel_id)
+    } else {
+        Default::default()
+    };
     let suggestions = caret_token()
         .as_deref()
         .map(|t| suggestions_now(&state.read(), channel_id, t))
