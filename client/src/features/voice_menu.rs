@@ -9,7 +9,7 @@ use crate::protocol::{ClientMessage, Permission};
 use crate::state::{VoiceMenu, use_app_state, use_gateway};
 
 const MENU_W: f64 = 232.0;
-const MENU_H: f64 = 190.0;
+const MENU_H: f64 = 220.0;
 
 #[component]
 pub fn VoiceMenuHost() -> Element {
@@ -43,10 +43,12 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
     let voice = use_voice_tx();
     let pubkey = menu.pubkey.clone();
 
-    let (volume, locally_muted, disconnect_in) = {
+    let (volume, locally_muted, disconnect_in, track_stats, health) = {
         let s = state.read();
         let volume = s.user_volumes.get(&pubkey).copied().unwrap_or(100);
         let muted = s.user_muted.contains(&pubkey);
+        let track_stats = s.voice_stats.get(&pubkey).copied();
+        let health = s.voice_quality.get(&pubkey).copied();
         // The server re-checks; this only hides a button that would be refused.
         let disconnect_in = s
             .voice_states
@@ -60,7 +62,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         .iter()
                         .any(|g| g.id == *gid && g.owner_pubkey == pubkey)
             });
-        (volume, muted, disconnect_in)
+        (volume, muted, disconnect_in, track_stats, health)
     };
 
     let apply = {
@@ -96,8 +98,43 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                 class: "dxf-pop-in fixed bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm select-none",
                 style: "{style}",
                 onclick: move |e| e.stop_propagation(),
-                div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)] border-b border-[var(--border)] mb-1 truncate",
-                    "{menu.name}"
+                div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)] border-b border-[var(--border)] mb-1 flex items-center justify-between gap-1",
+                    span { class: "truncate font-medium", "{menu.name}" }
+                    if let Some(h) = health {
+                        span {
+                            class: match h {
+                                crate::state::ConnectionHealth::Excellent | crate::state::ConnectionHealth::Good => "text-[10px] text-[var(--success)] shrink-0",
+                                crate::state::ConnectionHealth::Poor => "text-[10px] text-[var(--warn)] shrink-0",
+                                crate::state::ConnectionHealth::Lost => "text-[10px] text-[var(--danger)] shrink-0",
+                            },
+                            match h {
+                                crate::state::ConnectionHealth::Excellent => crate::i18n::text("Excellent", &[]),
+                                crate::state::ConnectionHealth::Good => crate::i18n::text("Good", &[]),
+                                crate::state::ConnectionHealth::Poor => crate::i18n::text("Reduced", &[]),
+                                crate::state::ConnectionHealth::Lost => crate::i18n::text("Disrupted", &[]),
+                            }
+                        }
+                    }
+                }
+                if let Some(stats) = track_stats {
+                    match stats {
+                        crate::state::TrackStats::Inbound { loss_pct, recent_loss_pct, jitter_ms, .. } => rsx! {
+                            div { class: "px-3 py-1 text-[11px] text-[var(--text-dim)] border-b border-[var(--border)] mb-1 flex items-center justify-between font-mono",
+                                span {
+                                    class: if recent_loss_pct.is_some_and(|l| l >= 1.0) { "text-[var(--warn)]" } else { "" },
+                                    {crate::i18n::text("Loss: {0}%", &[format!("{:.1}", recent_loss_pct.unwrap_or(loss_pct))])}
+                                }
+                                span { {crate::i18n::text("Jitter: {0}ms", &[format!("{jitter_ms:.0}")])} }
+                            }
+                        },
+                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, .. } => rsx! {
+                            div { class: "px-3 py-1 text-[11px] text-[var(--text-dim)] border-b border-[var(--border)] mb-1 flex items-center justify-between font-mono",
+                                span { {crate::i18n::text("Out: {0} kbps", &[bitrate_kbps.unwrap_or(0).to_string()])} }
+                                span { {crate::i18n::text("{0} pkt/s", &[packets_per_sec.unwrap_or(0).to_string()])} }
+                            }
+                        },
+                        _ => rsx! {},
+                    }
                 }
                 div { class: "px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-[var(--text-dim)]",
                     {crate::i18n::text("Volume for you", &[])}
