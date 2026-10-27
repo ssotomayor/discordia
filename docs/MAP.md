@@ -27,7 +27,7 @@ name instead.
 | `client/src/state.rs` | 2942 |
 | `client/src/update.rs` | 1052 |
 | `client/src/net.rs` | 2778 |
-| `client/src/features/chat.rs` | 2679 |
+| `client/src/features/chat.rs` | 2736 |
 | `server/src/store.rs` | 1505 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1239 |
