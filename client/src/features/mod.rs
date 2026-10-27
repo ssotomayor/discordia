@@ -25,6 +25,7 @@ mod host_connections;
 pub mod icons;
 pub mod identity_setup;
 pub mod image_editor;
+mod image_viewer;
 pub mod integrations;
 mod invite;
 pub mod leveling;

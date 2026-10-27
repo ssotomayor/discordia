@@ -869,31 +869,8 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 if let Some(attachment) = message.attachment.clone() {
                     super::chat_tools::FileAttachment { attachment }
                 }
-                if let Some(img) = message.image.as_ref() {
-                    {
-                        let resolved = state.read().media_src(img).map(str::to_string);
-                        match resolved {
-                            Some(src) => {
-                                let full = src.clone();
-                                rsx! {
-                                    img {
-                                        class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
-                                        style: "cursor: zoom-in;",
-                                        src: "{src}",
-                                        alt: crate::i18n::text("attachment", &[]),
-                                        title: crate::i18n::text("Click to view full size", &[]),
-                                        onclick: move |_| state.write().image_viewer = Some(full.clone()),
-                                    }
-                                }
-                            }
-                            None => rsx! {
-                                div {
-                                    class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] w-48 h-24 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                                    {crate::i18n::text("Loading image…", &[])}
-                                }
-                            },
-                        }
-                    }
+                if let Some(address) = message.image.as_ref() {
+                    ChatImage { address: address.clone() }
                 }
                 if let Some(metadata) = message.image_metadata.as_ref() {
                     div {
@@ -1292,34 +1269,41 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
 }
 
 #[component]
-pub fn ImageViewer() -> Element {
+fn ChatImage(address: String) -> Element {
     let mut state = use_app_state();
-    let Some(src) = state.read().image_viewer.clone() else {
-        return rsx! { Fragment {} };
-    };
-
+    let resolved = use_memo(use_reactive((&address,), move |(address,)| {
+        let s = state.read();
+        let data = match address.strip_prefix("media:") {
+            Some(blob) => s.emoji_images.get_shared(blob),
+            None => s
+                .media_src(&address)
+                .map(|data| std::sync::Arc::new(data.to_owned())),
+        }?;
+        Some(crate::image_assets::chat_source(data))
+    }));
     rsx! {
-        div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center",
-            style: "padding: 2.5rem; background: rgba(0,0,0,0.8);",
-            onclick: move |_| state.write().image_viewer = None,
+        if let Some(src) = resolved() {
             img {
-                class: "dxf-modal-in object-contain rounded-lg shadow-2xl",
-                style: "max-width: 100%; max-height: 100%;",
+                class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
+                style: "cursor: zoom-in;",
                 src: "{src}",
                 alt: crate::i18n::text("attachment", &[]),
-                onclick: move |e| e.stop_propagation(),
+                title: crate::i18n::text("Click to view full size", &[]),
+                onclick: move |_| {
+                    let full = state.peek().media_src(&address).map(str::to_string);
+                    if let Some(full) = full { state.write().image_viewer = Some(full); }
+                },
             }
-            button {
-                class: "absolute w-9 h-9 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors",
-                style: "top: 1rem; right: 1.25rem;",
-                title: crate::i18n::text("Close", &[]),
-                onclick: move |_| state.write().image_viewer = None,
-                "✕"
+        } else {
+            div {
+                class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] w-48 h-24 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                {crate::i18n::text("Loading image…", &[])}
             }
         }
     }
 }
+
+pub use super::image_viewer::ImageViewer;
 
 /// 100% emoji size. Emoji glyphs draw smaller than their box, so this sits
 /// above `1em`; the chat emoji slider scales it.

@@ -35,6 +35,7 @@ mod file_dialog;
 mod host;
 mod i18n;
 mod identity;
+mod image_assets;
 mod image_edit;
 mod keyvault;
 mod known_servers;
@@ -244,12 +245,23 @@ pub fn run() {
     webview2::gate();
 
     #[cfg(target_os = "windows")]
-    unsafe {
-        std::env::set_var(
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--unsafely-treat-insecure-origin-as-secure=\
-             http://dioxus.index.html,http://dioxus.index.html/",
-        );
+    {
+        let arguments = "--unsafely-treat-insecure-origin-as-secure=\
+             http://dioxus.index.html,http://dioxus.index.html/";
+        #[cfg(debug_assertions)]
+        let arguments = match std::env::var("DISCORDIA_WEBVIEW_DEBUG_PORT")
+            .ok()
+            .and_then(|value| value.parse::<std::num::NonZeroU16>().ok())
+        {
+            Some(port) => format!(
+                "{arguments} --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"
+            ),
+            None => arguments.to_owned(),
+        };
+        // SAFETY: WebView2 reads this before launch; no WebView threads exist yet.
+        unsafe {
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", arguments);
+        }
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
