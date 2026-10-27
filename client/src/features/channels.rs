@@ -1630,6 +1630,7 @@ fn occupant_diagnostics_tooltip(
 #[component]
 fn VoiceSignal(icon: &'static str, color: &'static str, tooltip: String) -> Element {
     let mut shown = use_signal(|| false);
+    let tooltip_id = use_hook(|| format!("voice-tooltip-{}", uuid::Uuid::new_v4()));
     rsx! {
         span {
             class: "relative inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
@@ -1640,8 +1641,14 @@ fn VoiceSignal(icon: &'static str, color: &'static str, tooltip: String) -> Elem
             span { class: "inline-flex", dangerous_inner_html: icon }
             if shown() {
                 span {
+                    id: "{tooltip_id}",
+                    "popover": "manual",
                     role: "tooltip",
-                    class: "absolute right-0 bottom-full mb-1.5 z-50 pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none whitespace-nowrap",
+                    class: "pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none",
+                    style: "position:fixed;inset:auto;margin:0;width:max-content;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;overflow-wrap:anywhere;white-space:normal;",
+                    onmounted: move |_| {
+                        let _ = document::eval(&format!("({})({tooltip_id:?})", include_str!("../../assets/voice-tooltip.js")));
+                    },
                     for line in tooltip.lines() {
                         span { class: "block", "{line}" }
                     }
