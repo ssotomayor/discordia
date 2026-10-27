@@ -250,13 +250,13 @@ pub fn ProfileCard(
                     .map(|m| m.xp)
             })
             .unwrap_or(0);
-        let rank = state
+        let rules = state
             .read()
             .selected_guild
             .filter(|_| !embedded)
             .map(|gid| state.read().leveling_of(gid))
-            .filter(|r| r.enabled)
-            .and_then(|r| r.tier_at(xp).cloned());
+            .unwrap_or_default();
+        let progress = crate::features::leveling::progress(&rules, xp);
         let member_roles: Vec<crate::protocol::Role> = {
             let s = state.read();
             s.selected_guild
@@ -289,8 +289,7 @@ pub fn ProfileCard(
             global,
             is_self,
             is_contact,
-            xp,
-            rank,
+            progress,
             member_roles,
         ))
     });
@@ -303,8 +302,7 @@ pub fn ProfileCard(
         global,
         is_self,
         is_contact,
-        xp,
-        rank,
+        progress,
         member_roles,
     )) = profile()
     else {
@@ -316,8 +314,19 @@ pub fn ProfileCard(
     let nostr_contact = nostr.clone();
     let signature = crate::identity::color_signature(&pubkey, 15);
     let accent = crate::identity::signature_accent(&pubkey);
-    let (level, into, span) = crate::protocol::level_progress(xp);
-    let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
+    let xp_pct = progress.pct;
+    let xp_count = match progress.target {
+        Some(target) => {
+            crate::i18n::text("{0}/{1} XP", &[progress.xp.to_string(), target.to_string()])
+        }
+        None => crate::i18n::text("{0} XP", &[progress.xp.to_string()]),
+    };
+    let xp_next = match (progress.target, progress.next.clone()) {
+        (Some(target), Some(next)) => {
+            crate::i18n::text("{0} XP to {1}", &[(target - progress.xp).to_string(), next])
+        }
+        _ => crate::i18n::text("Highest rank", &[]),
+    };
     let copy_pubkey = pubkey.clone();
 
     rsx! {
@@ -403,30 +412,28 @@ pub fn ProfileCard(
                     }
                     if !embedded {
                     div { class: "mt-4 flex items-center gap-3",
+                        title: crate::i18n::text("Earned on this server, counted by it", &[]),
                         span {
                             class: "dxf-display text-sm font-bold shrink-0",
-                            style: match rank.as_ref().and_then(|t| t.color.clone()) {
+                            style: match progress.color.clone() {
                                 Some(c) => format!("color: {c};"),
                                 None => "color: var(--accent);".to_string(),
                             },
-                            title: crate::i18n::text("Earned on this server, counted by it", &[]),
-                            match rank.as_ref() {
-                                Some(t) => t.name.clone(),
-                                None => format!("Lv {level}"),
-                            }
+                            "{progress.label}"
                         }
                         div { class: "flex-1 h-2 rounded-full overflow-hidden", style: "background: var(--bg2);",
                             div { class: "h-full rounded-full", style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));" }
                         }
-                        span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
+                        span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{xp_count}" }
                     }
+                    div { class: "mt-1 text-right text-[10px] text-[var(--text-dim)]", "{xp_next}" }
                     }
                     // Deliberately quiet, and deliberately labelled: this number
                     // is signed by the person it flatters and by nobody else.
                     if let Some(g) = global {
                         div { class: "mt-1.5 flex items-center gap-2",
                             span { class: "text-[10px] text-[var(--text-muted)] shrink-0",
-                                "{crate::features::leveling::global_label(g)}"
+                                {crate::i18n::text("Across servers: {0}", &[crate::features::leveling::global_label(g)])}
                             }
                             span {
                                 class: "text-[9px] px-1.5 py-px rounded bg-white/[0.04] text-[var(--text-dim)] uppercase tracking-wider shrink-0",

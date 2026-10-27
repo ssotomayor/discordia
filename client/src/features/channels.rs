@@ -1907,8 +1907,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 .unwrap_or(0),
             _ => 0,
         };
-        let (lvl, into, span) = crate::protocol::level_progress(xp);
-        (lvl, (into as f64 / span.max(1) as f64 * 100.0) as u32)
+        let rules = s
+            .selected_guild
+            .map(|gid| s.leveling_of(gid))
+            .unwrap_or_default();
+        let progress = crate::features::leveling::progress(&rules, xp);
+        (progress.label, progress.pct)
     };
 
     let screen_capture_available = state.read().screen_capture_available;
@@ -2192,7 +2196,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     div { class: "flex-1 min-w-0",
                         div { class: "flex items-center gap-1.5",
                             span { class: "text-[12.5px] font-medium text-[var(--text)] truncate", "{name}" }
-                            span { class: "text-[9px] font-semibold text-[var(--text-dim)] shrink-0", {crate::i18n::text("Lv {0}", &[(level).to_string()])} }
+                            span { class: "text-[9px] font-semibold text-[var(--text-dim)] shrink-0", "{level}" }
                         }
                         // The key under the name: this is the account, and the
                         // account is the key (trap 12).

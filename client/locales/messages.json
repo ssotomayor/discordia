@@ -1,4 +1,9 @@
 {
+  "{0}/{1} XP": ["{0}/{1} XP", "{0}/{1} XP", "{0}/{1} XP", "{0}/{1} XP"],
+  "{0} XP": ["{0} XP", "{0} XP", "{0} XP", "{0} XP"],
+  "{0} XP to {1}": ["{0} XP para {1}", "{0} XP para {1}", "距离 {1} 还差 {0} XP", "{1} まであと {0} XP"],
+  "Highest rank": ["Rango máximo", "Classificação máxima", "最高等级", "最高ランク"],
+  "Across servers: {0}": ["Entre servidores: {0}", "Entre servidores: {0}", "所有服务器：{0}", "全サーバー：{0}"],
   "not a voice channel": ["No es un canal de voz", "Não é um canal de voz", "这不是语音频道", "ボイスチャンネルではありません"],
   "unknown channel": ["Canal desconocido", "Canal desconhecido", "未知频道", "不明なチャンネル"],
   "identify first": ["Primero debés identificarte", "Primeiro você deve se identificar", "首先识别", "最初に特定してください"],
