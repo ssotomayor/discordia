@@ -1,3 +1,4 @@
+mod accent_palette;
 pub mod account;
 pub mod activities;
 pub mod appearance;

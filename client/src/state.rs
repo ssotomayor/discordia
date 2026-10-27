@@ -233,6 +233,7 @@ pub struct CommandForm {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuildDialog {
+    Accent(Id),
     Settings(Id),
     Integrations(Id),
     Roles(Id),
