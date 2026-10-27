@@ -18,8 +18,6 @@ struct MetadataInputs {
 struct VoiceInputs {
     connected_channel: Option<Id>,
     states: Vec<crate::protocol::VoiceState>,
-    quality: HashMap<String, crate::state::ConnectionHealth>,
-    channels: Vec<crate::protocol::Channel>,
 }
 
 #[derive(Clone, Copy)]
@@ -58,8 +56,6 @@ fn use_member_sources() -> MemberSources {
         VoiceInputs {
             connected_channel: s.connected_voice_channel(),
             states: s.voice_states.clone(),
-            quality: s.voice_quality.clone(),
-            channels: s.channels.clone(),
         }
     });
     let subtitles = use_memo(move || {
@@ -676,32 +672,15 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
         let same_channel = vs
             .and_then(|v| v.channel_id)
             .is_some_and(|cid| Some(cid) == input.connected_channel);
-        let health = input
-            .quality
-            .get(&voice_pk)
-            .copied()
-            .filter(|_| same_channel);
         let ring = if same_channel {
             crate::state::talk_ring(vs.is_some_and(|v| v.speaking))
         } else {
             ""
         };
-        let badges = vs.map(|v| {
-            let place = v
-                .channel_id
-                .and_then(|cid| {
-                    input
-                        .channels
-                        .iter()
-                        .find(|c| c.id == cid)
-                        .map(|c| format!("In voice — {}", c.name))
-                })
-                .unwrap_or_else(|| "In voice".into());
-            (place, v.muted, v.deafened)
-        });
-        (ring, badges, same_channel, health)
+        let badges = vs.map(|v| (v.muted, v.deafened));
+        (ring, badges)
     });
-    let (speaking_ring, badges, same_channel, health) = voice();
+    let (speaking_ring, badges) = voice();
     let card_pubkey = member.user.pubkey.clone();
     let ctx_member = member.clone();
     rsx! {
@@ -761,11 +740,8 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                     }
                 }
             }
-            if same_channel {
-                super::channels::VoiceQualitySignal { health, stats: None, ping_ms: None, is_self }
-            }
-            if let Some((place, muted, deafened)) = badges {
-                VoiceBadges { place, muted, deafened }
+            if let Some((muted, deafened)) = badges && (muted || deafened) {
+                VoiceBadges { muted, deafened }
             }
             // Lv1 is where everyone starts, so on most rows the badge repeats a
             // value that separates nobody from nobody. A named rank is worth
@@ -781,14 +757,9 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
 }
 
 #[component]
-fn VoiceBadges(place: String, muted: bool, deafened: bool) -> Element {
+fn VoiceBadges(muted: bool, deafened: bool) -> Element {
     rsx! {
         div { class: "flex items-center gap-1 shrink-0 text-[var(--text-dim)]",
-            span {
-                class: "block w-3 h-3",
-                title: "{place}",
-                dangerous_inner_html: crate::features::icons::SPEAKER,
-            }
             if deafened {
                 span {
                     class: "block w-3 h-3",
@@ -875,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn member_quality_updates_without_recoloring_speech_or_leaking_other_channels() {
+    fn member_rows_hide_connection_icons_and_channel_names_but_keep_speech_indication() {
         use dioxus::core::{AttributeValue, Mutation};
         use std::{cell::RefCell, rc::Rc};
         type Export = Rc<RefCell<Option<Signal<AppState>>>>;
@@ -890,6 +861,9 @@ mod tests {
                         member("bob", Id::nil(), true),
                     ];
                     let channel = Id::new_v4();
+                    s.channels.push(serde_json::from_value(serde_json::json!({
+                        "id": channel, "guild_id": Id::nil(), "name": "Private voice destination", "kind": "voice"
+                    })).unwrap());
                     s.voice.channel_id = Some(channel);
                     s.voice.phase = crate::state::VoicePhase::Connected;
                     s.voice_states = vec![
@@ -915,8 +889,18 @@ mod tests {
         ))
         };
         let initial = dom.rebuild_to_vec().edits;
-        assert!(has_icon(&initial, super::super::icons::SIGNAL_POOR));
-        assert!(!has_icon(&initial, super::super::icons::SIGNAL_LOST));
+        for icon in [
+            super::super::icons::SIGNAL_GOOD,
+            super::super::icons::SIGNAL_POOR,
+            super::super::icons::SIGNAL_LOST,
+            super::super::icons::SPEAKER,
+        ] {
+            assert!(!has_icon(&initial, icon));
+        }
+        assert!(!initial.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "title", value: AttributeValue::Text(value), .. }
+                if value.contains("Private voice destination")
+        )));
         let mut state = export.borrow().unwrap();
         state
             .write()
@@ -927,10 +911,7 @@ mod tests {
             .write()
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Lost);
-        assert!(has_icon(
-            &dom.render_immediate_to_vec().edits,
-            super::super::icons::SIGNAL_LOST
-        ));
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         state.write().voice_states[0].speaking = true;
         assert!(
             dom.render_immediate_to_vec()
@@ -945,17 +926,9 @@ mod tests {
             .write()
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Good);
-        assert!(has_icon(
-            &dom.render_immediate_to_vec().edits,
-            super::super::icons::SIGNAL_GOOD
-        ));
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         state.write().voice.phase = crate::state::VoicePhase::Idle;
-        assert!(
-            dom.render_immediate_to_vec()
-                .edits
-                .iter()
-                .any(|edit| matches!(edit, Mutation::Remove { .. } | Mutation::ReplaceWith { .. }))
-        );
+        assert!(!dom.render_immediate_to_vec().edits.is_empty());
         state
             .write()
             .voice_quality
