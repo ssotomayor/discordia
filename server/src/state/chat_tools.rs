@@ -101,11 +101,11 @@ impl AppState {
                 let _write = self.durable_writes.lock().await;
                 self.require_permission(guild_id, &user.pubkey, Permission::ManageGuild)?;
                 if policy.max_bytes == 0
-                    || policy.max_bytes > 2_000_000
+                    || policy.max_bytes > crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64
                     || !(1..=365).contains(&policy.retention_days)
                 {
                     return Err(
-                        "file limit must be 1 byte to 2 MB; expiry must be 1 to 365 days".into(),
+                        "file limit must be 1 byte to 10 MB; expiry must be 1 to 365 days".into(),
                     );
                 }
                 durable(
@@ -204,8 +204,18 @@ impl AppState {
                     .await
                     .map_err(|e| e.to_string())?;
                 let name = file_name(&name)?;
-                if content.len() > 2000 || data_url.len() > 2_700_000 {
-                    return Err("file messages allow 2000 characters and a file up to 2 MB".into());
+                let limit =
+                    (policy.max_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+                if data_url.len() > limit.div_ceil(3) * 4 + 128 {
+                    return Err(format!(
+                        "this community's file limit is {} KB",
+                        limit / 1000
+                    ));
+                }
+                if content.len() > 2000
+                    || data_url.len() > crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN
+                {
+                    return Err("file messages allow 2000 characters and a file up to 10 MB".into());
                 }
                 let payload = data_url
                     .strip_prefix("data:application/octet-stream;base64,")
@@ -213,7 +223,10 @@ impl AppState {
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(payload)
                     .map_err(|_| "invalid file data")?;
-                if bytes.is_empty() || bytes.len() as u64 > policy.max_bytes {
+                if bytes.is_empty()
+                    || bytes.len() > crate::protocol::MAX_GUILD_UPLOAD_BYTES
+                    || bytes.len() as u64 > policy.max_bytes
+                {
                     return Err(format!(
                         "this community's file limit is {} KB",
                         policy.max_bytes / 1000

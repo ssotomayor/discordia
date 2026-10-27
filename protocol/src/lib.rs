@@ -7,6 +7,9 @@ pub mod rendezvous;
 pub type Id = Uuid;
 
 pub const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+pub const DEFAULT_GUILD_UPLOAD_BYTES: u64 = 2_000_000;
+pub const MAX_GUILD_UPLOAD_BYTES: usize = 10_000_000;
+pub const MAX_GUILD_UPLOAD_DATA_LEN: usize = MAX_GUILD_UPLOAD_BYTES.div_ceil(3) * 4 + 128;
 
 pub const GATEWAY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 pub const GATEWAY_HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -1061,7 +1064,7 @@ pub struct FilePolicy {
 impl Default for FilePolicy {
     fn default() -> Self {
         Self {
-            max_bytes: 2_000_000,
+            max_bytes: DEFAULT_GUILD_UPLOAD_BYTES,
             retention_days: 7,
         }
     }

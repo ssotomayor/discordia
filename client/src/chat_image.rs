@@ -9,24 +9,42 @@ const MAX_PIXELS: u64 = 16_000_000;
 const TOO_LARGE: &str = "Image too large (max 2 MiB / 2,097,152 bytes).";
 
 pub fn read_file(path: &Path) -> Result<String, String> {
+    read_file_with_limit(path, MAX_BYTES)
+}
+
+fn size_error(limit: usize) -> String {
+    if limit == MAX_BYTES {
+        TOO_LARGE.into()
+    } else {
+        format!("Image too large (max {limit} bytes).")
+    }
+}
+
+pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
+    let max_bytes = max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
     let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
     let metadata = file.metadata().map_err(|_| "Couldn't read that file.")?;
     if !metadata.is_file() {
         return Err("That's not an image file.".into());
     }
-    if metadata.len() > MAX_BYTES as u64 {
-        return Err(TOO_LARGE.into());
+    if metadata.len() > max_bytes as u64 {
+        return Err(size_error(max_bytes));
     }
     let mut bytes = Vec::new();
-    file.take((MAX_BYTES + 1) as u64)
+    file.take((max_bytes + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| "Couldn't read that file.")?;
-    from_bytes(&bytes)
+    from_bytes_with_limit(&bytes, max_bytes)
 }
 
+#[cfg(test)]
 fn from_bytes(bytes: &[u8]) -> Result<String, String> {
-    if bytes.len() > MAX_BYTES {
-        return Err(TOO_LARGE.into());
+    from_bytes_with_limit(bytes, MAX_BYTES)
+}
+
+fn from_bytes_with_limit(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    if bytes.len() > max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES) {
+        return Err(size_error(max_bytes));
     }
     let format = image::guess_format(bytes).map_err(|_| "That's not a supported image.")?;
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
@@ -45,21 +63,21 @@ fn from_bytes(bytes: &[u8]) -> Result<String, String> {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn read_clipboard() -> Result<String, String> {
+pub fn read_clipboard(max_bytes: usize) -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|_| "Clipboard unavailable.")?;
     let image = clipboard
         .get_image()
         .map_err(|_| "Couldn't read an image from the clipboard.")?;
-    rgba_png(image.width, image.height, &image.bytes)
+    rgba_png_with_limit(image.width, image.height, &image.bytes, max_bytes)
 }
 
 #[cfg(target_os = "android")]
-pub fn read_clipboard() -> Result<String, String> {
-    from_bytes(&crate::android::read_clipboard_image()?)
+pub fn read_clipboard(max_bytes: usize) -> Result<String, String> {
+    from_bytes_with_limit(&crate::android::read_clipboard_image()?, max_bytes)
 }
 
 #[cfg(target_os = "ios")]
-pub fn read_clipboard() -> Result<String, String> {
+pub fn read_clipboard(_max_bytes: usize) -> Result<String, String> {
     Err("Pasting clipboard images is not available on mobile yet.".into())
 }
 
@@ -70,12 +88,25 @@ fn check_dimensions(width: u64, height: u64) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn rgba_png(width: usize, height: usize, pixels: &[u8]) -> Result<String, String> {
+    rgba_png_with_limit(width, height, pixels, MAX_BYTES)
+}
+
+fn rgba_png_with_limit(
+    width: usize,
+    height: usize,
+    pixels: &[u8],
+    max_bytes: usize,
+) -> Result<String, String> {
     check_dimensions(width as u64, height as u64)?;
     if width.checked_mul(height).and_then(|n| n.checked_mul(4)) != Some(pixels.len()) {
         return Err("Invalid clipboard image.".into());
     }
-    let mut bytes = BoundedBytes(Vec::new());
+    let mut bytes = BoundedBytes(
+        Vec::new(),
+        max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES),
+    );
     image::codecs::png::PngEncoder::new(&mut bytes)
         .write_image(
             pixels,
@@ -83,16 +114,16 @@ fn rgba_png(width: usize, height: usize, pixels: &[u8]) -> Result<String, String
             height as u32,
             image::ExtendedColorType::Rgba8,
         )
-        .map_err(|_| TOO_LARGE)?;
+        .map_err(|_| size_error(max_bytes))?;
     Ok(data_url("image/png", &bytes.0))
 }
 
-struct BoundedBytes(Vec<u8>);
+struct BoundedBytes(Vec<u8>, usize);
 
 impl std::io::Write for BoundedBytes {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAX_BYTES - self.0.len() {
-            return Err(std::io::Error::other(TOO_LARGE));
+        if bytes.len() > self.1.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other(size_error(self.1)));
         }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -112,6 +143,24 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn community_image_limit_can_expand_without_changing_the_default() {
+        let url = rgba_png(1, 1, &[1, 2, 3, 255]).unwrap();
+        let mut bytes = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        bytes.resize(MAX_BYTES + 1, 0);
+        assert!(from_bytes(&bytes).is_err());
+        assert!(from_bytes_with_limit(&bytes, crate::protocol::MAX_GUILD_UPLOAD_BYTES).is_ok());
+        assert!(from_bytes_with_limit(&bytes, 2_000_000).is_err());
+        let mut sink = BoundedBytes(Vec::new(), crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+        use std::io::Write;
+        assert!(
+            sink.write_all(&vec![0; crate::protocol::MAX_GUILD_UPLOAD_BYTES])
+                .is_ok()
+        );
+        assert!(sink.write_all(&[0]).is_err());
+    }
     use super::*;
 
     #[test]
@@ -156,7 +205,7 @@ mod tests {
     #[test]
     fn png_writer_never_exceeds_upload_limit() {
         use std::io::Write;
-        let mut output = BoundedBytes(vec![0; MAX_BYTES - 1]);
+        let mut output = BoundedBytes(vec![0; MAX_BYTES - 1], MAX_BYTES);
         assert!(output.write_all(&[1, 2]).is_err());
         assert_eq!(output.0.len(), MAX_BYTES - 1);
         assert!(check_dimensions(8192, 8192).is_err());

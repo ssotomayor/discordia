@@ -4,16 +4,22 @@ use dioxus::prelude::*;
 use crate::protocol::{Attachment, ClientMessage, FilePolicy, Id, MessageSearch, Permission};
 use crate::state::{use_app_state, use_gateway};
 
-pub(super) fn read_file(path: &std::path::Path) -> Result<(String, String), String> {
+pub(super) fn read_file(
+    path: &std::path::Path,
+    max_bytes: usize,
+) -> Result<(String, String), String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .map_err(|e| e.to_string())?
-        .take(2_000_001)
+        .take((max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES) + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.is_empty() || bytes.len() > 2_000_000 {
-        return Err("Choose a nonempty file up to 2 MB.".into());
+    if bytes.is_empty() || bytes.len() > max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES) {
+        return Err(format!(
+            "Choose a nonempty file up to {} KB.",
+            max_bytes / 1000
+        ));
     }
     let name = path
         .file_name()
@@ -392,13 +398,13 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
             onsubmit: move |e: FormEvent| {
                 e.prevent_default();
                 match (maximum().parse::<u64>(), days().parse::<u32>()) {
-                    (Ok(kb), Ok(days)) if (1..=2000).contains(&kb) && (1..=365).contains(&days) => { error.set(None); gateway.send(ClientMessage::SetGuildFilePolicy { guild_id, policy: FilePolicy { max_bytes: kb * 1000, retention_days: days } }); }
-                    _ => error.set(Some("Choose 1–2000 KB and 1–365 days.".into())),
+                    (Ok(kb), Ok(days)) if (1..=10_000).contains(&kb) && (1..=365).contains(&days) => { error.set(None); gateway.send(ClientMessage::SetGuildFilePolicy { guild_id, policy: FilePolicy { max_bytes: kb * 1000, retention_days: days } }); }
+                    _ => error.set(Some("Choose 1–10000 KB and 1–365 days.".into())),
                 }
             },
             div { class: "flex gap-2",
                 label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Largest file (KB)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 2000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
+                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
                 label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Keep for (days)", &[])},
                     input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
             }
@@ -494,7 +500,7 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                         let data = data.ok_or("The file is unavailable or expired.")?;
                         let payload = data.strip_prefix("data:application/octet-stream;base64,").ok_or("Invalid file data")?;
                         let bytes = base64::engine::general_purpose::STANDARD.decode(payload).map_err(|_| "Invalid file data")?;
-                        if bytes.len() as u64 != attachment.bytes || bytes.len() > 2_000_000 { return Err("Invalid file size".into()); }
+                        if bytes.len() as u64 != attachment.bytes || bytes.len() > crate::protocol::MAX_GUILD_UPLOAD_BYTES { return Err("Invalid file size".into()); }
                         #[cfg(target_os = "android")]
                         crate::android::document(attachment.name.clone(), String::new(), Some(bytes)).await?;
                         #[cfg(not(target_os = "android"))]

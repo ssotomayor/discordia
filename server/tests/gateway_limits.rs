@@ -334,3 +334,41 @@ async fn an_upgrade_carrying_an_origin_header_is_refused() {
         .expect("frame");
     assert!(matches!(hello, WsMessage::Text(t) if t.contains("hello")));
 }
+
+#[tokio::test]
+async fn a_ten_mb_image_message_reaches_the_handler() {
+    use base64::Engine as _;
+    let (url, _handle) = spawn_gateway().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let image = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD
+            .encode(vec![0; discordia_server::protocol::MAX_GUILD_UPLOAD_BYTES])
+    );
+    let message = ClientMessage::SendMessage {
+        channel_id: discordia_server::protocol::Id::new_v4(),
+        content: String::new(),
+        image: Some(image),
+        image_name: None,
+        reply_to: None,
+    };
+    let json = serde_json::to_string(&message).unwrap();
+    assert!(json.len() < discordia_server::gateway::MAX_FRAME_BYTES);
+    ws.send(WsMessage::Text(json)).await.unwrap();
+    let answered = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(message)) = ws.next().await {
+            if let WsMessage::Text(text) = message
+                && text.contains("identify first")
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        answered,
+        Ok(true),
+        "the configured maximum must reach validation rather than disconnect at the transport limit"
+    );
+}

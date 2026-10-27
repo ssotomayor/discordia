@@ -126,8 +126,24 @@ struct PendingImage {
     name: Option<String>,
 }
 
+fn upload_limit(state: &crate::state::AppState, channel_id: Id) -> usize {
+    if state.dm_of(channel_id).is_some() {
+        return crate::protocol::MAX_IMAGE_BYTES;
+    }
+    state
+        .channels
+        .iter()
+        .find(|c| c.id == channel_id)
+        .and_then(|c| state.guild_file_policies.get(&c.guild_id))
+        .cloned()
+        .unwrap_or_default()
+        .max_bytes
+        .min(crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64) as usize
+}
+
 fn load_attachment(
     path: Option<std::path::PathBuf>,
+    max_bytes: usize,
     mut pending: Signal<Option<PendingImage>>,
     mut error: Signal<Option<String>>,
     mut generation: Signal<u64>,
@@ -140,8 +156,8 @@ fn load_attachment(
             .and_then(|p| p.file_name())
             .map(|name| name.to_string_lossy().into_owned());
         let result = tokio::task::spawn_blocking(move || match path {
-            Some(path) => crate::chat_image::read_file(&path),
-            None => crate::chat_image::read_clipboard(),
+            Some(path) => crate::chat_image::read_file_with_limit(&path, max_bytes),
+            None => crate::chat_image::read_clipboard(max_bytes),
         })
         .await;
         if *generation.peek() != request {
@@ -158,6 +174,7 @@ fn load_attachment(
 }
 
 fn pick_file(
+    max_bytes: usize,
     mut pending: Signal<Option<(String, String)>>,
     mut image: Signal<Option<PendingImage>>,
     mut error: Signal<Option<String>>,
@@ -172,7 +189,9 @@ fn pick_file(
                 return;
             }
         };
-        let read = tokio::task::spawn_blocking(move || super::chat_tools::read_file(&path)).await;
+        let read =
+            tokio::task::spawn_blocking(move || super::chat_tools::read_file(&path, max_bytes))
+                .await;
         match read.unwrap_or_else(|e| Err(e.to_string())) {
             Ok(file) => {
                 generation.with_mut(|n| *n = n.wrapping_add(1));
@@ -1941,14 +1960,26 @@ fn Composer(
     use_effect(move || {
         if let Some(path) = dropped_file() {
             dropped_file.set(None);
-            load_attachment(Some(path), pending_image, attach_err, generation);
+            load_attachment(
+                Some(path),
+                upload_limit(&state.peek(), channel_id),
+                pending_image,
+                attach_err,
+                generation,
+            );
         }
     });
     use_future(move || async move {
         let mut eval = document::eval(PASTE_JS);
         while let Ok(msg) = eval.recv::<Value>().await {
             if msg.get("k").and_then(Value::as_str) == Some("paste") {
-                load_attachment(None, pending_image, attach_err, generation);
+                load_attachment(
+                    None,
+                    upload_limit(&state.peek(), channel_id),
+                    pending_image,
+                    attach_err,
+                    generation,
+                );
             }
         }
     });
@@ -2503,7 +2534,7 @@ fn Composer(
                                         onchange: move |evt: FormEvent| {
                                             show_attach.set(false);
                                             if let Some(file) = evt.files().into_iter().next() {
-                                                load_attachment(Some(file.path()), pending_image, attach_err, generation);
+                                                load_attachment(Some(file.path()), upload_limit(&state.peek(), channel_id), pending_image, attach_err, generation);
                                             }
                                         },
                                     }
@@ -2514,7 +2545,7 @@ fn Composer(
                                         class: "w-full flex items-center gap-2 px-2 h-8 rounded text-left text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)]",
                                         onclick: move |_| {
                                             show_attach.set(false);
-                                            pick_file(pending_file, pending_image, attach_err, generation);
+                                            pick_file(upload_limit(&state.peek(), channel_id), pending_file, pending_image, attach_err, generation);
                                         },
                                         span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::PAPERCLIP }
                                         {crate::i18n::text("File", &[])}

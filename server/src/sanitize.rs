@@ -168,7 +168,7 @@ pub fn message(m: &mut Message) -> bool {
     m.image = picture(m.image.take());
     m.attachment = m.attachment.take().filter(|a| {
         a.bytes > 0
-            && a.bytes <= 2_000_000
+            && a.bytes <= crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64
             && a.media.starts_with("media:")
             && crate::media::is_address(&a.media)
             && a.media.ends_with(".bin")
@@ -225,7 +225,10 @@ pub fn archive(a: &mut GuildArchive) {
     a.emojis.retain(emoji_is_sound);
     a.stickers.retain(emoji_is_sound);
     a.stickers.truncate(128);
-    a.file_policy.max_bytes = a.file_policy.max_bytes.clamp(1, 2_000_000);
+    a.file_policy.max_bytes = a
+        .file_policy
+        .max_bytes
+        .clamp(1, crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64);
     a.file_policy.retention_days = a.file_policy.retention_days.clamp(1, 365);
     a.sounds.retain_mut(sound);
     a.members.retain_mut(|m| user(&mut m.user));

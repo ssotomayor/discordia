@@ -2874,17 +2874,38 @@ impl AppState {
         reply_to: Option<Id>,
     ) -> Result<Message, String> {
         let author = self.attributed_author(channel_id, author);
-        let kind_ok = self
+        let guild_id = self
             .channels
             .get(&channel_id)
-            .map(|c| matches!(c.kind, crate::protocol::ChannelKind::Text))
-            .unwrap_or(false);
-        if !kind_ok {
-            return Err("can't post to this channel".into());
-        }
+            .filter(|c| matches!(c.kind, crate::protocol::ChannelKind::Text))
+            .map(|c| c.guild_id)
+            .ok_or("can't post to this channel")?;
         let (image, image_metadata) = match image {
             Some(img) => {
-                let stored = self.store_upload(&author.pubkey, &img)?;
+                let policy = self
+                    .store
+                    .file_policy(guild_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let limit =
+                    (policy.max_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+                let error = || {
+                    format!(
+                        "image too large: this community's size limit is {} KB",
+                        limit / 1000
+                    )
+                };
+                if img.len() > limit.div_ceil(3) * 4 + 128 {
+                    return Err(error());
+                }
+                self.charge_upload(&author.pubkey, img.len() as u64)?;
+                let stored = self.media.store_chat_image(&img, limit).map_err(|e| {
+                    if e == crate::media::StoreError::ImageTooLarge {
+                        error()
+                    } else {
+                        e.to_string()
+                    }
+                })?;
                 let metadata = crate::media::image_metadata(&img, image_name.as_deref());
                 (Some(stored), Some(metadata))
             }
