@@ -1713,6 +1713,7 @@ impl ActiveVoice {
             s.screen_audio_joined = false;
             s.voice_quality.clear();
             s.voice_stats.clear();
+            s.voice_ping_ms = None;
             s.voice_uplink_congested = false;
             s.voice_send_route = None;
             s.voice_receive_route = None;

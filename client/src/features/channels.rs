@@ -1233,7 +1233,14 @@ pub(crate) fn ConnectionStats() -> Element {
                                 {crate::i18n::text("{0} conc", &[(concealment_events).to_string()])}
                             }
                         },
-                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, target_kbps } => rsx! {
+                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, target_kbps, loss_pct } => rsx! {
+                            if let Some(loss) = loss_pct {
+                                span {
+                                    class: if *loss >= 1.0 { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
+                                    title: crate::i18n::text("Outbound packet loss reported by SFU feedback", &[]),
+                                    {crate::i18n::text("{0}% loss", &[format!("{loss:.1}")])}
+                                }
+                            }
                             span {
                                 class: "text-[var(--text-dim)]",
                                 title: crate::i18n::text("Sent audio payload, including redundancy. Current voice bitrate ceiling: {0} kbit/s.", &[(target_kbps).to_string()]),
@@ -1466,6 +1473,7 @@ fn ScreenShareStatsRow(
 fn occupant_diagnostics_tooltip(
     health: Option<crate::state::ConnectionHealth>,
     stats: Option<crate::state::TrackStats>,
+    ping_ms: Option<u32>,
     is_self: bool,
 ) -> String {
     let mut lines = Vec::new();
@@ -1492,6 +1500,10 @@ fn occupant_diagnostics_tooltip(
         None => crate::i18n::text("Connection quality: Normal", &[]),
     };
     lines.push(quality_desc);
+
+    if let Some(ping) = ping_ms {
+        lines.push(crate::i18n::text("Ping: {0} ms", &[ping.to_string()]));
+    }
 
     match stats {
         Some(crate::state::TrackStats::Inbound {
@@ -1534,7 +1546,14 @@ fn occupant_diagnostics_tooltip(
             bitrate_kbps,
             packets_per_sec,
             target_kbps,
+            loss_pct,
         }) => {
+            if let Some(loss) = loss_pct {
+                lines.push(crate::i18n::text(
+                    "Packet loss: {0}%",
+                    &[format!("{loss:.1}")],
+                ));
+            }
             if let Some(kbps) = bitrate_kbps {
                 lines.push(crate::i18n::text(
                     "Outbound audio: {0} kbps (target: {1} kbps)",
@@ -1603,7 +1622,8 @@ fn VoiceOccupant(
             "text-[var(--text-dim)]",
         ),
     };
-    let signal_tooltip = occupant_diagnostics_tooltip(health, track_stats, is_self);
+    let signal_tooltip =
+        occupant_diagnostics_tooltip(health, track_stats, state.read().voice_ping_ms, is_self);
     // Volume, local mute and disconnect live in the right-click menu, mounted
     // at the workspace root (trap 22); the row only shows what is set.
     let open_menu = {
@@ -1856,9 +1876,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     {
         let v_stats = voice.clone();
         use_effect(move || {
-            v_stats.send(crate::features::voice::VoiceCmd::SetStatsPolling {
-                enabled: show_banner,
-            });
+            let active = state.read().connected_voice_channel().is_some();
+            v_stats.send(crate::features::voice::VoiceCmd::SetStatsPolling { enabled: active });
         });
     }
 
@@ -1882,7 +1901,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             "{voice_where}"
                         }
                         span { class: "shrink-0 font-mono text-[10.5px] text-[var(--text-dim)]",
-                            {crate::i18n::text("{0} kbps", &[(voice_bitrate_kbps).to_string()])}
+                            if let Some(ping) = state.read().voice_ping_ms {
+                                {crate::i18n::text("{0} ms · {1} kbps", &[ping.to_string(), (voice_bitrate_kbps).to_string()])}
+                            } else {
+                                {crate::i18n::text("{0} kbps", &[(voice_bitrate_kbps).to_string()])}
+                            }
                         }
                     }
                     div { class: "min-w-0 text-[11px] text-[var(--text-dim)] truncate", title: "{voice_sub}", "{voice_sub}" }
@@ -2336,9 +2359,11 @@ mod tests {
                 buffer_ms: 12.0,
                 concealment_events: 0,
             }),
+            Some(32),
             false,
         );
         assert!(text.contains("Connection quality: Good"));
+        assert!(text.contains("Ping: 32 ms"));
         assert!(text.contains("Packet loss: 0.8% (recent) · 1.5% (total)"));
         assert!(text.contains("Jitter: 24 ms"));
         assert!(text.contains("Buffer delay: 12 ms"));
@@ -2353,18 +2378,26 @@ mod tests {
                 bitrate_kbps: Some(64),
                 packets_per_sec: Some(50),
                 target_kbps: 64,
+                loss_pct: Some(0.0),
             }),
+            Some(18),
             true,
         );
         assert!(text.contains("Connection quality: Excellent"));
+        assert!(text.contains("Ping: 18 ms"));
+        assert!(text.contains("Packet loss: 0.0%"));
         assert!(text.contains("Outbound audio: 64 kbps (target: 64 kbps)"));
         assert!(text.contains("Rate: 50 pkt/s"));
     }
 
     #[test]
     fn occupant_diagnostics_tooltip_self_reduced() {
-        let text =
-            occupant_diagnostics_tooltip(Some(crate::state::ConnectionHealth::Poor), None, true);
+        let text = occupant_diagnostics_tooltip(
+            Some(crate::state::ConnectionHealth::Poor),
+            None,
+            None,
+            true,
+        );
         assert!(text.contains("Connection quality: Reduced (your sent/received audio)"));
     }
 }

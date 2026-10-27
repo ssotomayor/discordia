@@ -100,6 +100,32 @@ pub fn selected_media_routes(
     (send, receive)
 }
 
+pub fn active_round_trip_time(
+    publisher: &[RtcStats],
+    subscriber: &[RtcStats],
+) -> Option<std::time::Duration> {
+    fn from_stats(stats: &[RtcStats]) -> Option<std::time::Duration> {
+        let pair_id = stats.iter().find_map(|s| match s {
+            RtcStats::Transport(t) if !t.transport.selected_candidate_pair_id.is_empty() => {
+                Some(t.transport.selected_candidate_pair_id.as_str())
+            }
+            _ => None,
+        })?;
+        let pair = stats.iter().find_map(|s| match s {
+            RtcStats::CandidatePair(p) if p.rtc.id == pair_id => Some(&p.candidate_pair),
+            _ => None,
+        })?;
+        if pair.current_round_trip_time > 0.0 && pair.current_round_trip_time.is_finite() {
+            Some(std::time::Duration::from_secs_f64(
+                pair.current_round_trip_time,
+            ))
+        } else {
+            None
+        }
+    }
+    from_stats(publisher).or_else(|| from_stats(subscriber))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +180,18 @@ mod tests {
         let unlisted = selected_media_route(&[&stats[..2], &stats[3..]].concat()).unwrap();
         assert_eq!(unlisted.label(), "IPv4 · UDP");
         assert_eq!(unlisted.endpoint, "");
+    }
+
+    #[test]
+    fn extracts_round_trip_time_from_the_selected_candidate_pair() {
+        let stats: Vec<RtcStats> = serde_json::from_value(serde_json::json!([
+            {"type":"transport", "selectedCandidatePairId":"selected"},
+            {"type":"candidate-pair", "id":"selected", "currentRoundTripTime":0.024}
+        ]))
+        .unwrap();
+        assert_eq!(
+            active_round_trip_time(&stats, &[]),
+            Some(std::time::Duration::from_millis(24))
+        );
     }
 }
