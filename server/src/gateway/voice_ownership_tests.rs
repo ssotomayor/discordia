@@ -127,3 +127,195 @@ async fn explicit_leave_is_owned_and_releases_the_publication() {
     assert!(!ctx.state.voice_owned_by(&user.pubkey, owner));
     assert!(ctx.state.clear_voice_owned(&user.pubkey, owner).is_none());
 }
+
+async fn movable_member(ctx: &AppContext, owner: &User, guild: Id, source: Id) -> (User, u64, Id) {
+    let member = User {
+        pubkey: "22".repeat(32),
+        username: "Target".into(),
+    };
+    ctx.state.join_guild(guild, &member).await.unwrap();
+    let (conn, _) = ctx
+        .state
+        .register_conn(Some("198.51.100.2".parse().unwrap()))
+        .unwrap();
+    ctx.state.identify_conn(conn, &member.pubkey).unwrap();
+    ctx.state.set_voice_channel_owned(
+        conn,
+        &member.pubkey,
+        guild,
+        source,
+        Some(crate::protocol::VoicePreferences {
+            muted: true,
+            deafened: true,
+        }),
+    );
+    ctx.state.update_screen_share(&member.pubkey, true);
+    ctx.state.update_camera(&member.pubkey, true);
+    let destination = ctx
+        .state
+        .create_channel(
+            guild,
+            "Destination",
+            crate::protocol::ChannelKind::Voice,
+            None,
+            Default::default(),
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    (member, conn, destination.id)
+}
+
+#[tokio::test]
+async fn owner_and_move_role_preserve_voice_ownership_and_mute_when_moving_a_member() {
+    let (ctx, owner, guild, source, _, _) = fixture().await;
+    let (target, target_conn, destination) = movable_member(&ctx, &owner, guild, source).await;
+    let manager = User {
+        pubkey: "33".repeat(32),
+        username: "Manager".into(),
+    };
+    ctx.state.join_guild(guild, &manager).await.unwrap();
+    assert!(
+        ctx.state
+            .move_voice_member(&target.pubkey, &manager.pubkey, source, destination)
+            .unwrap_err()
+            .contains("move_members")
+    );
+    let role = ctx
+        .state
+        .create_role(
+            guild,
+            "Mover",
+            None,
+            vec![Permission::MoveMembers],
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    ctx.state
+        .set_member_role(guild, role.id, &manager.pubkey, true, &owner.pubkey)
+        .await
+        .unwrap();
+    let (previous, joined, conn) = ctx
+        .state
+        .move_voice_member(&target.pubkey, &manager.pubkey, source, destination)
+        .unwrap();
+    assert_eq!(conn, target_conn);
+    assert_eq!(previous.channel_id, Some(source));
+    assert!(previous.camera_on && previous.screen_sharing);
+    assert_eq!(joined.channel_id, Some(destination));
+    assert!(joined.muted && joined.deafened);
+    assert!(!joined.speaking && !joined.camera_on && !joined.screen_sharing);
+    assert!(joined.screen_watching.is_empty());
+    assert!(ctx.state.voice_owned_by(&target.pubkey, target_conn));
+    let (sibling, _) = ctx.state.register_conn(None).unwrap();
+    ctx.state.identify_conn(sibling, &target.pubkey).unwrap();
+    assert!(
+        ctx.state
+            .clear_voice_owned(&target.pubkey, sibling)
+            .is_none()
+    );
+    assert_eq!(
+        ctx.state.connection_voice_address(target_conn).1,
+        Some("198.51.100.2".parse().unwrap())
+    );
+    assert!(
+        ctx.state
+            .move_voice_member(&owner.pubkey, &manager.pubkey, source, destination)
+            .unwrap_err()
+            .contains("owner")
+    );
+    ctx.state
+        .move_voice_member(&target.pubkey, &owner.pubkey, destination, source)
+        .unwrap();
+    assert_eq!(ctx.state.voice_channel_of(&target.pubkey), Some(source));
+}
+
+#[tokio::test]
+async fn invalid_moderator_moves_leave_the_original_call_untouched() {
+    let (ctx, owner, guild, source, _, _) = fixture().await;
+    let (target, target_conn, destination) = movable_member(&ctx, &owner, guild, source).await;
+    let text = ctx
+        .state
+        .create_channel(
+            guild,
+            "Text",
+            crate::protocol::ChannelKind::Text,
+            None,
+            Default::default(),
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    let (other_guild, other_channels, _, _) = ctx
+        .state
+        .create_guild("Elsewhere", None, &owner)
+        .await
+        .unwrap();
+    ctx.state.join_guild(other_guild.id, &target).await.unwrap();
+    let foreign = other_channels
+        .iter()
+        .find(|c| c.kind == crate::protocol::ChannelKind::Voice)
+        .unwrap()
+        .id;
+    for (from, to) in [
+        (source, source),
+        (source, text.id),
+        (source, foreign),
+        (Id::new_v4(), destination),
+    ] {
+        assert!(
+            ctx.state
+                .move_voice_member(&target.pubkey, &owner.pubkey, from, to)
+                .is_err()
+        );
+        assert_eq!(ctx.state.voice_channel_of(&target.pubkey), Some(source));
+        assert!(ctx.state.voice_owned_by(&target.pubkey, target_conn));
+    }
+    ctx.state
+        .set_channel_access(
+            destination,
+            Some(crate::protocol::ChannelAccess::default()),
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    assert!(
+        ctx.state
+            .move_voice_member(&target.pubkey, &owner.pubkey, source, destination)
+            .is_err()
+    );
+    assert!(
+        ctx.state
+            .voice_states
+            .get(&target.pubkey)
+            .unwrap()
+            .screen_sharing
+    );
+    ctx.state
+        .set_channel_access(destination, None, &owner.pubkey)
+        .await
+        .unwrap();
+    ctx.state
+        .move_voice_member(&target.pubkey, &owner.pubkey, source, destination)
+        .unwrap();
+    assert!(
+        ctx.state
+            .move_voice_member(&target.pubkey, &owner.pubkey, source, destination)
+            .is_err()
+    );
+    assert_eq!(
+        ctx.state.voice_channel_of(&target.pubkey),
+        Some(destination)
+    );
+    ctx.state.unregister_conn(target_conn, Some(&target.pubkey));
+    assert!(
+        ctx.state
+            .move_voice_member(&target.pubkey, &owner.pubkey, destination, source)
+            .is_err()
+    );
+    assert_eq!(
+        ctx.state.voice_channel_of(&target.pubkey),
+        Some(destination)
+    );
+}

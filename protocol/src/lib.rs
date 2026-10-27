@@ -1123,6 +1123,7 @@ pub enum Permission {
     CreateInvite,
     ManageEmojis,
     DisconnectMembers,
+    MoveMembers,
     /// Set or add to a member's guild XP by hand (`AdjustXp`).
     ManageXp,
 }
@@ -1141,6 +1142,7 @@ impl Permission {
         Permission::CreateInvite,
         Permission::ManageEmojis,
         Permission::DisconnectMembers,
+        Permission::MoveMembers,
         Permission::ManageXp,
     ];
 
@@ -1169,6 +1171,7 @@ impl Permission {
             Permission::CreateInvite => "Create invites",
             Permission::ManageEmojis => "Manage emojis",
             Permission::DisconnectMembers => "Disconnect from voice",
+            Permission::MoveMembers => "Move voice members",
             Permission::ManageXp => "Manage experience",
         }
     }
@@ -2179,6 +2182,11 @@ pub enum ClientMessage {
     DisconnectVoice {
         guild_id: Id,
         user_pubkey: String,
+    },
+    MoveVoice {
+        user_pubkey: String,
+        from_channel_id: Id,
+        channel_id: Id,
     },
     SetGuildAccent {
         guild_id: Id,

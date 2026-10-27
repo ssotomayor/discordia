@@ -52,6 +52,7 @@ pub(crate) async fn handle_connection_with_route<S>(
         }
     };
 
+    ctx.state.set_connection_host(conn_id, client_host.clone());
     let nonce = auth::fresh_nonce();
     if let Some(route) = route {
         ctx.state.set_connection_route(conn_id, route);
@@ -983,6 +984,59 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 };
                                 ctx.state.audit(guild_id, &u.pubkey, "channel_access", &channel.name, &detail).await;
                                 apply_sight_change(&ctx, guild_id, &sight_before, Some(channel_id));
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::MoveVoice { user_pubkey, from_channel_id, channel_id } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.move_voice_member(&user_pubkey, &u.pubkey, from_channel_id, channel_id) {
+                            Ok((previous, joined, target_conn)) => {
+                                let guild_id = joined.guild_id;
+                                let was_sharing = previous.screen_sharing;
+                                let left = crate::protocol::VoiceState {
+                                    channel_id: None,
+                                    speaking: false,
+                                    camera_on: false,
+                                    screen_sharing: false,
+                                    screen_watching: Vec::new(),
+                                    ..previous
+                                };
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                send_voice_state(&ctx.state, targets.clone(), left);
+                                send_voice_state(&ctx.state, targets, joined);
+                                evict_from_call(&ctx, &user_pubkey, from_channel_id);
+                                if was_sharing {
+                                    broadcast_screen_state(&ctx.state, guild_id, from_channel_id);
+                                }
+                                let ctx = ctx.clone();
+                                let by = u.pubkey.clone();
+                                let name = ctx.state.users.get(&user_pubkey)
+                                    .map(|u| u.username.clone()).unwrap_or_default();
+                                let (host, peer) = ctx.state.connection_voice_address(target_conn);
+                                let (cfg, revision) = ctx.livekit.route();
+                                let mut urls = cfg.urls_for_client(host.as_deref(), peer);
+                                let url = urls.remove(0);
+                                tokio::spawn(async move {
+                                    ctx.state.audit(guild_id, &by, "move_voice", &user_pubkey,
+                                        &format!("{from_channel_id} -> {channel_id}")).await;
+                                    let frames = mint_voice_frames(&cfg, &user_pubkey, &name,
+                                        channel_id, url, urls, revision).await;
+                                    if ctx.state.voice_channel_of(&user_pubkey) != Some(channel_id)
+                                        || !ctx.state.voice_owned_by(&user_pubkey, target_conn)
+                                        || ctx.livekit.route().1 != revision {
+                                        return;
+                                    }
+                                    for frame in &frames {
+                                        ctx.state.deliver_to_conn(target_conn, frame);
+                                    }
+                                });
                             }
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
