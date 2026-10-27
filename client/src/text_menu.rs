@@ -39,7 +39,5 @@ pub fn TextMenu() -> Element {
             }
         }
     });
-    rsx! {
-        document::Style { {include_str!("../assets/text-menu.css")} }
-    }
+    rsx! {}
 }

@@ -190,7 +190,6 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
     let catalog_total = state.read().catalog_total as usize;
 
     rsx! {
-        document::Style { {include_str!("../../assets/guild-hub.css")} }
         div {
             class: "dxf-backdrop-in guild-hub-backdrop",
             onclick: close,
