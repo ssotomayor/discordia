@@ -42,6 +42,7 @@ pub mod video_frame;
 pub mod video_frame_buffer;
 pub mod video_track;
 pub mod voice_audio_encoder;
+pub mod soundboard_decoder;
 pub mod webrtc;
 pub mod yuv_helper;
 

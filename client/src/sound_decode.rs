@@ -90,7 +90,7 @@ pub fn decode(bytes: &[u8], ext: Option<&str>) -> Result<Decoded, String> {
         return Err("the file has no audio in it".into());
     }
 
-    let pcm = match AudioResampler::new(rate, SAMPLE_RATE) {
+    let mut pcm = match AudioResampler::new(rate, SAMPLE_RATE) {
         Some(mut resampler) => {
             // The resampler holds back a partial chunk; the padding pushes the tail out.
             mono.resize(mono.len() + 2 * RESAMPLER_CHUNK, 0.0);
@@ -101,6 +101,20 @@ pub fn decode(bytes: &[u8], ext: Option<&str>) -> Result<Decoded, String> {
         }
         None => mono,
     };
+    let mut peak = 0.0_f32;
+    for sample in &pcm {
+        if !sample.is_finite() {
+            return Err("the file contains invalid audio samples".into());
+        }
+        peak = peak.max(sample.abs());
+    }
+    // Floating-point codecs and Opus header gain can exceed PCM full scale.
+    // Lower the whole clip instead of flattening its peaks in the playback mixer.
+    if peak > 1.0 {
+        for sample in &mut pcm {
+            *sample /= peak;
+        }
+    }
     Ok(Decoded { pcm, truncated })
 }
 
@@ -120,7 +134,6 @@ impl Codec {
             .map_err(|e| format!("can't decode this audio ({e})"))
     }
 
-    /// A packet that will not decode is skipped, as a player would.
     fn decode_into(&mut self, packet: &Packet, mono: &mut Vec<f32>) -> Result<(), String> {
         let decoder = match self {
             Codec::Opus(opus) => return opus.decode_into(&packet.data, mono),
@@ -150,7 +163,7 @@ const OPUS_MAX_FRAME: usize = 5760;
 /// What symphonia hands over for Ogg Opus is the RFC 7845 header; pre-skip and
 /// output gain are the decoder's job, and a player that ignores them is wrong.
 struct OpusStream {
-    decoder: opus_rs::OpusDecoder,
+    decoder: cxx::UniquePtr<webrtc_sys::soundboard_decoder::ffi::SoundboardDecoder>,
     channels: usize,
     skip: usize,
     gain: f32,
@@ -170,8 +183,10 @@ impl OpusStream {
         }
         let skip = u16::from_le_bytes([head[10], head[11]]) as usize;
         let gain_q8 = i16::from_le_bytes([head[16], head[17]]);
-        let decoder = opus_rs::OpusDecoder::new(SAMPLE_RATE as i32, channels)
-            .map_err(|e| format!("can't decode this audio ({e})"))?;
+        let decoder = webrtc_sys::soundboard_decoder::ffi::new_soundboard_decoder(channels as u8);
+        if decoder.is_null() {
+            return Err("can't initialize the Opus decoder".into());
+        }
         let scratch = vec![0.0; OPUS_MAX_FRAME * channels];
         Ok(Self {
             decoder,
@@ -183,13 +198,11 @@ impl OpusStream {
     }
 
     fn decode_into(&mut self, packet: &[u8], mono: &mut Vec<f32>) -> Result<(), String> {
-        let Ok(n) = self
-            .decoder
-            .decode(packet, OPUS_MAX_FRAME, &mut self.scratch)
-        else {
-            return Ok(());
-        };
-        let n = n.min(OPUS_MAX_FRAME);
+        let n = self.decoder.pin_mut().decode(packet, &mut self.scratch);
+        if n < 0 {
+            return Err(format!("can't decode this Opus packet ({n})"));
+        }
+        let n = n as usize;
         let dropped = self.skip.min(n);
         self.skip -= dropped;
         let (channels, gain) = (self.channels, self.gain);
@@ -375,6 +388,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn over_range_float_audio_is_scaled_without_clipping_and_nan_is_rejected() {
+        fn floating_wav(samples: &[f32]) -> Vec<u8> {
+            let mut bytes = wav(SAMPLE_RATE, 1, 0.0);
+            let length = (samples.len() * 4) as u32;
+            bytes[4..8].copy_from_slice(&(36 + length).to_le_bytes());
+            bytes[20..22].copy_from_slice(&3u16.to_le_bytes());
+            bytes[28..32].copy_from_slice(&(SAMPLE_RATE * 4).to_le_bytes());
+            bytes[32..34].copy_from_slice(&4u16.to_le_bytes());
+            bytes[34..36].copy_from_slice(&32u16.to_le_bytes());
+            bytes[40..44].copy_from_slice(&length.to_le_bytes());
+            bytes.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
+            bytes
+        }
+        let decoded = decode(&floating_wav(&[2.0, -1.0, 0.5, 0.0]), None).unwrap();
+        assert_eq!(decoded.pcm, [1.0, -0.5, 0.25, 0.0]);
+        assert!(decode(&floating_wav(&[f32::NAN]), None).is_err());
+    }
+
     /// Discord's soundboard serves Ogg Opus with no extension; this is a tone
     /// made for the test, not one of theirs.
     const TONE_OPUS: &[u8] = include_bytes!("../tests/fixtures/tone-stereo.opus");
@@ -449,6 +481,55 @@ mod tests {
             (0.35..0.65).contains(&peak),
             "a half-scale tone peaked at {peak}"
         );
+    }
+
+    #[test]
+    fn complex_opus_matches_independent_reference_samples() {
+        let cases: &[(&[u8], &[u8])] = &[
+            (
+                include_bytes!("../tests/fixtures/opus-chirp-noise.opus"),
+                include_bytes!("../tests/fixtures/opus-chirp-noise.reference.f32"),
+            ),
+            (
+                include_bytes!("../tests/fixtures/opus-stereo-phase.opus"),
+                include_bytes!("../tests/fixtures/opus-stereo-phase.reference.f32"),
+            ),
+            (
+                include_bytes!("../tests/fixtures/opus-transients.opus"),
+                include_bytes!("../tests/fixtures/opus-transients.reference.f32"),
+            ),
+        ];
+        for (encoded, reference) in cases {
+            let decoded = decode(encoded, None).expect("synthetic Opus decodes");
+            assert!(decoded.pcm.iter().all(|s| s.is_finite()));
+            assert!(decoded.pcm.len() >= reference.len() / 4 * 16);
+            let (mut error, mut energy) = (0.0, 0.0);
+            let (reference, remainder) = reference.as_chunks::<4>();
+            assert!(remainder.is_empty());
+            for (actual, expected) in decoded.pcm.iter().step_by(16).zip(reference) {
+                let expected = f64::from(f32::from_le_bytes(*expected));
+                error += (f64::from(*actual) - expected).powi(2);
+                energy += expected.powi(2);
+            }
+            assert!(
+                (error / energy).sqrt() < 0.01,
+                "Opus differs from reference"
+            );
+        }
+    }
+
+    #[test]
+    fn native_opus_rejects_invalid_channels_and_short_output_buffers() {
+        use webrtc_sys::soundboard_decoder::ffi::new_soundboard_decoder;
+        assert!(new_soundboard_decoder(0).is_null());
+        assert!(new_soundboard_decoder(3).is_null());
+        let mut decoder = new_soundboard_decoder(2);
+        assert!(!decoder.is_null());
+        let mut short = [0.0; 1];
+        assert!(decoder.pin_mut().decode(&[0xfc, 0xff, 0xfe], &mut short) < 0);
+        let mut full = vec![0.0; OPUS_MAX_FRAME * 2];
+        assert!(decoder.pin_mut().decode(&[], &mut full) < 0);
+        assert!(decoder.pin_mut().decode(&[0xff], &mut full) < 0);
     }
 
     #[test]

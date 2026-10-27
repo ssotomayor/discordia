@@ -1534,31 +1534,26 @@ fn occupant_diagnostics_tooltip(
     let mut lines = Vec::new();
     let quality_desc = match health {
         Some(crate::state::ConnectionHealth::Excellent) => {
-            crate::i18n::text("Connection quality: Excellent", &[])
+            crate::i18n::text("Connection: Excellent", &[])
         }
-        Some(crate::state::ConnectionHealth::Good) => {
-            crate::i18n::text("Connection quality: Good", &[])
-        }
+        Some(crate::state::ConnectionHealth::Good) => crate::i18n::text("Connection: Good", &[]),
         Some(crate::state::ConnectionHealth::Poor) => {
             if is_self {
-                crate::i18n::text(
-                    "Connection quality: Reduced (your sent/received audio)",
-                    &[],
-                )
+                crate::i18n::text("Connection: Reduced (your audio)", &[])
             } else {
-                crate::i18n::text("Connection quality: Reduced", &[])
+                crate::i18n::text("Connection: Reduced", &[])
             }
         }
         Some(crate::state::ConnectionHealth::Lost) => {
-            crate::i18n::text("Connection quality: Disrupted", &[])
+            crate::i18n::text("Connection: Disrupted", &[])
         }
-        None => crate::i18n::text("Connection quality: Unavailable", &[]),
+        None => crate::i18n::text("Connection: Unavailable", &[]),
     };
     lines.push(quality_desc);
 
     if let Some(ping) = ping_ms {
         lines.push(crate::i18n::text(
-            "Your ping to server: {0} ms",
+            "Server ping: {0} ms",
             &[ping.to_string()],
         ));
     }
@@ -1574,14 +1569,11 @@ fn occupant_diagnostics_tooltip(
         }) => {
             if let Some(recent) = recent_loss_pct {
                 lines.push(crate::i18n::text(
-                    "Packet loss: {0}% (recent) · {1}% (total)",
+                    "Loss: {0}% recent · {1}% total",
                     &[format!("{recent:.1}"), format!("{loss_pct:.1}")],
                 ));
             } else {
-                lines.push(crate::i18n::text(
-                    "Packet loss: {0}%",
-                    &[format!("{loss_pct:.1}")],
-                ));
+                lines.push(crate::i18n::text("Loss: {0}%", &[format!("{loss_pct:.1}")]));
             }
             lines.push(crate::i18n::text(
                 "Jitter: {0} ms",
@@ -1607,19 +1599,16 @@ fn occupant_diagnostics_tooltip(
             loss_pct,
         }) => {
             if let Some(loss) = loss_pct {
-                lines.push(crate::i18n::text(
-                    "Packet loss: {0}%",
-                    &[format!("{loss:.1}")],
-                ));
+                lines.push(crate::i18n::text("Loss: {0}%", &[format!("{loss:.1}")]));
             }
             if let Some(kbps) = bitrate_kbps {
                 lines.push(crate::i18n::text(
-                    "Outbound audio: {0} kbps (target: {1} kbps)",
+                    "Send: {0} / {1} kbps",
                     &[kbps.to_string(), target_kbps.to_string()],
                 ));
             }
             if let Some(pps) = packets_per_sec {
-                lines.push(crate::i18n::text("Rate: {0} pkt/s", &[pps.to_string()]));
+                lines.push(crate::i18n::text("Packets: {0}/s", &[pps.to_string()]));
             }
         }
         _ => {}
@@ -1630,6 +1619,7 @@ fn occupant_diagnostics_tooltip(
 #[component]
 fn VoiceSignal(icon: &'static str, color: &'static str, tooltip: String) -> Element {
     let mut shown = use_signal(|| false);
+    let tooltip_id = use_hook(|| format!("voice-tooltip-{}", uuid::Uuid::new_v4()));
     rsx! {
         span {
             class: "relative inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
@@ -1640,8 +1630,14 @@ fn VoiceSignal(icon: &'static str, color: &'static str, tooltip: String) -> Elem
             span { class: "inline-flex", dangerous_inner_html: icon }
             if shown() {
                 span {
+                    id: "{tooltip_id}",
+                    "popover": "manual",
                     role: "tooltip",
-                    class: "absolute right-0 bottom-full mb-1.5 z-50 pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none whitespace-nowrap",
+                    class: "pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none",
+                    style: "position:fixed;inset:auto;margin:0;width:max-content;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:auto;overflow-wrap:anywhere;white-space:normal;",
+                    onmounted: move |_| {
+                        let _ = document::eval(&format!("({})({tooltip_id:?})", include_str!("../../assets/voice-tooltip.js")));
+                    },
                     for line in tooltip.lines() {
                         span { class: "block", "{line}" }
                     }
@@ -2484,9 +2480,9 @@ mod tests {
             Some(32),
             false,
         );
-        assert!(text.contains("Connection quality: Good"));
-        assert!(text.contains("Your ping to server: 32 ms"));
-        assert!(text.contains("Packet loss: 0.8% (recent) · 1.5% (total)"));
+        assert!(text.contains("Connection: Good"));
+        assert!(text.contains("Server ping: 32 ms"));
+        assert!(text.contains("Loss: 0.8% recent · 1.5% total"));
         assert!(text.contains("Jitter: 24 ms"));
         assert!(text.contains("Buffer delay: 12 ms"));
         assert!(text.contains("Concealed speech: 1.2%"));
@@ -2505,11 +2501,11 @@ mod tests {
             Some(18),
             true,
         );
-        assert!(text.contains("Connection quality: Excellent"));
-        assert!(text.contains("Your ping to server: 18 ms"));
-        assert!(text.contains("Packet loss: 0.0%"));
-        assert!(text.contains("Outbound audio: 64 kbps (target: 64 kbps)"));
-        assert!(text.contains("Rate: 50 pkt/s"));
+        assert!(text.contains("Connection: Excellent"));
+        assert!(text.contains("Server ping: 18 ms"));
+        assert!(text.contains("Loss: 0.0%"));
+        assert!(text.contains("Send: 64 / 64 kbps"));
+        assert!(text.contains("Packets: 50/s"));
     }
 
     #[test]
@@ -2520,7 +2516,7 @@ mod tests {
             None,
             true,
         );
-        assert!(text.contains("Connection quality: Reduced (your sent/received audio)"));
+        assert!(text.contains("Connection: Reduced (your audio)"));
     }
 
     #[test]
@@ -2615,8 +2611,8 @@ mod tests {
             None,
             true,
         );
-        assert!(text.contains("Connection quality: Unavailable"));
-        assert!(!text.contains("Packet loss:"));
+        assert!(text.contains("Connection: Unavailable"));
+        assert!(!text.contains("Loss:"));
         assert!(!text.contains("ping"));
     }
 }

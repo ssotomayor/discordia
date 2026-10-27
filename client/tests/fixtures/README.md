@@ -8,6 +8,10 @@ and Pillow are fixture generation tools, not application dependencies.
 | `tone-stereo.opus` | Existing one-second stereo Opus tone, approximately half scale |
 | `tone-silence-stereo.mp3` | One second, 44.1 kHz; left 0.5/right 0.25; silence from 0.3 to 0.7 s; ID3v2 title |
 | `tone-stereo.ogg` | One second, 44.1 kHz Vorbis; left 0.5/right 0.25 |
+| `opus-{chirp-noise,stereo-phase,transients}.opus` | 0.4 s stereo at 48 kHz/32 kbps; synthetic chirps, changing stereo phase and noise transients |
+| `opus-*.reference.f32` | Independent libopus decoding through PyAV, averaged to mono; every 16th sample, little-endian float32 |
+
+Regenerate complex Opus fixtures with `python scripts/generate-soundboard-fixtures.py` (development-only PyAV and NumPy). Tests tolerate codec implementation differences but reject the old decoder's 56% relative RMS error on the stereo-phase signal.
 
 Generate the MP3 and Vorbis fixtures from the repository root:
 
