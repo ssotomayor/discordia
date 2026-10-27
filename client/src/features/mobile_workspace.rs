@@ -279,15 +279,20 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
             );
         });
     }
-    let selected_channel = use_memo(move || state.read().selected_channel);
+    let selected_channel = use_memo(move || {
+        let state = state.read();
+        (state.dm_mode, state.selected_channel)
+    });
     let mut previous_channel = use_signal(|| *selected_channel.peek());
     use_effect(move || {
         let current = selected_channel();
         if current != *previous_channel.peek() {
-            // Ready selects a default channel before the person has chosen to open its chat.
-            let had_channel = previous_channel.peek().is_some();
+            // Preselecting a DM on entry must leave its conversation list visible.
+            let open_chat = previous_channel.peek().1.is_some()
+                && previous_channel.peek().0 == current.0
+                && current.1.is_some();
             previous_channel.set(current);
-            if had_channel && current.is_some() {
+            if open_chat {
                 tab.set(MobileTab::Chat);
             }
         }
@@ -381,7 +386,7 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
             div {
                 class: "dxf-mobile-nav shrink-0 flex items-center justify-around border-t border-[var(--border)] bg-[var(--panel2)] z-30 select-none",
                 style: "padding-bottom: max(var(--safe-bottom), 6px); height: calc(52px + var(--safe-bottom));",
-                for (next, icon, label) in [(MobileTab::Channels, super::icons::CHANNEL_LIST, "Channels"), (MobileTab::Chat, super::icons::CHAT, "Chat"), (MobileTab::Members, super::icons::USERS, "Members")] {
+                for (next, icon, label) in [(MobileTab::Channels, super::icons::CHANNEL_LIST, "Channels"), (MobileTab::Chat, super::icons::CHAT, "Chat"), (MobileTab::Members, super::icons::USERS, if state.read().dm_mode { "Profile" } else { "Members" })] {
                     button {
                         key: "{next:?}",
                         class: if current == next {

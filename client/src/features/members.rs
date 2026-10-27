@@ -154,6 +154,40 @@ fn group_by_rank(members: Vec<Member>, rules: &Leveling) -> Vec<(Option<LevelTie
 
 #[component]
 pub fn MembersPanel() -> Element {
+    let state = use_app_state();
+    if state.read().dm_mode {
+        rsx! { DmProfilePanel {} }
+    } else {
+        rsx! { GuildMembersPanel {} }
+    }
+}
+
+#[component]
+fn DmProfilePanel() -> Element {
+    let mut state = use_app_state();
+    let selected = use_memo(move || state.read().preferred_dm());
+    use_effect(move || {
+        if let Some(dm) = selected()
+            && state.peek().selected_channel != Some(dm.channel_id)
+        {
+            state.write().selected_channel = Some(dm.channel_id);
+        }
+    });
+    rsx! {
+        if let Some(dm) = selected() {
+            for peer in std::iter::once(dm.other_pubkey) {
+                super::profiles::ProfileCard { key: "{peer}", embedded: true, peer: Some(peer.clone()) }
+            }
+        } else {
+            aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex items-center justify-center p-4 text-sm text-[var(--text-muted)]",
+                {crate::i18n::text("Pick a conversation", &[])}
+            }
+        }
+    }
+}
+
+#[component]
+fn GuildMembersPanel() -> Element {
     #[cfg(test)]
     tests::record_render("list");
     let state = use_app_state();
@@ -760,6 +794,60 @@ fn VoiceBadges(place: String, muted: bool, deafened: bool) -> Element {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dm_panel_renders_the_peer_profile_without_sorting_guild_members() {
+        use std::{cell::RefCell, rc::Rc};
+        type Export = Rc<RefCell<Option<Signal<AppState>>>>;
+        let export: Export = Rc::new(RefCell::new(None));
+        RENDERS.with_borrow_mut(|counts| counts.clear());
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let state = use_signal(|| {
+                    let mut state = AppState::empty();
+                    state.dm_mode = true;
+                    let peer = "11".repeat(32);
+                    let channel_id = Id::new_v4();
+                    state.dms.push(crate::state::DmInfo {
+                        channel_id,
+                        other_pubkey: peer.clone(),
+                    });
+                    state.dm_accepted.insert(peer.clone());
+                    state.nostr_names.insert(peer, ("DM peer".into(), 0));
+                    state
+                });
+                provide_context(state);
+                provide_context(crate::nostr::service::NostrTx::test_channel());
+                *export.borrow_mut() = Some(state);
+                rsx! { MembersPanel {} }
+            },
+            export.clone(),
+        );
+        let edits = dom.rebuild_to_vec().edits;
+        assert!(edits.iter().any(|edit| matches!(edit,
+            dioxus::core::Mutation::CreateTextNode { value, .. } if *value == "DM peer"
+        )));
+        assert!(export.borrow().unwrap().read().profile_card.is_none());
+        let mut state = export.borrow().unwrap();
+        let next = Id::new_v4();
+        {
+            let mut state = state.write();
+            let peer = "22".repeat(32);
+            state.dms.push(crate::state::DmInfo {
+                channel_id: next,
+                other_pubkey: peer.clone(),
+            });
+            state
+                .nostr_names
+                .insert(peer.clone(), ("Another peer".into(), 0));
+            state.dm_accepted.insert(peer);
+            state.selected_channel = Some(next);
+        }
+        let changes = dom.render_immediate_to_vec().edits;
+        assert!(changes.iter().any(|edit| matches!(edit,
+            dioxus::core::Mutation::CreateTextNode { value, .. } if *value == "Another peer"
+        )));
+        RENDERS.with_borrow(|counts| assert_eq!(counts.get("sort").copied().unwrap_or(0), 0));
+    }
     use super::*;
     use crate::protocol::User;
     use crate::state::AppState;

@@ -1118,6 +1118,9 @@ impl AppState {
     /// The open guild's dressing for this key, which only an app it installed
     /// has. The profile is one per key for the whole server.
     fn guild_look_of(&self, pubkey: &str) -> Option<&crate::protocol::GuildLook> {
+        if self.dm_mode {
+            return None;
+        }
         let guild = self.selected_guild?;
         self.members
             .iter()
@@ -1234,6 +1237,13 @@ impl AppState {
         } else {
             DmStanding::Request
         }
+    }
+
+    pub fn preferred_dm(&self) -> Option<DmInfo> {
+        self.selected_channel
+            .and_then(|id| self.dm_of(id))
+            .cloned()
+            .or_else(|| self.dms_by_recency(DmStanding::Inbox).into_iter().next())
     }
 
     /// Empty conversations sort last: one just opened by pasting a key has no
@@ -2483,6 +2493,21 @@ mod tests {
         s.note_dm_arrival(cid, peer, 100);
         assert!(s.dm_unread.is_empty());
         assert_eq!(s.dm_notify_tick, after_reading, "the replay rang again");
+    }
+
+    #[test]
+    fn preferred_dm_uses_recency_without_replacing_an_explicit_selection() {
+        let mut state = AppState::empty();
+        assert!(state.preferred_dm().is_none());
+        let older = dm_with(&mut state, "older", &[100]);
+        let recent = dm_with(&mut state, "recent", &[200]);
+        assert_eq!(state.preferred_dm().unwrap().channel_id, recent);
+        state.selected_channel = Some(older);
+        assert_eq!(state.preferred_dm().unwrap().channel_id, older);
+        state.selected_channel = Some(Id::new_v4());
+        state.dm_ignored.insert("recent".into());
+        state.dm_accepted.remove("recent");
+        assert_eq!(state.preferred_dm().unwrap().channel_id, older);
     }
 
     fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {

@@ -91,6 +91,10 @@ pub enum NostrCmd {
 pub struct NostrTx(UnboundedSender<NostrCmd>);
 
 impl NostrTx {
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> Self {
+        Self(unbounded_channel().0)
+    }
     pub fn try_send(&self, cmd: NostrCmd) -> bool {
         self.0.send(cmd).is_ok()
     }

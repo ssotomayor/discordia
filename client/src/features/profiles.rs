@@ -210,13 +210,16 @@ pub fn Avatar(
 }
 
 #[component]
-pub fn ProfileCard() -> Element {
+pub fn ProfileCard(
+    #[props(default)] embedded: bool,
+    #[props(default)] peer: Option<String>,
+) -> Element {
     let mut state = use_app_state();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
 
     let profile = use_memo(move || {
         let snapshot = state.read();
-        let pubkey = snapshot.profile_card.clone()?;
+        let pubkey = peer.clone().or_else(|| snapshot.profile_card.clone())?;
         let name = snapshot.display_name(&pubkey);
         let bio = snapshot.bio_of(&pubkey).map(str::to_owned);
         let status = snapshot.presence_of(&pubkey).to_string();
@@ -236,6 +239,7 @@ pub fn ProfileCard() -> Element {
         let xp = state
             .read()
             .selected_guild
+            .filter(|_| !embedded)
             .and_then(|gid| {
                 state
                     .read()
@@ -248,12 +252,14 @@ pub fn ProfileCard() -> Element {
         let rank = state
             .read()
             .selected_guild
+            .filter(|_| !embedded)
             .map(|gid| state.read().leveling_of(gid))
             .filter(|r| r.enabled)
             .and_then(|r| r.tier_at(xp).cloned());
         let member_roles: Vec<crate::protocol::Role> = {
             let s = state.read();
             s.selected_guild
+                .filter(|_| !embedded)
                 .map(|gid| {
                     let assigned = s
                         .members
@@ -315,13 +321,18 @@ pub fn ProfileCard() -> Element {
 
     rsx! {
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-            onclick: move |_| state.write().profile_card = None,
+            class: if embedded { "panel-hover w-full h-full min-w-0 flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-xl overflow-hidden" } else { "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50" },
+            onclick: move |_| { if !embedded { state.write().profile_card = None; } },
+            if embedded {
+                div { class: "h-12 px-3.5 shrink-0 flex items-center border-b border-[var(--border)] font-semibold text-sm",
+                    {crate::i18n::text("Profile", &[])}
+                }
+            }
             div {
-                class: "dxf-modal-in w-[22rem] bg-[var(--panel2)] border border-[var(--edge)] rounded-2xl shadow-2xl overflow-hidden",
+                class: if embedded { "dxf-dm-profile dxf-no-drag w-full min-w-0 flex-1 min-h-0 overflow-y-auto bg-[var(--panel2)]" } else { "dxf-modal-in w-[22rem] bg-[var(--panel2)] border border-[var(--edge)] rounded-2xl shadow-2xl overflow-hidden" },
                 onclick: move |e| e.stop_propagation(),
                 ProfileBanner { pubkey: pubkey.clone(), accent: accent.clone() }
-                div { class: "px-5 pb-5 -mt-10",
+                div { class: "px-5 pb-5 -mt-10", style: "min-width: 0; overflow-wrap: anywhere;",
                     div { class: "inline-block rounded-2xl p-1", style: "background: var(--panel2);",
                         Avatar {
                             pubkey: pubkey.clone(),
@@ -389,6 +400,7 @@ pub fn ProfileCard() -> Element {
                             }
                         }
                     }
+                    if !embedded {
                     div { class: "mt-4 flex items-center gap-3",
                         span {
                             class: "dxf-display text-sm font-bold shrink-0",
@@ -407,6 +419,7 @@ pub fn ProfileCard() -> Element {
                         }
                         span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
                     }
+                    }
                     // Deliberately quiet, and deliberately labelled: this number
                     // is signed by the person it flatters and by nobody else.
                     if let Some(g) = global {
@@ -421,7 +434,7 @@ pub fn ProfileCard() -> Element {
                             }
                         }
                     }
-                    crate::features::bot_commands::BotCommandsSection { bot_pubkey: pubkey.clone() }
+                    if !embedded { crate::features::bot_commands::BotCommandsSection { bot_pubkey: pubkey.clone() } }
                     if !is_self {
                         button {
                             class: "mt-4 w-full py-2 rounded-xl text-xs border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all",
@@ -434,7 +447,7 @@ pub fn ProfileCard() -> Element {
                             },
                             if is_contact { {crate::i18n::text("✓ In your contacts", &[])} } else { {crate::i18n::text("+ Add contact", &[])} }
                         }
-                        button {
+                        if !embedded { button {
                             class: "dxf-cta mt-2 w-full py-2.5 rounded-xl text-sm transition-all",
                             onclick: move |_| {
                                 nostr.send(crate::nostr::service::NostrCmd::Open {
@@ -443,7 +456,7 @@ pub fn ProfileCard() -> Element {
                                 state.write().profile_card = None;
                             },
                             {crate::i18n::text("Message", &[])}
-                        }
+                        } }
                     }
                 }
             }
