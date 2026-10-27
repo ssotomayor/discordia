@@ -357,6 +357,8 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 
 Each asset keeps its minisign signature. Existing Linux installations remain usable; the server keeps receiving releases.
 
+`prepare-prerelease` reserves the run's tag at its exact commit before compilation. A queued run already superseded by another push skips publication; reruns reuse a matching tag. The publisher verifies the tag again after signing and rejects missing or changed tags. This avoids requesting extra workflow-write permissions when master advances during a build; failed builds can leave a tag without a release.
+
 ## Android release APK
 
 `ci.yml` builds ARM64 Android on PRs (unsigned artifact) and on pushes to master (signed release asset). `publish-prerelease` waits for Android and publishes seven binaries plus their seven minisign signatures. The Android certificate is separate from minisign; its public SHA-256 is `client/android/release-signing.sha256`.
