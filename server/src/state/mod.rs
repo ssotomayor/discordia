@@ -2935,6 +2935,13 @@ impl AppState {
             return Err("that attachment is not an image".into());
         }
         if let Some(address) = self.media.existing(img) {
+            if self
+                .media
+                .stored_size(&address)
+                .is_none_or(|size| size > discordia_protocol::MAX_IMAGE_BYTES as u64)
+            {
+                return Err("an image must be at most 2 MiB (2,097,152 bytes)".into());
+            }
             return Ok(address);
         }
         if img.starts_with("data:image/") {

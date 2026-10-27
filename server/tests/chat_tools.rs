@@ -527,9 +527,11 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
         )
         .await
         .unwrap();
-    assert!(message.image.unwrap().starts_with("media:"));
+    let address = message.image.unwrap();
+    assert!(address.starts_with("media:"));
     assert!(message.image_metadata.is_some());
     assert_eq!(state.media.used_bytes(), 10_000_000);
+    assert!(state.image_reference(&owner.pubkey, &address).is_err());
     assert!(
         state
             .handle_chat_tool(&owner, upload(channel_id, "maximum.bin", &image))
