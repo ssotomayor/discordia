@@ -196,6 +196,19 @@ pub fn message(source: &str) -> String {
 }
 
 fn message_in(language: Language, source: &str) -> String {
+    if let Some(name) = source
+        .strip_prefix("you need the ")
+        .and_then(|s| s.strip_suffix(" permission to do that here"))
+        && let Ok(permission) = serde_json::from_value::<crate::protocol::Permission>(
+            serde_json::Value::String(name.to_owned()),
+        )
+    {
+        return translate(
+            language,
+            "you need the {0} permission to do that here",
+            &[translate(language, permission.label(), &[])],
+        );
+    }
     if language == Language::English || catalog().contains_key(source) {
         return translate(language, source, &[]);
     }
@@ -370,6 +383,71 @@ mod tests {
             assert_eq!(
                 translate(language, "{0} permissions", &["2".into()]),
                 permission
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_permission_labels_are_present_in_the_catalog() {
+        for permission in crate::protocol::Permission::ALL {
+            assert!(
+                catalog().contains_key(permission.label()),
+                "{}",
+                permission.label()
+            );
+        }
+    }
+
+    #[test]
+    fn camera_errors_permissions_and_name_availability_follow_the_selected_language() {
+        for (language, camera, permission, availability, error) in [
+            (
+                Language::English,
+                "Camera permission is required. Enable it in Android app settings.",
+                "you need the Move voice members permission to do that here",
+                "free in 3h",
+                "Error",
+            ),
+            (
+                Language::Spanish,
+                "Se necesita permiso para usar la cámara. Habilitalo en los ajustes de Android.",
+                "Necesitás el permiso Mover miembros de voz para hacer eso aquí",
+                "libre en 3 h",
+                "Error",
+            ),
+            (
+                Language::Portuguese,
+                "É necessária permissão para usar a câmera. Ative-a nas configurações do Android.",
+                "Você precisa da permissão Mover membros de voz para fazer isso aqui",
+                "livre em 3 h",
+                "Erro",
+            ),
+        ] {
+            assert_eq!(
+                message_in(
+                    language,
+                    "Camera permission is required. Enable it in Android app settings."
+                ),
+                camera
+            );
+            assert_eq!(
+                message_in(
+                    language,
+                    "you need the move_members permission to do that here"
+                ),
+                permission
+            );
+            assert_eq!(
+                translate(language, "free in {0}h", &["3".into()]),
+                availability
+            );
+            assert_eq!(translate(language, "Error", &[]), error);
+            assert_eq!(
+                message_in(
+                    language,
+                    "unknown external detail: Ana {0} https://example.test"
+                ),
+                "unknown external detail: Ana {0} https://example.test"
             );
         }
     }

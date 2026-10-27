@@ -18,17 +18,19 @@ pub(super) fn HostConnections(info: crate::host::HostInfo) -> Element {
     let offered = info
         .offered_routes
         .iter()
-        .map(|route| match route {
-            GatewayRoute::Ipv4 => "IPv4",
-            GatewayRoute::Ipv6 => "IPv6",
-            GatewayRoute::Relay => "Relay",
-            GatewayRoute::Local => "LAN",
-            GatewayRoute::Unknown => "Unknown",
+        .map(|route| {
+            crate::i18n::label(match route {
+                GatewayRoute::Ipv4 => "IPv4",
+                GatewayRoute::Ipv6 => "IPv6",
+                GatewayRoute::Relay => "Relay",
+                GatewayRoute::Local => "LAN",
+                GatewayRoute::Unknown => "Unknown",
+            })
         })
         .collect::<Vec<_>>()
         .join(" · ");
     let offered = if offered.is_empty() {
-        "This PC only".to_owned()
+        crate::i18n::text("This PC only", &[])
     } else {
         offered
     };

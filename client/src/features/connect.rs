@@ -879,9 +879,9 @@ fn ReservedNames(
                     let freed = name.code.clone();
                     let identity = identity.clone();
                     let status = match name.expires_in_secs {
-                        None => "live now".to_string(),
-                        Some(s) if s >= 3600 => format!("free in {}h", s / 3600),
-                        Some(s) => format!("free in {}m", (s / 60).max(1)),
+                        None => crate::i18n::text("live now", &[]),
+                        Some(s) if s >= 3600 => crate::i18n::text("free in {0}h", &[(s / 3600).to_string()]),
+                        Some(s) => crate::i18n::text("free in {0}m", &[(s / 60).max(1).to_string()]),
                     };
                     rsx! {
                         div {
