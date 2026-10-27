@@ -61,6 +61,11 @@ pub fn AccountView(
 ) -> Element {
     let settings = use_context::<Signal<ClientSettings>>();
     let mut state = use_account_state(settings);
+    use_hook(|| {
+        let owner = identity.pubkey.clone();
+        state.write().account_pictures =
+            crate::profile::load(&owner).map(|profile| (owner, profile.into()));
+    });
     crate::bookmarks::use_bookmarks(&identity, state);
     crate::voice_handoff::use_bridge();
     let nostr = use_hook(|| {

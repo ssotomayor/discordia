@@ -149,6 +149,21 @@ fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<std::sync::Arc<S
             s.avatar_address(&pubkey)
         }?;
         let resolved = s.media_src(address)?;
+        if let Some((owner, pictures)) = &s.account_pictures
+            && owner == &pubkey
+        {
+            let cached = if banner {
+                &pictures.banner
+            } else {
+                &pictures.avatar
+            };
+            if let Some(data) = cached
+                .as_ref()
+                .filter(|data| std::ptr::eq(data.as_str(), address))
+            {
+                return Some(data.clone());
+            }
+        }
         match address.strip_prefix("media:") {
             Some(blob) => s
                 .emoji_images
@@ -443,7 +458,7 @@ pub fn ProfileCard() -> Element {
 pub fn ProfileEditor(class: String, children: Element) -> Element {
     let identity = use_context::<crate::identity::Identity>();
     let profile_owner = use_signal(|| identity.pubkey);
-    let state = use_app_state();
+    let mut state = use_app_state();
     let gateway = use_gateway();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
 
@@ -535,6 +550,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             return;
         }
         let updated_at = local.updated_at;
+        state.write().account_pictures = Some((profile_owner.peek().clone(), local.clone().into()));
         nostr.send(crate::nostr::service::NostrCmd::PublishProfile(local));
         gateway.send(ClientMessage::SetProfile {
             avatar: avatar(),
@@ -849,5 +865,60 @@ fn SavedEmojiSection() -> Element {
                 crate::features::connect::BlobServerField {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod account_avatar_tests {
+    use super::*;
+    use dioxus::core::{AttributeValue, Mutation};
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn cached_account_avatar_renders_and_updates_without_a_gateway() {
+        type Export = Rc<RefCell<Option<Signal<crate::state::AppState>>>>;
+        let export: Export = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let state = use_signal(|| {
+                    let mut state = crate::state::AppState::empty();
+                    state.account_pictures = Some((
+                        "self".into(),
+                        crate::profile::LocalProfile {
+                            avatar: Some("data:image/png;base64,Zmlyc3Q=".into()),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ));
+                    state
+                });
+                provide_context(state);
+                *export.borrow_mut() = Some(state);
+                rsx! { Avatar { pubkey: "self", name: "Self", size: "w-8 h-8" } }
+            },
+            export.clone(),
+        );
+        let has_source = |edits: &[Mutation], expected: &str| {
+            edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "src", value: AttributeValue::Text(src), .. } if *src == expected
+        ))
+        };
+        assert!(has_source(
+            &dom.rebuild_to_vec().edits,
+            "data:image/png;base64,Zmlyc3Q="
+        ));
+        let mut state = export.borrow().unwrap();
+        state.write().account_pictures = Some((
+            "self".into(),
+            crate::profile::LocalProfile {
+                avatar: Some("data:image/png;base64,bmV3".into()),
+                ..Default::default()
+            }
+            .into(),
+        ));
+        assert!(has_source(
+            &dom.render_immediate_to_vec().edits,
+            "data:image/png;base64,bmV3"
+        ));
     }
 }

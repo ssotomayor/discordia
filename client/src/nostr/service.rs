@@ -730,7 +730,9 @@ fn adopt_profile(theirs: profile::SyncedProfile, our_pubkey: String, mut state: 
             tracing::warn!(error = %e, "synced profile not saved");
             return;
         }
-        state.write().profile_synced_at = local.updated_at;
+        let mut app = state.write();
+        app.profile_synced_at = local.updated_at;
+        app.account_pictures = Some((our_pubkey, local.into()));
     });
 }
 

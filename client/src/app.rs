@@ -208,6 +208,9 @@ const BASE_CSS: &str = "
   --safe-right: env(safe-area-inset-right, 0px);
 }
 html, body, #main { height: 100%; margin: 0; }
+.dxf-home-tools { padding-right: 44px; }
+.dxf-home-settings { position: absolute; top: 8px; right: 8px; }
+.dxf-home-macos .dxf-home-settings { top: 16px; }
 .dxf-workspace-mobile .dxf-workspace-header { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px; flex-shrink: 0; min-width: 0; }
 .dxf-workspace-mobile .dxf-workspace-brand { grid-column: 1; grid-row: 1; }
 .dxf-workspace-mobile .dxf-workspace-tools { grid-column: 3; grid-row: 1; margin-left: 0; gap: 0; }

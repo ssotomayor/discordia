@@ -2,3 +2,4 @@
 ; lives in its own file beside this one and is handed over here.
 !include "${__FILEDIR__}\webview2.nsh"
 !include "${__FILEDIR__}\start-menu.nsh"
+!include "${__FILEDIR__}\display-icon.nsh"
