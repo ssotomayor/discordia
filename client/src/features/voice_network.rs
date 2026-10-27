@@ -200,19 +200,28 @@ pub(super) fn spawn_stats_task(
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let connected = state.peek().voice.phase == VoicePhase::Connected;
-            let routes = if connected {
+            let (routes, room_rtt) = if connected {
                 match tokio::time::timeout(Duration::from_secs(2), room.get_stats()).await {
-                    Ok(Ok(s)) => crate::connection_routes::selected_media_routes(
-                        &s.publisher_stats,
-                        &s.subscriber_stats,
+                    Ok(Ok(s)) => (
+                        crate::connection_routes::selected_media_routes(
+                            &s.publisher_stats,
+                            &s.subscriber_stats,
+                        ),
+                        crate::connection_routes::active_round_trip_time(
+                            &s.publisher_stats,
+                            &s.subscriber_stats,
+                        ),
                     ),
                     _ => (
-                        state.peek().voice_send_route.clone(),
-                        state.peek().voice_receive_route.clone(),
+                        (
+                            state.peek().voice_send_route.clone(),
+                            state.peek().voice_receive_route.clone(),
+                        ),
+                        None,
                     ),
                 }
             } else {
-                (None, None)
+                ((None, None), None)
             };
             if state.peek().voice_send_route != routes.0
                 || state.peek().voice_receive_route != routes.1
@@ -234,6 +243,9 @@ pub(super) fn spawn_stats_task(
                 windows.clear();
                 if state.peek().voice_uplink_congested {
                     state.write().voice_uplink_congested = false;
+                }
+                if state.peek().voice_ping_ms.is_some() {
+                    state.write().voice_ping_ms = None;
                 }
                 continue;
             }
@@ -282,6 +294,30 @@ pub(super) fn spawn_stats_task(
                     );
                 }
             }
+            let remote_rtt = stats.iter().find_map(|s| match s {
+                RtcStats::RemoteInboundRtp(r)
+                    if r.remote_inbound.round_trip_time > 0.0
+                        && r.remote_inbound.round_trip_time.is_finite() =>
+                {
+                    Some(Duration::from_secs_f64(r.remote_inbound.round_trip_time))
+                }
+                _ => None,
+            });
+            let ping_ms = room_rtt
+                .or(remote_rtt)
+                .map(|d| (d.as_secs_f64() * 1000.0).round() as u32);
+            if state.peek().voice_ping_ms != ping_ms {
+                state.write().voice_ping_ms = ping_ms;
+            }
+            let current_loss = stats.iter().find_map(|s| match s {
+                RtcStats::RemoteInboundRtp(r)
+                    if r.remote_inbound.fraction_lost.is_finite()
+                        && (0.0..=1.0).contains(&r.remote_inbound.fraction_lost) =>
+                {
+                    Some((r.remote_inbound.fraction_lost * 100.0) as f32)
+                }
+                _ => None,
+            });
             // Loss keeps the voice bitrate: Opus FEC and resends repair it, and a lower
             // bitrate sends as many packets, so it only cost quality (Discord holds it too).
             let ceiling = controls.bitrate_kbps.load(Ordering::Relaxed);
@@ -323,7 +359,7 @@ pub(super) fn spawn_stats_task(
             if state.peek().voice_uplink_congested != uplink_congested {
                 state.write().voice_uplink_congested = uplink_congested;
             }
-            let display = controls.stats_polling.load(Ordering::Relaxed);
+            let display = controls.stats_polling.load(Ordering::Relaxed) || connected;
             let mut next = HashMap::new();
             let mut live = HashSet::new();
             let mut tracks = Vec::new();
@@ -442,19 +478,19 @@ pub(super) fn spawn_stats_task(
                 }
             }
             windows.retain(|sid, _| live.contains(sid));
-            if display
-                && let Some(pk) = &self_pubkey
-                && let Some(out) = out
-            {
-                let rates =
-                    outbound_rates(prev_out, out.sent.packets_sent, out.sent.bytes_sent, now);
-                prev_out = Some((out.sent.packets_sent, out.sent.bytes_sent, now));
+            if display && let Some(pk) = &self_pubkey {
+                let rates = out.and_then(|o| {
+                    let r = outbound_rates(prev_out, o.sent.packets_sent, o.sent.bytes_sent, now);
+                    prev_out = Some((o.sent.packets_sent, o.sent.bytes_sent, now));
+                    r
+                });
                 next.insert(
                     pk.clone(),
                     TrackStats::Outbound {
                         bitrate_kbps: rates.map(|(_, b)| b),
                         packets_per_sec: rates.map(|(p, _)| p),
                         target_kbps: ceiling,
+                        loss_pct: current_loss.or(Some(0.0)),
                     },
                 );
             } else {

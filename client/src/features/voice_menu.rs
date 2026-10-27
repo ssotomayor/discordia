@@ -43,12 +43,13 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
     let voice = use_voice_tx();
     let pubkey = menu.pubkey.clone();
 
-    let (volume, locally_muted, disconnect_in, track_stats, health) = {
+    let (volume, locally_muted, disconnect_in, track_stats, health, ping_ms) = {
         let s = state.read();
         let volume = s.user_volumes.get(&pubkey).copied().unwrap_or(100);
         let muted = s.user_muted.contains(&pubkey);
         let track_stats = s.voice_stats.get(&pubkey).copied();
         let health = s.voice_quality.get(&pubkey).copied();
+        let ping_ms = s.voice_ping_ms;
         // The server re-checks; this only hides a button that would be refused.
         let disconnect_in = s
             .voice_states
@@ -62,7 +63,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         .iter()
                         .any(|g| g.id == *gid && g.owner_pubkey == pubkey)
             });
-        (volume, muted, disconnect_in, track_stats, health)
+        (volume, muted, disconnect_in, track_stats, health, ping_ms)
     };
 
     let apply = {
@@ -119,18 +120,28 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                 if let Some(stats) = track_stats {
                     match stats {
                         crate::state::TrackStats::Inbound { loss_pct, recent_loss_pct, jitter_ms, .. } => rsx! {
-                            div { class: "px-3 py-1 text-[11px] text-[var(--text-dim)] border-b border-[var(--border)] mb-1 flex items-center justify-between font-mono",
+                            div { class: "px-3 py-1 text-[11px] text-[var(--text-dim)] border-b border-[var(--border)] mb-1 flex items-center justify-between font-mono gap-1.5",
                                 span {
                                     class: if recent_loss_pct.is_some_and(|l| l >= 1.0) { "text-[var(--warn)]" } else { "" },
                                     {crate::i18n::text("Loss: {0}%", &[format!("{:.1}", recent_loss_pct.unwrap_or(loss_pct))])}
                                 }
-                                span { {crate::i18n::text("Jitter: {0}ms", &[format!("{jitter_ms:.0}")])} }
+                                span { {crate::i18n::text("Jit: {0}ms", &[format!("{jitter_ms:.0}")])} }
+                                if let Some(ping) = ping_ms {
+                                    span { {crate::i18n::text("Ping: {0}ms", &[ping.to_string()])} }
+                                }
                             }
                         },
-                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, .. } => rsx! {
-                            div { class: "px-3 py-1 text-[11px] text-[var(--text-dim)] border-b border-[var(--border)] mb-1 flex items-center justify-between font-mono",
-                                span { {crate::i18n::text("Out: {0} kbps", &[bitrate_kbps.unwrap_or(0).to_string()])} }
+                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, loss_pct, .. } => rsx! {
+                            div { class: "px-3 py-1 text-[11px] text-[var(--text-dim)] border-b border-[var(--border)] mb-1 flex items-center justify-between font-mono gap-1.5",
+                                if let Some(loss) = loss_pct {
+                                    span { {crate::i18n::text("Loss: {0}%", &[format!("{loss:.1}")])} }
+                                } else {
+                                    span { {crate::i18n::text("Out: {0} kbps", &[bitrate_kbps.unwrap_or(0).to_string()])} }
+                                }
                                 span { {crate::i18n::text("{0} pkt/s", &[packets_per_sec.unwrap_or(0).to_string()])} }
+                                if let Some(ping) = ping_ms {
+                                    span { {crate::i18n::text("Ping: {0}ms", &[ping.to_string()])} }
+                                }
                             }
                         },
                         _ => rsx! {},

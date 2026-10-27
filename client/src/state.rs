@@ -130,6 +130,7 @@ pub enum TrackStats {
         bitrate_kbps: Option<u32>,
         packets_per_sec: Option<u32>,
         target_kbps: u32,
+        loss_pct: Option<f32>,
     },
 }
 
@@ -492,6 +493,7 @@ pub struct AppState {
     pub denoise_retry: u32,
     pub voice_bitrate_kbps: u32,
     pub voice_uplink_congested: bool,
+    pub voice_ping_ms: Option<u32>,
     pub voice_quality: HashMap<String, ConnectionHealth>,
     pub voice_stats: HashMap<String, TrackStats>,
     pub screen_share_stats: Option<ScreenShareStats>,
@@ -671,6 +673,7 @@ impl AppState {
             denoise_retry: 0,
             voice_bitrate_kbps: 64,
             voice_uplink_congested: false,
+            voice_ping_ms: None,
             voice_quality: HashMap::new(),
             voice_stats: HashMap::new(),
             screen_share_stats: None,
@@ -815,6 +818,7 @@ impl AppState {
         self.voice_menu = None;
         self.voice_quality.clear();
         self.voice_stats.clear();
+        self.voice_ping_ms = None;
         self.voice_uplink_congested = false;
         self.screen_share_stats = None;
         self.screen_share_in_stats = None;
