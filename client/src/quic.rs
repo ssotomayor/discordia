@@ -10,8 +10,48 @@ mod network_monitor;
 
 pub type GatewayIo = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::SendStream>;
 
+struct ClosingEndpoint {
+    endpoint: Endpoint,
+    runtime: tokio::runtime::Handle,
+    closed: std::sync::atomic::AtomicBool,
+}
+
+impl ClosingEndpoint {
+    fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            runtime: tokio::runtime::Handle::current(),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    async fn close(&self) {
+        self.endpoint.close().await;
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl std::ops::Deref for ClosingEndpoint {
+    type Target = Endpoint;
+
+    fn deref(&self) -> &Endpoint {
+        &self.endpoint
+    }
+}
+
+impl Drop for ClosingEndpoint {
+    fn drop(&mut self) {
+        // Losing route attempts are cancelled before they can run explicit shutdown.
+        if !self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            let endpoint = self.endpoint.clone();
+            self.runtime.spawn(async move { endpoint.close().await });
+        }
+    }
+}
+
 pub struct ConnectionGuard {
-    _endpoint: Endpoint,
+    _endpoint: ClosingEndpoint,
     conn: iroh::endpoint::Connection,
     #[cfg(target_os = "android")]
     _network_monitor: network_monitor::NetworkMonitor,
@@ -124,9 +164,11 @@ pub async fn dial(
         .await
         .map_err(|e| format!("quic bind: {e}"))?;
 
+    let endpoint = ClosingEndpoint::new(endpoint);
+
     #[cfg(target_os = "android")]
     let network_monitor = {
-        let endpoint = endpoint.clone();
+        let endpoint = endpoint.endpoint.clone();
         network_monitor::NetworkMonitor::start(network_changes, move || {
             let endpoint = endpoint.clone();
             async move {
@@ -165,6 +207,42 @@ pub fn secret_for(identity: &crate::identity::Identity) -> SecretKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_dial_closes_its_endpoint() {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let probe = endpoint.clone();
+        let owner = ClosingEndpoint::new(endpoint);
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _owner = owner;
+            ready.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        started.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(5), probe.closed())
+            .await
+            .expect("cancelled dial must close its endpoint");
+    }
+
+    #[tokio::test]
+    async fn explicit_shutdown_closes_before_the_guard_is_dropped() {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let owner = ClosingEndpoint::new(endpoint);
+        owner.close().await;
+        assert!(owner.endpoint.is_closed());
+        assert!(owner.closed.load(std::sync::atomic::Ordering::Acquire));
+    }
 
     #[test]
     fn transport_keys_are_stable_and_distinct() {
