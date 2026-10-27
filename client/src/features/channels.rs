@@ -1600,14 +1600,13 @@ fn VoiceOccupant(
         .get(&pubkey)
         .copied()
         .filter(|_| same_channel);
-    let health_label = health.and_then(|h| h.dot(is_self)).map(|(_, label)| label);
     let track_stats = state
         .read()
         .voice_stats
         .get(&pubkey)
         .copied()
         .filter(|_| same_channel);
-    let ring = crate::state::talk_ring(same_channel && speaking && !locally_muted, health);
+    let ring = crate::state::talk_ring(same_channel && speaking && !locally_muted);
     let (signal_icon, signal_color) = match health {
         Some(crate::state::ConnectionHealth::Excellent | crate::state::ConnectionHealth::Good) => {
             (crate::features::icons::SIGNAL_GOOD, "text-[var(--success)]")
@@ -1658,7 +1657,7 @@ fn VoiceOccupant(
             onclick: move |_| state.write().profile_card = Some(pk_card.clone()),
             oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
-                span { class: "shrink-0 flex", title: crate::i18n::label(health_label.unwrap_or_default()),
+                span { class: "shrink-0 flex",
                     crate::features::profiles::Avatar {
                         pubkey: pubkey.clone(),
                         name: name.clone(),

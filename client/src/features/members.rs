@@ -677,10 +677,7 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
             .and_then(|v| v.channel_id)
             .is_some_and(|cid| Some(cid) == input.connected_channel)
         {
-            crate::state::talk_ring(
-                vs.is_some_and(|v| v.speaking),
-                input.quality.get(&voice_pk).copied(),
-            )
+            crate::state::talk_ring(vs.is_some_and(|v| v.speaking))
         } else {
             ""
         };

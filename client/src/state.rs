@@ -77,40 +77,12 @@ pub enum ConnectionHealth {
     Lost,
 }
 
-/// The ring round a person's avatar: green while they talk, yellow or red when
-/// their connection is weak or gone, which stays visible between words.
-pub fn talk_ring(speaking: bool, health: Option<ConnectionHealth>) -> &'static str {
-    match (speaking, health) {
-        (true, Some(ConnectionHealth::Lost)) => "ring-2 ring-[var(--danger)]",
-        (true, Some(ConnectionHealth::Poor)) => "ring-2 ring-[var(--warn)]",
-        (true, _) => "ring-2 ring-[var(--success)]",
-        (false, Some(ConnectionHealth::Lost)) => "ring-1 ring-[var(--danger)]",
-        (false, Some(ConnectionHealth::Poor)) => "ring-1 ring-[var(--warn)]",
-        (false, _) => "",
-    }
-}
-
-impl ConnectionHealth {
-    pub fn dot(self, is_self: bool) -> Option<(&'static str, &'static str)> {
-        match (self, is_self) {
-            (Self::Excellent | Self::Good, _) => None,
-            (Self::Poor, false) => Some((
-                "var(--warn)",
-                "The server reports reduced media quality for this participant",
-            )),
-            (Self::Poor, true) => Some((
-                "var(--warn)",
-                "The server reports reduced media quality for your sent or received tracks",
-            )),
-            (Self::Lost, false) => Some((
-                "var(--danger)",
-                "The server is missing media or feedback for one of this participant's tracks",
-            )),
-            (Self::Lost, true) => Some((
-                "var(--danger)",
-                "The server is missing media or feedback for one of your sent or received tracks",
-            )),
-        }
+/// The ring round a person's avatar: green while they talk.
+pub fn talk_ring(speaking: bool) -> &'static str {
+    if speaking {
+        "ring-2 ring-[var(--success)]"
+    } else {
+        ""
     }
 }
 
@@ -2799,17 +2771,9 @@ mod tests {
     }
 
     #[test]
-    fn talking_lights_green_and_a_bad_connection_shows_between_words() {
-        use ConnectionHealth::*;
-        assert_eq!(talk_ring(true, None), "ring-2 ring-[var(--success)]");
-        assert_eq!(
-            talk_ring(true, Some(Excellent)),
-            "ring-2 ring-[var(--success)]"
-        );
-        assert_eq!(talk_ring(true, Some(Poor)), "ring-2 ring-[var(--warn)]");
-        assert_eq!(talk_ring(false, Some(Poor)), "ring-1 ring-[var(--warn)]");
-        assert_eq!(talk_ring(false, Some(Lost)), "ring-1 ring-[var(--danger)]");
-        assert_eq!(talk_ring(false, Some(Good)), "", "silent and fine is plain");
+    fn talking_lights_green_and_silence_shows_no_ring() {
+        assert_eq!(talk_ring(true), "ring-2 ring-[var(--success)]");
+        assert_eq!(talk_ring(false), "");
     }
 
     #[test]
