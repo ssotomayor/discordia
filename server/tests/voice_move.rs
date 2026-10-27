@@ -547,3 +547,93 @@ async fn a_media_key_only_travels_between_two_people_in_that_call() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn moderator_move_broadcasts_leave_join_and_sends_grants_only_to_the_voice_device() {
+    let (url, handle) = spawn_gateway().await;
+    let mut owner = connect_user(&url, &BotIdentity::generate(), "Owner").await;
+    let (guild, source) = guild_with_voice(&mut owner, "Move members").await;
+    owner
+        .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
+            guild_id: guild,
+            name: "Destination".into(),
+            kind: ChannelKind::Voice,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    let destination = loop {
+        if let ServerMessage::ChannelCreate(ch) = next_timeout(&mut owner).await {
+            break ch.id;
+        }
+    };
+    let identity = BotIdentity::generate();
+    let key = identity.pubkey().to_string();
+    let mut target = connect_user(&url, &identity, "Target").await;
+    join_guild(&mut target, guild).await;
+    target
+        .send(&ClientMessage::JoinVoice {
+            channel_id: source,
+            preferences: Some(discordia_server::protocol::VoicePreferences {
+                muted: true,
+                deafened: true,
+            }),
+        })
+        .await
+        .unwrap();
+    next_state_of(&mut owner, &key).await;
+    target
+        .send(&ClientMessage::SetScreenShare {
+            channel_id: source,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    assert!(next_state_of(&mut owner, &key).await.screen_sharing);
+    let mut sibling = connect_user(&url, &identity, "Target").await;
+    owner
+        .send(&ClientMessage::MoveVoice {
+            user_pubkey: key.clone(),
+            from_channel_id: source,
+            channel_id: destination,
+        })
+        .await
+        .unwrap();
+    for session in [&mut owner, &mut target, &mut sibling] {
+        loop {
+            if next_state_of(session, &key).await.channel_id.is_none() {
+                break;
+            }
+        }
+        let joined = next_state_of(session, &key).await;
+        assert_eq!(joined.channel_id, Some(destination));
+        assert!(joined.muted && joined.deafened);
+        assert!(!joined.speaking && !joined.screen_sharing && !joined.camera_on);
+    }
+    loop {
+        if let ServerMessage::VoiceToken {
+            channel_id, token, ..
+        } = next_timeout(&mut target).await
+            && channel_id == destination
+        {
+            assert!(!token.is_empty());
+            break;
+        }
+    }
+    let sibling_grant = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if let Some(ServerMessage::VoiceToken { channel_id, .. }) = sibling.next_event().await
+                && channel_id == destination
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        sibling_grant.is_err(),
+        "a chat-only sibling must not join the moved call"
+    );
+    handle.abort();
+}

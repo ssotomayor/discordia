@@ -9,7 +9,7 @@ use crate::protocol::{ClientMessage, Permission};
 use crate::state::{VoiceMenu, use_app_state, use_gateway};
 
 const MENU_W: f64 = 232.0;
-const MENU_H: f64 = 220.0;
+const MENU_H: f64 = 276.0;
 
 #[component]
 pub fn VoiceMenuHost() -> Element {
@@ -65,6 +65,40 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
             });
         (volume, muted, disconnect_in, track_stats, health, ping_ms)
     };
+
+    let (move_from, destinations) = {
+        let s = state.read();
+        let source = s
+            .voice_states
+            .iter()
+            .find(|v| v.user_pubkey == pubkey)
+            .filter(|v| {
+                s.can(v.guild_id, Permission::MoveMembers)
+                    && s.self_user.as_ref().is_none_or(|u| u.pubkey != pubkey)
+                    && !s
+                        .guilds
+                        .iter()
+                        .any(|g| g.id == v.guild_id && g.owner_pubkey == pubkey)
+            });
+        let from = source.and_then(|v| v.channel_id);
+        let mut destinations: Vec<_> = source
+            .into_iter()
+            .flat_map(|v| {
+                s.channels
+                    .iter()
+                    .filter(move |c| {
+                        c.guild_id == v.guild_id
+                            && c.kind == crate::protocol::ChannelKind::Voice
+                            && Some(c.id) != from
+                    })
+                    .map(|c| (c.id, c.name.clone()))
+            })
+            .collect();
+        destinations.sort_by(|a, b| a.1.cmp(&b.1));
+        (from, destinations)
+    };
+    let pk_move = pubkey.clone();
+    let move_gateway = gateway.clone();
 
     let apply = {
         let pubkey = pubkey.clone();
@@ -127,7 +161,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                                 }
                                 span { {crate::i18n::text("Jit: {0}ms", &[format!("{jitter_ms:.0}")])} }
                                 if let Some(ping) = ping_ms {
-                                    span { {crate::i18n::text("Ping: {0}ms", &[ping.to_string()])} }
+                                    span { title: crate::i18n::text("Your ping to server: {0} ms", &[ping.to_string()]), {crate::i18n::text("Your ping: {0}ms", &[ping.to_string()])} }
                                 }
                             }
                         },
@@ -140,7 +174,7 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                                 }
                                 span { {crate::i18n::text("{0} pkt/s", &[packets_per_sec.unwrap_or(0).to_string()])} }
                                 if let Some(ping) = ping_ms {
-                                    span { {crate::i18n::text("Ping: {0}ms", &[ping.to_string()])} }
+                                    span { title: crate::i18n::text("Your ping to server: {0} ms", &[ping.to_string()]), {crate::i18n::text("Your ping: {0}ms", &[ping.to_string()])} }
                                 }
                             }
                         },
@@ -191,6 +225,25 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         close();
                     },
                     {crate::i18n::text("View profile", &[])}
+                }
+                if let Some(from_channel_id) = move_from && !destinations.is_empty() {
+                    select {
+                        class: "w-full px-3 py-1.5 rounded text-xs bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)]",
+                        aria_label: crate::i18n::text("Move to voice channel", &[]),
+                        value: "",
+                        onchange: move |e| {
+                            if let Ok(channel_id) = e.value().parse() {
+                                move_gateway.send(ClientMessage::MoveVoice {
+                                    user_pubkey: pk_move.clone(), from_channel_id, channel_id,
+                                });
+                                close();
+                            }
+                        },
+                        option { value: "", disabled: true, {crate::i18n::text("Move to voice channel", &[])} }
+                        for (id, name) in destinations {
+                            option { value: "{id}", "{name}" }
+                        }
+                    }
                 }
                 if let Some(gid) = disconnect_in {
                     div { class: "border-t border-[var(--border)] my-1" }

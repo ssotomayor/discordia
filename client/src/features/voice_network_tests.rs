@@ -117,6 +117,33 @@ fn upstream_reports_must_be_fresh_match_the_sender_and_have_active_audio() {
     assert_eq!(feedback.sample(&sender_stats(5, 250, 0.5)), Some(50.0));
 }
 
+#[test]
+fn displayed_loss_requires_valid_feedback_for_the_current_microphone() {
+    assert_eq!(reported_microphone_loss(&[]), None);
+    assert_eq!(
+        reported_microphone_loss(&sender_stats(1, 50, 0.0)),
+        Some(0.0)
+    );
+    assert_eq!(
+        reported_microphone_loss(&sender_stats(1, 50, 0.25)),
+        Some(25.0)
+    );
+    for loss in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+        assert_eq!(reported_microphone_loss(&sender_stats(1, 50, loss)), None);
+    }
+    let mut stats = sender_stats(1, 50, 0.25);
+    if let RtcStats::RemoteInboundRtp(report) = &mut stats[1] {
+        report.remote_inbound.local_id = "previous-microphone".into();
+    }
+    assert_eq!(reported_microphone_loss(&stats), None);
+    if let RtcStats::RemoteInboundRtp(report) = &mut stats[1] {
+        report.remote_inbound.local_id = "mic".into();
+        report.stream.ssrc = 2;
+    }
+    assert_eq!(reported_microphone_loss(&stats), None);
+    assert_eq!(reported_microphone_loss(&stats[..1]), None);
+}
+
 #[tokio::test]
 #[ignore = "starts the bundled SFU; checks Opus FEC is negotiated and a new ceiling applies live"]
 async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecting() {

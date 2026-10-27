@@ -59,6 +59,7 @@ pub enum ProfileWrite {
 struct Conn {
     tx: mpsc::Sender<ServerMessage>,
     ip: Option<std::net::IpAddr>,
+    host: Option<String>,
     route: crate::connection_routes::RouteSource,
 }
 
@@ -368,10 +369,27 @@ impl AppState {
             Conn {
                 tx,
                 ip,
+                host: None,
                 route: crate::connection_routes::RouteSource::Socket(ip),
             },
         );
         Ok((id, rx))
+    }
+
+    pub(crate) fn set_connection_host(&self, conn_id: u64, host: Option<String>) {
+        if let Some(mut conn) = self.conns.get_mut(&conn_id) {
+            conn.host = host;
+        }
+    }
+
+    pub(crate) fn connection_voice_address(
+        &self,
+        conn_id: u64,
+    ) -> (Option<String>, Option<std::net::IpAddr>) {
+        self.conns
+            .get(&conn_id)
+            .map(|c| (c.host.clone(), c.ip))
+            .unwrap_or_default()
     }
 
     pub fn identify_conn(&self, conn_id: u64, pubkey: &str) -> Result<(), String> {
@@ -2134,6 +2152,51 @@ impl AppState {
         }
         self.clear_voice(target_pubkey)
             .ok_or_else(|| "they aren't in a voice channel here".into())
+    }
+
+    pub fn move_voice_member(
+        &self,
+        target_pubkey: &str,
+        by_pubkey: &str,
+        from_channel_id: Id,
+        channel_id: Id,
+    ) -> Result<(VoiceState, VoiceState, u64), String> {
+        let destination = self.channel(channel_id).ok_or("not a voice channel")?;
+        let guild_id = destination.guild_id;
+        self.require_permission(guild_id, by_pubkey, Permission::MoveMembers)?;
+        self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
+        if destination.kind != crate::protocol::ChannelKind::Voice
+            || from_channel_id == channel_id
+            || !self.is_guild_member(guild_id, target_pubkey)
+            || !self.can_see_channel(by_pubkey, &destination)
+            || !self.can_see_channel(target_pubkey, &destination)
+        {
+            return Err("not an accessible voice destination".into());
+        }
+        let source = self
+            .channel(from_channel_id)
+            .ok_or("unknown source channel")?;
+        if source.guild_id != guild_id || !self.can_see_channel(by_pubkey, &source) {
+            return Err("voice moves must stay in the same guild".into());
+        }
+        let owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        let conn_id = *owners
+            .get(target_pubkey)
+            .ok_or("they aren't in a voice channel here")?;
+        if !self.conns.contains_key(&conn_id) {
+            return Err("their voice connection is unavailable".into());
+        }
+        let previous = self
+            .voice_states
+            .get(target_pubkey)
+            .map(|v| v.clone())
+            .ok_or("they aren't in a voice channel here")?;
+        if previous.channel_id != Some(from_channel_id) || previous.guild_id != guild_id {
+            return Err("their voice channel changed before the move".into());
+        }
+        let joined =
+            self.set_voice_channel_unlocked(target_pubkey, guild_id, Some(channel_id), None);
+        Ok((previous, joined, conn_id))
     }
 
     pub async fn ban_member(

@@ -124,6 +124,28 @@ struct UplinkFeedback {
     last_packets: Option<(u32, u64)>,
 }
 
+fn microphone_feedback(
+    stats: &[RtcStats],
+) -> Option<&livekit::webrtc::stats::RemoteInboundRtpStats> {
+    let out = stats.iter().find_map(|s| match s {
+        RtcStats::OutboundRtp(s) => Some(s),
+        _ => None,
+    })?;
+    stats.iter().find_map(|s| match s {
+        RtcStats::RemoteInboundRtp(s)
+            if s.remote_inbound.local_id == out.rtc.id && s.stream.ssrc == out.stream.ssrc =>
+        {
+            Some(s)
+        }
+        _ => None,
+    })
+}
+
+fn reported_microphone_loss(stats: &[RtcStats]) -> Option<f32> {
+    let loss = microphone_feedback(stats)?.remote_inbound.fraction_lost;
+    (loss.is_finite() && (0.0..=1.0).contains(&loss)).then_some(loss as f32 * 100.0)
+}
+
 impl UplinkFeedback {
     /// Loss from a receiver report not seen before, while audio is flowing.
     fn sample(&mut self, stats: &[RtcStats]) -> Option<f32> {
@@ -139,14 +161,7 @@ impl UplinkFeedback {
         // DTX sends a few packets a second in silence; a report over those says little.
         let active = previous
             .is_some_and(|(ssrc, packets)| ssrc == sent.0 && sent.1.saturating_sub(packets) >= 20);
-        let report = stats.iter().find_map(|s| match s {
-            RtcStats::RemoteInboundRtp(s)
-                if s.remote_inbound.local_id == out.rtc.id && s.stream.ssrc == out.stream.ssrc =>
-            {
-                Some(s)
-            }
-            _ => None,
-        })?;
+        let report = microphone_feedback(stats)?;
         let key = (report.stream.ssrc, report.rtc.timestamp);
         if self
             .last_report
@@ -294,14 +309,11 @@ pub(super) fn spawn_stats_task(
                     );
                 }
             }
-            let remote_rtt = stats.iter().find_map(|s| match s {
-                RtcStats::RemoteInboundRtp(r)
-                    if r.remote_inbound.round_trip_time > 0.0
-                        && r.remote_inbound.round_trip_time.is_finite() =>
-                {
-                    Some(Duration::from_secs_f64(r.remote_inbound.round_trip_time))
-                }
-                _ => None,
+            let remote_rtt = microphone_feedback(&stats).and_then(|r| {
+                let seconds = r.remote_inbound.round_trip_time;
+                (seconds > 0.0)
+                    .then(|| Duration::try_from_secs_f64(seconds).ok())
+                    .flatten()
             });
             let ping_ms = room_rtt
                 .or(remote_rtt)
@@ -309,15 +321,7 @@ pub(super) fn spawn_stats_task(
             if state.peek().voice_ping_ms != ping_ms {
                 state.write().voice_ping_ms = ping_ms;
             }
-            let current_loss = stats.iter().find_map(|s| match s {
-                RtcStats::RemoteInboundRtp(r)
-                    if r.remote_inbound.fraction_lost.is_finite()
-                        && (0.0..=1.0).contains(&r.remote_inbound.fraction_lost) =>
-                {
-                    Some((r.remote_inbound.fraction_lost * 100.0) as f32)
-                }
-                _ => None,
-            });
+            let current_loss = reported_microphone_loss(&stats);
             // Loss keeps the voice bitrate: Opus FEC and resends repair it, and a lower
             // bitrate sends as many packets, so it only cost quality (Discord holds it too).
             let ceiling = controls.bitrate_kbps.load(Ordering::Relaxed);
@@ -490,7 +494,7 @@ pub(super) fn spawn_stats_task(
                         bitrate_kbps: rates.map(|(_, b)| b),
                         packets_per_sec: rates.map(|(p, _)| p),
                         target_kbps: ceiling,
-                        loss_pct: current_loss.or(Some(0.0)),
+                        loss_pct: current_loss,
                     },
                 );
             } else {

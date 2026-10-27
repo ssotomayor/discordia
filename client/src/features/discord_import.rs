@@ -243,6 +243,7 @@ pub fn map_permissions(bits: &str) -> Vec<Permission> {
         (1 << 13, Permission::ManageMessages),
         (1 << 16, Permission::ReadMessageHistory),
         (1 << 24, Permission::DisconnectMembers),
+        (1 << 24, Permission::MoveMembers),
         (1 << 28, Permission::ManageRoles),
         (1 << 30, Permission::ManageEmojis),
     ];

@@ -114,11 +114,29 @@ enum ChanMenuMode {
     ConfirmDelete,
 }
 
+#[derive(Clone, PartialEq)]
+struct VoiceDrag {
+    pubkey: String,
+    from_channel: Id,
+    destination: Option<Id>,
+}
+
+#[derive(Clone, Copy)]
+struct VoiceDragContext {
+    drag: Signal<Option<VoiceDrag>>,
+    suppress_click: Signal<bool>,
+}
+
 const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden";
 const HEADER: &str = "h-12 px-3.5 flex items-center gap-2 border-b border-[var(--border)]";
 
 #[component]
 pub fn ChannelsColumn() -> Element {
+    let mut voice_drag = use_context_provider(|| VoiceDragContext {
+        drag: Signal::new(None),
+        suppress_click: Signal::new(false),
+    });
+
     let mut state = use_app_state();
     let gateway = use_gateway();
 
@@ -357,10 +375,25 @@ pub fn ChannelsColumn() -> Element {
                 class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 // Pointer drag, not HTML5 DnD: Windows turns HTML5 DnD off while
                 // the wry file-drop handler is installed. The rail commits it.
+                onpointerdown: move |_| voice_drag.suppress_click.set(false),
                 onpointerup: {
                     let gateway = gateway.clone();
                     let order = guild_order.clone();
                     move |_| {
+                        let member = voice_drag.drag.write().take();
+                        if let Some(member) = member {
+                            dragging.set(None);
+                            drop_at.set(None);
+                            if let Some(channel_id) = member.destination {
+                                voice_drag.suppress_click.set(true);
+                                gateway.send(ClientMessage::MoveVoice {
+                                    user_pubkey: member.pubkey,
+                                    from_channel_id: member.from_channel,
+                                    channel_id,
+                                });
+                            }
+                            return;
+                        }
                         let moved = dragging();
                         let at = drop_at();
                         dragging.set(None);
@@ -371,10 +404,12 @@ pub fn ChannelsColumn() -> Element {
                     }
                 },
                 onpointerleave: move |_| {
+                    voice_drag.drag.set(None);
                     dragging.set(None);
                     drop_at.set(None);
                 },
                 onpointercancel: move |_| {
+                    voice_drag.drag.set(None);
                     dragging.set(None);
                     drop_at.set(None);
                 },
@@ -1080,17 +1115,37 @@ fn VoiceChannelRow(
     } else {
         ""
     };
+    let mut voice_drag = use_context::<VoiceDragContext>();
+    let targeted = voice_drag
+        .drag
+        .read()
+        .as_ref()
+        .is_some_and(|drag| drag.destination == Some(channel.id));
+    let channel_id = channel.id;
     let state = use_app_state();
     let users_by_id = state.read();
     let sharers: Vec<String> = users_by_id.screen_sharers_in(channel.id).to_vec();
 
     rsx! {
-        div { class: "rounded",
+        div {
+            class: "rounded",
+            style: if targeted { "outline:2px solid var(--accent);" } else { "" },
+            onpointerenter: move |_| {
+                if let Some(member) = voice_drag.drag.write().as_mut() {
+                    member.destination = (member.from_channel != channel_id).then_some(channel_id);
+                }
+            },
+            onpointerleave: move |_| {
+                if let Some(member) = voice_drag.drag.write().as_mut()
+                    && member.destination == Some(channel_id) {
+                    member.destination = None;
+                }
+            },
             button {
                 class: "relative w-full min-h-8 py-1 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
                 style: "{row_style}",
                 onclick: move |_| {
-                    if !connected {
+                    if !(voice_drag.suppress_click)() && !connected {
                         on_join.call(());
                     }
                 },
@@ -1497,12 +1552,15 @@ fn occupant_diagnostics_tooltip(
         Some(crate::state::ConnectionHealth::Lost) => {
             crate::i18n::text("Connection quality: Disrupted", &[])
         }
-        None => crate::i18n::text("Connection quality: Normal", &[]),
+        None => crate::i18n::text("Connection quality: Unavailable", &[]),
     };
     lines.push(quality_desc);
 
     if let Some(ping) = ping_ms {
-        lines.push(crate::i18n::text("Ping: {0} ms", &[ping.to_string()]));
+        lines.push(crate::i18n::text(
+            "Your ping to server: {0} ms",
+            &[ping.to_string()],
+        ));
     }
 
     match stats {
@@ -1570,6 +1628,30 @@ fn occupant_diagnostics_tooltip(
 }
 
 #[component]
+fn VoiceSignal(icon: &'static str, color: &'static str, tooltip: String) -> Element {
+    let mut shown = use_signal(|| false);
+    rsx! {
+        span {
+            class: "relative inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
+            role: "img",
+            aria_label: "{tooltip}",
+            onmouseenter: move |_| shown.set(true),
+            onmouseleave: move |_| shown.set(false),
+            span { class: "inline-flex", dangerous_inner_html: icon }
+            if shown() {
+                span {
+                    role: "tooltip",
+                    class: "absolute right-0 bottom-full mb-1.5 z-50 pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none whitespace-nowrap",
+                    for line in tooltip.lines() {
+                        span { class: "block", "{line}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn VoiceOccupant(
     channel_id: Id,
     pubkey: String,
@@ -1584,7 +1666,22 @@ fn VoiceOccupant(
     can_watch_camera: bool,
 ) -> Element {
     let mut state = use_app_state();
-    let mut show_tooltip = use_signal(|| false);
+    let mut voice_drag = use_context::<VoiceDragContext>();
+    let can_move = {
+        let s = state.read();
+        s.channels
+            .iter()
+            .find(|c| c.id == channel_id)
+            .is_some_and(|c| {
+                !is_self
+                    && s.can(c.guild_id, Permission::MoveMembers)
+                    && !s
+                        .guilds
+                        .iter()
+                        .any(|g| g.id == c.guild_id && g.owner_pubkey == pubkey)
+            })
+    };
+    let drag_pubkey = pubkey.clone();
 
     let volume = state
         .read()
@@ -1653,8 +1750,22 @@ fn VoiceOccupant(
 
     rsx! {
         div {
-            class: "px-2 py-0.5 rounded cursor-pointer hover:bg-white/[0.03]",
-            onclick: move |_| state.write().profile_card = Some(pk_card.clone()),
+            class: "px-2 py-0.5 rounded cursor-pointer select-none hover:bg-white/[0.03]",
+            style: if can_move { "cursor:grab;" } else { "" },
+            onpointerdown: move |e: PointerEvent| {
+                if can_move && e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
+                    e.stop_propagation();
+                    voice_drag.suppress_click.set(false);
+                    voice_drag.drag.set(Some(VoiceDrag {
+                        pubkey: drag_pubkey.clone(), from_channel: channel_id, destination: None,
+                    }));
+                }
+            },
+            onclick: move |_| {
+                if !(voice_drag.suppress_click)() {
+                    state.write().profile_card = Some(pk_card.clone());
+                }
+            },
             oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
                 span { class: "shrink-0 flex",
@@ -1669,22 +1780,7 @@ fn VoiceOccupant(
                     if is_self { {crate::i18n::text(" (you)", &[])} }
                 }
                 if same_channel {
-                    span {
-                        class: "relative inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {signal_color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
-                        role: "img",
-                        aria_label: "{signal_tooltip}",
-                        onmouseenter: move |_| show_tooltip.set(true),
-                        onmouseleave: move |_| show_tooltip.set(false),
-                        dangerous_inner_html: signal_icon,
-                        if show_tooltip() {
-                            div {
-                                class: "absolute right-0 bottom-full mb-1.5 z-50 pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none whitespace-nowrap",
-                                for line in signal_tooltip.lines() {
-                                    div { "{line}" }
-                                }
-                            }
-                        }
-                    }
+                    VoiceSignal { icon: signal_icon, color: signal_color, tooltip: signal_tooltip }
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
@@ -2154,6 +2250,10 @@ fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) 
 }
 
 #[cfg(test)]
+#[path = "voice_drag_tests.rs"]
+mod voice_drag_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2372,7 +2472,7 @@ mod tests {
             false,
         );
         assert!(text.contains("Connection quality: Good"));
-        assert!(text.contains("Ping: 32 ms"));
+        assert!(text.contains("Your ping to server: 32 ms"));
         assert!(text.contains("Packet loss: 0.8% (recent) · 1.5% (total)"));
         assert!(text.contains("Jitter: 24 ms"));
         assert!(text.contains("Buffer delay: 12 ms"));
@@ -2393,7 +2493,7 @@ mod tests {
             true,
         );
         assert!(text.contains("Connection quality: Excellent"));
-        assert!(text.contains("Ping: 18 ms"));
+        assert!(text.contains("Your ping to server: 18 ms"));
         assert!(text.contains("Packet loss: 0.0%"));
         assert!(text.contains("Outbound audio: 64 kbps (target: 64 kbps)"));
         assert!(text.contains("Rate: 50 pkt/s"));
@@ -2408,6 +2508,103 @@ mod tests {
             true,
         );
         assert!(text.contains("Connection quality: Reduced (your sent/received audio)"));
+    }
+
+    #[test]
+    fn signal_updates_leave_the_open_tooltip_outside_the_svg_leaf() {
+        use dioxus::core::{AttributeValue, ElementId, Mutation};
+        use std::{any::Any, cell::RefCell, rc::Rc};
+
+        type Export = Rc<RefCell<Option<Signal<bool>>>>;
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let export: Export = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let lost = use_signal(|| false);
+                *export.borrow_mut() = Some(lost);
+                let (icon, color, tooltip) = if lost() {
+                    (super::super::icons::SIGNAL_LOST, "red", "Disrupted")
+                } else {
+                    (super::super::icons::SIGNAL_GOOD, "green", "Healthy")
+                };
+                rsx! { VoiceSignal { icon, color, tooltip } }
+            },
+            export.clone(),
+        );
+        let initial = dom.rebuild_to_vec().edits;
+        let hover = initial
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "mouseenter" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let icon = initial
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "dangerous_inner_html",
+                    id,
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(
+            hover, icon,
+            "rewriting the SVG must not replace the hover container's children"
+        );
+        fn mouse(dom: &mut VirtualDom, name: &str, id: ElementId) -> Vec<Mutation> {
+            let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+                dioxus::html::SerializedMouseData::default(),
+            )));
+            dom.runtime()
+                .handle_event(name, Event::new(data, false), id);
+            dom.render_immediate_to_vec().edits
+        }
+        let shown = mouse(&mut dom, "mouseenter", hover);
+        assert!(shown.iter().any(|edit| matches!(
+            edit,
+            Mutation::SetText { value, .. } | Mutation::CreateTextNode { value, .. } if value == "Healthy"
+        )));
+        let mut lost = export.borrow().unwrap();
+        lost.set(true);
+        let changed = dom.render_immediate_to_vec().edits;
+        assert!(changed.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "dangerous_inner_html", value: AttributeValue::Text(svg), id, .. }
+                if *id == icon && *svg == super::super::icons::SIGNAL_LOST
+        )));
+        assert!(
+            changed.iter().any(|edit| matches!(
+                edit,
+                Mutation::SetText { value, .. } if value == "Disrupted"
+            )),
+            "the mounted tooltip still receives its text update"
+        );
+        assert!(
+            mouse(&mut dom, "mouseleave", hover)
+                .iter()
+                .any(|edit| matches!(edit, Mutation::Remove { .. } | Mutation::ReplaceWith { .. }))
+        );
+        assert!(!mouse(&mut dom, "mouseenter", hover).is_empty());
+    }
+
+    #[test]
+    fn diagnostics_do_not_claim_healthy_quality_or_zero_loss_without_feedback() {
+        let text = occupant_diagnostics_tooltip(
+            None,
+            Some(crate::state::TrackStats::Outbound {
+                bitrate_kbps: None,
+                packets_per_sec: None,
+                target_kbps: 64,
+                loss_pct: None,
+            }),
+            None,
+            true,
+        );
+        assert!(text.contains("Connection quality: Unavailable"));
+        assert!(!text.contains("Packet loss:"));
+        assert!(!text.contains("ping"));
     }
 }
 
