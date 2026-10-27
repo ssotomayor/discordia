@@ -262,6 +262,11 @@ impl MediaStore {
         report
     }
 
+    pub fn stored_size(&self, stored: &str) -> Option<u64> {
+        let name = sanitize(stored.strip_prefix(SENTINEL)?)?;
+        std::fs::metadata(self.dir.join(name)).ok().map(|m| m.len())
+    }
+
     pub fn existing(&self, stored: &str) -> Option<String> {
         let name = sanitize(stored.strip_prefix(SENTINEL)?)?;
         self.dir
