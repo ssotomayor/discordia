@@ -59,6 +59,7 @@ fn main() {
         "src/audio_mixer.rs",
         "src/packet_trailer.rs",
         "src/voice_audio_encoder.rs",
+        "src/soundboard_decoder.rs",
     ];
 
     if is_desktop {
@@ -100,6 +101,7 @@ fn main() {
         "src/prohibit_libsrtp_initialization.cpp",
         "src/apm.cpp",
         "src/voice_audio_encoder.cpp",
+        "src/soundboard_decoder.cpp",
         "src/audio_mixer.cpp",
         "src/av1_bitstream.cpp",
         "src/packet_trailer.cpp",
