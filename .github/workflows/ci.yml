@@ -5,8 +5,8 @@ on:
     branches: [main, master]
   pull_request:
 
-# A push to a PR supersedes the run for its previous commit; a master run is
-# never cancelled, since it is publishing a pre-release.
+# Cancelling an active publisher can strand its reserved tag before its
+# signed assets are uploaded.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -46,6 +46,8 @@ jobs:
           node --test scripts/test-chat-scroll.cjs
       - name: Android release metadata and signing regressions
         run: python3 scripts/test_android_release.py
+      - name: Release tag preparation regressions
+        run: node --test scripts/test-release-tag.cjs
 
   test:
     name: fmt · clippy · test
@@ -556,13 +558,33 @@ jobs:
             Discordia-macos-arm64.dmg
           retention-days: 7
 
-  publish-prerelease:
-    name: Publish pre-release
+  prepare-prerelease:
+    name: Reserve pre-release tag
     if: github.event_name == 'push'
-    needs: [test, desktop-build, android-build, prerelease-linux, prerelease-windows, prerelease-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: write           # create the release + tag
+      contents: write
+    outputs:
+      ready: ${{ steps.tag.outputs.ready }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Reserve tag for this build commit
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-tag.cjs prepare
+
+  publish-prerelease:
+    name: Publish pre-release
+    if: github.event_name == 'push' && needs.prepare-prerelease.outputs.ready == 'true'
+    needs: [prepare-prerelease, test, desktop-build, android-build, prerelease-linux, prerelease-windows, prerelease-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
       pull-requests: read       # generate_release_notes reads merged PRs
     steps:
       - uses: actions/checkout@v4
@@ -630,10 +652,18 @@ jobs:
           test "$(find release -type f | wc -l)" -eq 14 || {
             echo "ERROR: expected 7 artifacts and 7 signatures"; exit 1; }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify release tag matches the signed build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-tag.cjs verify
+
       - name: Create pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0-pre.${{ github.run_number }}
+          tag_name: ${{ needs.prepare-prerelease.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Pre-Release v0.1.0-pre.${{ github.run_number }}
           prerelease: true
