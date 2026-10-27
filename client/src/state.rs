@@ -960,8 +960,13 @@ impl AppState {
             .unwrap_or(&[])
     }
 
-    /// The call the server has us in. It leads `voice.channel_id`, which waits
-    /// for a token to be minted, so keys for the new call are not refused.
+    pub fn connected_voice_channel(&self) -> Option<Id> {
+        (self.voice.phase == VoicePhase::Connected)
+            .then_some(self.voice.channel_id)
+            .flatten()
+    }
+
+    /// Keys can arrive before the local media token, so the server channel leads the join.
     pub fn server_voice_channel(&self) -> Option<Id> {
         let me = self.self_user.as_ref()?;
         self.voice_states

@@ -16,6 +16,7 @@ struct MetadataInputs {
 
 #[derive(Clone, PartialEq)]
 struct VoiceInputs {
+    connected_channel: Option<Id>,
     states: Vec<crate::protocol::VoiceState>,
     quality: HashMap<String, crate::state::ConnectionHealth>,
     channels: Vec<crate::protocol::Channel>,
@@ -55,6 +56,7 @@ fn use_member_sources() -> MemberSources {
     let voice = use_memo(move || {
         let s = state.read();
         VoiceInputs {
+            connected_channel: s.connected_voice_channel(),
             states: s.voice_states.clone(),
             quality: s.voice_quality.clone(),
             channels: s.channels.clone(),
@@ -671,10 +673,17 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
     let voice = use_memo(move || {
         let input = sources.voice.read();
         let vs = voice_here(&input.states, voice_guild, &voice_pk);
-        let ring = crate::state::talk_ring(
-            vs.is_some_and(|v| v.speaking),
-            input.quality.get(&voice_pk).copied(),
-        );
+        let ring = if vs
+            .and_then(|v| v.channel_id)
+            .is_some_and(|cid| Some(cid) == input.connected_channel)
+        {
+            crate::state::talk_ring(
+                vs.is_some_and(|v| v.speaking),
+                input.quality.get(&voice_pk).copied(),
+            )
+        } else {
+            ""
+        };
         let badges = vs.map(|v| {
             let place = v
                 .channel_id
@@ -932,6 +941,21 @@ mod tests {
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
         state.write().voice_states[0].speaking = true;
+        dom.render_immediate_to_vec();
+        assert_eq!(renders(), expected);
+        {
+            let mut s = state.write();
+            s.voice.channel_id = Some(channel);
+            s.voice.phase = crate::state::VoicePhase::Connected;
+        }
+        let edits = dom.render_immediate_to_vec().edits;
+        assert!(edits.iter().any(|edit| matches!(edit,
+            dioxus::core::Mutation::SetAttribute { name: "class", value: dioxus::core::AttributeValue::Text(value), .. }
+                if value.contains("ring-2 ring-[var(--success)]")
+        )));
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().voice.phase = crate::state::VoicePhase::Idle;
         dom.render_immediate_to_vec();
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
