@@ -1274,7 +1274,10 @@ fn ChatImage(address: String) -> Element {
     let resolved = use_memo(use_reactive((&address,), move |(address,)| {
         let s = state.read();
         let data = match address.strip_prefix("media:") {
-            Some(blob) => s.emoji_images.get_shared(blob),
+            Some(blob) => s
+                .emoji_images
+                .get_shared(blob)
+                .filter(|data| !data.is_empty()),
             None => s
                 .media_src(&address)
                 .map(|data| std::sync::Arc::new(data.to_owned())),
@@ -1300,6 +1303,60 @@ fn ChatImage(address: String) -> Element {
                 {crate::i18n::text("Loading image…", &[])}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn missing_chat_images_keep_the_placeholder_and_can_resolve_later() {
+        type Export = Rc<RefCell<Option<Signal<crate::state::AppState>>>>;
+        let export: Export = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let state = use_signal(|| {
+                    let mut state = crate::state::AppState::empty();
+                    state
+                        .emoji_images
+                        .insert("missing.png".into(), String::new());
+                    state
+                });
+                use_context_provider(|| state);
+                *export.borrow_mut() = Some(state);
+                rsx! { ChatImage { address: "media:missing.png".to_owned() } }
+            },
+            export.clone(),
+        );
+        let loading = crate::i18n::text("Loading image…", &[]);
+        let placeholder = |edits: &[dioxus::core::Mutation]| {
+            assert!(edits.iter().any(|edit| matches!(edit,
+                dioxus::core::Mutation::CreateTextNode { value, .. } if *value == loading
+            )));
+            assert!(!edits.iter().any(|edit| matches!(edit,
+                dioxus::core::Mutation::SetAttribute { name: "src", value: dioxus::core::AttributeValue::Text(value), .. }
+                    if value.is_empty()
+            )));
+        };
+        placeholder(&dom.rebuild_to_vec().edits);
+        let mut state = export.borrow().unwrap();
+        let image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=";
+        state
+            .write()
+            .emoji_images
+            .insert("missing.png".into(), image.into());
+        assert!(dom.render_immediate_to_vec().edits.iter().any(|edit| matches!(edit,
+            dioxus::core::Mutation::SetAttribute { name: "src", value: dioxus::core::AttributeValue::Text(value), .. }
+                if value == image
+        )));
+        state
+            .write()
+            .emoji_images
+            .insert("missing.png".into(), String::new());
+        placeholder(&dom.render_immediate_to_vec().edits);
+        assert!(state.read().emoji_images.contains_key("missing.png"));
     }
 }
 
