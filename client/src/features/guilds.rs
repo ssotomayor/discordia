@@ -17,22 +17,6 @@ struct GuildMenu {
     x: f64,
     y: f64,
     confirming: Option<ConfirmAction>,
-    accent_draft: Option<String>,
-}
-
-fn accept_accent(
-    menu: &mut Option<GuildMenu>,
-    guild_id: Id,
-    current: Option<&str>,
-) -> Option<ClientMessage> {
-    if menu.as_ref()?.guild_id != guild_id {
-        return None;
-    }
-    let draft = menu.take()?.accent_draft;
-    (draft.as_deref() != current).then_some(ClientMessage::SetGuildAccent {
-        guild_id,
-        accent: draft,
-    })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -229,9 +213,6 @@ pub fn GuildsSidebar() -> Element {
                                         x,
                                         y,
                                         confirming: None,
-                                        accent_draft: state.read().guilds.iter()
-                                            .find(|g| g.id == gid)
-                                            .and_then(|g| g.accent.clone()),
                                     }));
                                 },
                             }
@@ -299,7 +280,7 @@ pub fn GuildsSidebar() -> Element {
                                 && (!is_system || s.default_guild.is_some());
                             drop(s);
                             let gw_default = gateway.clone();
-                            let gw_set = gateway.clone();
+                            let accent_preview = cur_accent.as_deref().unwrap_or("var(--accent)");
                             rsx! {
                                 match m.confirming {
                                     None => rsx! {
@@ -315,49 +296,15 @@ pub fn GuildsSidebar() -> Element {
                                             }
                                         }
                                         if can_manage {
-                                            div { class: "flex items-center gap-2 px-3 py-1.5",
-                                                span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("Guild accent", &[])} }
-                                                input {
-                                                    r#type: "color",
-                                                    class: "w-7 h-7 rounded border border-[var(--border)] bg-transparent cursor-pointer",
-                                                    aria_label: crate::i18n::text("Guild accent", &[]),
-                                                    value: "{m.accent_draft.clone().unwrap_or_else(|| \"#e0a06a\".into())}",
-                                                    oninput: move |e| {
-                                                        if let Some(draft) = menu.write().as_mut().filter(|m| m.guild_id == gid) {
-                                                            draft.accent_draft = Some(e.value());
-                                                        }
-                                                    },
-                                                }
-                                                if m.accent_draft.is_some() {
-                                                    button {
-                                                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)]",
-                                                        onclick: move |_| {
-                                                            if let Some(draft) = menu.write().as_mut().filter(|m| m.guild_id == gid) {
-                                                                draft.accent_draft = None;
-                                                            }
-                                                        },
-                                                        {crate::i18n::text("clear", &[])}
-                                                    }
-                                                }
-                                            }
-                                            div { class: "flex items-center justify-end gap-2 px-3 py-1.5",
-                                                button {
-                                                    onclick: move |_| menu.set(None),
-                                                    {crate::i18n::text("Cancel", &[])}
-                                                }
-                                                button {
-                                                    class: "px-3 py-1 rounded border border-[var(--border)] text-[var(--accent)]",
-                                                    disabled: m.accent_draft == cur_accent,
-                                                    onclick: move |_| {
-                                                        let current = state.read().guilds.iter()
-                                                            .find(|g| g.id == gid)
-                                                            .and_then(|g| g.accent.clone());
-                                                        let command = accept_accent(&mut menu.write(), gid, current.as_deref());
-                                                        if let Some(command) = command {
-                                                            gw_set.send(command);
-                                                        }
-                                                    },
-                                                    {crate::i18n::text("Apply", &[])}
+                                            button {
+                                                class: "w-full flex items-center gap-2 px-3 py-1.5 rounded hover:bg-white/[0.04]",
+                                                onclick: move |_| {
+                                                    state.write().guild_dialog = Some(crate::state::GuildDialog::Accent(gid));
+                                                    menu.set(None);
+                                                },
+                                                span { class: "text-xs text-[var(--text-muted)] flex-1 text-left", {crate::i18n::text("Guild accent", &[])} }
+                                                span {
+                                                    style: "display: block; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 4px; background-color: {accent_preview};",
                                                 }
                                             }
                                             button {
@@ -783,58 +730,5 @@ pub fn RulesPromptDialog() -> Element {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod accent_tests {
-    use super::*;
-
-    fn editor() -> Option<GuildMenu> {
-        Some(GuildMenu {
-            guild_id: Id::new_v4(),
-            name: "Guild".into(),
-            x: 0.0,
-            y: 0.0,
-            confirming: None,
-            accent_draft: Some("#3355ff".into()),
-        })
-    }
-
-    #[test]
-    fn applies_only_the_final_color_once() {
-        let mut menu = editor();
-        let guild_id = menu.as_ref().unwrap().guild_id;
-        for color in ["#112233", "#223344", "#334455"] {
-            menu.as_mut().unwrap().accent_draft = Some(color.into());
-        }
-        assert!(matches!(
-            accept_accent(&mut menu, guild_id, Some("#3355ff")),
-            Some(ClientMessage::SetGuildAccent { guild_id: id, accent: Some(color) })
-                if id == guild_id && color == "#334455"
-        ));
-        assert!(accept_accent(&mut menu, guild_id, Some("#3355ff")).is_none());
-    }
-
-    #[test]
-    fn cancellation_and_unchanged_color_send_nothing() {
-        let mut menu = editor();
-        let guild_id = menu.as_ref().unwrap().guild_id;
-        assert!(accept_accent(&mut menu, guild_id, Some("#3355ff")).is_none());
-        menu = None;
-        assert!(accept_accent(&mut menu, guild_id, None).is_none());
-    }
-
-    #[test]
-    fn clearing_requires_confirmation_and_stale_events_leave_the_editor_alone() {
-        let mut menu = editor();
-        let guild_id = menu.as_ref().unwrap().guild_id;
-        menu.as_mut().unwrap().accent_draft = None;
-        assert!(accept_accent(&mut menu, Id::new_v4(), Some("#3355ff")).is_none());
-        assert!(menu.is_some());
-        assert!(matches!(
-            accept_accent(&mut menu, guild_id, Some("#3355ff")),
-            Some(ClientMessage::SetGuildAccent { guild_id: id, accent: None }) if id == guild_id
-        ));
     }
 }

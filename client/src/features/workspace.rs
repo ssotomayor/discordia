@@ -1428,6 +1428,11 @@ fn GuildDialogHost() -> Element {
 
     match open() {
         None => rsx! { Fragment {} },
+        Some(crate::state::GuildDialog::Accent(gid)) => rsx! {
+            for guild_id in std::iter::once(gid) {
+                super::accent_palette::GuildAccentDialog { key: "{guild_id}", guild_id, on_close: close }
+            }
+        },
         Some(crate::state::GuildDialog::Settings(gid)) => rsx! {
             crate::features::guild_settings::GuildSettingsDialog { guild_id: gid, on_close: close }
         },

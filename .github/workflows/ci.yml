@@ -181,6 +181,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/header-layout" --no-save playwright@1.62.1
           node "$RUNNER_TEMP/header-layout/node_modules/playwright/cli.js" install --with-deps chromium
           NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-home-header.cjs
+          NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-accent-palette.cjs
 
   windows-build:
     name: client compiles (windows)
