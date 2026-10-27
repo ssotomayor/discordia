@@ -1584,6 +1584,7 @@ fn VoiceOccupant(
     can_watch_camera: bool,
 ) -> Element {
     let mut state = use_app_state();
+    let mut show_tooltip = use_signal(|| false);
 
     let volume = state
         .read()
@@ -1670,11 +1671,20 @@ fn VoiceOccupant(
                 }
                 if same_channel {
                     span {
-                        class: "inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {signal_color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
+                        class: "relative inline-flex w-3.5 h-3.5 shrink-0 items-center justify-center {signal_color} cursor-help opacity-70 hover:opacity-100 transition-opacity",
                         role: "img",
-                        title: "{signal_tooltip}",
                         aria_label: "{signal_tooltip}",
+                        onmouseenter: move |_| show_tooltip.set(true),
+                        onmouseleave: move |_| show_tooltip.set(false),
                         dangerous_inner_html: signal_icon,
+                        if show_tooltip() {
+                            div {
+                                class: "absolute right-0 bottom-full mb-1.5 z-50 pointer-events-none rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-2.5 py-1.5 text-left font-mono text-[11px] leading-relaxed text-[var(--text)] select-none whitespace-nowrap",
+                                for line in signal_tooltip.lines() {
+                                    div { "{line}" }
+                                }
+                            }
+                        }
                     }
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
