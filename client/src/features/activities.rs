@@ -1592,6 +1592,8 @@ mod tests {
                 crate::i18n::Language::English,
                 crate::i18n::Language::Spanish,
                 crate::i18n::Language::Portuguese,
+                crate::i18n::Language::ChineseSimplified,
+                crate::i18n::Language::Japanese,
             ] {
                 let (hash, bundle) = builtin_bundle_in(id, language).unwrap();
                 assert!(hashes.insert(hash));
@@ -1627,6 +1629,8 @@ mod tests {
             (crate::i18n::Language::English, "Dice Roller"),
             (crate::i18n::Language::Spanish, "Dados"),
             (crate::i18n::Language::Portuguese, "Dados"),
+            (crate::i18n::Language::ChineseSimplified, "掷骰子"),
+            (crate::i18n::Language::Japanese, "サイコロ"),
         ] {
             let names: Names = Rc::new(RefCell::new(Vec::new()));
             VirtualDom::new(probe)

@@ -1057,6 +1057,8 @@ mod tests {
             (Language::English, "en", "Loading Discordia…"),
             (Language::Spanish, "es", "Cargando Discordia…"),
             (Language::Portuguese, "pt-BR", "Carregando Discordia…"),
+            (Language::ChineseSimplified, "zh-CN", "正在加载 Discordia…"),
+            (Language::Japanese, "ja", "Discordia を読み込み中…"),
         ] {
             let html = super::desktop_index(language);
             assert!(html.contains(&format!("<html lang=\"{tag}\">")));
