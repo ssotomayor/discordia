@@ -106,6 +106,14 @@ impl MediaStore {
         self.store_kind(data_url, Kind::Image)
     }
 
+    pub fn store_chat_image(&self, data_url: &str, max_bytes: usize) -> Result<String, StoreError> {
+        self.store_kind_with_image_limit(
+            data_url,
+            Kind::Image,
+            max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES),
+        )
+    }
+
     pub fn store_sound_data_url(&self, data_url: &str) -> Result<String, StoreError> {
         self.store_kind(data_url, Kind::Sound)
     }
@@ -119,6 +127,15 @@ impl MediaStore {
     }
 
     fn store_kind(&self, data_url: &str, kind: Kind) -> Result<String, StoreError> {
+        self.store_kind_with_image_limit(data_url, kind, crate::protocol::MAX_IMAGE_BYTES)
+    }
+
+    fn store_kind_with_image_limit(
+        &self,
+        data_url: &str,
+        kind: Kind,
+        max_image_bytes: usize,
+    ) -> Result<String, StoreError> {
         let unsupported = match kind {
             Kind::Image => StoreError::Unsupported,
             Kind::Sound => StoreError::UnsupportedSound,
@@ -130,7 +147,7 @@ impl MediaStore {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(payload)
             .map_err(|_| unsupported)?;
-        if matches!(kind, Kind::Image) && bytes.len() > crate::protocol::MAX_IMAGE_BYTES {
+        if matches!(kind, Kind::Image) && bytes.len() > max_image_bytes {
             return Err(StoreError::ImageTooLarge);
         }
         if matches!(kind, Kind::Bundle) && bytes.len() > crate::protocol::MAX_BUNDLE_BYTES {
@@ -349,6 +366,27 @@ fn mime_for_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_image_limit_does_not_expand_profile_uploads() {
+        let (media, _dir) = store();
+        let mut bytes = vec![0; crate::protocol::MAX_GUILD_UPLOAD_BYTES];
+        bytes[..6].copy_from_slice(b"GIF89a");
+        let url = format!(
+            "data:image/gif;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        assert_eq!(media.store_data_url(&url), Err(StoreError::ImageTooLarge));
+        assert!(
+            media
+                .store_chat_image(&url, crate::protocol::MAX_GUILD_UPLOAD_BYTES)
+                .is_ok()
+        );
+        assert_eq!(
+            media.store_chat_image(&url, 2_000_000),
+            Err(StoreError::ImageTooLarge)
+        );
+    }
 
     #[test]
     fn image_limit_counts_decoded_bytes_and_includes_exactly_two_mib() {

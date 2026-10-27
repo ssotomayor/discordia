@@ -361,7 +361,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let content = content.trim().to_string();
                         if let Some(img) = &image
                             && (!img.starts_with("data:image/")
-                                || img.len() > crate::state::MAX_IMAGE_LEN)
+                                || img.len() > crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN)
                             {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
                                     message: "image must be a data:image/* URL under the size limit".into(),
@@ -2637,9 +2637,8 @@ const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Each attempt is a Schnorr verification, so an unbounded retry is CPU we hand
 /// to anyone who can open a socket.
 const MAX_IDENTIFY_ATTEMPTS: u32 = 5;
-/// SetProfile carries two images together, plus JSON and profile text.
-/// Keep the socket bounded while admitting both independently legal uploads.
-pub const MAX_FRAME_BYTES: usize = 2 * crate::state::MAX_IMAGE_LEN + 16_384;
+// A configured 10 MB chat image must fit alongside its base64 encoding and JSON envelope.
+pub const MAX_FRAME_BYTES: usize = crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN + 16_384;
 
 /// The socket enforces the cap and the handler enforces the image size, so a
 /// cap under it would kill the connection before anything could explain why.

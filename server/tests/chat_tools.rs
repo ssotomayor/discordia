@@ -475,3 +475,142 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
         Some(ServerMessage::GuildFilePolicy { .. })
     ));
 }
+
+#[tokio::test]
+async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
+    let (state, owner, guild_id, channel_id) = fixture().await;
+    assert_eq!(
+        state.store.file_policy(guild_id).await.unwrap().max_bytes,
+        2_000_000
+    );
+    let mut image = vec![0; 10_000_000];
+    image[..6].copy_from_slice(b"GIF89a");
+    let url = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&image)
+    );
+    assert!(
+        state
+            .push_image_message(
+                channel_id,
+                owner.clone(),
+                String::new(),
+                Some(url.clone()),
+                None,
+                None
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(state.media.used_bytes(), 0);
+    state
+        .handle_chat_tool(
+            &owner,
+            ClientMessage::SetGuildFilePolicy {
+                guild_id,
+                policy: FilePolicy {
+                    max_bytes: 10_000_000,
+                    retention_days: 7,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let message = state
+        .push_image_message(
+            channel_id,
+            owner.clone(),
+            String::new(),
+            Some(url),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(message.image.unwrap().starts_with("media:"));
+    assert!(message.image_metadata.is_some());
+    assert_eq!(state.media.used_bytes(), 10_000_000);
+    assert!(
+        state
+            .handle_chat_tool(&owner, upload(channel_id, "maximum.bin", &image))
+            .await
+            .is_ok()
+    );
+    image.push(0);
+    let too_large = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&image)
+    );
+    assert!(
+        state
+            .push_image_message(
+                channel_id,
+                owner.clone(),
+                String::new(),
+                Some(too_large),
+                None,
+                None
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        state
+            .handle_chat_tool(&owner, upload(channel_id, "too-large.bin", &image))
+            .await
+            .is_err()
+    );
+    assert!(
+        state
+            .handle_chat_tool(
+                &owner,
+                ClientMessage::SetGuildFilePolicy {
+                    guild_id,
+                    policy: FilePolicy {
+                        max_bytes: 10_000_001,
+                        retention_days: 7
+                    }
+                }
+            )
+            .await
+            .is_err()
+    );
+    let stranger = User {
+        pubkey: "33".repeat(32),
+        username: "stranger".into(),
+    };
+    assert!(
+        state
+            .handle_chat_tool(
+                &stranger,
+                ClientMessage::SetGuildFilePolicy {
+                    guild_id,
+                    policy: FilePolicy {
+                        max_bytes: 10_000_000,
+                        retention_days: 7
+                    }
+                }
+            )
+            .await
+            .is_err()
+    );
+    state
+        .handle_chat_tool(
+            &owner,
+            ClientMessage::SetGuildFilePolicy {
+                guild_id,
+                policy: FilePolicy::default(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        state
+            .handle_chat_tool(
+                &owner,
+                upload(channel_id, "default-too-large.bin", &image[..2_000_001])
+            )
+            .await
+            .is_err()
+    );
+}
