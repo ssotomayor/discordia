@@ -128,7 +128,6 @@ fn Palette(
     let preview = draft().unwrap_or_else(|| "var(--accent)".into());
     let caption = crate::i18n::text("Guild accent", &[]);
     rsx! {
-        document::Style { {include_str!("../../assets/accent-palette.css")} }
         div {
             class: "dxf-accent-backdrop",
             onclick: move |_| cancel(),
@@ -262,6 +261,39 @@ mod tests {
         )));
         dom.runtime()
             .handle_event("click", Event::new(data, true), id);
+    }
+
+    #[test]
+    fn editing_the_palette_does_not_try_to_update_document_styles() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tracing_subscriber::layer::SubscriberExt;
+        struct Count(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if event.metadata().target().starts_with("dioxus_document")
+                    && *event.metadata().level() == tracing::Level::WARN
+                {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Count(warnings.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let (mut dom, edits, _) = fixture();
+            let hex = labeled(&edits, "Hex color");
+            for value in ["#223344", "#334455", "#aabbcc"] {
+                input(&mut dom, hex, value);
+            }
+        });
+        assert_eq!(warnings.load(Ordering::Relaxed), 0);
     }
 
     #[test]
