@@ -855,7 +855,8 @@ mod tests {
             .stderr(std::process::Stdio::null());
         let mut child = command.spawn().unwrap();
         let ready = wait_for_ready(&mut child, p.ws, &creds, Duration::from_secs(10)).await;
-        if std::net::TcpListener::bind("[::1]:0").is_ok() {
+        // Go wildcard listeners bind IPv4 only on Darwin without dual-stack socket support.
+        if !cfg!(target_os = "macos") && std::net::TcpListener::bind("[::1]:0").is_ok() {
             tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, p.ws))
                 .await
                 .expect("the ready SFU must accept IPv6 signaling as well as IPv4");
