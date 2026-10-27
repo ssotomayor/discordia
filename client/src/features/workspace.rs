@@ -1293,10 +1293,11 @@ fn TransportBadge() -> Element {
         ),
     };
     let route_label = route.unwrap_or_else(|| label.to_string());
+    let route_label = crate::i18n::label(&route_label).to_owned();
     rsx! {
         button {
             class: "dxf-transport-badge shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
-            title: crate::i18n::text("{0} — click for the whole picture", &[(title).to_string()]),
+            title: crate::i18n::text("{0} — click for the whole picture", &[crate::i18n::label(title).to_owned()]),
             onclick: move |_| state.write().topology_open = true,
             aria_label: crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label))),
             span { class: "dxf-route-full", {crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label)))} }
@@ -1324,21 +1325,29 @@ fn VoiceRouteBadge() -> Element {
         Some("configured") => "configured server",
         _ => "server unknown",
     };
+    let location = crate::i18n::label(location);
     let phase = match s.voice.phase {
-        crate::state::VoicePhase::Connecting => "connecting".to_string(),
-        crate::state::VoicePhase::Error => "failed".to_string(),
+        crate::state::VoicePhase::Connecting => crate::i18n::text("Connecting…", &[]),
+        crate::state::VoicePhase::Error => crate::i18n::text("Error", &[]),
         _ => {
-            let send = s.voice_send_route.as_ref().map(|r| r.label());
-            let receive = s.voice_receive_route.as_ref().map(|r| r.label());
+            let send = s
+                .voice_send_route
+                .as_ref()
+                .map(|r| crate::i18n::label(&r.label()).to_owned());
+            let receive = s
+                .voice_receive_route
+                .as_ref()
+                .map(|r| crate::i18n::label(&r.label()).to_owned());
             match (send, receive) {
                 (Some(a), Some(b)) if a != b => "different send/receive routes".into(),
                 (Some(a), Some(_)) => a,
-                (Some(a), None) => format!("send {a}"),
-                (None, Some(a)) => format!("receive {a}"),
+                (Some(a), None) => crate::i18n::text("send {0}", &[a]),
+                (None, Some(a)) => crate::i18n::text("receive {0}", &[a]),
                 _ => "media route unknown".into(),
             }
         }
     };
+    let phase = crate::i18n::label(&phase).to_owned();
     let mobile_phase = crate::i18n::text(
         match s.voice.phase {
             crate::state::VoicePhase::Connecting => "Connecting…",
@@ -1347,19 +1356,28 @@ fn VoiceRouteBadge() -> Element {
         },
         &[],
     );
-    let signaling = s.voice_endpoint.as_deref().unwrap_or("not connected");
+    let signaling = s
+        .voice_endpoint
+        .as_deref()
+        .unwrap_or(crate::i18n::label("not connected"));
     let send = s
         .voice_send_route
         .as_ref()
-        .map(|r| format!("{} ({})", r.label(), r.endpoint))
-        .unwrap_or_else(|| "unknown".into());
+        .map(|r| format!("{} ({})", crate::i18n::label(&r.label()), r.endpoint))
+        .unwrap_or_else(|| crate::i18n::text("unknown", &[]));
     let receive = s
         .voice_receive_route
         .as_ref()
-        .map(|r| format!("{} ({})", r.label(), r.endpoint))
-        .unwrap_or_else(|| "unknown".into());
-    let title = format!(
-        "Voice server: {location}. Audio send: {send}. Audio receive: {receive}. Signaling: {signaling}. This is your connection; other participants can use different routes. Chat/control uses the separate Server indicator."
+        .map(|r| format!("{} ({})", crate::i18n::label(&r.label()), r.endpoint))
+        .unwrap_or_else(|| crate::i18n::text("unknown", &[]));
+    let title = crate::i18n::text(
+        "Voice server: {0}. Audio send: {1}. Audio receive: {2}. Signaling: {3}. This is your connection; other participants can use different routes. Chat/control uses the separate Server indicator.",
+        &[
+            location.to_owned(),
+            send.clone(),
+            receive.clone(),
+            signaling.to_owned(),
+        ],
     );
     let channel = s.server_voice_channel();
     let peers: Vec<_> = s
@@ -1407,9 +1425,9 @@ fn VoiceRouteBadge() -> Element {
                     div { class: "border-t border-[var(--border)] py-2",
                         strong { "{name}" }
                         if let Some(report) = report {
-                            p { {crate::i18n::text("Server: {0}", std::slice::from_ref(&(report . gateway)))} }
-                            p { {crate::i18n::text("Audio send: {0}", &[(report . sent . as_deref () . unwrap_or ("unknown")).to_string()])} }
-                            p { {crate::i18n::text("Audio receive: {0}", &[(report . received . as_deref () . unwrap_or ("unknown")).to_string()])} }
+                            p { {crate::i18n::text("Server: {0}", &[crate::i18n::label(&report.gateway).to_owned()])} }
+                            p { {crate::i18n::text("Audio send: {0}", &[crate::i18n::label(report.sent.as_deref().unwrap_or("unknown")).to_owned()])} }
+                            p { {crate::i18n::text("Audio receive: {0}", &[crate::i18n::label(report.received.as_deref().unwrap_or("unknown")).to_owned()])} }
                         } else {
                             p { {crate::i18n::text("Waiting for route report…", &[])} }
                         }
