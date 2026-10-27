@@ -504,13 +504,10 @@ mod tests {
             assert!(decoded.pcm.iter().all(|s| s.is_finite()));
             assert!(decoded.pcm.len() >= reference.len() / 4 * 16);
             let (mut error, mut energy) = (0.0, 0.0);
-            for (actual, expected) in decoded
-                .pcm
-                .iter()
-                .step_by(16)
-                .zip(reference.chunks_exact(4))
-            {
-                let expected = f64::from(f32::from_le_bytes(expected.try_into().unwrap()));
+            let (reference, remainder) = reference.as_chunks::<4>();
+            assert!(remainder.is_empty());
+            for (actual, expected) in decoded.pcm.iter().step_by(16).zip(reference) {
+                let expected = f64::from(f32::from_le_bytes(*expected));
                 error += (f64::from(*actual) - expected).powi(2);
                 energy += expected.powi(2);
             }
