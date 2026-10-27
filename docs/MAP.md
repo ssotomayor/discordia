@@ -21,13 +21,13 @@ name instead.
 | `server/src/state/mod.rs` | 3771 |
 | `server/tests/owner_controls.rs` | 3299 |
 | `server/src/gateway/connection.rs` | 3757 |
-| `client/src/features/channels.rs` | 2235 |
+| `client/src/features/channels.rs` | 2243 |
 | `client/src/features/screenshare.rs` | 3777 |
 | `protocol/src/lib.rs` | 3608 |
-| `client/src/state.rs` | 2937 |
+| `client/src/state.rs` | 2942 |
 | `client/src/update.rs` | 1052 |
 | `client/src/net.rs` | 2778 |
-| `client/src/features/chat.rs` | 2695 |
+| `client/src/features/chat.rs` | 2679 |
 | `server/src/store.rs` | 1505 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1239 |
@@ -42,6 +42,9 @@ that direction says a file is safe to open when it is not.
 
 | To find | Open | At |
 |---|---|---|
+| Native image transport | `client/src/image_assets.rs`, `features/profiles.rs`, `features/chat.rs`, `client/src/app.rs` | Avatars, banners and chat images use per-window asset URLs instead of repeating base64 in DOM edits. Equal payloads share storage; registrations hold weak references. Decode runs outside the UI thread; artwork keeps its 2 MiB budget and chat supports up to 10 MB. GIF bytes are preserved; expired registrations return 404 |
+| Expanded image zoom | `client/src/features/image_viewer.rs`, `client/assets/image-viewer.js`, `image-viewer.css`, `scripts/test-image-viewer.cjs` | Shared desktop/Android viewer supports wheel, pinch, pan, double click/tap, keyboard and 44 px controls at 100–800%. Gestures update transforms locally. Escape, Android Back and background taps close; instance-scoped cleanup protects replacement viewers |
+| Speaking indicator visibility | `client/src/state.rs`, `features/channels.rs`, `features/members.rs` | `connected_voice_channel` gates speaking/quality rings to the current connected media channel. Members and channel occupants hide stale rings while disconnected, connecting or in another channel |
 | Chat opening and document styles | `client/src/features/chat.rs`, `client/src/features/markup.rs`, `client/src/app.rs`, `scripts/test-chat-scroll.cjs` | Channel/DM changes position the viewport before collecting page measurements, without a Rust round trip; resize/manual history retain the existing scroll policy. Plain lines share one text node, and closed emoji pickers do not copy image payloads. Static styles mount under the memoized `AppHead`, outside reactive dialogs |
 | Android tab swipe navigation | `client/src/features/mobile_workspace.rs`, `client/assets/mobile-pager.js`, `client/assets/mobile.css`, `scripts/test-mobile-pager.cjs` | Native horizontal scroll-snap reveals Channels/Chat/Members during touch; Rust receives only preview/settled selection events, not per-frame movement. Chat/Channels retain DOM and scroll; Members mounts only when selected or peeking and is released after cancellation. Tabs, Back, resize, reduced motion and cleanup share the same pager bridge |
 | Shared media cache memory | `client/src/media_cache.rs`, `client/src/net.rs` | `EmojiBlobs` shares immutable bytes between LRU entries and queued disk writes. Android uses a 64 MiB payload budget with 32 MiB for pending disk results; desktop uses 128 MiB each. Pending results are also entry bounded and overflow retries through existing requests. Budgets exclude WebView decoded images; tests cover sharing, eviction, release and stalled consumers |

@@ -1128,6 +1128,7 @@ fn VoiceChannelRow(
                             let is_sharing = sharers.iter().any(|p| p == &vs.user_pubkey);
                             rsx! {
                                 VoiceOccupant {
+                                    channel_id: channel.id,
                                     key: "{vs.user_pubkey}",
                                     pubkey: vs.user_pubkey.clone(),
                                     name,
@@ -1464,6 +1465,7 @@ fn ScreenShareStatsRow(
 
 #[component]
 fn VoiceOccupant(
+    channel_id: Id,
     pubkey: String,
     name: String,
     speaking: bool,
@@ -1484,9 +1486,15 @@ fn VoiceOccupant(
         .copied()
         .unwrap_or(100);
     let locally_muted = state.read().user_muted.contains(&pubkey);
-    let health = state.read().voice_quality.get(&pubkey).copied();
+    let same_channel = state.read().connected_voice_channel() == Some(channel_id);
+    let health = state
+        .read()
+        .voice_quality
+        .get(&pubkey)
+        .copied()
+        .filter(|_| same_channel);
     let health_label = health.and_then(|h| h.dot(is_self)).map(|(_, label)| label);
-    let ring = crate::state::talk_ring(speaking && !locally_muted, health);
+    let ring = crate::state::talk_ring(same_channel && speaking && !locally_muted, health);
     // Volume, local mute and disconnect live in the right-click menu, mounted
     // at the workspace root (trap 22); the row only shows what is set.
     let open_menu = {
