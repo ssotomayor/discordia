@@ -124,7 +124,7 @@ pub fn GuildsSidebar() -> Element {
                         if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
                             let mut s = state.write();
                             s.dm_mode = true;
-                            s.selected_channel = None;
+                            s.selected_channel = s.preferred_dm().map(|dm| dm.channel_id);
                             tab.set(super::workspace::MobileTab::Channels);
                             return;
                         }
@@ -135,7 +135,7 @@ pub fn GuildsSidebar() -> Element {
                             .map(|cid| s.dm_of(cid).is_some())
                             .unwrap_or(false);
                         if !on_dm {
-                            let first = s.dms.first().map(|d| d.channel_id);
+                            let first = s.preferred_dm().map(|dm| dm.channel_id);
                             s.selected_channel = first;
                             if let Some(cid) = first {
                                 s.mark_dm_read(cid);
