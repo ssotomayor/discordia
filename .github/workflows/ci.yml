@@ -368,12 +368,10 @@ jobs:
           retention-days: 3
 
   prerelease-linux:
-    name: pre-release · server+client (linux · x86_64)
+    name: pre-release · server (linux · x86_64)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
-      CC: clang-21
-      CXX: clang++-21
       # Per publishing job, never at workflow level: a check job that inherited
       # it would build a binary claiming to be a release nobody published.
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
@@ -384,33 +382,10 @@ jobs:
         with:
           shared-key: linux-release
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: System deps (wry/GTK)
+      - name: System deps (server)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
-            libasound2-dev libssl-dev pkg-config
-      - name: WebRTC C++ toolchain
-        run: sudo bash scripts/install-webrtc-toolchain.sh
-      - name: Cached Dioxus CLI
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/dx
-            ~/.cargo/bin/dx.exe
-          key: dx-${{ runner.os }}-${{ runner.arch }}-${{ env.DIOXUS_CLI_VERSION }}
-      - uses: cargo-bins/cargo-binstall@main
-      - name: Install Dioxus CLI
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if dx --version 2>/dev/null | grep -qF " $DIOXUS_CLI_VERSION"; then
-            echo "dx $DIOXUS_CLI_VERSION already installed"; exit 0
-          fi
-          cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
-      - name: Verify dx
-        run: dx --version
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
       - name: Build server (release)
         run: cargo build --release -p discordia-server
       - name: Verify livekit-server is embedded
@@ -420,21 +395,11 @@ jobs:
           if ($srv.Length -lt 40MB) { throw "discordia-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Strip server binary
         run: strip target/release/discordia-server
-      - name: Bundle client (AppImage)
-        working-directory: client
-        run: dx bundle --release
-      - name: Collect artifacts
-        shell: pwsh
-        run: |
-          $appimg = Get-ChildItem -Recurse -Filter '*.AppImage' target/dx | Select-Object -First 1
-          if (-not $appimg) { throw "no AppImage produced by dx bundle" }
-          Copy-Item $appimg.FullName Discordia-linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: prerelease-linux
-          path: |
-            target/release/discordia-server
-            Discordia-linux-x86_64.AppImage
+          path: target/release/discordia-server
+          if-no-files-found: error
           retention-days: 7
 
   prerelease-windows:
@@ -613,8 +578,6 @@ jobs:
           mkdir -p release
           find artifacts/prerelease-linux -type f -name discordia-server \
             -exec cp {} release/discordia-server-linux \;
-          find artifacts/prerelease-linux -type f -name '*.AppImage' \
-            -exec cp {} release/ \;
           find artifacts/prerelease-windows -type f -name discordia-server.exe \
             -exec cp {} release/ \;
           find artifacts/prerelease-windows -type f -name 'Discordia-windows-portable.zip' \
@@ -629,7 +592,7 @@ jobs:
             -exec cp {} release/ \;
           test -s release/Discordia-android-arm64.apk
           ls -l release/
-          test "$(find release -type f | wc -l)" -eq 8 || { echo "ERROR: expected 8 artifacts"; exit 1; }
+          test "$(find release -type f | wc -l)" -eq 7 || { echo "ERROR: expected 7 artifacts"; exit 1; }
 
       - name: Sign release artifacts
         env:
@@ -664,8 +627,8 @@ jobs:
             case "$f" in *.minisig) continue ;; esac
             minisign -V -p release-signing.pub -m "$f"
           done
-          test "$(find release -type f | wc -l)" -eq 16 || {
-            echo "ERROR: expected 8 artifacts and 8 signatures"; exit 1; }
+          test "$(find release -type f | wc -l)" -eq 14 || {
+            echo "ERROR: expected 7 artifacts and 7 signatures"; exit 1; }
 
       - name: Create pre-release
         uses: softprops/action-gh-release@v2

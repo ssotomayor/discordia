@@ -346,9 +346,20 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 | SFU | `LIVEKIT_BUNDLE_SKIP=1`, autospawn off | unset to build a server that embeds one |
 | Site | `cd site && npm run dev` on 3100, `npm run build && npm run preview` on 8787 | the only ports compose publishes to the host, loopback only; recreate the container after editing `.devcontainer/` |
 
+## Release platforms
+
+| Platform | Published assets |
+|---|---|
+| Linux x86_64 | Server only; AppImage releases paused. Client compilation/tests continue in CI. |
+| Windows | Server, client installer and portable ZIP |
+| macOS ARM64 | Server and client DMG |
+| Android ARM64 | Client APK |
+
+Each asset keeps its minisign signature. Existing Linux installations remain usable; the server keeps receiving releases.
+
 ## Android release APK
 
-`ci.yml` builds ARM64 Android on PRs (unsigned artifact) and on pushes to master (signed release asset). `publish-prerelease` waits for Android and publishes eight binaries plus their eight minisign signatures. The Android certificate is separate from minisign; its public SHA-256 is `client/android/release-signing.sha256`.
+`ci.yml` builds ARM64 Android on PRs (unsigned artifact) and on pushes to master (signed release asset). `publish-prerelease` waits for Android and publishes seven binaries plus their seven minisign signatures. The Android certificate is separate from minisign; its public SHA-256 is `client/android/release-signing.sha256`.
 
 | Repository secret | Value |
 |---|---|
