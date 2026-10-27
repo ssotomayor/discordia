@@ -13,6 +13,18 @@ function placeholders(value) {
   return [...value.matchAll(/\{\d+\}/g)].map(match => match[0]).sort();
 }
 
+function matchLabelKeys(source) {
+  return [...source.matchAll(/i18n::label\(\s*match\b[^{}]*\{([^{}]*)\}\s*\)/g)]
+    .flatMap(match => [...match[1].matchAll(/=>\s*("(?:[^"\\]|\\.)*")/g)]
+      .map(arm => JSON.parse(arm[1])));
+}
+
+test('translation coverage includes literal labels selected by match arms', () => {
+  const source = 'crate::i18n::label(match route { Route::Ipv4 => "IPv4", Route::Local => "LAN", })';
+  assert.deepEqual(matchLabelKeys(source), ['IPv4', 'LAN']);
+  assert.deepEqual(matchLabelKeys('match route { Route::Local => "not a translated label" }'), []);
+});
+
 test('catalog keys are unique before JSON parsing can hide duplicates', () => {
   const keys = [...catalogSource.matchAll(/^\s*("(?:[^"\\]|\\.)*")\s*:/gm)]
     .map(match => JSON.parse(match[1]));
@@ -37,6 +49,9 @@ test('literal translation calls cannot silently fall back because a catalog entr
       if (entry.isDirectory()) { scan(path); continue; }
       if (!entry.name.endsWith('.rs') || entry.name === 'i18n.rs') continue;
       const source = readFileSync(path, 'utf8');
+      for (const key of matchLabelKeys(source)) {
+        assert.ok(Object.hasOwn(messages, key), `${path}: match label ${key}`);
+      }
       for (const match of source.matchAll(/i18n::(?:text|label|plural)\(\s*("(?:[^"\\]|\\.)*")/g)) {
         const key = JSON.parse(match[1]);
         assert.ok(Object.hasOwn(messages, key), `${path}: ${key}`);
