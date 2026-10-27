@@ -673,10 +673,15 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
     let voice = use_memo(move || {
         let input = sources.voice.read();
         let vs = voice_here(&input.states, voice_guild, &voice_pk);
-        let ring = if vs
+        let same_channel = vs
             .and_then(|v| v.channel_id)
-            .is_some_and(|cid| Some(cid) == input.connected_channel)
-        {
+            .is_some_and(|cid| Some(cid) == input.connected_channel);
+        let health = input
+            .quality
+            .get(&voice_pk)
+            .copied()
+            .filter(|_| same_channel);
+        let ring = if same_channel {
             crate::state::talk_ring(vs.is_some_and(|v| v.speaking))
         } else {
             ""
@@ -694,9 +699,9 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                 .unwrap_or_else(|| "In voice".into());
             (place, v.muted, v.deafened)
         });
-        (ring, badges)
+        (ring, badges, same_channel, health)
     });
-    let (speaking_ring, badges) = voice();
+    let (speaking_ring, badges, same_channel, health) = voice();
     let card_pubkey = member.user.pubkey.clone();
     let ctx_member = member.clone();
     rsx! {
@@ -755,6 +760,9 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                         title: "{sub}", "{sub}"
                     }
                 }
+            }
+            if same_channel {
+                super::channels::VoiceQualitySignal { health, stats: None, ping_ms: None, is_self }
             }
             if let Some((place, muted, deafened)) = badges {
                 VoiceBadges { place, muted, deafened }
@@ -864,6 +872,95 @@ mod tests {
 
     pub(super) fn record_render(part: &str) {
         RENDERS.with_borrow_mut(|counts| *counts.entry(part.into()).or_default() += 1);
+    }
+
+    #[test]
+    fn member_quality_updates_without_recoloring_speech_or_leaking_other_channels() {
+        use dioxus::core::{AttributeValue, Mutation};
+        use std::{cell::RefCell, rc::Rc};
+        type Export = Rc<RefCell<Option<Signal<AppState>>>>;
+        let export: Export = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let state = use_signal(|| {
+                    let mut s = AppState::empty();
+                    s.selected_guild = Some(Id::nil());
+                    s.members = vec![
+                        member("alice", Id::nil(), true),
+                        member("bob", Id::nil(), true),
+                    ];
+                    let channel = Id::new_v4();
+                    s.voice.channel_id = Some(channel);
+                    s.voice.phase = crate::state::VoicePhase::Connected;
+                    s.voice_states = vec![
+                        voice("alice", Id::nil(), Some(channel)),
+                        voice("bob", Id::nil(), Some(Id::new_v4())),
+                    ];
+                    s.voice_quality
+                        .insert("alice".into(), crate::state::ConnectionHealth::Poor);
+                    s.voice_quality
+                        .insert("bob".into(), crate::state::ConnectionHealth::Lost);
+                    s
+                });
+                provide_context(state);
+                *export.borrow_mut() = Some(state);
+                rsx! { MembersPanel {} }
+            },
+            export.clone(),
+        );
+        let has_icon = |edits: &[Mutation], icon: &str| {
+            edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "dangerous_inner_html", value: AttributeValue::Text(value), .. }
+                if *value == icon
+        ))
+        };
+        let initial = dom.rebuild_to_vec().edits;
+        assert!(has_icon(&initial, super::super::icons::SIGNAL_POOR));
+        assert!(!has_icon(&initial, super::super::icons::SIGNAL_LOST));
+        let mut state = export.borrow().unwrap();
+        state
+            .write()
+            .voice_quality
+            .insert("bob".into(), crate::state::ConnectionHealth::Poor);
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        state
+            .write()
+            .voice_quality
+            .insert("alice".into(), crate::state::ConnectionHealth::Lost);
+        assert!(has_icon(
+            &dom.render_immediate_to_vec().edits,
+            super::super::icons::SIGNAL_LOST
+        ));
+        state.write().voice_states[0].speaking = true;
+        assert!(
+            dom.render_immediate_to_vec()
+                .edits
+                .iter()
+                .any(|edit| matches!(edit,
+                    Mutation::SetAttribute { name: "class", value: AttributeValue::Text(value), .. }
+                        if value.contains("ring-2 ring-[var(--success)]")
+                ))
+        );
+        state
+            .write()
+            .voice_quality
+            .insert("alice".into(), crate::state::ConnectionHealth::Good);
+        assert!(has_icon(
+            &dom.render_immediate_to_vec().edits,
+            super::super::icons::SIGNAL_GOOD
+        ));
+        state.write().voice.phase = crate::state::VoicePhase::Idle;
+        assert!(
+            dom.render_immediate_to_vec()
+                .edits
+                .iter()
+                .any(|edit| matches!(edit, Mutation::Remove { .. } | Mutation::ReplaceWith { .. }))
+        );
+        state
+            .write()
+            .voice_quality
+            .insert("alice".into(), crate::state::ConnectionHealth::Poor);
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
     }
 
     #[tokio::test]

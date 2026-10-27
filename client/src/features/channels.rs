@@ -1652,6 +1652,32 @@ fn VoiceSignal(icon: &'static str, color: &'static str, tooltip: String) -> Elem
 }
 
 #[component]
+pub(super) fn VoiceQualitySignal(
+    health: Option<crate::state::ConnectionHealth>,
+    stats: Option<crate::state::TrackStats>,
+    ping_ms: Option<u32>,
+    is_self: bool,
+) -> Element {
+    let (signal_icon, signal_color) = match health {
+        Some(crate::state::ConnectionHealth::Excellent | crate::state::ConnectionHealth::Good) => {
+            (crate::features::icons::SIGNAL_GOOD, "text-[var(--success)]")
+        }
+        Some(crate::state::ConnectionHealth::Poor) => {
+            (crate::features::icons::SIGNAL_POOR, "text-[var(--warn)]")
+        }
+        Some(crate::state::ConnectionHealth::Lost) => {
+            (crate::features::icons::SIGNAL_LOST, "text-[var(--danger)]")
+        }
+        None => (
+            crate::features::icons::SIGNAL_GOOD,
+            "text-[var(--text-dim)]",
+        ),
+    };
+    let signal_tooltip = occupant_diagnostics_tooltip(health, stats, ping_ms, is_self);
+    rsx! { VoiceSignal { icon: signal_icon, color: signal_color, tooltip: signal_tooltip } }
+}
+
+#[component]
 fn VoiceOccupant(
     channel_id: Id,
     pubkey: String,
@@ -1704,23 +1730,6 @@ fn VoiceOccupant(
         .copied()
         .filter(|_| same_channel);
     let ring = crate::state::talk_ring(same_channel && speaking && !locally_muted);
-    let (signal_icon, signal_color) = match health {
-        Some(crate::state::ConnectionHealth::Excellent | crate::state::ConnectionHealth::Good) => {
-            (crate::features::icons::SIGNAL_GOOD, "text-[var(--success)]")
-        }
-        Some(crate::state::ConnectionHealth::Poor) => {
-            (crate::features::icons::SIGNAL_POOR, "text-[var(--warn)]")
-        }
-        Some(crate::state::ConnectionHealth::Lost) => {
-            (crate::features::icons::SIGNAL_LOST, "text-[var(--danger)]")
-        }
-        None => (
-            crate::features::icons::SIGNAL_GOOD,
-            "text-[var(--text-dim)]",
-        ),
-    };
-    let signal_tooltip =
-        occupant_diagnostics_tooltip(health, track_stats, state.read().voice_ping_ms, is_self);
     // Volume, local mute and disconnect live in the right-click menu, mounted
     // at the workspace root (trap 22); the row only shows what is set.
     let open_menu = {
@@ -1780,7 +1789,7 @@ fn VoiceOccupant(
                     if is_self { {crate::i18n::text(" (you)", &[])} }
                 }
                 if same_channel {
-                    VoiceSignal { icon: signal_icon, color: signal_color, tooltip: signal_tooltip }
+                    VoiceQualitySignal { health, stats: track_stats, ping_ms: state.read().voice_ping_ms, is_self }
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
