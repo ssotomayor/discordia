@@ -40,6 +40,10 @@ async function chatBridge() {
   assert.equal(samples.shift(), true);
   window.__dxfChatScrollMeasure('channel', 'one');
   const first = samples.pop();
+  assert.equal(node.scrollTop, 1000, 'opening a channel scrolls before waiting for Rust');
+  node.scrollTop = 300;
+  node.listeners.get('scroll')();
+  assert.equal(samples.pop().top, 300, 'manual scrolling replaces the initial position');
   window.__dxfChatScrollMeasure('append', 'one');
   const second = samples.pop();
   receive({ channel: 'one', sequence: first.sequence, top: 1000 });
@@ -71,9 +75,10 @@ async function chatBridge() {
   window.__dxfChatScrollMeasure('channel', 'two');
   assert(!observer.nodes.has(page), 'removed history pages are released');
   const next = samples.pop();
+  assert.equal(node.scrollTop, 1000, 'switching channels immediately shows the latest messages');
   receive({ channel: 'one', sequence: next.sequence, top: 1 });
   await tick();
-  assert.equal(node.scrollTop, 900, 'channel identity is checked even if the sequence matches');
+  assert.equal(node.scrollTop, 1000, 'channel identity is checked even if the sequence matches');
   const old = node;
   node = element(); geometry(node);
   receive({ channel: 'two', sequence: next.sequence, top: 1 });
