@@ -9,6 +9,8 @@ pub enum Language {
     English,
     Spanish,
     Portuguese,
+    ChineseSimplified,
+    Japanese,
     #[default]
     #[serde(other)]
     System,
@@ -28,6 +30,8 @@ impl Language {
         match self.resolve() {
             Self::Spanish => "es",
             Self::Portuguese => "pt-BR",
+            Self::ChineseSimplified => "zh-CN",
+            Self::Japanese => "ja",
             _ => "en",
         }
     }
@@ -38,6 +42,8 @@ impl Language {
             Self::English => "en",
             Self::Spanish => "es",
             Self::Portuguese => "pt-BR",
+            Self::ChineseSimplified => "zh-CN",
+            Self::Japanese => "ja",
         }
     }
 }
@@ -52,6 +58,8 @@ fn from_tag(tag: &str) -> Language {
     {
         "es" => Language::Spanish,
         "pt" => Language::Portuguese,
+        "zh" => Language::ChineseSimplified,
+        "ja" => Language::Japanese,
         _ => Language::English,
     }
 }
@@ -131,8 +139,8 @@ pub fn current() -> Language {
     Language::English
 }
 
-fn catalog() -> &'static BTreeMap<String, [String; 2]> {
-    static CATALOG: OnceLock<BTreeMap<String, [String; 2]>> = OnceLock::new();
+fn catalog() -> &'static BTreeMap<String, [String; 4]> {
+    static CATALOG: OnceLock<BTreeMap<String, [String; 4]>> = OnceLock::new();
     CATALOG.get_or_init(|| {
         serde_json::from_str(include_str!("../locales/messages.json")).unwrap_or_else(|error| {
             tracing::error!(%error, "invalid embedded translation catalog");
@@ -149,6 +157,8 @@ pub fn label(source: &str) -> &str {
     match current().resolve() {
         Language::Spanish => catalog().get(source).map(|entry| entry[0].as_str()),
         Language::Portuguese => catalog().get(source).map(|entry| entry[1].as_str()),
+        Language::ChineseSimplified => catalog().get(source).map(|entry| entry[2].as_str()),
+        Language::Japanese => catalog().get(source).map(|entry| entry[3].as_str()),
         _ => None,
     }
     .filter(|value| !value.is_empty())
@@ -159,6 +169,8 @@ pub fn translate(language: Language, source: &str, arguments: &[String]) -> Stri
     let translated = match language.resolve() {
         Language::Spanish => catalog().get(source).map(|entry| entry[0].as_str()),
         Language::Portuguese => catalog().get(source).map(|entry| entry[1].as_str()),
+        Language::ChineseSimplified => catalog().get(source).map(|entry| entry[2].as_str()),
+        Language::Japanese => catalog().get(source).map(|entry| entry[3].as_str()),
         _ => None,
     }
     .filter(|value| !value.is_empty())
@@ -270,6 +282,8 @@ pub fn LanguageSelector() -> Element {
                     let language = match event.value().as_str() {
                         "es" => Language::Spanish,
                         "pt-BR" => Language::Portuguese,
+                        "zh-CN" => Language::ChineseSimplified,
+                        "ja" => Language::Japanese,
                         "en" => Language::English,
                         _ => Language::System,
                     };
@@ -281,6 +295,8 @@ pub fn LanguageSelector() -> Element {
                 option { value: "en", {crate::i18n::text("English", &[])} }
                 option { value: "es", {crate::i18n::text("Español", &[])} }
                 option { value: "pt-BR", {crate::i18n::text("Português (Brasil)", &[])} }
+                option { value: "zh-CN", {crate::i18n::text("简体中文", &[])} }
+                option { value: "ja", {crate::i18n::text("日本語", &[])} }
             }
         }
     }
@@ -314,6 +330,12 @@ mod tests {
         }
         for tag in ["pt-BR", "pt_PT.UTF-8"] {
             assert_eq!(from_tag(tag), Language::Portuguese);
+        }
+        for tag in ["zh", "zh-CN", "zh-Hans", "zh_Hans_CN.UTF-8", "zh-SG"] {
+            assert_eq!(from_tag(tag), Language::ChineseSimplified);
+        }
+        for tag in ["ja", "ja-JP", "ja_JP.UTF-8"] {
+            assert_eq!(from_tag(tag), Language::Japanese);
         }
         for tag in ["en-US", "de-DE", "C", ""] {
             assert_eq!(from_tag(tag), Language::English);
@@ -422,6 +444,20 @@ mod tests {
                 "livre em 3 h",
                 "Erro",
             ),
+            (
+                Language::ChineseSimplified,
+                "需要摄像头权限。请在 Android 应用设置中启用。",
+                "你需要“移动语音成员”权限才能在此执行该操作",
+                "3 小时后可用",
+                "错误",
+            ),
+            (
+                Language::Japanese,
+                "カメラの権限が必要です。Android のアプリ設定で許可してください。",
+                "ここでこの操作を行うには「ボイスチャンネルのメンバーを移動」権限が必要です",
+                "3 時間後に使用可能",
+                "エラー",
+            ),
         ] {
             assert_eq!(
                 message_in(
@@ -464,7 +500,13 @@ mod tests {
         let future: crate::settings::ClientSettings = serde_json::from_value(value).unwrap();
         assert_eq!(future.language, Language::System);
         assert_eq!(future.theme, "paper");
-        for language in [Language::English, Language::Spanish, Language::Portuguese] {
+        for language in [
+            Language::English,
+            Language::Spanish,
+            Language::Portuguese,
+            Language::ChineseSimplified,
+            Language::Japanese,
+        ] {
             let saved = serde_json::to_string(&language).unwrap();
             assert_eq!(serde_json::from_str::<Language>(&saved).unwrap(), language);
         }
@@ -505,6 +547,8 @@ mod tests {
         for (language, expected) in [
             (Language::Spanish, "Ajustes / 1 clave"),
             (Language::Portuguese, "Configurações / 1 chave"),
+            (Language::ChineseSimplified, "设置 / 1 个密钥"),
+            (Language::Japanese, "設定 / 1 個の鍵"),
             (Language::English, "Settings / 1 key"),
         ] {
             locale.set(language);
@@ -521,7 +565,7 @@ mod tests {
 
     #[test]
     fn catalog_is_valid_and_preserves_arguments() {
-        let parsed: BTreeMap<String, [String; 2]> =
+        let parsed: BTreeMap<String, [String; 4]> =
             serde_json::from_str(include_str!("../locales/messages.json")).unwrap();
         assert!(!parsed.is_empty());
         for (source, translations) in parsed {

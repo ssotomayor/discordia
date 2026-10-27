@@ -19,10 +19,10 @@ test('catalog keys are unique before JSON parsing can hide duplicates', () => {
   assert.equal(new Set(keys).size, keys.length, 'duplicate catalog key');
 });
 
-test('every catalog message has Spanish and Portuguese with the same arguments', () => {
+test('every catalog message has Spanish, Portuguese, Simplified Chinese and Japanese with the same arguments', () => {
   assert.ok(Object.keys(messages).length > 1000);
   for (const [source, translations] of Object.entries(messages)) {
-    assert.equal(translations.length, 2, source);
+    assert.equal(translations.length, 4, source);
     for (const translated of translations) {
       assert.ok(translated.trim(), source);
       assert.deepEqual(placeholders(translated), placeholders(source), `${source}: ${translated}`);
@@ -64,10 +64,10 @@ test('built-in game scripts translate registered messages and preserve player te
       assert.ok(keys.includes(match[1] ?? match[2]), match[0]);
     }
     const interpolate = script.match(/const tr = [^\n]+/)[0];
-    for (const column of [-1, 0, 1]) {
+    for (const column of [-1, 0, 1, 2, 3]) {
       const dictionary = Object.fromEntries(keys.map(key => [key, column < 0 ? key : messages[key][column]]));
       const tr = runInNewContext(`const translations = ${JSON.stringify(dictionary)}; ${interpolate}; tr`);
-      const expected = column < 0 ? 'Hi, Ana {0} <b>' : ['Hola, Ana {0} <b>', 'Olá, Ana {0} <b>'][column];
+      const expected = column < 0 ? 'Hi, Ana {0} <b>' : ['Hola, Ana {0} <b>', 'Olá, Ana {0} <b>', '你好，Ana {0} <b>', 'こんにちは、Ana {0} <b>'][column];
       assert.equal(tr('Hi, {0}', 'Ana {0} <b>'), expected);
     }
   }
