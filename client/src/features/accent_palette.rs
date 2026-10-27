@@ -106,7 +106,7 @@ fn Palette(
         Color::parse(initial.as_deref().unwrap_or("#e0a06a")).unwrap_or(Color::rgb([224, 160, 106]))
     });
     let mut hex = use_signal(|| color.peek().hex());
-    let mut draft = use_signal(|| Some(color.peek().hex()));
+    let mut draft = use_signal(|| initial.clone());
     let mut dragging = use_signal(|| false);
     let mut size = use_signal(|| (256.0, 160.0));
     let mut finished = use_signal(|| false);
@@ -181,7 +181,16 @@ fn Palette(
                 }
                 label { class: "dxf-accent-hex", "HEX",
                     input { r#type: "text", value: "{hex}", maxlength: "7", spellcheck: "false", aria_invalid: (!valid).to_string(), aria_label: crate::i18n::text("Hex color", &[]),
-                        oninput: move |e| { let value = e.value(); if let Some(next) = Color::parse(&value) { color.set(next); draft.set(Some(next.hex())); } hex.set(value); },
+                        oninput: move |e| {
+                            let value = e.value();
+                            if let Some(next) = Color::parse(&value) {
+                                color.set(next);
+                                draft.set(Some(next.hex()));
+                            } else {
+                                draft.set(Some(value.clone()));
+                            }
+                            hex.set(value);
+                        },
                     }
                     span { class: "dxf-accent-swatch", style: "background-color: {preview};" }
                 }
@@ -195,7 +204,7 @@ fn Palette(
                         aria_label: crate::i18n::text("Apply", &[]),
                         onclick: move |_| {
                             let value = draft();
-                            if !finished() && (value.is_none() || Color::parse(&hex()).is_some()) {
+                            if !finished() && valid && value != initial {
                                 finished.set(true); on_apply.call(value);
                             }
                         },
@@ -215,19 +224,23 @@ mod tests {
 
     type Applied = Rc<RefCell<Vec<Option<String>>>>;
 
-    fn fixture() -> (VirtualDom, Vec<Mutation>, Applied) {
+    fn fixture_with(initial: Option<String>) -> (VirtualDom, Vec<Mutation>, Applied) {
         dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         let applied: Applied = Rc::new(RefCell::new(Vec::new()));
         let mut dom = VirtualDom::new_with_props(
-            |applied: Applied| {
+            |(initial, applied): (Option<String>, Applied)| {
                 rsx! {
-                    Palette { initial: Some("#112233".to_owned()), on_apply: move |value| applied.borrow_mut().push(value), on_cancel: |_| {} }
+                    Palette { initial, on_apply: move |value| applied.borrow_mut().push(value), on_cancel: |_| {} }
                 }
             },
-            applied.clone(),
+            (initial, applied.clone()),
         );
         let edits = dom.rebuild_to_vec().edits;
         (dom, edits, applied)
+    }
+
+    fn fixture() -> (VirtualDom, Vec<Mutation>, Applied) {
+        fixture_with(Some("#112233".to_owned()))
     }
 
     fn labeled(edits: &[Mutation], label: &str) -> ElementId {
@@ -354,5 +367,33 @@ mod tests {
         ] {
             assert!(Color::parse(invalid).is_none());
         }
+    }
+
+    #[test]
+    fn theme_default_accent_palette_disables_apply_until_edited() {
+        let (mut dom, edits, applied) = fixture_with(None);
+        let apply = labeled(&edits, "Apply");
+        let reset = labeled(&edits, "Theme default");
+        let hex = labeled(&edits, "Hex color");
+        let pressed = edits.iter().any(|edit| {
+            matches!(
+                edit,
+                Mutation::SetAttribute {
+                    name: "aria-pressed",
+                    value: AttributeValue::Text(val),
+                    id,
+                    ..
+                } if *id == reset && *val == "true"
+            )
+        });
+        assert!(pressed);
+        click(&mut dom, apply);
+        assert!(applied.borrow().is_empty());
+        input(&mut dom, hex, "#bad");
+        click(&mut dom, apply);
+        assert!(applied.borrow().is_empty());
+        input(&mut dom, hex, "#224466");
+        click(&mut dom, apply);
+        assert_eq!(&*applied.borrow(), &[Some("#224466".into())]);
     }
 }
