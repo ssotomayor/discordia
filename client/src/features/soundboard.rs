@@ -51,11 +51,21 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     let gateway = use_gateway();
     let voice = use_voice_tx();
     let mut last_play = use_signal(|| None::<Instant>);
+    let mut filter = use_signal(String::new);
     {
         let gw = gateway.clone();
         use_effect(move || crate::net::resolve_media(&mut state.write(), &gw.0));
     }
     let sounds = use_memo(move || state.read().sounds_of(guild_id).to_vec());
+    let shown = use_memo(move || {
+        let query = filter.read().trim().to_lowercase();
+        sounds
+            .read()
+            .iter()
+            .filter(|sound| sound.name.to_lowercase().contains(&query))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
     let can_manage = state.read().can(guild_id, Permission::ManageGuild);
     let adjusting = state.read().soundboard_adjusting;
     let deafened = state.read().voice.deafened;
@@ -109,6 +119,18 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                     },
                 }
             }
+            if !adjusting && !sounds().is_empty() {
+                div { class: "px-2 pt-2 shrink-0",
+                    input {
+                        class: "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
+                        aria_label: crate::i18n::text("Search sounds…", &[]),
+                        placeholder: crate::i18n::text("Search sounds…", &[]),
+                        autofocus: true,
+                        value: "{filter}",
+                        oninput: move |e| filter.set(e.value()),
+                    }
+                }
+            }
             div { class: "p-2 overflow-y-auto",
                 if adjusting {
                     SoundboardVolume {}
@@ -125,8 +147,13 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                             }
                         }
                     }
+                    if !sounds().is_empty() && shown().is_empty() {
+                        div { class: "px-1 py-0.5 text-[11px] text-[var(--text-dim)]",
+                            {crate::i18n::text("No sounds match your search.", &[])}
+                        }
+                    }
                     div { class: "grid grid-cols-3 gap-1.5",
-                        for sound in sounds().iter().cloned() {
+                        for sound in shown().iter().cloned() {
                             {
                                 let ready = blob_of(&state.read(), &sound).is_some();
                                 let cooling = last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN);

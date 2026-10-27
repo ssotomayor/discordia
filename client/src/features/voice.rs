@@ -2775,6 +2775,8 @@ impl Drop for SystemAudioTrack {
 const SOUNDBOARD_TRACK: &str = "soundboard";
 /// A spammed button stacks sounds; past this many the oldest is dropped.
 const MAX_OVERLAPPING_SOUNDS: usize = 4;
+/// Past this the loop was suspended, not late; replaying the gap would flood the SFU.
+const SOUNDBOARD_MAX_CATCH_UP: std::time::Duration = std::time::Duration::from_millis(200);
 
 struct SoundboardTrack {
     _sid: livekit::prelude::TrackSid,
@@ -2797,7 +2799,7 @@ async fn soundboard_loop(
     mixer: PlaybackHandle,
     self_identity: String,
 ) {
-    let local = mixer.add_track(self_identity, TrackKind::Soundboard);
+    let local = mixer.add_local_soundboard(self_identity);
     let mut rate = mixer.rate();
     let mut cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
     let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
@@ -2805,7 +2807,9 @@ async fn soundboard_loop(
     let mut playing: Vec<(Arc<[f32]>, usize)> = Vec::new();
     let mut was_playing = false;
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS as u64));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Frames are the track's RTP clock: a late tick must be made up, or the
+    // track falls behind real time and listeners' NetEq stretches it (trap 38).
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     loop {
         loop {
             match rx.try_recv() {
@@ -2820,7 +2824,10 @@ async fn soundboard_loop(
         if playing.len() > MAX_OVERLAPPING_SOUNDS {
             playing.drain(..playing.len() - MAX_OVERLAPPING_SOUNDS);
         }
-        tick.tick().await;
+        let due = tick.tick().await;
+        if due.elapsed() > SOUNDBOARD_MAX_CATCH_UP {
+            tick.reset();
+        }
         let playing_this_frame = !playing.is_empty();
         let mut frame = [0.0f32; FRAME_SAMPLES];
         for (pcm, pos) in playing.iter_mut() {
@@ -3746,6 +3753,11 @@ impl PlaybackHandle {
         self.insert_track(identity, kind, true)
     }
 
+    /// Pushed only while a sound plays, so an empty queue is a pause, not a stall.
+    fn add_local_soundboard(&self, identity: String) -> u64 {
+        self.insert_track(identity, TrackKind::Soundboard, false)
+    }
+
     fn add_buffered_track(&self, identity: String) -> u64 {
         self.insert_track(identity, TrackKind::Voice, false)
     }
@@ -3857,12 +3869,11 @@ fn next_playback_sample(tracks: &mut MixerTracks) -> f32 {
         if track.samples.is_empty() {
             track.starved += 1;
         }
-        let live = track.drift_correction && track.kind != TrackKind::Soundboard;
-        if live && !track.recovery.ready(track.samples.len()) {
+        if track.drift_correction && !track.recovery.ready(track.samples.len()) {
             continue;
         }
         let sample = track.samples.pop_front().unwrap_or(0.0);
-        let resume = if live {
+        let resume = if track.drift_correction {
             track.recovery.resume_gain()
         } else {
             1.0
