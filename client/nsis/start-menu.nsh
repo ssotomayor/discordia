@@ -2,6 +2,10 @@
 ; Uninstall from the icon's context menu through the registry key just written.
 Section "-Start Menu"
     CreateShortcut "$SMPROGRAMS\Discordia.lnk" "$INSTDIR\Discordia.exe"
+    ExecWait '"$INSTDIR\Discordia.exe" --register-notifications' $0
+    ${If} $0 != 0
+        DetailPrint "Discordia notification registration will retry at startup."
+    ${EndIf}
     Delete "$SMPROGRAMS\Discordia\Discordia.lnk"
     Delete "$SMPROGRAMS\Discordia\Uninstall Discordia.lnk"
     RMDir "$SMPROGRAMS\Discordia"

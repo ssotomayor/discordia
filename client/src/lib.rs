@@ -217,6 +217,16 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
 }
 
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if std::env::args().any(|arg| arg == windows_notifications::REGISTER_FLAG) {
+        match windows_notifications::register_identity() {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("Could not register Windows notifications: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     #[cfg(target_os = "android")]
     if let Err(error) = android::initialize() {
         eprintln!("Android initialization failed: {error}");
@@ -306,6 +316,9 @@ fn init_windows_identity() {
         ))
     } {
         tracing::warn!(%error, "could not set Discordia's Windows application identity");
+    }
+    if let Err(error) = windows_notifications::register_identity() {
+        tracing::warn!(%error, "could not register Discordia's notification shortcut");
     }
 }
 

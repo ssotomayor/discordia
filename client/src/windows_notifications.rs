@@ -5,8 +5,15 @@ use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, IsWindowVisible};
 use windows::core::{HSTRING, PCWSTR};
 
+mod identity;
+
 const APP_ID: &str = "com.discordia.app";
+pub(crate) const REGISTER_FLAG: &str = "--register-notifications";
 static ACTIVE_CALL_TOAST: Mutex<Option<ToastNotification>> = Mutex::new(None);
+
+pub(crate) fn register_identity() -> Result<(), String> {
+    identity::register()
+}
 
 pub fn is_minimized_or_hidden() -> bool {
     let title: Vec<u16> = crate::MAIN_WINDOW_TITLE
