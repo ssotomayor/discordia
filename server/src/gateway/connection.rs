@@ -236,7 +236,12 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
-                        if let Err(message) = ctx.state.remember_user(&new_user).await {
+                        let remembered = if bot {
+                            ctx.state.remember_user(&new_user).await
+                        } else {
+                            ctx.state.rename_user(&new_user.pubkey, &new_user.username).await.map(|_| ())
+                        };
+                        if let Err(message) = remembered {
                             tracing::warn!(reason = %message, "gateway user persistence failed");
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             break;

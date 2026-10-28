@@ -76,6 +76,7 @@ pub enum NostrCmd {
     PublishXp(xp::GlobalXp),
     /// The profile just saved on this device, for the account's other ones.
     PublishProfile(crate::profile::LocalProfile),
+    PublishName(String),
     /// Look an app's manifest up on our relays, for a guild about to install it.
     FetchAppManifest {
         author: String,
@@ -185,10 +186,12 @@ pub fn spawn_nostr(
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
         // Reading kind 0 is half a loop: between two Discordia clients neither
         // had ever published one, so both read the other as a truncated key.
+        let mut published_name = identity.display_name.clone();
+        let mut name_published_at = now();
         pool.publish(metadata::own_metadata_event(
             &secret,
-            &identity.display_name,
-            now(),
+            &published_name,
+            name_published_at,
         ));
 
         // Offline nothing else ever sets this, and your own messages then read
@@ -382,6 +385,17 @@ pub fn spawn_nostr(
                                     ..Default::default()
                                 }],
                             );
+                        }
+                    }
+                    Some(NostrCmd::PublishName(name)) => {
+                        let name = crate::protocol::canonical_username(&name);
+                        if name != published_name {
+                            let observed = state.peek().nostr_names.get(&our_pubkey).map(|(_, at)| *at).unwrap_or(0);
+                            name_published_at = now().max(name_published_at.max(observed).saturating_add(1));
+                            let event = metadata::own_metadata_event(&secret, &name, name_published_at);
+                            apply_own_name(&mut state.write(), &our_pubkey, &name, name_published_at);
+                            published_name = name;
+                            pool.publish(event);
                         }
                     }
                     Some(NostrCmd::PublishProfile(local)) => {
@@ -748,6 +762,24 @@ const SUB_DM: &str = "dxf-dm";
 /// replays everything under the id it names — sharing `SUB_DM` would have
 /// re-delivered every gift wrap each time somebody new said hello.
 const SUB_NAMES: &str = "dxf-names";
+fn apply_own_name(state: &mut AppState, pubkey: &str, name: &str, at: i64) {
+    state.note_name(pubkey, name.to_owned(), at);
+    if let Some(user) = state
+        .self_user
+        .as_mut()
+        .filter(|user| user.pubkey == pubkey)
+    {
+        user.username = name.to_owned();
+    }
+    for member in state
+        .members
+        .iter_mut()
+        .filter(|member| !member.bot && member.user.pubkey == pubkey)
+    {
+        member.user.username = name.to_owned();
+    }
+}
+
 /// One app at a time: each lookup replaces the last under this id.
 const SUB_APP: &str = "dxf-app";
 const SUB_BLOCKLISTS: &str = "dxf-app-blocklists";
@@ -1094,6 +1126,42 @@ fn insert_message(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn renaming_updates_the_live_account_and_every_human_membership() {
+        let mut state = AppState::empty();
+        state.self_user = Some(User {
+            pubkey: "me".into(),
+            username: "Before".into(),
+        });
+        for (pubkey, bot) in [("me", false), ("me", false), ("me", true), ("other", false)] {
+            state.members.push(crate::protocol::Member {
+                user: User {
+                    pubkey: pubkey.into(),
+                    username: "Before".into(),
+                },
+                guild_id: Id::new_v4(),
+                online: true,
+                bot,
+                roles: vec![],
+                xp: 0,
+                look: Default::default(),
+            });
+        }
+        apply_own_name(&mut state, "me", "After", 101);
+        assert_eq!(state.display_name("me"), "After");
+        assert_eq!(state.nostr_names["me"], ("After".into(), 101));
+        assert_eq!(
+            state
+                .members
+                .iter()
+                .map(|member| member.user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["After", "After", "Before", "Before"]
+        );
+        assert!(!state.note_name("me", "Before".into(), 100));
+        assert_eq!(state.display_name("me"), "After");
+    }
+
     use super::*;
 
     /// The whole UI keys off these, so they must be stable across launches and
