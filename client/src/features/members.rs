@@ -102,6 +102,30 @@ enum ModAction {
     Ban,
 }
 
+fn member_menu_permissions(
+    state: &crate::state::AppState,
+    member: &Member,
+) -> (bool, bool, bool, bool) {
+    if member.bot {
+        return (false, false, false, false);
+    }
+    let gid = member.guild_id;
+    let protected = state
+        .self_user
+        .as_ref()
+        .is_some_and(|u| u.pubkey == member.user.pubkey)
+        || state
+            .guilds
+            .iter()
+            .any(|g| g.id == gid && g.owner_pubkey == member.user.pubkey);
+    (
+        !protected && state.can(gid, Permission::KickMembers),
+        !protected && state.can(gid, Permission::BanMembers),
+        state.can(gid, Permission::ManageRoles) && (!protected || state.is_owner(gid)),
+        !protected && state.can(gid, Permission::DisconnectMembers),
+    )
+}
+
 fn voice_here<'a>(
     voice_states: &'a [VoiceState],
     guild: Id,
@@ -248,42 +272,6 @@ fn GuildMembersPanel() -> Element {
         (guild_id, members, rules, by_role, by_rank, top_roles)
     });
     let (_, members, rules, by_role, by_rank, top_roles) = roster();
-    let permissions = use_memo(move || {
-        let snapshot = state.read();
-        let guild_id = snapshot.selected_guild;
-        let (can_kick, can_ban, can_roles, can_disconnect, owner_pk, self_pk) = guild_id
-            .map(|gid| {
-                (
-                    snapshot.can(gid, Permission::KickMembers),
-                    snapshot.can(gid, Permission::BanMembers),
-                    snapshot.can(gid, Permission::ManageRoles),
-                    snapshot.can(gid, Permission::DisconnectMembers),
-                    snapshot
-                        .guilds
-                        .iter()
-                        .find(|g| g.id == gid)
-                        .map(|g| g.owner_pubkey.clone())
-                        .unwrap_or_default(),
-                    snapshot
-                        .self_user
-                        .as_ref()
-                        .map(|u| u.pubkey.clone())
-                        .unwrap_or_default(),
-                )
-            })
-            .unwrap_or((false, false, false, false, String::new(), String::new()));
-        (
-            can_kick,
-            can_ban,
-            can_roles,
-            can_disconnect,
-            owner_pk,
-            self_pk,
-        )
-    });
-    let (can_kick, can_ban, can_roles, can_disconnect, owner_pk, self_pk) = permissions();
-
-    let can_moderate = can_kick || can_ban || can_roles || can_disconnect;
     let mut menu = use_signal::<Option<MemberMenu>>(|| None);
 
     let (online_members, offline_members): (Vec<Member>, Vec<Member>) =
@@ -335,11 +323,8 @@ fn GuildMembersPanel() -> Element {
     let online_count = members.iter().filter(|m| m.online).count();
 
     let on_context = use_callback(move |(member, x, y): (Member, f64, f64)| {
-        if !can_moderate
-            || member.bot
-            || member.user.pubkey == self_pk
-            || member.user.pubkey == owner_pk
-        {
+        let (kick, ban, roles, disconnect) = member_menu_permissions(&state.read(), &member);
+        if !kick && !ban && !roles && !disconnect {
             return;
         }
         menu.set(Some(MemberMenu {
@@ -386,18 +371,29 @@ fn GuildMembersPanel() -> Element {
             }
 
             if let Some(m) = menu() {
-                MemberMenuPopover {
-                    menu: m,
-                    can_kick,
-                    can_ban,
-                    can_roles,
-                    can_disconnect,
-                    on_close: move |_| menu.set(None),
-                    on_confirm: move |action: ModAction| {
-                        if let Some(cur) = menu.write().as_mut() {
-                            cur.confirming = Some(action);
+                {
+                    let access = {
+                        let state = state.read();
+                        state.members.iter()
+                            .find(|member| member.guild_id == m.guild_id && member.user.pubkey == m.pubkey)
+                            .map(|member| member_menu_permissions(&state, member))
+                            .unwrap_or_default()
+                    };
+                    rsx! {
+                        MemberMenuPopover {
+                            menu: m,
+                            can_kick: access.0,
+                            can_ban: access.1,
+                            can_roles: access.2,
+                            can_disconnect: access.3,
+                            on_close: move |_| menu.set(None),
+                            on_confirm: move |action: ModAction| {
+                                if let Some(cur) = menu.write().as_mut() {
+                                    cur.confirming = Some(action);
+                                }
+                            },
                         }
-                    },
+                    }
                 }
             }
         }
@@ -779,6 +775,66 @@ fn VoiceBadges(muted: bool, deafened: bool) -> Element {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_has_every_permission_and_can_edit_own_roles_without_self_moderation() {
+        let mut state = AppState::empty();
+        let gid = Id::new_v4();
+        let owner = member("owner", gid, true);
+        state.self_user = Some(owner.user.clone());
+        state.guilds.push(
+            serde_json::from_value(serde_json::json!({
+                "id": gid, "name": "Community", "icon": null, "owner_pubkey": "owner"
+            }))
+            .unwrap(),
+        );
+        for permission in Permission::ALL {
+            assert!(state.can(gid, *permission), "missing {permission:?}");
+        }
+        assert_eq!(
+            member_menu_permissions(&state, &owner),
+            (false, false, true, false)
+        );
+        let other = member("other", gid, true);
+        assert_eq!(
+            member_menu_permissions(&state, &other),
+            (true, true, true, true)
+        );
+        let role = Id::new_v4();
+        state.self_user = Some(other.user.clone());
+        let mut moderator = other.clone();
+        moderator.roles.push(role);
+        state.members.push(moderator.clone());
+        state.roles.insert(
+            gid,
+            vec![crate::protocol::Role {
+                id: role,
+                guild_id: gid,
+                name: "Moderator".into(),
+                color: None,
+                permissions: vec![
+                    Permission::ManageRoles,
+                    Permission::KickMembers,
+                    Permission::MoveMembers,
+                ],
+                position: 0,
+            }],
+        );
+        assert_eq!(
+            member_menu_permissions(&state, &owner),
+            (false, false, false, false)
+        );
+        assert_eq!(
+            member_menu_permissions(&state, &moderator),
+            (false, false, false, false)
+        );
+        assert!(!state.can(gid, Permission::ManageGuild));
+        assert!(state.can(gid, Permission::MoveMembers));
+        assert_eq!(
+            member_menu_permissions(&state, &member("regular", gid, true)),
+            (true, false, true, false)
+        );
+    }
+
     #[test]
     fn dm_panel_renders_the_peer_profile_without_sorting_guild_members() {
         use std::{cell::RefCell, rc::Rc};

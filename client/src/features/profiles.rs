@@ -202,7 +202,7 @@ pub fn Avatar(
         div {
             class: "rounded-md border border-[var(--border)] overflow-hidden shrink-0 flex items-center justify-center text-[var(--accent)] font-medium {size} {text}",
             if let Some(url) = avatar {
-                img { class: "w-full h-full object-cover", src: "{url}", alt: "{name}" }
+                img { class: "w-full h-full object-cover", src: "{url}", alt: "{name}", draggable: false }
             } else {
                 "{initial}"
             }
@@ -924,10 +924,16 @@ mod account_avatar_tests {
             Mutation::SetAttribute { name: "src", value: AttributeValue::Text(src), .. } if *src == expected
         ))
         };
-        assert!(has_source(
-            &dom.rebuild_to_vec().edits,
-            "data:image/png;base64,Zmlyc3Q="
-        ));
+        let initial = dom.rebuild_to_vec().edits;
+        assert!(initial.iter().any(|edit| matches!(
+            edit,
+            Mutation::SetAttribute {
+                name: "draggable",
+                value: AttributeValue::Bool(false),
+                ..
+            }
+        )));
+        assert!(has_source(&initial, "data:image/png;base64,Zmlyc3Q="));
         let mut state = export.borrow().unwrap();
         state.write().account_pictures = Some((
             "self".into(),
