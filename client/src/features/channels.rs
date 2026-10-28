@@ -2226,6 +2226,7 @@ pub(crate) fn select_text_channel(
         let mut s = state.write();
         s.selected_channel = Some(channel_id);
         s.dm_mode = false;
+        crate::channel_selection::remember_current(&mut s);
         s.mark_channel_read(channel_id);
         !s.history_loaded.contains(&channel_id)
     };

@@ -123,12 +123,14 @@ pub fn GuildsSidebar() -> Element {
                     onclick: move |_| {
                         if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
                             let mut s = state.write();
+                            crate::channel_selection::remember_current(&mut s);
                             s.dm_mode = true;
                             s.selected_channel = s.preferred_dm().map(|dm| dm.channel_id);
                             tab.set(super::workspace::MobileTab::Channels);
                             return;
                         }
                         let mut s = state.write();
+                        crate::channel_selection::remember_current(&mut s);
                         s.dm_mode = true;
                         let on_dm = s
                             .selected_channel
@@ -192,6 +194,7 @@ pub fn GuildsSidebar() -> Element {
                                     move |gid: Id| {
                                         let target = {
                                             let mut s = state.write();
+                                            crate::channel_selection::remember_current(&mut s);
                                             s.dm_mode = false;
                                             s.selected_guild = Some(gid);
                                             s.selected_channel = None;

@@ -319,6 +319,7 @@ pub struct AppState {
     pub voice_session_epoch: u64,
     pub selected_guild: Option<Id>,
     pub selected_channel: Option<Id>,
+    pub last_text_channels: Vec<crate::channel_selection::RememberedTextChannel>,
     pub dms: Vec<DmInfo>,
     /// The NIP-30 `emoji` tags a DM carried, by message: `:code:` in its text
     /// resolves here, since a DM has no guild to ask. Memory only — relays
@@ -549,6 +550,7 @@ impl AppState {
             voice_session_epoch: 0,
             selected_guild: None,
             selected_channel: None,
+            last_text_channels: Vec::new(),
             dms: Vec::new(),
             dm_emoji: HashMap::new(),
             saved_emoji: Vec::new(),
@@ -733,6 +735,7 @@ impl AppState {
     }
 
     pub fn clear_server_session(&mut self) {
+        crate::channel_selection::remember_current(self);
         self.channel_unread.clear();
         self.voice_route_revision = 0;
         self.status = ConnectionStatus::Disconnected;
@@ -1162,6 +1165,9 @@ impl AppState {
     }
 
     pub fn default_channel_of(&self, guild_id: Id) -> Option<Id> {
+        if let Some(channel) = crate::channel_selection::recalled(self, guild_id) {
+            return Some(channel);
+        }
         self.channels
             .iter()
             .filter(|c| {
