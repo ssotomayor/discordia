@@ -15,7 +15,7 @@ const html = (mobile) => `<style>${css}</style><body class="${mobile ? "dxf-plat
 <span class="${cls('dxf-home-relays')}"><span style="width:7px;height:7px;background:var(--up);border-radius:50%"></span><span class="text-xs">4/4</span></span>
 <div class="${cls('dxf-home-spacer')}"></div><div class="${cls('dxf-home-tools')}">
 <button class="${cls('dxf-home-social')}" aria-expanded="true" aria-label="Social 3"><span>${icon('USERS')}</span><span class="dxf-home-social-label">Social</span><span>3</span></button>
-${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dxf-home-account')}"><div class="w-8 h-8 border rounded-md flex items-center justify-center">R</div><div class="${cls('dxf-home-account-details')}">Nombre de usuario</div></button>` : `<button class="${cls('dxf-home-account')}"><div class="w-8 h-8 border rounded-md flex items-center justify-center">R</div><div class="${cls('dxf-home-account-details')}">Nombre de usuario</div></button>${button('dxf-home-settings', icon('GEAR'))}`}
+${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dxf-home-account')}"><div class="dxf-avatar w-8 h-8 border rounded-md flex items-center justify-center"><img alt="Account" style="width:100%;height:100%;object-fit:cover" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Crect width='32' height='32' fill='red'/%3E%3C/svg%3E"></div><div class="${cls('dxf-home-account-details')}">Nombre de usuario</div></button>` : `<button class="${cls('dxf-home-account')}"><div class="dxf-avatar w-8 h-8 border rounded-md flex items-center justify-center"><img alt="Account" style="width:100%;height:100%;object-fit:cover" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Crect width='32' height='32' fill='red'/%3E%3C/svg%3E"></div><div class="${cls('dxf-home-account-details')}">Nombre de usuario</div></button>${button('dxf-home-settings', icon('GEAR'))}`}
 </div></div></div><p style="padding:16px">Inicio</p>
 <div class="dxf-workspace-mobile p-2" style="padding-top:max(var(--safe-top),.5rem);padding-left:max(var(--safe-left),.5rem);padding-right:max(var(--safe-right),.5rem)">
 <div class="dxf-workspace-header flex items-center gap-2"><div class="dxf-workspace-brand flex items-center"><div class="dxf-logo dxf-workspace-logo w-6 h-6">${logo}</div></div>
@@ -41,6 +41,13 @@ ${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dx
       assert.equal(result.home.cx,result.icon.cx); assert.equal(result.home.cy,result.icon.cy);
       assert.ok(result.relays.x+result.relays.w <= result.social.x, `overlap ${width}`);
       assert.equal(await page.getByRole('button', {name: 'Social 3', exact:true}).count(), 1);
+      const avatar = await page.locator('.dxf-home-account').boundingBox();
+      const exit = await page.locator('.dxf-workspace-tools > button').last().boundingBox();
+      assert.equal(avatar.width, 44); assert.equal(avatar.height, 44);
+      assert.equal(avatar.width, exit.width); assert.equal(avatar.height, exit.height);
+      assert.equal(avatar.x + avatar.width / 2, exit.x + exit.width / 2);
+      const picture = await page.locator('.dxf-home-account img').boundingBox();
+      assert.equal(picture.width, 42); assert.equal(picture.height, 42);
       const order = await page.locator('.dxf-home-tools > button').evaluateAll(nodes => nodes.map(n => n.className.split(' ')[0]));
       assert.deepEqual(order, ['dxf-home-social','dxf-home-settings','dxf-home-account']);
       console.log(JSON.stringify({width,settingsX:result.home.cx,settingsY:result.home.cy,logo:result.homeLogo.w,icon:result.icon.w,overflow:result.overflow}));

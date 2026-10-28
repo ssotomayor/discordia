@@ -235,6 +235,7 @@ fn TopBar(
             open.set(!now);
         },
         crate::features::profiles::Avatar {
+            account: true,
             pubkey: identity.pubkey.clone(),
             name: identity.display_name.clone(),
             size: "w-8 h-8",

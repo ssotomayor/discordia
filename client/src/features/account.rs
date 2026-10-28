@@ -67,6 +67,7 @@ pub fn AccountView(
         state.write().account_pictures =
             crate::profile::load(&owner).map(|profile| (owner, profile.into()));
     });
+    crate::profile::use_avatar_recovery(state, identity.pubkey.clone());
     crate::bookmarks::use_bookmarks(&identity, state);
     crate::voice_handoff::use_bridge();
     let nostr = use_hook(|| {

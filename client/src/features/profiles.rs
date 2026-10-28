@@ -138,46 +138,61 @@ pub(crate) fn embed_image(cropped: String) -> (Option<String>, Option<String>) {
     (Some(cropped), None)
 }
 
-fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<crate::image_assets::ImageSource>> {
+fn use_profile_image(
+    pubkey: &str,
+    banner: bool,
+    account: bool,
+) -> Memo<Option<crate::image_assets::ImageSource>> {
     let state = use_app_state();
     let pubkey = pubkey.to_owned();
-    use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
-        let s = state.read();
-        let address = if banner {
-            s.banner_address(&pubkey)
-        } else {
-            s.avatar_address(&pubkey)
-        }?;
-        let resolved = s.media_src(address)?;
-        if let Some((owner, pictures)) = &s.account_pictures
-            && owner == &pubkey
-        {
-            let cached = if banner {
-                &pictures.banner
-            } else {
-                &pictures.avatar
-            };
-            if let Some(data) = cached
+    use_memo(use_reactive(
+        (&pubkey, &account),
+        move |(pubkey, account)| {
+            let s = state.read();
+            let personal = s
+                .account_pictures
                 .as_ref()
-                .filter(|data| std::ptr::eq(data.as_str(), address))
+                .filter(|(owner, _)| owner == &pubkey)
+                .and_then(|(_, pictures)| pictures.avatar.as_deref())
+                .map(String::as_str);
+            let address = if account {
+                personal.or_else(|| s.profiles.get(&pubkey)?.avatar.as_deref())
+            } else if banner {
+                s.banner_address(&pubkey)
+            } else {
+                s.avatar_address(&pubkey)
+            }?;
+            let resolved = s.media_src(address)?;
+            if let Some((owner, pictures)) = &s.account_pictures
+                && owner == &pubkey
             {
-                return Some(crate::image_assets::source(data.clone()));
+                let cached = if banner {
+                    &pictures.banner
+                } else {
+                    &pictures.avatar
+                };
+                if let Some(data) = cached
+                    .as_ref()
+                    .filter(|data| std::ptr::eq(data.as_str(), address))
+                {
+                    return Some(crate::image_assets::source(data.clone()));
+                }
             }
-        }
-        let data = match address.strip_prefix("media:") {
-            Some(blob) => s
-                .emoji_images
-                .get_shared(blob)
-                .filter(|data| !data.is_empty()),
-            None => Some(std::sync::Arc::new(resolved.to_owned())),
-        }?;
-        Some(crate::image_assets::source(data))
-    }))
+            let data = match address.strip_prefix("media:") {
+                Some(blob) => s
+                    .emoji_images
+                    .get_shared(blob)
+                    .filter(|data| !data.is_empty()),
+                None => Some(std::sync::Arc::new(resolved.to_owned())),
+            }?;
+            Some(crate::image_assets::source(data))
+        },
+    ))
 }
 
 #[component]
 fn ProfileBanner(pubkey: String, accent: String) -> Element {
-    let image = use_profile_image(&pubkey, true);
+    let image = use_profile_image(&pubkey, true, false);
     rsx! {
         if let Some(b) = image() {
             img { class: "h-24 w-full object-cover block", src: "{b}", alt: crate::i18n::text("banner", &[]) }
@@ -193,14 +208,15 @@ pub fn Avatar(
     #[props(into)] name: String,
     #[props(into)] size: String,
     #[props(into, default = "text-xs".to_string())] text: String,
+    #[props(default)] account: bool,
 ) -> Element {
-    let image = use_profile_image(&pubkey, false);
+    let image = use_profile_image(&pubkey, false, account);
     let avatar = image();
     let initial = name.chars().next().unwrap_or('?').to_ascii_uppercase();
 
     rsx! {
         div {
-            class: "rounded-md border border-[var(--border)] overflow-hidden shrink-0 flex items-center justify-center text-[var(--accent)] font-medium {size} {text}",
+            class: "dxf-avatar rounded-md border border-[var(--border)] overflow-hidden shrink-0 flex items-center justify-center text-[var(--accent)] font-medium {size} {text}",
             if let Some(url) = avatar {
                 img { class: "w-full h-full object-cover", src: "{url}", alt: "{name}", draggable: false }
             } else {
@@ -911,11 +927,19 @@ mod account_avatar_tests {
                         }
                         .into(),
                     ));
+                    state.profiles.insert(
+                        "self".into(),
+                        crate::protocol::Profile {
+                            pubkey: "self".into(),
+                            avatar: None,
+                            ..Default::default()
+                        },
+                    );
                     state
                 });
                 provide_context(state);
                 *export.borrow_mut() = Some(state);
-                rsx! { Avatar { pubkey: "self", name: "Self", size: "w-8 h-8" } }
+                rsx! { Avatar { pubkey: "self", name: "Self", size: "w-8 h-8", account: true } }
             },
             export.clone(),
         );
