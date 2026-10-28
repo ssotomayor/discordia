@@ -325,7 +325,6 @@
   "Tray notifications": ["Notificaciones en la bandeja", "Notificações na bandeja", "托盘通知", "トレイ通知"],
   "Notify about incoming calls and private messages while Discordia is minimized to the system tray.": ["Avisar sobre llamadas entrantes y mensajes privados mientras Discordia está minimizada en la bandeja del sistema.", "Avisar sobre chamadas recebidas e mensagens privadas enquanto o Discordia estiver minimizado na bandeja do sistema.", "当 Discordia 最小化到系统托盘时，通知来电和私人消息。", "Discordia がシステム トレイに最小化されている間、着信通話とプライベート メッセージについて通知します。"],
   "Enable notifications when minimized to tray": ["Activar notificaciones al minimizar en la bandeja", "Ativar notificações ao minimizar na bandeja", "最小化到托盘时启用通知", "トレイに最小化したときに通知を有効にする"],
-  "Incoming voice call": ["Llamada de voz entrante", "Chamada de voz recebida", "语音来电", "着信音声通話"],
   "{0} is calling you": ["{0} te está llamando", "{0} está te chamando", "{0} 正在呼叫您", "{0} が発信しています"],
   "GPU (hardware)": ["GPU (hardware)", "GPU (hardware)", "GPU（硬件）", "GPU (ハードウェア)"],
   "CPU (software)": ["CPU (software)", "CPU (software)", "CPU（软件）", "CPU (ソフトウェア)"],

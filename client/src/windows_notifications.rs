@@ -158,7 +158,10 @@ mod tests {
     #[test]
     fn xml_escaping_escapes_special_characters() {
         assert_eq!(xml_escape("Bob & Alice"), "Bob &amp; Alice");
-        assert_eq!(xml_escape("<tag> \"quote\" 'apostrophe'"), "&lt;tag&gt; &quot;quote&quot; &apos;apostrophe&apos;");
+        assert_eq!(
+            xml_escape("<tag> \"quote\" 'apostrophe'"),
+            "&lt;tag&gt; &quot;quote&quot; &apos;apostrophe&apos;"
+        );
         assert_eq!(xml_escape("Plain Text 123"), "Plain Text 123");
     }
 }
