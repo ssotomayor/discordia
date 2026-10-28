@@ -54,5 +54,6 @@ pub mod topology;
 mod ui_update_bench;
 mod video_lifecycle;
 pub mod voice;
+mod voice_drag;
 pub mod voice_menu;
 pub mod workspace;

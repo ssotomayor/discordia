@@ -66,40 +66,6 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
         (volume, muted, disconnect_in, track_stats, health, ping_ms)
     };
 
-    let (move_from, destinations) = {
-        let s = state.read();
-        let source = s
-            .voice_states
-            .iter()
-            .find(|v| v.user_pubkey == pubkey)
-            .filter(|v| {
-                s.can(v.guild_id, Permission::MoveMembers)
-                    && s.self_user.as_ref().is_none_or(|u| u.pubkey != pubkey)
-                    && !s
-                        .guilds
-                        .iter()
-                        .any(|g| g.id == v.guild_id && g.owner_pubkey == pubkey)
-            });
-        let from = source.and_then(|v| v.channel_id);
-        let mut destinations: Vec<_> = source
-            .into_iter()
-            .flat_map(|v| {
-                s.channels
-                    .iter()
-                    .filter(move |c| {
-                        c.guild_id == v.guild_id
-                            && c.kind == crate::protocol::ChannelKind::Voice
-                            && Some(c.id) != from
-                    })
-                    .map(|c| (c.id, c.name.clone()))
-            })
-            .collect();
-        destinations.sort_by(|a, b| a.1.cmp(&b.1));
-        (from, destinations)
-    };
-    let pk_move = pubkey.clone();
-    let move_gateway = gateway.clone();
-
     let apply = {
         let pubkey = pubkey.clone();
         move || {
@@ -225,25 +191,6 @@ fn VoiceMenuPopover(menu: VoiceMenu) -> Element {
                         close();
                     },
                     {crate::i18n::text("View profile", &[])}
-                }
-                if let Some(from_channel_id) = move_from && !destinations.is_empty() {
-                    select {
-                        class: "w-full px-3 py-1.5 rounded text-xs bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)]",
-                        aria_label: crate::i18n::text("Move to voice channel", &[]),
-                        value: "",
-                        onchange: move |e| {
-                            if let Ok(channel_id) = e.value().parse() {
-                                move_gateway.send(ClientMessage::MoveVoice {
-                                    user_pubkey: pk_move.clone(), from_channel_id, channel_id,
-                                });
-                                close();
-                            }
-                        },
-                        option { value: "", disabled: true, {crate::i18n::text("Move to voice channel", &[])} }
-                        for (id, name) in destinations {
-                            option { value: "{id}", "{name}" }
-                        }
-                    }
                 }
                 if let Some(gid) = disconnect_in {
                     div { class: "border-t border-[var(--border)] my-1" }
