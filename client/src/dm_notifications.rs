@@ -54,6 +54,84 @@ fn open_inbox(state: &mut AppState, peer: &str) -> bool {
     true
 }
 
+#[cfg(any(target_os = "android", target_os = "windows"))]
+#[derive(Clone, Default)]
+struct NativeState {
+    #[cfg(target_os = "android")]
+    resumed: bool,
+    open: Option<(String, String)>,
+}
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+fn events() -> &'static tokio::sync::watch::Sender<NativeState> {
+    static EVENTS: std::sync::OnceLock<tokio::sync::watch::Sender<NativeState>> =
+        std::sync::OnceLock::new();
+    EVENTS.get_or_init(|| tokio::sync::watch::channel(NativeState::default()).0)
+}
+
+#[cfg(target_os = "windows")]
+pub fn request_open_dm(account: &str, peer: &str) {
+    if account.parse::<secp256k1::XOnlyPublicKey>().is_ok()
+        && peer.parse::<secp256k1::XOnlyPublicKey>().is_ok()
+    {
+        events().send_modify(|state| state.open = Some((account.to_string(), peer.to_string())));
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, live: bool) {
+    if let Some(notice) = notice(state, message, account, live) {
+        crate::windows_notifications::show_dm_notification(
+            &notice.account,
+            &notice.sender,
+            &notice.message,
+            &notice.peer,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn use_notifications(mut state: dioxus::prelude::Signal<AppState>, account: String) {
+    use dioxus::prelude::*;
+    let mut pending = use_signal(|| None::<String>);
+    let active_account = account.clone();
+    use_hook(move || {
+        crate::service_task::spawn(async move {
+            let mut receiver = events().subscribe();
+            loop {
+                let event = receiver.borrow_and_update().clone();
+                if let Some((owner, peer)) = event.open
+                    && owner == active_account
+                {
+                    pending.set(Some(peer.clone()));
+                    events().send_if_modified(|event| {
+                        if event.open.as_ref() == Some(&(owner.clone(), peer.clone())) {
+                            event.open = None;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                }
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+    });
+    use_effect(move || {
+        let Some(peer) = pending() else {
+            return;
+        };
+        if state.read().dm_standing(&peer) != DmStanding::Inbox {
+            return;
+        }
+        if open_inbox(&mut state.write(), &peer) {
+            pending.set(None);
+        }
+    });
+}
+
 #[cfg(target_os = "android")]
 pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, live: bool) {
     if let Some(notice) = notice(state, message, account, live) {
@@ -75,19 +153,6 @@ mod native {
         JNIEnv,
         objects::{JObject, JString, JValue},
     };
-    use std::sync::OnceLock;
-    use tokio::sync::watch;
-
-    #[derive(Clone, Default)]
-    struct NativeState {
-        resumed: bool,
-        open: Option<(String, String)>,
-    }
-
-    fn events() -> &'static watch::Sender<NativeState> {
-        static EVENTS: OnceLock<watch::Sender<NativeState>> = OnceLock::new();
-        EVENTS.get_or_init(|| watch::channel(NativeState::default()).0)
-    }
 
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_dev_dioxus_main_MainActivity_onDmNotificationVisibility(

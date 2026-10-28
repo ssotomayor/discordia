@@ -111,6 +111,9 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "Foundation",
 ] }
 windows-core = "0.61"
 webview2-com-sys = "0.38"

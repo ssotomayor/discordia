@@ -83,7 +83,7 @@ pub fn AccountView(
     provide_context(state);
     provide_context(nostr.clone());
     provide_context(identity.clone());
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     crate::dm_notifications::use_notifications(state, identity.pubkey.clone());
     #[cfg(target_os = "android")]
     crate::call_notifications::use_controls(state, nostr.clone());

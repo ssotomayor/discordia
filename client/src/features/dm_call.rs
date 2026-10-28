@@ -1079,6 +1079,22 @@ pub fn CallAlert() -> Element {
         } else if current.is_none() && previous.peek().is_some() {
             super::sounds::sfx("call-ended");
         }
+        #[cfg(target_os = "windows")]
+        if current == Some(Phase::Incoming) {
+            if let Some(call) = state.peek().dm_call.as_ref() {
+                let caller_name = state.peek().display_name(&call.peer);
+                let account = try_consume_context::<crate::identity::Identity>()
+                    .map(|id| id.pubkey)
+                    .unwrap_or_default();
+                crate::windows_notifications::show_call_notification(
+                    &account,
+                    &caller_name,
+                    &call.peer,
+                );
+            }
+        } else {
+            crate::windows_notifications::hide_call_notification();
+        }
         previous.set(current);
     });
     use_drop(move || {
@@ -1086,6 +1102,8 @@ pub fn CallAlert() -> Element {
             task.cancel();
         }
         crate::native_sounds::call_ring(None);
+        #[cfg(target_os = "windows")]
+        crate::windows_notifications::hide_call_notification();
     });
     rsx! {}
 }

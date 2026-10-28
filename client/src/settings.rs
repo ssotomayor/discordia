@@ -185,6 +185,9 @@ pub struct ClientSettings {
     /// Executable to display name, for what the committed catalogue misses.
     #[serde(default)]
     pub detect_extra: Vec<(String, String)>,
+    /// Opt-out for native tray toast alerts on platforms that run a tray icon.
+    #[serde(default = "default_enabled")]
+    pub tray_notifications: bool,
 }
 
 fn default_publish_global_level() -> bool {
@@ -415,6 +418,7 @@ impl Default for ClientSettings {
             detect_games: default_enabled(),
             discord_rpc_socket: default_discord_rpc(),
             detect_extra: Vec::new(),
+            tray_notifications: default_enabled(),
         }
     }
 }
@@ -878,5 +882,16 @@ mod tests {
             "192.168.0.61:7800"
         );
         assert_eq!(rendezvous_label("ws://[::1]:7700"), "[::1]");
+    }
+
+    #[test]
+    fn tray_notifications_defaults_to_true_and_preserves_explicit_choice() {
+        assert!(ClientSettings::default().tray_notifications);
+        let disabled = ClientSettings {
+            tray_notifications: false,
+            ..Default::default()
+        };
+        let loaded = parse(&file(serde_json::to_value(disabled).unwrap())).unwrap();
+        assert!(!loaded.tray_notifications);
     }
 }

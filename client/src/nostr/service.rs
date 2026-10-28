@@ -1084,7 +1084,7 @@ fn insert_message(
         return;
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "windows"))]
     crate::dm_notifications::received(&s, msg, our_pubkey, live && source == Source::Relay);
 
     if msg.author != our_pubkey {

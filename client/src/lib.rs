@@ -27,7 +27,7 @@ mod mobile_back;
 mod text_menu;
 #[macro_use]
 mod devlog;
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "windows", test))]
 mod dm_notifications;
 mod emoji;
 mod features;
@@ -76,6 +76,8 @@ mod voice_handoff;
 mod voice_record;
 #[cfg(target_os = "windows")]
 mod webview2;
+#[cfg(target_os = "windows")]
+mod windows_notifications;
 mod xp_ledger;
 
 #[cfg(target_os = "windows")]
