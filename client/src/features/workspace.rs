@@ -1470,6 +1470,11 @@ fn GuildDialogHost() -> Element {
         Some(crate::state::GuildDialog::Invite(gid)) => rsx! {
             super::invite::InviteDialog { guild_id: gid, on_close: close }
         },
+        Some(crate::state::GuildDialog::VoiceInvite(cid)) => rsx! {
+            for channel_id in std::iter::once(cid) {
+                super::voice_invite::VoiceInviteDialog { key: "{channel_id}", channel_id, on_close: close }
+            }
+        },
         Some(crate::state::GuildDialog::Integrations(gid)) => rsx! {
             crate::features::integrations::IntegrationsDialog { guild_id: gid, on_close: close }
         },

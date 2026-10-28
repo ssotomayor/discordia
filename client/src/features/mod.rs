@@ -55,5 +55,6 @@ mod ui_update_bench;
 mod video_lifecycle;
 pub mod voice;
 mod voice_drag;
+mod voice_invite;
 pub mod voice_menu;
 pub mod workspace;
