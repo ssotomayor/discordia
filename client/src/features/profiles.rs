@@ -478,12 +478,16 @@ pub fn ProfileCard(
 /// rather than growing an icon beside it.
 pub fn ProfileEditor(class: String, children: Element) -> Element {
     let identity = use_context::<crate::identity::Identity>();
+    let identity_name = identity.display_name.clone();
+    let rename = try_use_context::<super::account::RenameAccount>();
     let profile_owner = use_signal(|| identity.pubkey);
     let mut state = use_app_state();
     let gateway = use_gateway();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
 
     let mut open = use_signal(|| false);
+    let mut display_name = use_signal(String::new);
+    let mut original_name = use_signal(String::new);
     let mut avatar = use_signal::<Option<String>>(|| None);
     let mut banner = use_signal::<Option<String>>(|| None);
     let mut bio = use_signal(String::new);
@@ -497,6 +501,9 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
 
     let mut load_current = move || {
         let s = state.read();
+        let name = s.display_name_or(&profile_owner.peek(), &identity_name);
+        display_name.set(name.clone());
+        original_name.set(name);
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
         if let Some(pk) = me
             && let Some(p) = s.profile_of(&pk)
@@ -522,6 +529,19 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
     };
 
     let mut save = move || {
+        if let Some(rename) = rename {
+            if display_name.peek().trim().is_empty() {
+                return;
+            }
+            let name = crate::protocol::canonical_username(&display_name());
+            if name != *original_name.peek() {
+                if let Err(message) = rename.0.call(name.clone()) {
+                    err.set(Some(message));
+                    return;
+                }
+                original_name.set(name);
+            }
+        }
         let bio_val = bio();
         let bio_opt = {
             let t = bio_val.trim();
@@ -597,6 +617,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
         button {
             class: "{class}",
             title: crate::i18n::text("Edit your profile", &[]),
+            aria_label: crate::i18n::text("Edit your profile", &[]),
             onclick: move |_| { load_current(); err.set(None); open.set(true); },
             {children}
         }
@@ -635,6 +656,21 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                     class: "dxf-modal-in w-80 max-h-[90vh] overflow-y-auto bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Edit profile", &[])} }
+
+                    if rename.is_some() {
+                        label { class: "block mb-3 text-xs text-[var(--text-muted)]",
+                            {crate::i18n::text("Display name", &[])}
+                            input {
+                                class: "w-full mt-1 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-sm text-[var(--text)] outline-none transition-colors",
+                                r#type: "text",
+                                aria_label: crate::i18n::text("Display name", &[]),
+                                maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
+                                value: "{display_name}",
+                                oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
+                            }
+                            span { class: "block mt-1 text-[10px] text-[var(--text-dim)]", {crate::i18n::text("This changes your account name across Discordia.", &[])} }
+                        }
+                    }
 
                     div { class: "flex items-center gap-3 mb-3",
                         div { class: "w-16 h-16 rounded-md border border-[var(--border)] overflow-hidden flex items-center justify-center text-[var(--text-dim)] text-xs shrink-0",
@@ -816,11 +852,14 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                     div { class: "mt-3 flex gap-2 justify-end",
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                            aria_label: crate::i18n::text("Cancel", &[]),
                             onclick: move |_| open.set(false),
                             {crate::i18n::text("Cancel", &[])}
                         }
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                            aria_label: crate::i18n::text("Save", &[]),
+                            disabled: rename.is_some() && display_name.read().trim().is_empty(),
                             onclick: move |_| save(),
                             {crate::i18n::text("Save", &[])}
                         }
@@ -886,6 +925,128 @@ fn SavedEmojiSection() -> Element {
                 crate::features::connect::BlobServerField {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_name_tests {
+    use super::*;
+    use dioxus::core::{AttributeValue, ElementId, Mutation};
+    use std::{any::Any, cell::RefCell, rc::Rc};
+
+    fn labeled(edits: &[Mutation], label: &str) -> ElementId {
+        let label = crate::i18n::text(label, &[]);
+        edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: AttributeValue::Text(value),
+                    id,
+                    ..
+                } if *value == label => Some(*id),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn click(dom: &VirtualDom, id: ElementId) {
+        let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+            dioxus::html::SerializedMouseData::default(),
+        )));
+        dom.runtime()
+            .handle_event("click", Event::new(data, true), id);
+    }
+
+    fn input(dom: &VirtualDom, id: ElementId, value: &str) {
+        let data: dioxus::html::SerializedFormData =
+            serde_json::from_value(serde_json::json!({"value": value})).unwrap();
+        let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(data)));
+        dom.runtime()
+            .handle_event("input", Event::new(data, true), id);
+    }
+
+    #[test]
+    fn in_server_name_editor_uses_live_name_and_preserves_failed_or_cancelled_edits() {
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        type Requests = Rc<RefCell<Vec<String>>>;
+        let requests: Requests = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |requests: Requests| {
+                let state = use_signal(|| {
+                    let mut s = crate::state::AppState::empty();
+                    s.self_user = Some(crate::protocol::User {
+                        pubkey: "profile-name-test".into(),
+                        username: "Current name".into(),
+                    });
+                    s.profiles.insert(
+                        "profile-name-test".into(),
+                        crate::protocol::Profile {
+                            pubkey: "profile-name-test".into(),
+                            ..Default::default()
+                        },
+                    );
+                    s
+                });
+                provide_context(state);
+                use_context_provider(|| Signal::new(crate::settings::ClientSettings::default()));
+                use_context_provider(|| {
+                    let mut identity = crate::identity::Identity::restore_from_private_key(
+                        "01".repeat(32),
+                        "Stale name",
+                    )
+                    .unwrap();
+                    identity.pubkey = "profile-name-test".into();
+                    identity
+                });
+                use_context_provider(|| {
+                    crate::state::GatewayTx(tokio::sync::mpsc::unbounded_channel().0)
+                });
+                use_context_provider(crate::nostr::service::NostrTx::test_channel);
+                let rename = use_callback(move |name| {
+                    requests.borrow_mut().push(name);
+                    Err("rename failed".into())
+                });
+                provide_context(super::super::account::RenameAccount(rename));
+                rsx! { ProfileEditor { class: "", "Profile" } }
+            },
+            requests.clone(),
+        );
+        let initial = dom.rebuild_to_vec();
+        let trigger = labeled(&initial.edits, "Edit your profile");
+        click(&dom, trigger);
+        let opened = dom.render_immediate_to_vec();
+        let field = labeled(&opened.edits, "Display name");
+        let save = labeled(&opened.edits, "Save");
+        let cancel = labeled(&opened.edits, "Cancel");
+        assert!(opened.edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "value", value: AttributeValue::Text(value), id, .. } if *id == field && *value == "Current name"
+        )));
+        input(&dom, field, " \u{202e}New name\u{2029} ");
+        dom.render_immediate_to_vec();
+        click(&dom, save);
+        assert_eq!(*requests.borrow(), vec!["New name"]);
+        assert!(
+            dom.render_immediate_to_vec()
+                .edits
+                .iter()
+                .any(|edit| matches!(edit,
+                    Mutation::CreateTextNode { value, .. } if *value == "rename failed"
+                ))
+        );
+        input(&dom, field, "   ");
+        dom.render_immediate_to_vec();
+        click(&dom, save);
+        assert_eq!(requests.borrow().len(), 1);
+        click(&dom, cancel);
+        dom.render_immediate_to_vec();
+        click(&dom, trigger);
+        let reopened = dom.render_immediate_to_vec();
+        let field = labeled(&reopened.edits, "Display name");
+        assert!(reopened.edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "value", value: AttributeValue::Text(value), id, .. } if *id == field && *value == "Current name"
+        )));
+        assert_eq!(requests.borrow().len(), 1);
     }
 }
 

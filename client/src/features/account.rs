@@ -6,6 +6,9 @@ use crate::session::SavedSession;
 use crate::settings::ClientSettings;
 use crate::state::{AppState, ConnectionStatus, SessionParams};
 
+#[derive(Clone, Copy)]
+pub(super) struct RenameAccount(pub Callback<String, Result<(), String>>);
+
 pub(super) fn use_account_state(settings: Signal<ClientSettings>) -> Signal<AppState> {
     // Social reads this from another VirtualDom; ROOT ownership avoids hoisting warnings.
     let state =
@@ -57,7 +60,7 @@ pub fn AccountView(
     last_session: Option<SavedSession>,
     on_connect: EventHandler<SessionParams>,
     on_disconnect: EventHandler<String>,
-    on_rename: EventHandler<String>,
+    on_rename: Callback<String, Result<(), String>>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
     let settings = use_context::<Signal<ClientSettings>>();
@@ -82,6 +85,7 @@ pub fn AccountView(
         crate::nostr::service::spawn_nostr(identity.clone(), relays, state, settings)
     });
     provide_context(state);
+    provide_context(RenameAccount(on_rename));
     provide_context(nostr.clone());
     let name_nostr = nostr.clone();
     use_effect(use_reactive((&identity.display_name,), move |(name,)| {
@@ -182,7 +186,14 @@ pub fn AccountView(
                 }
             }
         } else {
-            super::home::HomeView { identity, error, last_session, on_connect, on_rename, on_sign_out }
+            super::home::HomeView { identity, error, last_session, on_connect,
+                on_rename: move |name| {
+                    if let Err(message) = on_rename.call(name) {
+                        state.write().error_toast = Some(message);
+                    }
+                },
+                on_sign_out,
+            }
         }
     }
 }

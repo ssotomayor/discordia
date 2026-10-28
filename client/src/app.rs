@@ -974,10 +974,12 @@ pub fn App() -> Element {
                         on_rename: move |new_name: String| {
                             let current = identity.peek().clone();
                             if let Some(mut renamed) = current {
-                                match renamed.set_display_name(crate::protocol::canonical_username(&new_name)) {
-                                    Ok(()) => identity.set(Some(renamed)),
-                                    Err(message) => error.set(Some(message)),
-                                }
+                                renamed.set_display_name(crate::protocol::canonical_username(&new_name))?;
+                                identity.set(Some(renamed));
+                                error.set(None);
+                                Ok(())
+                            } else {
+                                Err(crate::i18n::text("No account is signed in.", &[]))
                             }
                         },
                         on_sign_out: move |_| {
