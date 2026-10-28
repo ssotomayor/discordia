@@ -36,6 +36,8 @@ pub struct ClientSettings {
     #[serde(default)]
     pub guild_order: Vec<crate::protocol::Id>,
     #[serde(default)]
+    pub last_text_channels: Vec<crate::channel_selection::RememberedTextChannel>,
+    #[serde(default)]
     pub accent: Option<String>,
     #[serde(default = "default_pattern")]
     pub pattern: String,
@@ -363,6 +365,7 @@ impl Default for ClientSettings {
             emoji_size_percent: default_ui_size(),
             reaction_size_percent: default_ui_size(),
             guild_order: Vec::new(),
+            last_text_channels: Vec::new(),
             accent: None,
             pattern: default_pattern(),
             background: None,

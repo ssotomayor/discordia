@@ -16,6 +16,7 @@ mod bookmarks;
 #[cfg(any(target_os = "android", test))]
 mod call_notifications;
 mod camera_quality;
+mod channel_selection;
 mod chat_image;
 mod clipboard;
 mod connection_routes;

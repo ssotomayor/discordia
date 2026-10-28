@@ -16,6 +16,7 @@ pub(super) fn use_account_state(settings: Signal<ClientSettings>) -> Signal<AppS
 
 fn initial_state(saved: &ClientSettings) -> AppState {
     let mut s = AppState::empty();
+    s.last_text_channels = saved.last_text_channels.clone();
     s.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
@@ -130,6 +131,7 @@ pub fn AccountView(
         }
     });
     crate::state::use_dm_read_persistence(state);
+    crate::channel_selection::use_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_dm_standing_persistence(state);
     crate::state::use_saved_emoji_persistence(state);
@@ -235,6 +237,11 @@ mod tests {
             selected_input_device: Some("Microphone".into()),
             user_volumes: vec![("peer".into(), 180)],
             dm_read_at: vec![("peer".into(), 123)],
+            last_text_channels: vec![crate::channel_selection::RememberedTextChannel {
+                server: "server".into(),
+                guild_id: Id::new_v4(),
+                channel_id: Id::new_v4(),
+            }],
             ..Default::default()
         };
         let state = initial_state(&saved);
@@ -243,6 +250,7 @@ mod tests {
         assert_eq!(state.selected_input_device, saved.selected_input_device);
         assert_eq!(state.user_volumes["peer"], 180);
         assert_eq!(state.dm_read_at["peer"], 123);
+        assert_eq!(state.last_text_channels, saved.last_text_channels);
     }
 
     type Export = Rc<RefCell<Option<(Signal<AppState>, Signal<u8>)>>>;
