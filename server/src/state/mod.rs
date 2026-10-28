@@ -3158,9 +3158,7 @@ impl AppState {
             username: username.to_string(),
         };
         durable(self.store.rename_user(&user).await, "user rename")?;
-        if let Some(mut u) = self.users.get_mut(pubkey) {
-            u.username = username.to_string();
-        }
+        self.users.insert(pubkey.to_owned(), user);
 
         let mut changed = Vec::new();
         for entry in self.members.iter() {

@@ -87,6 +87,65 @@ async fn next_error(session: &mut Bot) -> String {
 }
 
 #[tokio::test]
+async fn identifying_with_a_new_name_refreshes_all_community_memberships() {
+    let (url, handle) = spawn_gateway().await;
+    let identity = BotIdentity::generate();
+    let key = identity.pubkey().to_string();
+    let (mut owner, _) = connect_user(&url, &identity, "Before").await;
+    let (first, _) = create_guild(&mut owner, "First").await;
+    let (second, _) = create_guild(&mut owner, "Second").await;
+    let (mut observer, _) = connect_user(&url, &BotIdentity::generate(), "Observer").await;
+    for gid in [first, second] {
+        observer
+            .send(&ClientMessage::JoinGuild {
+                guild_id: gid,
+                accept: true,
+                pow_nonce: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            if let ServerMessage::GuildJoined { guild, .. } = next_timeout(&mut observer).await
+                && guild.id == gid
+            {
+                break;
+            }
+        }
+    }
+    let mut renamed = Bot::connect_as_user(&url, &identity, "After")
+        .await
+        .unwrap();
+    loop {
+        match next_timeout(&mut renamed).await {
+            ServerMessage::Ready { user, members, .. } => {
+                assert_eq!(user.username, "After");
+                for gid in [first, second] {
+                    let member = members
+                        .iter()
+                        .find(|member| member.guild_id == gid && member.user.pubkey == key)
+                        .unwrap();
+                    assert_eq!(member.user.username, "After");
+                }
+                break;
+            }
+            ServerMessage::Error { message } => panic!("rename rejected: {message}"),
+            _ => {}
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    while seen.len() < 2 {
+        if let ServerMessage::MemberJoin(member) = next_timeout(&mut observer).await
+            && member.user.pubkey == key
+            && [first, second].contains(&member.guild_id)
+        {
+            assert_eq!(member.user.username, "After");
+            seen.insert(member.guild_id);
+        }
+    }
+    handle.abort();
+}
+
+#[tokio::test]
 async fn owner_can_assign_and_remove_every_permission_on_their_own_role() {
     let (url, handle) = spawn_gateway().await;
     let identity = BotIdentity::generate();

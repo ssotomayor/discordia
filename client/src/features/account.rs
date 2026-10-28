@@ -83,6 +83,10 @@ pub fn AccountView(
     });
     provide_context(state);
     provide_context(nostr.clone());
+    let name_nostr = nostr.clone();
+    use_effect(use_reactive((&identity.display_name,), move |(name,)| {
+        name_nostr.send(crate::nostr::service::NostrCmd::PublishName(name));
+    }));
     provide_context(identity.clone());
     #[cfg(any(target_os = "android", target_os = "windows"))]
     crate::dm_notifications::use_notifications(state, identity.pubkey.clone());

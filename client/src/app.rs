@@ -972,9 +972,12 @@ pub fn App() -> Element {
                             session.set(Some(params));
                         },
                         on_rename: move |new_name: String| {
-                            let mut current = identity.write();
-                            if let Some(id) = current.as_mut() {
-                                let _ = id.set_display_name(new_name);
+                            let current = identity.peek().clone();
+                            if let Some(mut renamed) = current {
+                                match renamed.set_display_name(crate::protocol::canonical_username(&new_name)) {
+                                    Ok(()) => identity.set(Some(renamed)),
+                                    Err(message) => error.set(Some(message)),
+                                }
                             }
                         },
                         on_sign_out: move |_| {
