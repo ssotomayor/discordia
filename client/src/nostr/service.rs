@@ -96,6 +96,11 @@ impl NostrTx {
     pub(crate) fn test_channel() -> Self {
         Self(unbounded_channel().0)
     }
+    #[cfg(test)]
+    pub(crate) fn test_channel_pair() -> (Self, tokio::sync::mpsc::UnboundedReceiver<NostrCmd>) {
+        let (tx, rx) = unbounded_channel();
+        (Self(tx), rx)
+    }
     pub fn try_send(&self, cmd: NostrCmd) -> bool {
         self.0.send(cmd).is_ok()
     }

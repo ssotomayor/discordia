@@ -468,11 +468,8 @@ pub fn ChannelsColumn() -> Element {
                                                 drop_at.set(next);
                                             }
                                         },
-                                        // Muting is the only item a plain member gets and it means
-                                        // nothing on a voice channel, so without this the menu
-                                        // opens empty for them.
                                         oncontextmenu: move |e: MouseEvent| {
-                                            if !can_manage_channels {
+                                            if !can_manage_channels && !super::voice_invite::can_invite_to(&state.peek(), &ctx_ch) {
                                                 return;
                                             }
                                             e.prevent_default();
@@ -740,6 +737,16 @@ fn ChannelMenuPopover(
                         let gw_ro = gateway.clone();
                         let ch_ro = ch.clone();
                         rsx! {
+                            if super::voice_invite::can_invite_to(&state.read(), &ch) {
+                                button {
+                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                    onclick: move |_| {
+                                        state.write().guild_dialog = Some(crate::state::GuildDialog::VoiceInvite(ch.id));
+                                        on_close.call(());
+                                    },
+                                    {crate::i18n::text("Invite to voice by DM", &[])}
+                                }
+                            }
                             if matches!(ch.kind, ChannelKind::Text) {
                                 {
                                 let cid = ch.id;
@@ -1084,7 +1091,7 @@ fn VoiceChannelRow(
         ""
     };
     let channel_id = channel.id;
-    let state = use_app_state();
+    let mut state = use_app_state();
     let users_by_id = state.read();
     let sharers: Vec<String> = users_by_id.screen_sharers_in(channel.id).to_vec();
 
@@ -1092,8 +1099,9 @@ fn VoiceChannelRow(
         div {
             class: "rounded",
             "data-voice-channel": "{channel_id}",
+            div { class: "flex items-center gap-1",
             button {
-                class: "relative w-full min-h-8 py-1 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
+                class: "relative flex-1 min-w-0 min-h-8 py-1 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
                 style: "{row_style}",
                 onclick: move |_| {
                     if !connected {
@@ -1122,6 +1130,21 @@ fn VoiceChannelRow(
                         "🔒"
                     }
                 }
+            }
+            if super::voice_invite::can_invite_to(&users_by_id, &channel) {
+                button {
+                    r#type: "button",
+                    class: "w-8 h-8 shrink-0 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--accent)]",
+                    title: crate::i18n::text("Invite to voice by DM", &[]),
+                    aria_label: crate::i18n::text("Invite to voice by DM", &[]),
+                    onpointerdown: move |e: PointerEvent| e.stop_propagation(),
+                    onclick: move |e: MouseEvent| {
+                        e.stop_propagation();
+                        state.write().guild_dialog = Some(crate::state::GuildDialog::VoiceInvite(channel_id));
+                    },
+                    span { dangerous_inner_html: super::icons::USER_PLUS }
+                }
+            }
             }
             if !occupants.is_empty() {
                 div {
