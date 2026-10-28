@@ -623,7 +623,9 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
     let message_id = message.id;
-    let author_name = message.author.username.clone();
+    let author_name = state
+        .read()
+        .display_name_or(&message.author.pubkey, &message.author.username);
     let content_for_reply = {
         let flat = message
             .content
@@ -749,7 +751,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 div { class: "min-w-0 flex items-center gap-1.5 text-[11px] text-[var(--text-dim)]",
                     span { class: "shrink-0 opacity-60", "↩" }
                     span { class: "shrink-0 font-medium text-[var(--text-muted)]",
-                        "{q.author_username}"
+                        {state.read().display_name_or(&q.author_pubkey, &q.author_username)}
                     }
                     span { class: "truncate", "{q.excerpt}" }
                 }
@@ -770,7 +772,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     onclick: move |_| state.write().profile_card = Some(author_pubkey.clone()),
                     crate::features::profiles::Avatar {
                         pubkey: message.author.pubkey.clone(),
-                        name: message.author.username.clone(),
+                        name: author_name.clone(),
                         size: "w-9 h-9",
                     }
                 }
@@ -783,7 +785,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             class: "text-sm font-semibold",
                             style: "color: {name_color};",
                             title: "{message.author.pubkey}",
-                            "{message.author.username}"
+                            "{author_name}"
                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5 font-normal",
                                 "#{discriminator(&message.author.pubkey)}"
                             }
@@ -929,11 +931,13 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         "data-context-action": "reply",
                         onclick: {
                             let author = author_name.clone();
+                            let pubkey = message.author.pubkey.clone();
                             let body = content_for_reply.clone();
                             move |_| {
                                 state.write().replying_to = Some(crate::state::ReplyDraft {
                                     message_id,
                                     channel_id,
+                                    author_pubkey: pubkey.clone(),
                                     author_username: author.clone(),
                                     excerpt: body.clone(),
                                 });
@@ -1303,6 +1307,104 @@ fn ChatImage(address: String) -> Element {
                 {crate::i18n::text("Loading image…", &[])}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod author_name_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    fn historical_message() -> Message {
+        Message {
+            id: Id::nil(),
+            channel_id: Id::nil(),
+            author: crate::protocol::User {
+                pubkey: "a".repeat(64),
+                username: "Before".into(),
+            },
+            author_bot: false,
+            content: "Unchanged content".into(),
+            image: None,
+            image_metadata: None,
+            attachment: None,
+            pinned: false,
+            reactions: vec![],
+            reply_to: Some(crate::protocol::ReplyRef {
+                message_id: Id::new_v4(),
+                author_pubkey: "a".repeat(64),
+                author_username: "Before".into(),
+                excerpt: "Unchanged excerpt".into(),
+            }),
+            created_at: chrono::Utc::now(),
+            edited_at: None,
+        }
+    }
+
+    #[test]
+    fn historical_message_and_quote_names_follow_live_metadata_with_recorded_fallback() {
+        type Export = Rc<RefCell<Option<Signal<crate::state::AppState>>>>;
+        let export: Export = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let message = use_hook(historical_message);
+                let state = use_signal(|| {
+                    let mut state = crate::state::AppState::empty();
+                    state.messages.insert(Id::nil(), vec![message.clone()]);
+                    state
+                });
+                use_context_provider(|| state);
+                use_context_provider(|| {
+                    crate::state::GatewayTx(tokio::sync::mpsc::unbounded_channel().0)
+                });
+                use_context_provider(crate::nostr::service::NostrTx::test_channel);
+                *export.borrow_mut() = Some(state);
+                rsx! { MessageRow { message, grouped: false } }
+            },
+            export.clone(),
+        );
+        let initial = dom.rebuild_to_vec();
+        assert_eq!(
+            initial
+                .edits
+                .iter()
+                .filter(|edit| matches!(edit,
+                    dioxus::core::Mutation::CreateTextNode { value, .. } if *value == "Before"
+                ))
+                .count(),
+            2
+        );
+        let mut state = export.borrow().unwrap();
+        let original = state.read().messages[&Id::nil()][0].clone();
+        assert!(
+            state
+                .write()
+                .note_name(&"a".repeat(64), "After".into(), 200)
+        );
+        let changed = dom.render_immediate_to_vec();
+        assert_eq!(
+            changed
+                .edits
+                .iter()
+                .filter(|edit| matches!(edit,
+                    dioxus::core::Mutation::SetText { value, .. } if *value == "After"
+                ))
+                .count(),
+            2
+        );
+        state.write().nostr_names.clear();
+        let fallback = dom.render_immediate_to_vec();
+        assert_eq!(
+            fallback
+                .edits
+                .iter()
+                .filter(|edit| matches!(edit,
+                    dioxus::core::Mutation::SetText { value, .. } if *value == "Before"
+                ))
+                .count(),
+            2
+        );
+        assert_eq!(state.read().messages[&Id::nil()][0], original);
     }
 }
 
@@ -2368,7 +2470,7 @@ fn Composer(
                 div { class: "flex items-center gap-2 mb-1 px-2 py-1 rounded-t-md bg-[var(--panel-solid)] border border-b-0 border-[var(--border)] text-[11px]",
                     span { class: "shrink-0 text-[var(--text-dim)] opacity-60", "↩" }
                     span { class: "shrink-0 text-[var(--text-muted)]", {crate::i18n::text("Replying to", &[])} }
-                    span { class: "shrink-0 font-medium text-[var(--accent)]", "{r.author_username}" }
+                    span { class: "shrink-0 font-medium text-[var(--accent)]", {state.read().display_name_or(&r.author_pubkey, &r.author_username)} }
                     span { class: "truncate text-[var(--text-dim)]", "{r.excerpt}" }
                     button {
                         class: "ml-auto shrink-0 w-5 h-5 rounded text-[var(--text-dim)] hover:text-[var(--danger)] leading-none transition-colors",

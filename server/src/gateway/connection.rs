@@ -237,14 +237,23 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
                         let remembered = if bot {
-                            ctx.state.remember_user(&new_user).await
+                            ctx.state.remember_user(&new_user).await.map(|()| Vec::new())
                         } else {
-                            ctx.state.rename_user(&new_user.pubkey, &new_user.username).await.map(|_| ())
+                            ctx.state.rename_user(&new_user.pubkey, &new_user.username).await
                         };
-                        if let Err(message) = remembered {
-                            tracing::warn!(reason = %message, "gateway user persistence failed");
-                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
-                            break;
+                        match remembered {
+                            Ok(changed) => {
+                                for member in changed {
+                                    let targets = ctx.state.guild_member_pubkeys(member.guild_id);
+                                    let member = ctx.state.stamp_xp(member);
+                                    ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                                }
+                            }
+                            Err(message) => {
+                                tracing::warn!(reason = %message, "gateway user persistence failed");
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                break;
+                            }
                         }
                         is_bot = bot;
                         let gated_default = if is_bot {
@@ -2178,6 +2187,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         u.username = username.clone();
                         for member in changed {
                             let targets = ctx.state.guild_member_pubkeys(member.guild_id);
+                            let member = ctx.state.stamp_xp(member);
                             ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                         }
                     }
