@@ -15,8 +15,18 @@ static TRAY_RESTORE_RECEIVER: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
 > = std::sync::OnceLock::new();
 #[cfg(target_os = "windows")]
+static TRAY_RESTORE_SENDER: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<()>> =
+    std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
 static TRAY_QUIT_AVAILABLE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+pub fn request_restore() {
+    if let Some(sender) = TRAY_RESTORE_SENDER.get() {
+        let _ = sender.send(());
+    }
+}
 
 #[cfg(target_os = "windows")]
 pub fn init_tray_quit_bridge() {
@@ -24,6 +34,8 @@ pub fn init_tray_quit_bridge() {
 
     let (quit_sender, quit_receiver) = tokio::sync::mpsc::unbounded_channel();
     let (restore_sender, restore_receiver) = tokio::sync::mpsc::unbounded_channel();
+
+    let _ = TRAY_RESTORE_SENDER.set(restore_sender.clone());
 
     if TRAY_QUIT_RECEIVER
         .set(std::sync::Mutex::new(Some(quit_receiver)))

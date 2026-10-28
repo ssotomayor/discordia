@@ -71,7 +71,7 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
 
 fn settings_tab_visible(tab: SettingsTab, android: bool, ios: bool) -> bool {
     match tab {
-        SettingsTab::Notifications => android,
+        SettingsTab::Notifications => android || (!ios && cfg!(target_os = "windows")),
         SettingsTab::Video | SettingsTab::Updates => !ios,
         _ => true,
     }
@@ -102,7 +102,11 @@ mod navigation_tests {
         let desktop = menu(false, false);
         assert!(desktop.contains(&SettingsTab::Video));
         assert!(desktop.contains(&SettingsTab::Updates));
-        assert!(!desktop.contains(&SettingsTab::Notifications));
+        if cfg!(target_os = "windows") {
+            assert!(desktop.contains(&SettingsTab::Notifications));
+        } else {
+            assert!(!desktop.contains(&SettingsTab::Notifications));
+        }
         let ios = menu(false, true);
         assert!(!ios.contains(&SettingsTab::Video));
         assert!(!ios.contains(&SettingsTab::Updates));
@@ -223,7 +227,7 @@ pub fn SettingsDialog() -> Element {
                             h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
                             div { class: "mt-4", crate::i18n::LanguageSelector {} }
                         }
-                        if settings_tab() == SettingsTab::Notifications { { android_notification_settings() } }
+                        if settings_tab() == SettingsTab::Notifications { { notification_settings() } }
                         if settings_tab() == SettingsTab::Updates { crate::update::UpdatePanel {} }
                         if settings_tab() == SettingsTab::Audio {
                             super::settings_microphone::MicrophoneSettings {}
@@ -475,14 +479,48 @@ pub fn SettingsDialog() -> Element {
     }
 }
 
-fn android_notification_settings() -> Element {
+fn notification_settings() -> Element {
     #[cfg(target_os = "android")]
     {
         rsx! { crate::dm_notifications::NotificationSettings {} }
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "windows")]
+    {
+        rsx! { WindowsNotificationSettings {} }
+    }
+    #[cfg(not(any(target_os = "android", target_os = "windows")))]
     {
         rsx! {}
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[component]
+fn WindowsNotificationSettings() -> Element {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let enabled = settings.read().tray_notifications;
+    rsx! {
+        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Tray notifications", &[])} }
+        p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+            {crate::i18n::text("Notify about incoming calls and private messages while Discordia is minimized to the system tray.", &[])}
+        }
+        div { class: "mb-3",
+            label { class: "flex items-center gap-2 cursor-pointer select-none",
+                input {
+                    r#type: "checkbox",
+                    class: "accent-[var(--accent)]",
+                    checked: enabled,
+                    aria_label: crate::i18n::text("Enable notifications when minimized to tray", &[]),
+                    onchange: move |e| {
+                        let mut next = settings.read().clone();
+                        next.tray_notifications = e.checked();
+                        settings.set(next.clone());
+                        crate::settings::save(&next);
+                    },
+                }
+                span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Enable notifications when minimized to tray", &[])} }
+            }
+        }
     }
 }
 
