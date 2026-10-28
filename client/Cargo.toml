@@ -9,7 +9,7 @@ dioxus = { workspace = true }
 dioxus-desktop = { version = "=0.7.10", default-features = false, optional = true }
 tokio-tungstenite = { workspace = true }
 url = "2"
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.5", default-features = false }
 
 livekit = "=0.9.5"
 # Later SDK dependency patches changed APIs without a semver break; keep the compatible set.
