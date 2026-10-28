@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp"];
+
 pub struct PickedFile {
     path: PathBuf,
 }

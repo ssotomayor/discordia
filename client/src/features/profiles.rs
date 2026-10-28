@@ -122,6 +122,59 @@ pub(crate) fn image_mime(reported: Option<String>) -> String {
         .unwrap_or_else(|| "image/png".to_string())
 }
 
+fn read_profile_image(path: &std::path::Path, limit: usize) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
+    let size = file
+        .metadata()
+        .map_err(|_| "Couldn't read that file.")?
+        .len();
+    if size > limit as u64 {
+        return Err(format!(
+            "That image is {:.1} MB — too big to upload. {IMAGE_HELP}",
+            size as f64 / 1_000_000.0
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Couldn't read that file.")?;
+    let format = image::guess_format(&bytes).map_err(|_| "That's not a supported image.")?;
+    let mime = format.to_mime_type();
+    check_image(&bytes, mime, limit)?;
+    Ok(to_data_url(&bytes, mime))
+}
+
+fn pick_profile_image(
+    limit: usize,
+    mut editing: Signal<Option<String>>,
+    mut error: Signal<Option<String>>,
+) {
+    spawn(async move {
+        let file = match crate::file_dialog::pick_file(&[(
+            crate::i18n::label("Image"),
+            crate::file_dialog::IMAGE_EXTENSIONS,
+        )])
+        .await
+        {
+            Ok(Some(file)) => file,
+            Ok(None) => return,
+            Err(message) => {
+                error.set(Some(message));
+                return;
+            }
+        };
+        let result = tokio::task::spawn_blocking(move || read_profile_image(&file, limit)).await;
+        match result.unwrap_or_else(|error| Err(error.to_string())) {
+            Ok(image) => {
+                error.set(None);
+                editing.set(Some(image));
+            }
+            Err(message) => error.set(Some(message)),
+        }
+    });
+}
+
 /// The server stores the picture and hands back an address, so the only
 /// thing a client ever sends is the bytes themselves — never a link for every
 /// other member's webview to go and fetch.
@@ -661,37 +714,11 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                             }
                         }
                         div { class: "flex flex-col gap-1",
-                            label {
+                            button {
+                                r#type: "button",
                                 class: "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer text-center",
+                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_AVATAR_INPUT_BYTES, editing_avatar, err),
                                 {crate::i18n::text("Choose image", &[])}
-                                input {
-                                    r#type: "file",
-                                    accept: "image/*",
-                                    class: "hidden",
-                                    onchange: move |evt: FormEvent| {
-                                        let files = evt.files();
-                                        let mut err = err;
-                                        spawn(async move {
-                                            let Some(file) = files.into_iter().next() else { return };
-                                            match file.read_bytes().await {
-                                                Ok(bytes) => {
-                                                    let mime = image_mime(file.content_type());
-
-                                                    if let Err(msg) = check_image(&bytes, &mime, crate::image_edit::MAX_AVATAR_INPUT_BYTES) {
-
-                                                        err.set(Some(msg));
-
-                                                        return;
-
-                                                    }
-
-                                                    editing_avatar.set(Some(to_data_url(&bytes, &mime)));
-                                                }
-                                                Err(_) => err.set(Some("Couldn't read that file.".into())),
-                                            }
-                                        });
-                                    },
-                                }
                             }
                             if avatar().is_some() {
                                 button {
@@ -714,37 +741,11 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                             }
                         }
                         div { class: "flex gap-2 mt-1",
-                            label {
+                            button {
+                                r#type: "button",
                                 class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
+                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_BANNER_INPUT_BYTES, editing_banner, err),
                                 {crate::i18n::text("Choose banner", &[])}
-                                input {
-                                    r#type: "file",
-                                    accept: "image/*",
-                                    class: "hidden",
-                                    onchange: move |evt: FormEvent| {
-                                        let files = evt.files();
-                                        let mut err = err;
-                                        spawn(async move {
-                                            let Some(file) = files.into_iter().next() else { return };
-                                            match file.read_bytes().await {
-                                                Ok(bytes) => {
-                                                    let mime = image_mime(file.content_type());
-
-                                                    if let Err(msg) = check_image(&bytes, &mime, crate::image_edit::MAX_BANNER_INPUT_BYTES) {
-
-                                                        err.set(Some(msg));
-
-                                                        return;
-
-                                                    }
-
-                                                    editing_banner.set(Some(to_data_url(&bytes, &mime)));
-                                                }
-                                                Err(_) => err.set(Some("Couldn't read that file.".into())),
-                                            }
-                                        });
-                                    },
-                                }
                             }
                             if banner().is_some() {
                                 button {
@@ -907,6 +908,35 @@ fn SavedEmojiSection() -> Element {
 
 #[cfg(test)]
 mod account_avatar_tests {
+    #[test]
+    fn native_profile_picker_reads_an_extensionless_jpeg_and_keeps_it_crop_ready() {
+        let root =
+            std::env::temp_dir().join(format!("profile-picker-{}", crate::protocol::Id::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("selected-document");
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(4, 4)
+            .write_to(&mut bytes, image::ImageFormat::Jpeg)
+            .unwrap();
+        std::fs::write(&path, bytes.get_ref()).unwrap();
+        let url = read_profile_image(&path, crate::image_edit::MAX_AVATAR_INPUT_BYTES).unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+        assert_eq!(data_url_bytes(&url), *bytes.get_ref());
+        assert!(crate::image_edit::decode(&url, crate::image_edit::MAX_AVATAR_INPUT_BYTES).is_ok());
+        assert!(
+            read_profile_image(&path, 16)
+                .unwrap_err()
+                .contains("too big")
+        );
+        std::fs::write(&path, b"This is not an image").unwrap();
+        assert!(
+            read_profile_image(&path, 1024)
+                .unwrap_err()
+                .contains("not a supported image")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     use dioxus::core::{AttributeValue, Mutation};
     use std::{cell::RefCell, rc::Rc};

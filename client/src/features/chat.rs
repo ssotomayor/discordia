@@ -174,6 +174,52 @@ fn load_attachment(
     });
 }
 
+fn pick_image(
+    max_bytes: usize,
+    mut pending: Signal<Option<PendingImage>>,
+    mut pending_file: Signal<Option<(String, String)>>,
+    mut error: Signal<Option<String>>,
+    mut generation: Signal<u64>,
+) {
+    let request = generation.peek().wrapping_add(1);
+    generation.set(request);
+    spawn(async move {
+        let file = match crate::file_dialog::pick_file(&[(
+            crate::i18n::label("Image"),
+            crate::file_dialog::IMAGE_EXTENSIONS,
+        )])
+        .await
+        {
+            Ok(Some(file)) => file,
+            Ok(None) => return,
+            Err(message) => {
+                if *generation.peek() == request {
+                    error.set(Some(message));
+                }
+                return;
+            }
+        };
+        let name = file
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let result = tokio::task::spawn_blocking(move || {
+            crate::chat_image::read_file_with_limit(&file, max_bytes)
+        })
+        .await;
+        if *generation.peek() != request {
+            return;
+        }
+        match result.unwrap_or_else(|error| Err(error.to_string())) {
+            Ok(url) => {
+                error.set(None);
+                pending_file.set(None);
+                pending.set(Some(PendingImage { url, name }));
+            }
+            Err(message) => error.set(Some(message)),
+        }
+    });
+}
+
 fn pick_file(
     max_bytes: usize,
     mut pending: Signal<Option<(String, String)>>,
@@ -2570,20 +2616,15 @@ fn Composer(
                         if show_attach() {
                             div { class: "fixed inset-0 z-20", onclick: move |_| show_attach.set(false) }
                             div { style: "width: 9rem;", class: "dxf-pop-in absolute bottom-full left-0 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30 text-xs",
-                                label { class: "w-full flex items-center gap-2 px-2 h-8 rounded text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)] cursor-pointer",
+                                button {
+                                    r#type: "button",
+                                    class: "w-full flex items-center gap-2 px-2 h-8 rounded text-left text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)] cursor-pointer",
+                                    onclick: move |_| {
+                                        show_attach.set(false);
+                                        pick_image(upload_limit(&state.peek(), channel_id), pending_image, pending_file, attach_err, generation);
+                                    },
                                     span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::IMAGE }
                                     {crate::i18n::text("Image", &[])}
-                                    input {
-                                        r#type: "file",
-                                        accept: "image/*",
-                                        class: "hidden",
-                                        onchange: move |evt: FormEvent| {
-                                            show_attach.set(false);
-                                            if let Some(file) = evt.files().into_iter().next() {
-                                                load_attachment(Some(file.path()), upload_limit(&state.peek(), channel_id), pending_image, attach_err, generation);
-                                            }
-                                        },
-                                    }
                                 }
                                 if file_guild.is_some() {
                                     button {
