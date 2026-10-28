@@ -1840,6 +1840,14 @@ fn apply(
             }
         }
         ServerMessage::MemberUpdate(member) => {
+            if !member.bot
+                && let Some(user) = s
+                    .self_user
+                    .as_mut()
+                    .filter(|u| u.pubkey == member.user.pubkey)
+            {
+                user.username.clone_from(&member.user.username);
+            }
             let existing = s
                 .members
                 .iter_mut()

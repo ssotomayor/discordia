@@ -90,7 +90,6 @@ fn use_member_sources() -> MemberSources {
 struct MemberMenu {
     guild_id: Id,
     pubkey: String,
-    username: String,
     x: f64,
     y: f64,
     confirming: Option<ModAction>,
@@ -330,7 +329,6 @@ fn GuildMembersPanel() -> Element {
         menu.set(Some(MemberMenu {
             guild_id: member.guild_id,
             pubkey: member.user.pubkey.clone(),
-            username: member.user.username.clone(),
             x,
             y,
             confirming: None,
@@ -415,6 +413,7 @@ fn MemberMenuPopover(
 
     let gid = menu.guild_id;
     let target_pk = menu.pubkey.clone();
+    let username = state.read().display_name(&target_pk);
     let in_a_call_here = state
         .read()
         .voice_states
@@ -443,7 +442,7 @@ fn MemberMenuPopover(
                 style: "left: {menu.x}px; top: {menu.y}px;",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)] border-b border-[var(--border)] mb-1 truncate",
-                    "{menu.username}"
+                    "{username}"
                 }
                 match menu.confirming {
                     None => rsx! {
@@ -518,7 +517,7 @@ fn MemberMenuPopover(
                         let pk = menu.pubkey.clone();
                         rsx! {
                             div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-                                "{verb} {menu.username}? {msg_hint}"
+                                "{verb} {username}? {msg_hint}"
                             }
                             div { class: "flex gap-1 px-1 pb-0.5",
                                 button {
@@ -679,6 +678,8 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
     let (speaking_ring, badges) = voice();
     let card_pubkey = member.user.pubkey.clone();
     let ctx_member = member.clone();
+    let name_pk = member.user.pubkey.clone();
+    let name = use_memo(move || state.read().display_name(&name_pk))();
     rsx! {
         div {
             class: "flex items-center gap-2.5 h-9 px-2.5 mx-1 rounded-lg hover:bg-[var(--panel2)] cursor-pointer",
@@ -692,7 +693,7 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
             div { class: "relative shrink-0",
                 crate::features::profiles::Avatar {
                     pubkey: member.user.pubkey.clone(),
-                    name: member.user.username.clone(),
+                    name: name.clone(),
                     size: "w-7 h-7 {dim} {speaking_ring}",
                 }
                 span {
@@ -704,7 +705,7 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                 span {
                     class: "text-sm truncate flex items-center gap-1.5 {name_class}",
                     title: "{member.user.pubkey}",
-                    span { class: "truncate", "{member.user.username}" }
+                    span { class: "truncate", "{name}" }
                     if crown {
                         span {
                             class: "dxf-badge block w-3 h-3 shrink-0",
@@ -1107,10 +1108,12 @@ mod tests {
         assert!(!dom.render_immediate_to_vec().edits.is_empty());
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
-        state.write().members[0].user.username = "Zoe".into();
-        dom.render_immediate_to_vec();
+        assert!(state.write().note_name("alice", "Zoe".into(), 200));
+        assert!(!dom.render_immediate_to_vec().edits.is_empty());
         assert_eq!(renders()["list"], 2);
         assert_eq!(renders()["row:bob"], 1);
+        assert!(!state.write().note_name("alice", "Alice".into(), 100));
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         assert_eq!(state.read().selected_guild, Some(guild));
         state.write().selected_guild = Some(Id::new_v4());
         dom.render_immediate_to_vec();

@@ -149,6 +149,7 @@ pub fn AccountView(
                 super::workspace::WorkspaceView {
                     key: "{crate::app::session_key(&params)}",
                     params: params.clone(),
+                    display_name: identity.display_name.clone(),
                     on_disconnect: move |reason: String| {
                         // Only Ready sets `self_user`: without it, this session never got in.
                         let got_in = state.peek().self_user.is_some();

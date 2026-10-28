@@ -134,7 +134,7 @@ async fn identifying_with_a_new_name_refreshes_all_community_memberships() {
     }
     let mut seen = std::collections::HashSet::new();
     while seen.len() < 2 {
-        if let ServerMessage::MemberJoin(member) = next_timeout(&mut observer).await
+        if let ServerMessage::MemberUpdate(member) = next_timeout(&mut observer).await
             && member.user.pubkey == key
             && [first, second].contains(&member.guild_id)
         {
