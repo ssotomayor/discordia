@@ -114,31 +114,14 @@ enum ChanMenuMode {
     ConfirmDelete,
 }
 
-#[derive(Clone, PartialEq)]
-struct VoiceDrag {
-    pubkey: String,
-    from_channel: Id,
-    destination: Option<Id>,
-}
-
-#[derive(Clone, Copy)]
-struct VoiceDragContext {
-    drag: Signal<Option<VoiceDrag>>,
-    suppress_click: Signal<bool>,
-}
-
 const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden";
 const HEADER: &str = "h-12 px-3.5 flex items-center gap-2 border-b border-[var(--border)]";
 
 #[component]
 pub fn ChannelsColumn() -> Element {
-    let mut voice_drag = use_context_provider(|| VoiceDragContext {
-        drag: Signal::new(None),
-        suppress_click: Signal::new(false),
-    });
-
     let mut state = use_app_state();
     let gateway = use_gateway();
+    let (voice_drag_root, voice_drag_mount) = super::voice_drag::use_drag(state, gateway.clone());
 
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
@@ -372,28 +355,15 @@ pub fn ChannelsColumn() -> Element {
                 }
             } else {
             div {
+                id: "{voice_drag_root}",
+                onmounted: voice_drag_mount,
                 class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 // Pointer drag, not HTML5 DnD: Windows turns HTML5 DnD off while
                 // the wry file-drop handler is installed. The rail commits it.
-                onpointerdown: move |_| voice_drag.suppress_click.set(false),
                 onpointerup: {
                     let gateway = gateway.clone();
                     let order = guild_order.clone();
                     move |_| {
-                        let member = voice_drag.drag.write().take();
-                        if let Some(member) = member {
-                            dragging.set(None);
-                            drop_at.set(None);
-                            if let Some(channel_id) = member.destination {
-                                voice_drag.suppress_click.set(true);
-                                gateway.send(ClientMessage::MoveVoice {
-                                    user_pubkey: member.pubkey,
-                                    from_channel_id: member.from_channel,
-                                    channel_id,
-                                });
-                            }
-                            return;
-                        }
                         let moved = dragging();
                         let at = drop_at();
                         dragging.set(None);
@@ -404,12 +374,10 @@ pub fn ChannelsColumn() -> Element {
                     }
                 },
                 onpointerleave: move |_| {
-                    voice_drag.drag.set(None);
                     dragging.set(None);
                     drop_at.set(None);
                 },
                 onpointercancel: move |_| {
-                    voice_drag.drag.set(None);
                     dragging.set(None);
                     drop_at.set(None);
                 },
@@ -1115,12 +1083,6 @@ fn VoiceChannelRow(
     } else {
         ""
     };
-    let mut voice_drag = use_context::<VoiceDragContext>();
-    let targeted = voice_drag
-        .drag
-        .read()
-        .as_ref()
-        .is_some_and(|drag| drag.destination == Some(channel.id));
     let channel_id = channel.id;
     let state = use_app_state();
     let users_by_id = state.read();
@@ -1129,23 +1091,12 @@ fn VoiceChannelRow(
     rsx! {
         div {
             class: "rounded",
-            style: if targeted { "outline:2px solid var(--accent);" } else { "" },
-            onpointerenter: move |_| {
-                if let Some(member) = voice_drag.drag.write().as_mut() {
-                    member.destination = (member.from_channel != channel_id).then_some(channel_id);
-                }
-            },
-            onpointerleave: move |_| {
-                if let Some(member) = voice_drag.drag.write().as_mut()
-                    && member.destination == Some(channel_id) {
-                    member.destination = None;
-                }
-            },
+            "data-voice-channel": "{channel_id}",
             button {
                 class: "relative w-full min-h-8 py-1 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
                 style: "{row_style}",
                 onclick: move |_| {
-                    if !(voice_drag.suppress_click)() && !connected {
+                    if !connected {
                         on_join.call(());
                     }
                 },
@@ -1688,7 +1639,6 @@ fn VoiceOccupant(
     can_watch_camera: bool,
 ) -> Element {
     let mut state = use_app_state();
-    let mut voice_drag = use_context::<VoiceDragContext>();
     let can_move = {
         let s = state.read();
         s.channels
@@ -1703,7 +1653,6 @@ fn VoiceOccupant(
                         .any(|g| g.id == c.guild_id && g.owner_pubkey == pubkey)
             })
     };
-    let drag_pubkey = pubkey.clone();
 
     let volume = state
         .read()
@@ -1756,21 +1705,11 @@ fn VoiceOccupant(
     rsx! {
         div {
             class: "px-2 py-0.5 rounded cursor-pointer select-none hover:bg-white/[0.03]",
-            style: if can_move { "cursor:grab;" } else { "" },
-            onpointerdown: move |e: PointerEvent| {
-                if can_move && e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
-                    e.stop_propagation();
-                    voice_drag.suppress_click.set(false);
-                    voice_drag.drag.set(Some(VoiceDrag {
-                        pubkey: drag_pubkey.clone(), from_channel: channel_id, destination: None,
-                    }));
-                }
-            },
-            onclick: move |_| {
-                if !(voice_drag.suppress_click)() {
-                    state.write().profile_card = Some(pk_card.clone());
-                }
-            },
+            "data-voice-pubkey": "{pubkey}",
+            "data-voice-from": "{channel_id}",
+            "data-voice-name": "{name}",
+            "data-voice-movable": if can_move { "true" } else { "false" },
+            onclick: move |_| state.write().profile_card = Some(pk_card.clone()),
             oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
                 span { class: "shrink-0 flex",
