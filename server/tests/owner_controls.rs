@@ -87,6 +87,84 @@ async fn next_error(session: &mut Bot) -> String {
 }
 
 #[tokio::test]
+async fn owner_can_assign_and_remove_every_permission_on_their_own_role() {
+    let (url, handle) = spawn_gateway().await;
+    let identity = BotIdentity::generate();
+    let key = identity.pubkey().to_string();
+    let (mut owner, _) = connect_user(&url, &identity, "Owner").await;
+    let (gid, _) = create_guild(&mut owner, "Owner permissions").await;
+    owner
+        .send(&ClientMessage::CreateRole {
+            guild_id: gid,
+            name: "All permissions".into(),
+            color: None,
+            permissions: Permission::ALL.to_vec(),
+        })
+        .await
+        .unwrap();
+    let role = loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::GuildRoles { guild_id, roles } if guild_id == gid => {
+                let role = roles
+                    .into_iter()
+                    .find(|role| role.name == "All permissions")
+                    .unwrap();
+                assert_eq!(role.permissions.len(), Permission::ALL.len());
+                break role.id;
+            }
+            ServerMessage::Error { message } => panic!("owner denied: {message}"),
+            _ => {}
+        }
+    };
+    for assign in [true, false] {
+        let command = if assign {
+            ClientMessage::AssignRole {
+                guild_id: gid,
+                role_id: role,
+                user_pubkey: key.clone(),
+            }
+        } else {
+            ClientMessage::UnassignRole {
+                guild_id: gid,
+                role_id: role,
+                user_pubkey: key.clone(),
+            }
+        };
+        owner.send(&command).await.unwrap();
+        loop {
+            match next_timeout(&mut owner).await {
+                ServerMessage::MemberUpdate(member)
+                    if member.guild_id == gid && member.user.pubkey == key =>
+                {
+                    assert_eq!(member.roles.contains(&role), assign);
+                    break;
+                }
+                ServerMessage::Error { message } => panic!("owner self role denied: {message}"),
+                _ => {}
+            }
+        }
+    }
+    owner
+        .send(&ClientMessage::DeleteRole {
+            guild_id: gid,
+            role_id: role,
+        })
+        .await
+        .unwrap();
+    loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::GuildRoles { guild_id, roles } if guild_id == gid => {
+                assert!(roles.is_empty());
+                break;
+            }
+            ServerMessage::Error { message } => panic!("owner lost permissions: {message}"),
+            _ => {}
+        }
+    }
+    handle.abort();
+}
+
+#[tokio::test]
 async fn role_crud_and_broadcast() {
     let (url, handle) = spawn_gateway().await;
 
