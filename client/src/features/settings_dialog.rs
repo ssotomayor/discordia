@@ -247,8 +247,7 @@ pub fn SettingsDialog() -> Element {
                             div { class: "dxf-general-language mt-4", crate::i18n::LanguageSelector {} }
                             if cfg!(target_os = "android") {
                                 div { class: "dxf-general-notifications", { notification_settings() } }
-                                details { class: "dxf-mic-advanced",
-                                    summary { {crate::i18n::text("Level and activity", &[])} }
+                                div { class: "dxf-general-level",
                                     ActivitySettings {}
                                 }
                             }
