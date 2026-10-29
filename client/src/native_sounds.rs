@@ -32,51 +32,12 @@ const NAMES: [&str; 23] = [
     "viewer-leave",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SoundCategory {
-    Messages,
-    Calls,
-    Connections,
-    VoiceParticipants,
-    VoiceControls,
-    Streams,
-    StreamViewers,
-}
-
-impl SoundCategory {
-    pub const ALL: [Self; 7] = [
-        Self::Messages,
-        Self::Calls,
-        Self::Connections,
-        Self::VoiceParticipants,
-        Self::VoiceControls,
-        Self::Streams,
-        Self::StreamViewers,
-    ];
-
-    pub fn label(self) -> String {
-        match self {
-            Self::Messages => crate::i18n::text("Message sounds", &[]),
-            Self::Calls => crate::i18n::text("Call sounds", &[]),
-            Self::Connections => crate::i18n::text("Connection sounds", &[]),
-            Self::VoiceParticipants => crate::i18n::text("Voice participant sounds", &[]),
-            Self::VoiceControls => crate::i18n::text("Microphone and deafen sounds", &[]),
-            Self::Streams => crate::i18n::text("Stream sounds", &[]),
-            Self::StreamViewers => crate::i18n::text("Your stream's viewer sounds", &[]),
-        }
-    }
-}
-
 const DND: u32 = 1 << 31;
 static SOUND_POLICY: AtomicU32 = AtomicU32::new(0);
 static SOUND_VOLUME: AtomicU32 = AtomicU32::new(70);
 
-pub fn configure_policy(disabled: &[SoundCategory], dnd: bool) {
-    let mask = disabled
-        .iter()
-        .fold(0, |mask, category| mask | (1 << *category as u32));
-    SOUND_POLICY.store(mask | if dnd { DND } else { 0 }, Ordering::Relaxed);
+pub fn configure_policy(dnd: bool) {
+    SOUND_POLICY.store(if dnd { DND } else { 0 }, Ordering::Relaxed);
 }
 
 pub fn sound_enabled(name: &str) -> bool {
@@ -96,21 +57,9 @@ const MAX_VOICES: usize = 32;
 struct Sound(usize);
 
 impl Sound {
-    fn category(self) -> SoundCategory {
-        match self.0 {
-            3 | 4 => SoundCategory::Messages,
-            15..=18 => SoundCategory::Calls,
-            7 | 8 => SoundCategory::VoiceParticipants,
-            13 | 14 | 19 | 20 => SoundCategory::VoiceControls,
-            1 | 2 | 9..=12 => SoundCategory::Streams,
-            21 | 22 => SoundCategory::StreamViewers,
-            _ => SoundCategory::Connections,
-        }
-    }
-
     fn allowed(self, policy: u32) -> bool {
         let passive = matches!(self.0, 3 | 4 | 7 | 8 | 11 | 12 | 15 | 21 | 22);
-        policy & (1 << self.category() as u32) == 0 && !(passive && policy & DND != 0)
+        !(passive && policy & DND != 0)
     }
 }
 
@@ -756,16 +705,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn category_switches_are_independent_and_dnd_keeps_local_feedback() {
+    fn app_volume_policy_keeps_all_events_and_dnd_keeps_local_feedback() {
         for index in 0..NAMES.len() {
-            let sound = Sound(index);
-            assert!(sound.allowed(0));
-            for category in SoundCategory::ALL {
-                assert_eq!(
-                    sound.allowed(1 << category as u32),
-                    category != sound.category()
-                );
-            }
+            assert!(Sound(index).allowed(0));
         }
         for name in [
             "notify",

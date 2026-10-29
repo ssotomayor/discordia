@@ -124,17 +124,9 @@ pub fn MessageSounds() -> Element {
     let mut state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let identity = use_context::<crate::identity::Identity>();
-    let policy = use_memo(move || {
-        (
-            settings.read().disabled_sound_categories.clone(),
-            state.read().account_is_dnd(&identity.pubkey),
-        )
-    });
-    use_effect(move || {
-        let (disabled, dnd) = policy();
-        crate::native_sounds::configure_policy(&disabled, dnd);
-    });
-    use_drop(|| crate::native_sounds::configure_policy(&[], false));
+    let policy = use_memo(move || state.read().account_is_dnd(&identity.pubkey));
+    use_effect(move || crate::native_sounds::configure_policy(policy()));
+    use_drop(|| crate::native_sounds::configure_policy(false));
     use_future(move || async move {
         loop {
             let now = chrono::Utc::now().timestamp();

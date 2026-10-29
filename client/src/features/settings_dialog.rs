@@ -149,6 +149,14 @@ pub fn SettingsDialog() -> Element {
         }
     });
 
+    let camera_settings_open =
+        use_memo(move || state.read().audio_settings && settings_tab() == SettingsTab::Video);
+    use_effect(move || {
+        if camera_settings_open() {
+            super::camera::refresh_cameras(state);
+        }
+    });
+
     if !state.read().audio_settings {
         return rsx! { Fragment {} };
     }
@@ -231,15 +239,14 @@ pub fn SettingsDialog() -> Element {
                         }
                         }
                         div { class: "dxf-settings-content flex-1 min-w-0 overflow-y-auto",
-                        if cfg!(target_os = "android") && super::settings_mobile::group(settings_tab()) == SettingsTab::Diagnostics {
-                            super::settings_mobile::SupportTabs { selected: settings_tab }
+                        if cfg!(target_os = "android") && super::settings_mobile::group(settings_tab()) == SettingsTab::Updates {
+                            super::settings_mobile::AppTabs { selected: settings_tab }
                         }
                         if settings_tab() == SettingsTab::General {
-                            h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
-                            div { class: "mt-4", crate::i18n::LanguageSelector {} }
+                            h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text(if cfg!(target_os = "android") { "General" } else { "Language" }, &[])} }
+                            div { class: "dxf-general-language mt-4", crate::i18n::LanguageSelector {} }
                             if cfg!(target_os = "android") {
-                                super::settings_mobile::Appearance {}
-                                { notification_settings() }
+                                div { class: "dxf-general-notifications", { notification_settings() } }
                                 details { class: "dxf-mic-advanced",
                                     summary { {crate::i18n::text("Level and activity", &[])} }
                                     ActivitySettings {}
@@ -281,12 +288,15 @@ pub fn SettingsDialog() -> Element {
                                         crate::features::camera::toggle_camera(state, settings, &gw_camera, true);
                                     }
                                 },
-                                option { value: "", {crate::i18n::text("System default", &[])} }
+                                option { value: "", selected: selected_camera_id.is_none(), {crate::i18n::text("System default", &[])} }
+                                if let Some(id) = selected_camera_id.as_ref().filter(|id| !available_cameras.iter().any(|cam| cam.id == **id)) {
+                                    option { value: "{id}", selected: true, {crate::i18n::text("{0} (unavailable)", std::slice::from_ref(id))} }
+                                }
                                 for (i, cam) in available_cameras.iter().enumerate() {
                                     option {
                                         selected: selected_camera_id.as_ref().map(|id| id == &cam.id).unwrap_or(false),
                                         value: "{cam.id}",
-                                        if cam.label.is_empty() { {crate::i18n::text("Camera {0}", &[(i + 1).to_string()])} } else { "{cam.label}" }
+                                        if cam.label.is_empty() { {crate::i18n::text("Camera {0}", &[(i + 1).to_string()])} } else { {crate::i18n::label(&cam.label)} }
                                     }
                                 }
                             }
@@ -295,6 +305,10 @@ pub fn SettingsDialog() -> Element {
                                     class: "text-[10px] text-[var(--text-dim)] mt-1",
                                     {crate::i18n::text("Turn your camera on once to see device names.", &[])}
                                 }
+                            }
+                            button { r#type: "button", class: "dxf-camera-refresh text-[12px] text-[var(--accent)] mt-2",
+                                onclick: move |_| super::camera::refresh_cameras(state),
+                                {crate::i18n::text("Refresh cameras", &[])}
                             }
                         }
                         div { class: "mb-2",

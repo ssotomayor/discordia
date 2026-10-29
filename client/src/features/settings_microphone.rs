@@ -218,17 +218,11 @@ pub(super) fn MicrophoneSettings() -> Element {
             }
         }
         }
-        if cfg!(target_os = "android") && section() == AudioSection::Output {
+        if !cfg!(target_os = "android") || section() == AudioSection::Sound {
             fieldset { disabled, class: "min-w-0",
-                super::settings_audio::OutputDevice { disabled }
-                div { class: "dxf-audio-sound-row",
-                    span { {crate::i18n::text("Soundboard volume", &[])} }
-                    crate::features::soundboard::SoundboardVolume {}
-                }
+                if cfg!(target_os = "android") { super::settings_audio::OutputDevice { disabled } }
+                super::settings_audio::AppSounds {}
             }
-        }
-        if !cfg!(target_os = "android") || section() == AudioSection::Sounds {
-            fieldset { disabled, class: "min-w-0", super::settings_audio::AppSounds {} }
         }
     }
 }
