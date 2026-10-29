@@ -10,7 +10,9 @@ type Writer = Pin<Box<dyn Sink<Message, Error = Error> + Send>>;
 type Reader = Pin<Box<dyn Stream<Item = Result<Message, Error>> + Send>>;
 type Command = (Message, oneshot::Sender<Result<(), String>>);
 const QUEUED_FRAMES: usize = 128;
-const QUEUED_BYTES: usize = 8 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = discordia_server::gateway::MAX_FRAME_BYTES;
+// A valid media response can exceed 8 MiB; leave room for the following update too.
+const QUEUED_BYTES: usize = 2 * MAX_FRAME_BYTES;
 
 pub(super) struct Transport(tokio::task::JoinHandle<()>);
 
@@ -78,6 +80,9 @@ where
                             Message::Pong(_) => {}
                             frame => {
                                 let closed = matches!(frame, Message::Close(_));
+                                if frame.len() > MAX_FRAME_BYTES {
+                                    return Err("gateway frame exceeded its byte limit".into());
+                                }
                                 let bytes = u32::try_from(frame.len()).map_err(|_| "gateway frame too large")?;
                                 let permit = budget.clone().try_acquire_many_owned(bytes)
                                     .map_err(|_| "gateway background buffer exceeded its byte limit")?;
@@ -217,9 +222,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legal_media_batches_larger_than_eight_mib_preserve_following_updates() {
+        let data = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(crate::protocol::MAX_IMAGE_BYTES / 3 * 4)
+        );
+        let blobs = (0..3)
+            .map(|index| crate::protocol::EmojiBlob {
+                image: format!("{index:064x}.png"),
+                data_url: data.clone(),
+            })
+            .collect();
+        let raw =
+            serde_json::to_string(&crate::protocol::ServerMessage::EmojiBlobs { blobs }).unwrap();
+        assert!(raw.len() > 8 * 1024 * 1024);
+        assert!(raw.len() <= discordia_server::gateway::MAX_FRAME_BYTES);
+        let frame = Message::Text(raw);
+        let next = Message::Text("following chat update".into());
+        let sink = futures_util::sink::drain::<Message>();
+        let reader = futures_util::stream::iter([Ok(frame.clone()), Ok(next.clone())]);
+        let (_writer, mut ui, _transport) = start(sink, reader);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            assert_eq!(
+                ui.next()
+                    .await
+                    .unwrap()
+                    .expect("legal media batch must fit"),
+                frame
+            );
+            assert_eq!(ui.next().await.unwrap().unwrap(), next);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_legal_frames_still_have_a_bounded_byte_budget() {
+        let sink = futures_util::sink::drain::<Message>();
+        let reader = futures_util::stream::iter([
+            Ok(Message::Binary(vec![0; MAX_FRAME_BYTES])),
+            Ok(Message::Binary(vec![0; MAX_FRAME_BYTES])),
+            Ok(Message::Text("overflow".into())),
+        ]);
+        let (_writer, mut ui, mut transport) = start(sink, reader);
+        tokio::time::timeout(Duration::from_secs(5), &mut transport.0)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(ui.next().await.unwrap().unwrap().len(), MAX_FRAME_BYTES);
+        }
+        assert!(
+            ui.next()
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("background buffer exceeded its byte limit")
+        );
+    }
+
+    #[tokio::test]
     async fn oversized_frames_cannot_escape_the_byte_budget() {
         let sink = futures_util::sink::drain::<Message>();
-        let reader = futures_util::stream::iter([Ok(Message::Binary(vec![0; QUEUED_BYTES + 1]))]);
+        let reader =
+            futures_util::stream::iter([Ok(Message::Binary(vec![0; MAX_FRAME_BYTES + 1]))]);
         let (_writer, mut ui, _transport) = start(sink, reader);
         let error = tokio::time::timeout(Duration::from_secs(1), ui.next())
             .await
