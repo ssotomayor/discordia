@@ -655,7 +655,8 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         if let Some(expires) = expires_at {
             let delay = expires
                 .saturating_sub(chrono::Utc::now().timestamp())
-                .max(0) as u64;
+                .clamp(0, super::voice_invite::INVITE_LIFETIME_SECS as i64)
+                as u64;
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             if let Some(messages) = state.write().messages.get_mut(&expiry_channel) {
                 messages.retain(|m| {
