@@ -1953,5 +1953,7 @@
   "Zoom out": ["Alejar", "Reduzir", "缩小", "ズームアウト"],
   "Reset zoom": ["Restablecer zoom", "Redefinir zoom", "重置缩放", "ズームをリセット"],
   "简体中文": ["简体中文", "简体中文", "简体中文", "简体中文"],
-  "日本語": ["日本語", "日本語", "日本語", "日本語"]
+  "日本語": ["日本語", "日本語", "日本語", "日本語"],
+  "Voice channel": ["Canal de voz", "Canal de voz", "语音频道", "ボイスチャンネル"],
+  "Community": ["Comunidad", "Comunidade", "社区", "コミュニティ"]
 }

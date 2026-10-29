@@ -224,6 +224,13 @@ pub struct RulesPrompt {
     pub invite_code: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingVoiceInvite {
+    pub guild_id: Id,
+    pub channel_id: Id,
+    pub code: Option<String>,
+}
+
 impl RulesPrompt {
     /// A challenge raised by an invite has to be answered through the invite:
     /// the code is what the server matched, and a private guild refuses the
@@ -524,7 +531,7 @@ pub struct AppState {
     /// Set by a switch from the server rail; the next Ready opens this guild.
     pub open_guild_on_ready: Option<Id>,
     /// Set when following a voice invite; joins this voice channel upon ready or guild join.
-    pub join_voice_on_ready: Option<Id>,
+    pub voice_invite_on_ready: Option<PendingVoiceInvite>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
     /// The connected server's, from Ready and `DefaultGuild`.
@@ -691,7 +698,7 @@ impl AppState {
             invites: HashMap::new(),
             error_toast: None,
             open_guild_on_ready: None,
-            join_voice_on_ready: None,
+            voice_invite_on_ready: None,
             gateway_failure: None,
             is_operator: false,
             default_guild: None,
@@ -739,7 +746,48 @@ impl AppState {
         self.cameras_watching.clear();
     }
 
+    pub fn prepare_server_switch(&mut self, guild: Option<Id>, invite: Option<PendingVoiceInvite>) {
+        self.clear_server_session();
+        self.open_guild_on_ready = guild;
+        self.voice_invite_on_ready = invite;
+    }
+
+    pub fn resume_voice_invite(&mut self, joined: Option<Id>) -> Option<ClientMessage> {
+        let pending = self.voice_invite_on_ready.as_mut()?;
+        if self.status != ConnectionStatus::Ready {
+            return None;
+        }
+        if self.dm_call.is_some() {
+            self.voice_invite_on_ready = None;
+            return None;
+        }
+        if joined.is_some_and(|gid| gid != pending.guild_id) {
+            return None;
+        }
+        if !self.guilds.iter().any(|g| g.id == pending.guild_id) {
+            return pending.code.take().map(|code| ClientMessage::JoinByInvite {
+                code,
+                accept: false,
+                pow_nonce: None,
+            });
+        }
+        let pending = self.voice_invite_on_ready.take()?;
+        if !self.channels.iter().any(|c| {
+            c.id == pending.channel_id
+                && c.guild_id == pending.guild_id
+                && c.kind == crate::protocol::ChannelKind::Voice
+        }) {
+            return None;
+        }
+        self.dm_mode = false;
+        self.selected_guild = Some(pending.guild_id);
+        self.selected_channel = Some(pending.channel_id);
+        crate::channel_selection::remember_current(self);
+        Some(self.voice.join_message(pending.channel_id))
+    }
+
     pub fn clear_server_session(&mut self) {
+        self.voice_invite_on_ready = None;
         crate::channel_selection::remember_current(self);
         self.channel_unread.clear();
         self.voice_route_revision = 0;
