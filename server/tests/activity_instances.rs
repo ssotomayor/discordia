@@ -569,6 +569,23 @@ async fn an_activity_only_app_plays_without_a_seat_among_the_members() {
     manifest.version = 2;
     manifest.intents = vec![Intent::GuildMessages];
     bot.register_manifest(&app, &manifest).await.unwrap();
+    loop {
+        match next_timeout(&mut alice).await {
+            ServerMessage::GuildIntegrations { guild_id, bots }
+                if guild_id == gid
+                    && bots.iter().any(|b| {
+                        b.bot_pubkey == key
+                            && b.pending
+                                .as_ref()
+                                .is_some_and(|p| p.version == manifest.version)
+                    }) =>
+            {
+                break;
+            }
+            ServerMessage::Error { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
     alice
         .send(&ClientMessage::ApproveAppUpdate {
             guild_id: gid,

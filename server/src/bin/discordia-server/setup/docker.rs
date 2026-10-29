@@ -206,18 +206,18 @@ mod tests {
         let mut a = answers(Role::Rendezvous);
         a.config_path = "/opt/discordia/discordia.toml".into();
         let (steps, _) = plan(&a, Path::new("/opt/discordia"), "latest");
-        let written: Vec<String> = steps
+        let written: Vec<&Path> = steps
             .iter()
             .filter_map(|s| match s {
-                Step::Write { path, .. } => Some(path.to_string_lossy().to_string()),
+                Step::Write { path, .. } => Some(path.as_path()),
                 _ => None,
             })
             .collect();
         assert_eq!(
             written,
             [
-                "/opt/discordia/discordia.toml",
-                "/opt/discordia/docker-compose.yml"
+                Path::new("/opt/discordia/discordia.toml"),
+                Path::new("/opt/discordia/docker-compose.yml")
             ]
         );
         let compose = compose_file(&a, "latest");
