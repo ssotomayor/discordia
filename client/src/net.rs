@@ -1477,7 +1477,9 @@ fn apply(
                 }
             }
             if let Some(voice_cid) = s.join_voice_on_ready.take()
-                && s.channels.iter().any(|c| c.id == voice_cid && c.kind == crate::protocol::ChannelKind::Voice)
+                && s.channels
+                    .iter()
+                    .any(|c| c.id == voice_cid && c.kind == crate::protocol::ChannelKind::Voice)
             {
                 s.dm_mode = false;
                 s.selected_channel = Some(voice_cid);
@@ -1616,7 +1618,9 @@ fn apply(
                 });
             }
             if let Some(voice_cid) = s.join_voice_on_ready.take()
-                && s.channels.iter().any(|c| c.id == voice_cid && c.kind == crate::protocol::ChannelKind::Voice)
+                && s.channels
+                    .iter()
+                    .any(|c| c.id == voice_cid && c.kind == crate::protocol::ChannelKind::Voice)
             {
                 s.dm_mode = false;
                 s.selected_channel = Some(voice_cid);
