@@ -53,8 +53,9 @@ const fixture = (popout = false, mobile = false, expanded = false) => `<style>${
     assert.equal(await visible(), 'false', 'losing window focus releases a drag');
 
     await page.addScriptTag({ content: script });
-    await page.locator('#tile').evaluate(node => node.remove());
+    await page.locator('#tile').evaluate(node => { window.removedTile = node; node.remove(); });
     await page.clock.fastForward(5000);
+    assert.equal(await page.evaluate(() => window.removedTile.hasAttribute('data-controls-visible')), false);
     await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<div id="tile" class="dxf-stream-tile" data-stream-controls><div class="dxf-stream-toolbar"><button>New tile</button></div></div>'));
     assert.equal(await visible(), 'true');
     await page.evaluate(() => window.dxStreamControls.destroy());
