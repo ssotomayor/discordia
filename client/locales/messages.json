@@ -1,4 +1,7 @@
 {
+  "General": ["General", "Geral", "常规", "一般"],
+  "Support": ["Soporte", "Suporte", "支持", "サポート"],
+  "Video": ["Video", "Vídeo", "视频", "ビデオ"],
   "This changes your account name across Discordia.": ["Esto cambia el nombre de tu cuenta en todo Discordia.", "Isso altera o nome da sua conta em todo o Discordia.", "这会更改你的 Discordia 帐户名称。", "Discordia全体でアカウント名が変更されます。"],
   "No account is signed in.": ["No hay ninguna cuenta iniciada.", "Nenhuma conta está conectada.", "当前没有已登录的帐户。", "ログイン中のアカウントがありません。"],
   "Invite to voice by DM": ["Invitar al canal de voz por DM", "Convidar para voz por DM", "通过私信邀请加入语音频道", "DMでボイスチャンネルに招待"],

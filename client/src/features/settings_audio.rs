@@ -54,7 +54,7 @@ pub(super) fn AppSounds() -> Element {
     let persist_settings = move |_: FormEvent| crate::settings::save(&settings.read());
     rsx! {
         details { class: "dxf-audio-sounds", open: true,
-            summary { {crate::i18n::text("App sounds and soundboard", &[])} }
+            summary { {crate::i18n::text(if cfg!(target_os = "android") { "App sounds" } else { "App sounds and soundboard" }, &[])} }
             p { class: "dxf-audio-sounds-note", {crate::i18n::text("Adjust the volume of what you hear in the app.", &[])} }
             div { class: "dxf-audio-sound-row",
                 label { r#for: "app-sounds-volume", {crate::i18n::text("App sounds", &[])} }
@@ -70,10 +70,10 @@ pub(super) fn AppSounds() -> Element {
                     output { "for": "app-sounds-volume", "{settings.read().sfx_volume}%" }
                 }
             }
-            div { class: "dxf-audio-sound-row",
+            if !cfg!(target_os = "android") { div { class: "dxf-audio-sound-row",
                 span { {crate::i18n::text("Soundboard volume", &[])} }
                 crate::features::soundboard::SoundboardVolume {}
-            }
+            } }
             for category in crate::native_sounds::SoundCategory::ALL {
                 label { class: "dxf-audio-sound-row",
                     span { "{category.label()}" }
