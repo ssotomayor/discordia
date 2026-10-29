@@ -312,8 +312,8 @@ input::placeholder { color: var(--text-dim); }
     var(--bg);
 }
 .app-bg-mesh {
-  background:
-    var(--bg),
+  background-color: var(--bg);
+  background-image:
     radial-gradient(circle at 20% 20%, var(--accent-soft), transparent 45%),
     radial-gradient(circle at 85% 80%, color-mix(in srgb, var(--violet) 10%, transparent), transparent 45%);
 }

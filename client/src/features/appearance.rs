@@ -61,7 +61,7 @@ pub(crate) const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
     (
         "mesh",
         "Mesh",
-        "background:#121110,radial-gradient(circle at 20% 20%,var(--accent-soft),transparent 45%),radial-gradient(circle at 85% 80%,color-mix(in srgb,var(--violet) 14%,transparent),transparent 45%);",
+        "background-color:#121110;background-image:radial-gradient(circle at 20% 20%,var(--accent-soft),transparent 45%),radial-gradient(circle at 85% 80%,color-mix(in srgb,var(--violet) 10%,transparent),transparent 45%);",
     ),
     (
         "sunset",
@@ -114,7 +114,6 @@ pub fn AppearanceButton() -> Element {
                     style: "left: min(max({at_x}px - 280px, 8px), calc(100vw - 328px)); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Appearance", &[])} }
-                    div { class: "mb-4", crate::i18n::LanguageSelector {} }
 
                     for (label, kind) in [
                         ("Text size", SizeKind::Text),
