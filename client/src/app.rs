@@ -294,6 +294,10 @@ input::placeholder { color: var(--text-dim); }
 .dxf-fold[open] > summary::before { content: '▾'; }
 
 .app-bg-pattern { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+.dxf-theme-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }
+.dxf-theme-tile { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; }
+.dxf-theme-swatch { display: block; width: 100%; height: 44px; border-radius: 8px; }
+.dxf-theme-name { min-height: 26px; font-size: 10px; line-height: 1.3; color: var(--text-muted); overflow-wrap: anywhere; }
 .app-bg-grid {
   background-color: var(--bg);
   background-image: linear-gradient(var(--edge) 1px, transparent 1px),
@@ -611,6 +615,56 @@ pub const THEMES: &[ThemeDef] = &[
                --text:#2a2320; --text-muted:#6b615a; --text-dim:#a99e92; \
                --accent:#e8730a; --accent-soft:rgba(232,115,10,.12); --accent-strong:#c65f00; \
                --up:#2f9e6a; --success:#2f9e6a; --violet:#8b5cf6; --amber:#c77d1a; --warn:#c77d1a; --danger:#c0392b;",
+    },
+    ThemeDef {
+        id: "github",
+        label: "GitHub Dark",
+        swatch: "#58a6ff",
+        vars: "--bg:#0d1117; --bg2:#161b22; --panel-solid:#161b22; --panel:#161b22; --panel2:#21262d; \
+               --edge:#30363d; --edge-strong:#6e7681; --border:#30363d; --border-strong:#6e7681; \
+               --text:#e6edf3; --text-muted:#9da7b3; --text-dim:#8b949e; \
+               --accent:#58a6ff; --accent-soft:rgba(88,166,255,.14); --accent-strong:#79c0ff; \
+               --up:#3fb950; --success:#3fb950; --violet:#bc8cff; --amber:#d29922; --warn:#d29922; --danger:#f85149;",
+    },
+    ThemeDef {
+        id: "one-dark-pro",
+        label: "One Dark Pro",
+        swatch: "#61afef",
+        vars: "--bg:#282c34; --bg2:#21252b; --panel-solid:#21252b; --panel:#21252b; --panel2:#2c313c; \
+               --edge:#3e4451; --edge-strong:#697383; --border:#3e4451; --border-strong:#697383; \
+               --text:#d7dae0; --text-muted:#abb2bf; --text-dim:#9da5b4; \
+               --accent:#61afef; --accent-soft:rgba(97,175,239,.14); --accent-strong:#8bc5f3; \
+               --up:#98c379; --success:#98c379; --violet:#c678dd; --amber:#e5c07b; --warn:#e5c07b; --danger:#e06c75;",
+    },
+    ThemeDef {
+        id: "dracula",
+        label: "Dracula",
+        swatch: "#bd93f9",
+        vars: "--bg:#282a36; --bg2:#21222c; --panel-solid:#21222c; --panel:#21222c; --panel2:#343746; \
+               --edge:#44475a; --edge-strong:#747a99; --border:#44475a; --border-strong:#747a99; \
+               --text:#f8f8f2; --text-muted:#c1c0d4; --text-dim:#aaa8c1; \
+               --accent:#bd93f9; --accent-soft:rgba(189,147,249,.14); --accent-strong:#d6b9ff; \
+               --up:#50fa7b; --success:#50fa7b; --violet:#ff79c6; --amber:#f1fa8c; --warn:#f1fa8c; --danger:#ff5555;",
+    },
+    ThemeDef {
+        id: "ayu-mirage",
+        label: "Ayu Mirage",
+        swatch: "#ffcc66",
+        vars: "--bg:#1f2430; --bg2:#242936; --panel-solid:#242936; --panel:#242936; --panel2:#2b3242; \
+               --edge:#3c4659; --edge-strong:#778399; --border:#3c4659; --border-strong:#778399; \
+               --text:#cccac2; --text-muted:#b8b6ad; --text-dim:#a1a6b2; \
+               --accent:#ffcc66; --accent-soft:rgba(255,204,102,.14); --accent-strong:#ffdf99; \
+               --up:#bae67e; --success:#bae67e; --violet:#d4bfff; --amber:#ffa759; --warn:#ffa759; --danger:#ff6666;",
+    },
+    ThemeDef {
+        id: "monokai-pro",
+        label: "Monokai Pro",
+        swatch: "#ffd866",
+        vars: "--bg:#2d2a2e; --bg2:#221f22; --panel-solid:#272528; --panel:#272528; --panel2:#363337; \
+               --edge:#49454a; --edge-strong:#79727b; --border:#49454a; --border-strong:#79727b; \
+               --text:#fcfcfa; --text-muted:#c1bdc2; --text-dim:#a9a3aa; \
+               --accent:#ffd866; --accent-soft:rgba(255,216,102,.14); --accent-strong:#ffe59a; \
+               --up:#a9dc76; --success:#a9dc76; --violet:#ab9df2; --amber:#fc9867; --warn:#fc9867; --danger:#ff6188;",
     },
 ];
 
