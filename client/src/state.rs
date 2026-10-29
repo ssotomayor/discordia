@@ -287,6 +287,7 @@ pub struct DmInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingDmEdit {
     pub author: String,
+    pub rumor_id: String,
     pub content: String,
     pub created_at: i64,
     pub emoji: Vec<(String, String)>,
@@ -366,8 +367,9 @@ pub struct AppState {
     pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub dm_deleted_ids: HashSet<String>,
-    pub pending_dm_edits: HashMap<String, PendingDmEdit>,
-    pub pending_dm_deletions: HashMap<String, String>,
+    pub pending_dm_edits: HashMap<(String, String), PendingDmEdit>,
+    pub dm_edit_versions: HashMap<Id, (i64, String)>,
+    pub pending_dm_deletions: HashSet<(String, String)>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
     pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
@@ -590,7 +592,8 @@ impl AppState {
             nostr_event_ids: HashMap::new(),
             dm_deleted_ids: HashSet::new(),
             pending_dm_edits: HashMap::new(),
-            pending_dm_deletions: HashMap::new(),
+            dm_edit_versions: HashMap::new(),
+            pending_dm_deletions: HashSet::new(),
             dm_delivery: HashMap::new(),
             dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
@@ -1467,6 +1470,7 @@ impl AppState {
     }
 
     pub fn delete_message_locally(&mut self, channel_id: Id, message_id: Id) {
+        self.dm_edit_versions.remove(&message_id);
         if let Some(msgs) = self.messages.get_mut(&channel_id) {
             msgs.retain(|m| m.id != message_id);
         }
@@ -1476,8 +1480,8 @@ impl AppState {
             search_msgs.retain(|m| m.id != message_id);
         }
         if let Some(rumor_id) = self.nostr_event_ids.remove(&message_id) {
-            self.pending_dm_edits.remove(&rumor_id);
-            self.pending_dm_deletions.remove(&rumor_id);
+            self.pending_dm_edits.retain(|(id, _), _| id != &rumor_id);
+            self.pending_dm_deletions.retain(|(id, _)| id != &rumor_id);
         }
         self.dm_delivery.remove(&message_id);
         self.dm_emoji.remove(&message_id);
