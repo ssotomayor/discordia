@@ -84,7 +84,7 @@
 .dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-tile { height: auto !important; }
 .dxf-platform-mobile .dxf-streams:not(.dxf-streams-expanded) .dxf-stream-video { flex: 0 0 auto; aspect-ratio: 16 / 9; min-height: 0; }
 .dxf-platform-mobile .dxf-stream-toolbar { gap: 4px; padding: 0 8px; min-height: 44px; flex-wrap: nowrap; }
-.dxf-platform-mobile .dxf-stream-toolbar button[title]:first-of-type { display: none; }
+.dxf-platform-mobile .dxf-stream-toolbar .dxf-stream-popout { display: none; }
 .dxf-platform-mobile .dxf-stream-toolbar > span.text-\[10px\] { display: none; }
 .dxf-platform-mobile .dxf-stream-button { width: 44px; height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; touch-action: manipulation; }
 .dxf-platform-mobile .dxf-stream-volume { width: 136px; max-width: 40vw; height: 44px; touch-action: pan-y; }
