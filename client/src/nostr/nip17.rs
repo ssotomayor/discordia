@@ -7,6 +7,7 @@ use super::event::{self, Event, Rumor};
 use super::nip59;
 
 pub const KIND_CHAT: u16 = 14;
+pub const KIND_DELETION: u16 = 5;
 pub const KIND_DM_RELAYS: u16 = 10050;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,72 @@ pub fn chat_rumor(
         tags.push(vec!["emoji".to_string(), code.clone(), url.clone()]);
     }
     event::rumor(from_pubkey, now, KIND_CHAT, tags, text.to_string())
+}
+
+pub fn chat_edit_rumor(
+    from_pubkey: &str,
+    to_pubkey: &str,
+    original_rumor_id: &str,
+    text: &str,
+    emoji: &[(String, String)],
+    now: i64,
+) -> Rumor {
+    let mut tags = vec![
+        vec!["p".to_string(), to_pubkey.to_string()],
+        vec!["edit".to_string(), original_rumor_id.to_string()],
+        vec![
+            "e".to_string(),
+            original_rumor_id.to_string(),
+            String::new(),
+            "root".to_string(),
+        ],
+    ];
+    for (code, url) in emoji {
+        tags.push(vec!["emoji".to_string(), code.clone(), url.clone()]);
+    }
+    event::rumor(from_pubkey, now, KIND_CHAT, tags, text.to_string())
+}
+
+pub fn edit_target(rumor: &Rumor) -> Option<&str> {
+    if rumor.kind != KIND_CHAT {
+        return None;
+    }
+    rumor
+        .tags
+        .iter()
+        .find(|t| t.first().map(String::as_str) == Some("edit"))
+        .and_then(|t| t.get(1).map(String::as_str))
+}
+
+pub fn chat_deletion_rumor(
+    from_pubkey: &str,
+    to_pubkey: &str,
+    target_rumor_id: &str,
+    now: i64,
+) -> Rumor {
+    let tags = vec![
+        vec!["p".to_string(), to_pubkey.to_string()],
+        vec!["e".to_string(), target_rumor_id.to_string()],
+        vec!["k".to_string(), KIND_CHAT.to_string()],
+    ];
+    event::rumor(
+        from_pubkey,
+        now,
+        KIND_DELETION,
+        tags,
+        "Message deleted".to_string(),
+    )
+}
+
+pub fn deletion_target(rumor: &Rumor) -> Option<&str> {
+    if rumor.kind != KIND_DELETION {
+        return None;
+    }
+    rumor
+        .tags
+        .iter()
+        .find(|t| t.first().map(String::as_str) == Some("e"))
+        .and_then(|t| t.get(1).map(String::as_str))
 }
 
 /// NIP-30 tags, in order, skipping any whose code could not be a shortcode.
@@ -102,7 +169,20 @@ pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String
     let reply_to = rumor
         .tags
         .iter()
-        .find(|t| t.first().map(String::as_str) == Some("e"))
+        .find(|t| {
+            t.first().map(String::as_str) == Some("e")
+                && t.get(3).map(String::as_str) == Some("reply")
+        })
+        .or_else(|| {
+            if edit_target(rumor).is_none() {
+                rumor
+                    .tags
+                    .iter()
+                    .find(|t| t.first().map(String::as_str) == Some("e"))
+            } else {
+                None
+            }
+        })
         .and_then(|t| t.get(1))
         .cloned();
     Ok(ChatMessage {
@@ -245,5 +325,28 @@ mod tests {
         assert!(e.content.is_empty(), "the list carries no content");
         assert!(e.verify());
         assert_eq!(parse_dm_relay_list(&e), relays);
+    }
+
+    #[test]
+    fn edit_rumor_targets_original_message() {
+        let (alice, bob) = (key(1), key(2));
+        let (a_pub, b_pub) = (xonly_hex(&alice), xonly_hex(&bob));
+        let first = chat_rumor(&a_pub, &b_pub, "hello", None, &[], 1_700_000_000);
+        let edited = chat_edit_rumor(&a_pub, &b_pub, &first.id, "hello world", &[], 1_700_000_010);
+        assert_eq!(edited.kind, KIND_CHAT);
+        assert_eq!(edit_target(&edited), Some(first.id.as_str()));
+        let msg = open_rumor(&b_pub, &edited).expect("open edit rumor");
+        assert_eq!(msg.content, "hello world");
+        assert_eq!(msg.reply_to, None, "edit target is not a reply");
+    }
+
+    #[test]
+    fn deletion_rumor_targets_original_message() {
+        let (alice, bob) = (key(1), key(2));
+        let (a_pub, b_pub) = (xonly_hex(&alice), xonly_hex(&bob));
+        let first = chat_rumor(&a_pub, &b_pub, "sensitive info", None, &[], 1_700_000_000);
+        let deleted = chat_deletion_rumor(&a_pub, &b_pub, &first.id, 1_700_000_020);
+        assert_eq!(deleted.kind, KIND_DELETION);
+        assert_eq!(deletion_target(&deleted), Some(first.id.as_str()));
     }
 }

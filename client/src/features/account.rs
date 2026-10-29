@@ -25,6 +25,7 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
     s.dm_accepted = saved.dm_accepted.iter().cloned().collect();
     s.dm_ignored = saved.dm_ignored.iter().cloned().collect();
+    s.dm_deleted_ids = saved.dm_deleted_ids.iter().cloned().collect();
     s.mutes = crate::nostr::nip51::MuteList::from_pubkeys(saved.dm_blocked.iter().cloned());
     s.saved_emoji = saved.saved_emoji.clone();
     s.muted_channels = saved.muted_channels.iter().copied().collect();

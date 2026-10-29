@@ -748,8 +748,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 .read()
                 .can(gid, crate::protocol::Permission::ManageMessages)
         });
-    // A DM lives on Nostr relays, which hold no edits.
-    let can_edit = is_author && guild_id.is_some();
+    let can_edit = is_author;
     let bookmarks = try_consume_context::<crate::bookmarks::Bookmarks>();
     let bookmark_key = crate::bookmarks::Conversation::of(&state.read(), channel_id);
     let bookmarked = bookmarks
@@ -768,6 +767,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
     let save_edit = {
         let original = message.content.clone();
         let gateway = gateway.clone();
+        let nostr = nostr.clone();
         use_callback(move |_: ()| {
             let Some(draft) = editing() else { return };
             let text = draft.trim().to_string();
@@ -778,19 +778,40 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
             if text.is_empty() && !has_media {
                 return;
             }
-            state
-                .write()
-                .edit_locally(channel_id, message_id, text.clone());
-            gateway.send(ClientMessage::EditMessage {
-                channel_id,
-                message_id,
-                content: text,
-            });
+            if guild_id.is_some() {
+                state
+                    .write()
+                    .edit_locally(channel_id, message_id, text.clone());
+                gateway.send(ClientMessage::EditMessage {
+                    channel_id,
+                    message_id,
+                    content: text,
+                });
+            } else {
+                let emoji = {
+                    let s = state.read();
+                    let (list, urls) = guild_emojis_of(&s, channel_id);
+                    crate::emoji::dm_emoji_tags(&text, |code| {
+                        let e = list.iter().find(|e| e.shortcode == code)?;
+                        s.saved_emoji_of(&e.image)
+                            .and_then(|saved| saved.blossom_url.clone())
+                            .or_else(|| urls.get(&e.image).cloned())
+                    })
+                    .0
+                };
+                nostr.send(crate::nostr::service::NostrCmd::Edit {
+                    channel_id,
+                    message_id,
+                    text,
+                    emoji,
+                });
+            }
             editing.set(None);
         })
     };
 
-    let delivery_mark = delivery.map(|delivery| {
+    let nostr_retry = nostr.clone();
+    let delivery_mark = delivery.map(move |delivery| {
         use crate::nostr::delivery::Delivery;
         let icon = "inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]";
         match delivery {
@@ -807,7 +828,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
             Delivery::Failed => rsx! {
                 span { class: "text-[10px] text-[var(--danger)]",
                     {crate::i18n::text("Not accepted · ", &[])}
-                    button { class: "underline", onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Retry { message_id }), {crate::i18n::text("Retry", &[])} }
+                    button { class: "underline", onclick: move |_| nostr_retry.send(crate::nostr::service::NostrCmd::Retry { message_id }), {crate::i18n::text("Retry", &[])} }
                 }
             },
         }
@@ -1085,7 +1106,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                         button {
                             class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] text-sm leading-none transition-colors",
                             title: crate::i18n::text("Delete message", &[]),
-                            "data-context-action": if guild_id.is_some() { "delete" } else { "" },
+                            "data-context-action": "delete",
                             onclick: move |_| confirm_delete.set(!confirm_delete()),
                             "🗑"
                         }
@@ -1110,8 +1131,13 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                 class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
                                 onclick: {
                                     let g = gateway.clone();
+                                    let nostr = nostr.clone();
                                     move |_| {
-                                        g.send(ClientMessage::DeleteMessage { channel_id, message_id });
+                                        if guild_id.is_some() {
+                                            g.send(ClientMessage::DeleteMessage { channel_id, message_id });
+                                        } else {
+                                            nostr.send(crate::nostr::service::NostrCmd::Delete { channel_id, message_id });
+                                        }
                                         confirm_delete.set(false);
                                     }
                                 },

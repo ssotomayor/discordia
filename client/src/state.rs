@@ -284,6 +284,13 @@ pub struct DmInfo {
     pub other_pubkey: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDmEdit {
+    pub content: String,
+    pub created_at: i64,
+    pub emoji: Vec<(String, String)>,
+}
+
 /// Which list a conversation belongs in. A bot with `Members` can harvest every
 /// pubkey and DM it over relays, outside any server's reach (#311).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +364,8 @@ pub struct AppState {
     pub muted_channels: HashSet<Id>,
     pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
+    pub dm_deleted_ids: HashSet<String>,
+    pub pending_dm_edits: HashMap<String, PendingDmEdit>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
     pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
@@ -577,6 +586,8 @@ impl AppState {
             muted_channels: HashSet::new(),
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
+            dm_deleted_ids: HashSet::new(),
+            pending_dm_edits: HashMap::new(),
             dm_delivery: HashMap::new(),
             dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
@@ -1450,6 +1461,28 @@ impl AppState {
     pub fn edit_locally(&mut self, channel_id: Id, message_id: Id, content: String) {
         self.apply_message_edit(channel_id, message_id, content, Some(chrono::Utc::now()));
         self.pending_edits.insert(message_id);
+    }
+
+    pub fn delete_message_locally(&mut self, channel_id: Id, message_id: Id) {
+        if let Some(msgs) = self.messages.get_mut(&channel_id) {
+            msgs.retain(|m| m.id != message_id);
+        }
+        if let Some((cid, _, search_msgs)) = &mut self.message_search
+            && *cid == channel_id
+        {
+            search_msgs.retain(|m| m.id != message_id);
+        }
+        self.nostr_event_ids.remove(&message_id);
+        self.dm_delivery.remove(&message_id);
+        self.dm_emoji.remove(&message_id);
+        self.pending_edits.remove(&message_id);
+        if self
+            .replying_to
+            .as_ref()
+            .is_some_and(|r| r.message_id == message_id)
+        {
+            self.replying_to = None;
+        }
     }
 
     pub fn insert_message(&mut self, channel_id: Id, message: Message) -> bool {
