@@ -6,7 +6,7 @@ use crate::nostr::service::{NostrCmd, NostrTx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission};
 use crate::state::{AppState, ConnectionStatus, SessionMode, use_app_state, use_gateway};
 
-pub(crate) const INVITE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
+pub(crate) const INVITE_LIFETIME_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Clone)]
 pub(super) struct VoiceInviteConnector(
@@ -459,14 +459,14 @@ mod tests {
     }
 
     #[test]
-    fn invitations_expire_after_seven_days_and_history_cannot_restore_them() {
+    fn invitations_expire_after_24_hours_and_history_cannot_restore_them() {
         let (mut state, channel) = fixture();
         let before = chrono::Utc::now().timestamp();
         let content = invitation(&state, &channel, "alice", None, None).unwrap();
         let parsed = parse_voice_invite(&content).unwrap();
         let deadline = parsed.expires_at.unwrap();
-        assert!(deadline >= before + INVITE_LIFETIME_SECS as i64);
-        assert!(deadline <= chrono::Utc::now().timestamp() + INVITE_LIFETIME_SECS as i64);
+        assert!(deadline >= before + 86_400);
+        assert!(deadline <= chrono::Utc::now().timestamp() + 86_400);
         let mut message: crate::protocol::Message = serde_json::from_value(serde_json::json!({
             "id": Id::new_v4(), "channel_id": channel.id,
             "author": {"pubkey":"alice", "username":"Alice"},
@@ -475,8 +475,15 @@ mod tests {
         .unwrap();
         assert!(!is_expired_message(&message, deadline - 1));
         assert!(is_expired_message(&message, deadline));
+        message.created_at = chrono::Utc::now() - chrono::Duration::hours(25);
+        message.content = format!(
+            "discordia://voice/{}/{}?exp={}",
+            channel.guild_id,
+            channel.id,
+            before + 6 * 86_400,
+        );
+        assert!(is_expired_message(&message, before));
         message.content = format!("discordia://voice/{}/{}", channel.guild_id, channel.id);
-        message.created_at = chrono::Utc::now() - chrono::Duration::days(8);
         assert!(is_expired_message(&message, before));
         assert!(!state.insert_message(channel.id, message.clone()));
         state.merge_history(channel.id, vec![message.clone()]);
@@ -976,7 +983,7 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
                     button { r#type: "button", aria_label: crate::i18n::text("Close", &[]), onclick: move |_| on_close.call(()), "✕" }
                 }
                 p { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Send a private invitation with the voice channel and connection details.", &[])} }
-                p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Invitations expire after 7 days and disappear from the chat.", &[])} }
+                p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Invitations expire after 24 hours and disappear from the chat.", &[])} }
                 if channel.access.is_some() {
                     p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Only members with access to this channel are shown.", &[])} }
                 }
