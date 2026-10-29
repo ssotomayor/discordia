@@ -1,7 +1,20 @@
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
-fn claim(path: &Path) -> Result<File, String> {
+struct OwnershipLock {
+    file: File,
+}
+
+impl Drop for OwnershipLock {
+    fn drop(&mut self) {
+        // A forked child can retain the lock through a duplicate until exec closes it.
+        if let Err(error) = self.file.unlock() {
+            tracing::warn!(%error, "cannot release host ownership lock");
+        }
+    }
+}
+
+fn claim(path: &Path) -> Result<OwnershipLock, String> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -10,11 +23,11 @@ fn claim(path: &Path) -> Result<File, String> {
         .open(path)
         .map_err(|e| format!("cannot open host ownership lock: {e}"))?;
     file.try_lock().map_err(|_| "Another host is using this data directory or media port. Use a separate configuration directory and a different DISCORDIA_LIVEKIT_PORT block.".to_string())?;
-    Ok(file)
+    Ok(OwnershipLock { file })
 }
 
 pub struct HostLease {
-    _directory: File,
+    _directory: OwnershipLock,
 }
 
 impl HostLease {
@@ -27,8 +40,8 @@ impl HostLease {
 }
 
 pub(super) struct MediaOwnership {
-    _directory: File,
-    _ports: Vec<File>,
+    _directory: OwnershipLock,
+    _ports: Vec<OwnershipLock>,
 }
 
 impl MediaOwnership {
@@ -65,6 +78,26 @@ mod tests {
 
     fn scratch() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("discordia-media-owners-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn dropping_ownership_unlocks_while_an_inherited_descriptor_survives() {
+        let root = scratch();
+        super::super::private_dir(&root).unwrap();
+        let path = root.join("owner.lock");
+        let owner = claim(&path).unwrap();
+        // A duplicate models the descriptor a concurrent fork inherits before exec.
+        let inherited = owner.file.try_clone().unwrap();
+        assert!(claim(&path).is_err());
+        drop(owner);
+        let restarted = claim(&path).unwrap();
+        assert!(claim(&path).is_err());
+        drop(inherited);
+        assert!(claim(&path).is_err());
+        drop(restarted);
+        drop(claim(&path).unwrap());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
