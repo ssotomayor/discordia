@@ -443,6 +443,8 @@ pub fn WorkspaceView(
             store.set_free(id.clone(), FloatRect::new(*x, *y, *w, *h));
         }
     });
+    let mut edit_mode = use_signal(|| false);
+    let mut workspace_width = use_signal(|| None::<f64>);
     let mut normal_arrangement = use_signal(|| None::<super::stream_layout::Arrangement>);
     use_effect(move || {
         let active = streams_visible();
@@ -491,6 +493,25 @@ pub fn WorkspaceView(
         }
     });
 
+    use_effect(move || {
+        if edit_mode() {
+            return;
+        }
+        let Some(width) = workspace_width() else {
+            return;
+        };
+        let base = super::stream_layout::Arrangement {
+            cells: layout.snapshot(),
+            free: layout.free_snapshot(),
+        };
+        if let Some(rects) = super::workspace_layout::compact_rail(&base, width, GRID_GAP) {
+            let mut store = layout;
+            for (id, rect) in rects {
+                store.set_free(id, rect);
+            }
+        }
+    });
+
     // Media rooms survive an unmount; the gateway must finish its close
     // handshake before quitting can destroy the transport.
     let leave_voice = voice_tx.clone();
@@ -529,7 +550,6 @@ pub fn WorkspaceView(
         });
     });
 
-    let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
     let activities_open = use_signal(|| false);
     let mut is_mobile = use_signal(|| cfg!(any(target_os = "android", target_os = "ios")));
@@ -748,6 +768,21 @@ pub fn WorkspaceView(
                 super::mobile_workspace::MobileWorkspace { activities_open }
             } else {
                 div { class: "flex-1 overflow-auto min-h-0",
+                    onmounted: move |event| {
+                        let data = event.data();
+                        spawn(async move {
+                            if let Ok(rect) = data.get_client_rect().await
+                                && workspace_width.peek().is_none()
+                            {
+                                workspace_width.set(Some(rect.size.width));
+                            }
+                        });
+                    },
+                    onresize: move |event| {
+                        if let Ok(size) = event.get_content_box_size() {
+                            workspace_width.set(Some(size.width));
+                        }
+                    },
                         GridLayout {
                             cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
                             store: layout, editable: edit_mode(),
@@ -1479,6 +1514,75 @@ fn GuildDialogHost() -> Element {
         Some(crate::state::GuildDialog::AddGuild) => rsx! {
             crate::features::guild_hub::AddGuildDialog { on_close: close }
         },
+    }
+}
+
+#[cfg(test)]
+mod rail_layout_tests {
+    use super::*;
+    use crate::features::{stream_layout, workspace_layout};
+
+    #[test]
+    fn rail_keeps_96_pixels_across_templates_and_window_resize_cycles() {
+        for (name, template, _) in LAYOUT_TEMPLATES {
+            let mut base = stream_layout::Arrangement {
+                cells: template(),
+                free: if *name == "Default" {
+                    default_free_layout()
+                } else {
+                    vec![]
+                },
+            };
+            for width in [900.0, 1920.0, 3840.0, 1280.0, 2560.0] {
+                let next = workspace_layout::compact_rail(&base, width, GRID_GAP).unwrap();
+                let rail = next.iter().find(|(id, _)| id == "guilds").unwrap().1;
+                assert!((rail.w * width - GRID_GAP - 96.0).abs() < 1e-6, "{name}");
+                let channels = next.iter().find(|(id, _)| id == "channels").unwrap().1;
+                assert!((channels.x - rail.w).abs() < 1e-6, "{name}");
+                let right = next.iter().map(|(_, r)| r.x + r.w).fold(0.0, f64::max);
+                assert!((right - 1.0).abs() < 1e-6, "{name}");
+                for (id, rect) in &next {
+                    let cell = base.cells.iter().find(|(key, _)| key == id).unwrap().1;
+                    assert!((rect.y - cell.y as f64 / 30.0).abs() < 1e-6);
+                    assert!((rect.h - cell.h as f64 / 30.0).abs() < 1e-6);
+                    assert!(rect.x >= 0.0 && rect.w > 0.0 && rect.x + rect.w <= 1.0 + 1e-6);
+                }
+                base.free = next;
+                assert!(workspace_layout::compact_rail(&base, width, GRID_GAP).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn compacting_preserves_stream_and_chat_stacking() {
+        let base = stream_layout::above_chat(
+            stream_layout::Arrangement {
+                cells: default_layout(),
+                free: default_free_layout(),
+            },
+            12,
+            GRID_ROWS,
+        );
+        let next = workspace_layout::compact_rail(&base, 2560.0, GRID_GAP).unwrap();
+        let streams = next.iter().find(|(id, _)| id == "streams").unwrap().1;
+        let chat = next.iter().find(|(id, _)| id == "chat").unwrap().1;
+        assert_eq!((streams.x, streams.w), (chat.x, chat.w));
+        assert!((streams.y + streams.h - chat.y).abs() < 1e-6);
+        assert!((chat.y + chat.h - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn moved_rails_and_unmeasured_windows_keep_their_layout() {
+        let mut base = stream_layout::Arrangement {
+            cells: default_layout(),
+            free: vec![],
+        };
+        for width in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(workspace_layout::compact_rail(&base, width, GRID_GAP).is_none());
+        }
+        base.free
+            .push(("guilds".into(), FloatRect::new(0.4, 0.1, 0.2, 0.8)));
+        assert!(workspace_layout::compact_rail(&base, 2560.0, GRID_GAP).is_none());
     }
 }
 
