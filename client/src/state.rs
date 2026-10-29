@@ -523,6 +523,8 @@ pub struct AppState {
     pub error_toast: Option<String>,
     /// Set by a switch from the server rail; the next Ready opens this guild.
     pub open_guild_on_ready: Option<Id>,
+    /// Set when following a voice invite; joins this voice channel upon ready or guild join.
+    pub join_voice_on_ready: Option<Id>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
     /// The connected server's, from Ready and `DefaultGuild`.
@@ -689,6 +691,7 @@ impl AppState {
             invites: HashMap::new(),
             error_toast: None,
             open_guild_on_ready: None,
+            join_voice_on_ready: None,
             gateway_failure: None,
             is_operator: false,
             default_guild: None,

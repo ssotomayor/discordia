@@ -1476,6 +1476,15 @@ fn apply(
                     });
                 }
             }
+            if let Some(voice_cid) = s.join_voice_on_ready.take()
+                && s.channels.iter().any(|c| c.id == voice_cid && c.kind == crate::protocol::ChannelKind::Voice)
+            {
+                s.dm_mode = false;
+                s.selected_channel = Some(voice_cid);
+                crate::channel_selection::remember_current(&mut s);
+                let join_msg = s.voice.join_message(voice_cid);
+                let _ = tx.send(join_msg);
+            }
         }
         ServerMessage::MessageHistory {
             channel_id,
@@ -1605,6 +1614,15 @@ fn apply(
                     limit: 50,
                     before_ms: None,
                 });
+            }
+            if let Some(voice_cid) = s.join_voice_on_ready.take()
+                && s.channels.iter().any(|c| c.id == voice_cid && c.kind == crate::protocol::ChannelKind::Voice)
+            {
+                s.dm_mode = false;
+                s.selected_channel = Some(voice_cid);
+                crate::channel_selection::remember_current(&mut s);
+                let join_msg = s.voice.join_message(voice_cid);
+                let _ = tx.send(join_msg);
             }
         }
         ServerMessage::GuildCatalog {

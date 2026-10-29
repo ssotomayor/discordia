@@ -1131,7 +1131,7 @@ fn VoiceChannelRow(
                     }
                 }
             }
-            if super::voice_invite::can_invite_to(&users_by_id, &channel) {
+            if connected && super::voice_invite::can_invite_to(&users_by_id, &channel) {
                 button {
                     r#type: "button",
                     class: "w-8 h-8 shrink-0 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--accent)]",
