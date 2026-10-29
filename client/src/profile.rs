@@ -100,6 +100,64 @@ fn load_at(path: &std::path::Path) -> Option<LocalProfile> {
     Some(stored.profile)
 }
 
+pub(crate) fn use_avatar_recovery(
+    state: dioxus::prelude::Signal<crate::state::AppState>,
+    owner: String,
+) {
+    use dioxus::prelude::*;
+    let key = owner.clone();
+    let available = use_memo(move || {
+        let state = state.read();
+        if state
+            .account_pictures
+            .as_ref()
+            .is_some_and(|(account, pictures)| account == &key && pictures.avatar.is_some())
+        {
+            return None;
+        }
+        let profile = state.profiles.get(&key)?;
+        let address = profile.avatar.as_deref()?;
+        let data = match address.strip_prefix("media:") {
+            Some(blob) => state.emoji_images.get_shared(blob)?,
+            None => std::sync::Arc::new(address.to_owned()),
+        };
+        Some((profile.updated_at, data))
+    });
+    use_effect(move || {
+        let Some((updated_at, avatar)) = available() else {
+            return;
+        };
+        let local = load(&owner).unwrap_or_default();
+        let Some(recovered) = recover_avatar(&local, updated_at, &avatar) else {
+            return;
+        };
+        if let Err(error) = save(&owner, &recovered) {
+            tracing::warn!(%error, "account avatar recovery could not be saved");
+            return;
+        }
+        let mut state = state;
+        state.write().account_pictures = Some((owner.clone(), recovered.into()));
+    });
+}
+
+fn recover_avatar(
+    local: &LocalProfile,
+    server_updated_at: i64,
+    avatar: &str,
+) -> Option<LocalProfile> {
+    if local.avatar.is_some()
+        || local.updated_at > server_updated_at
+        || !avatar.starts_with("data:image/")
+        || avatar.len() > crate::protocol::MAX_IMAGE_BYTES.div_ceil(3) * 4 + 128
+    {
+        return None;
+    }
+    let mut recovered = local.clone();
+    recovered.avatar = Some(avatar.to_owned());
+    // Recovering cached bytes is not a profile edit and must not republish older metadata.
+    Some(recovered)
+}
+
 pub fn migrate_legacy(pubkey: &str) -> Result<(), String> {
     migrate_at(&config_dir(), pubkey)
 }
@@ -120,6 +178,45 @@ fn migrate_at(root: &std::path::Path, pubkey: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_missing_avatar_is_recovered_for_home_and_survives_a_restart_without_editing_metadata() {
+        let root = std::env::temp_dir().join(format!("avatar-recovery-{}", uuid::Uuid::new_v4()));
+        let owner = "a".repeat(64);
+        let local = LocalProfile {
+            bio: Some("Keep my bio".into()),
+            updated_at: 10,
+            ..Default::default()
+        };
+        let avatar = "data:image/png;base64,Zmlyc3Q=";
+        let recovered = recover_avatar(&local, 20, avatar).unwrap();
+        assert_eq!(recovered.bio, local.bio);
+        assert_eq!(recovered.updated_at, 10);
+        save_at(&root, &owner, &recovered).unwrap();
+        let restored = load_at(&profile_path(&root, &owner).unwrap()).unwrap();
+        assert_eq!(restored.avatar.as_deref(), Some(avatar));
+        let mut state = crate::state::AppState::empty();
+        state.account_pictures = Some((owner.clone(), restored.into()));
+        state.clear_server_session();
+        assert_eq!(state.avatar_address(&owner), Some(avatar));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn avatar_recovery_preserves_personal_images_and_newer_deletions() {
+        let avatar = "data:image/png;base64,Zmlyc3Q=";
+        let mut local = LocalProfile {
+            avatar: Some("personal".into()),
+            updated_at: 10,
+            ..Default::default()
+        };
+        assert!(recover_avatar(&local, 20, avatar).is_none());
+        local.avatar = None;
+        assert!(recover_avatar(&local, 9, avatar).is_none());
+        assert!(recover_avatar(&local, 20, "media:server-only.png").is_none());
+        assert!(recover_avatar(&local, 20, "https://example.com/avatar.png").is_none());
+        assert!(recover_avatar(&local, 10, avatar).is_some());
+    }
+
     use super::*;
 
     #[test]

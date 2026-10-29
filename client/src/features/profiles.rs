@@ -122,6 +122,93 @@ pub(crate) fn image_mime(reported: Option<String>) -> String {
         .unwrap_or_else(|| "image/png".to_string())
 }
 
+fn read_profile_image(path: &std::path::Path, limit: usize) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
+    let size = file
+        .metadata()
+        .map_err(|_| "Couldn't read that file.")?
+        .len();
+    if size > limit as u64 {
+        return Err(format!(
+            "That image is {:.1} MB — too big to upload. {IMAGE_HELP}",
+            size as f64 / 1_000_000.0
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Couldn't read that file.")?;
+    let format = image::guess_format(&bytes).map_err(|_| "That's not a supported image.")?;
+    let mime = format.to_mime_type();
+    check_image(&bytes, mime, limit)?;
+    Ok(to_data_url(&bytes, mime))
+}
+
+fn pick_profile_image(
+    limit: usize,
+    editing: Signal<Option<String>>,
+    error: Signal<Option<String>>,
+    mut generation: Signal<u64>,
+) {
+    let request = generation.peek().wrapping_add(1);
+    generation.set(request);
+    spawn(async move {
+        load_profile_image(
+            request,
+            generation,
+            editing,
+            error,
+            async {
+                crate::file_dialog::pick_file(&[(
+                    crate::i18n::label("Image"),
+                    crate::file_dialog::IMAGE_EXTENSIONS,
+                )])
+                .await
+            },
+            move |file| async move {
+                tokio::task::spawn_blocking(move || read_profile_image(&file, limit))
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result)
+            },
+        )
+        .await;
+    });
+}
+
+async fn load_profile_image<T, R: std::future::Future<Output = Result<String, String>>>(
+    request: u64,
+    generation: Signal<u64>,
+    mut editing: Signal<Option<String>>,
+    mut error: Signal<Option<String>>,
+    pick: impl std::future::Future<Output = Result<Option<T>, String>>,
+    read: impl FnOnce(T) -> R,
+) {
+    if *generation.peek() != request {
+        return;
+    }
+    let picked = pick.await;
+    if *generation.peek() != request {
+        return;
+    }
+    let result = match picked {
+        Ok(Some(file)) => read(file).await,
+        Ok(None) => return,
+        Err(message) => Err(message),
+    };
+    if *generation.peek() != request {
+        return;
+    }
+    match result {
+        Ok(image) => {
+            error.set(None);
+            editing.set(Some(image));
+        }
+        Err(message) => error.set(Some(message)),
+    }
+}
+
 /// The server stores the picture and hands back an address, so the only
 /// thing a client ever sends is the bytes themselves — never a link for every
 /// other member's webview to go and fetch.
@@ -138,46 +225,61 @@ pub(crate) fn embed_image(cropped: String) -> (Option<String>, Option<String>) {
     (Some(cropped), None)
 }
 
-fn use_profile_image(pubkey: &str, banner: bool) -> Memo<Option<crate::image_assets::ImageSource>> {
+fn use_profile_image(
+    pubkey: &str,
+    banner: bool,
+    account: bool,
+) -> Memo<Option<crate::image_assets::ImageSource>> {
     let state = use_app_state();
     let pubkey = pubkey.to_owned();
-    use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
-        let s = state.read();
-        let address = if banner {
-            s.banner_address(&pubkey)
-        } else {
-            s.avatar_address(&pubkey)
-        }?;
-        let resolved = s.media_src(address)?;
-        if let Some((owner, pictures)) = &s.account_pictures
-            && owner == &pubkey
-        {
-            let cached = if banner {
-                &pictures.banner
-            } else {
-                &pictures.avatar
-            };
-            if let Some(data) = cached
+    use_memo(use_reactive(
+        (&pubkey, &account),
+        move |(pubkey, account)| {
+            let s = state.read();
+            let personal = s
+                .account_pictures
                 .as_ref()
-                .filter(|data| std::ptr::eq(data.as_str(), address))
+                .filter(|(owner, _)| owner == &pubkey)
+                .and_then(|(_, pictures)| pictures.avatar.as_deref())
+                .map(String::as_str);
+            let address = if account {
+                personal.or_else(|| s.profiles.get(&pubkey)?.avatar.as_deref())
+            } else if banner {
+                s.banner_address(&pubkey)
+            } else {
+                s.avatar_address(&pubkey)
+            }?;
+            let resolved = s.media_src(address)?;
+            if let Some((owner, pictures)) = &s.account_pictures
+                && owner == &pubkey
             {
-                return Some(crate::image_assets::source(data.clone()));
+                let cached = if banner {
+                    &pictures.banner
+                } else {
+                    &pictures.avatar
+                };
+                if let Some(data) = cached
+                    .as_ref()
+                    .filter(|data| std::ptr::eq(data.as_str(), address))
+                {
+                    return Some(crate::image_assets::source(data.clone()));
+                }
             }
-        }
-        let data = match address.strip_prefix("media:") {
-            Some(blob) => s
-                .emoji_images
-                .get_shared(blob)
-                .filter(|data| !data.is_empty()),
-            None => Some(std::sync::Arc::new(resolved.to_owned())),
-        }?;
-        Some(crate::image_assets::source(data))
-    }))
+            let data = match address.strip_prefix("media:") {
+                Some(blob) => s
+                    .emoji_images
+                    .get_shared(blob)
+                    .filter(|data| !data.is_empty()),
+                None => Some(std::sync::Arc::new(resolved.to_owned())),
+            }?;
+            Some(crate::image_assets::source(data))
+        },
+    ))
 }
 
 #[component]
 fn ProfileBanner(pubkey: String, accent: String) -> Element {
-    let image = use_profile_image(&pubkey, true);
+    let image = use_profile_image(&pubkey, true, false);
     rsx! {
         if let Some(b) = image() {
             img { class: "h-24 w-full object-cover block", src: "{b}", alt: crate::i18n::text("banner", &[]) }
@@ -193,14 +295,15 @@ pub fn Avatar(
     #[props(into)] name: String,
     #[props(into)] size: String,
     #[props(into, default = "text-xs".to_string())] text: String,
+    #[props(default)] account: bool,
 ) -> Element {
-    let image = use_profile_image(&pubkey, false);
+    let image = use_profile_image(&pubkey, false, account);
     let avatar = image();
     let initial = name.chars().next().unwrap_or('?').to_ascii_uppercase();
 
     rsx! {
         div {
-            class: "rounded-md border border-[var(--border)] overflow-hidden shrink-0 flex items-center justify-center text-[var(--accent)] font-medium {size} {text}",
+            class: "dxf-avatar rounded-md border border-[var(--border)] overflow-hidden shrink-0 flex items-center justify-center text-[var(--accent)] font-medium {size} {text}",
             if let Some(url) = avatar {
                 img { class: "w-full h-full object-cover", src: "{url}", alt: "{name}", draggable: false }
             } else {
@@ -498,8 +601,19 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
     let mut err = use_signal::<Option<String>>(|| None);
     let mut editing_avatar = use_signal(|| None::<String>);
     let mut editing_banner = use_signal(|| None::<String>);
+    let mut image_generation = use_signal(|| 0_u64);
+    let mut reset_images = move || {
+        image_generation.with_mut(|n| *n = n.wrapping_add(1));
+        editing_avatar.set(None);
+        editing_banner.set(None);
+    };
+    let close = use_callback(move |()| {
+        reset_images();
+        open.set(false);
+    });
 
     let mut load_current = move || {
+        reset_images();
         let s = state.read();
         let name = s.display_name_or(&profile_owner.peek(), &identity_name);
         display_name.set(name.clone());
@@ -603,7 +717,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             hide_operator: !show_operator(),
             updated_at,
         });
-        open.set(false);
+        close.call(());
     };
 
     let (owns_a_guild, is_operator) = {
@@ -626,7 +740,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             crate::features::image_editor::ImageEditor {
                 src,
                 shape: crate::features::image_editor::CropShape::Square,
-                on_cancel: move |_| editing_avatar.set(None),
+                on_cancel: move |_| reset_images(),
                 on_apply: move |cropped: String| {
                     editing_avatar.set(None);
                     let (val, note) = embed_image(cropped);
@@ -639,7 +753,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             crate::features::image_editor::ImageEditor {
                 src,
                 shape: crate::features::image_editor::CropShape::Banner,
-                on_cancel: move |_| editing_banner.set(None),
+                on_cancel: move |_| reset_images(),
                 on_apply: move |cropped: String| {
                     editing_banner.set(None);
                     let (val, note) = embed_image(cropped);
@@ -651,7 +765,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
         if open() {
             div {
                 class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-                onclick: move |_| open.set(false),
+                onclick: move |_| close.call(()),
                 div {
                     class: "dxf-modal-in w-80 max-h-[90vh] overflow-y-auto bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
@@ -681,43 +795,17 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                             }
                         }
                         div { class: "flex flex-col gap-1",
-                            label {
+                            button {
+                                r#type: "button",
                                 class: "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer text-center",
+                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_AVATAR_INPUT_BYTES, editing_avatar, err, image_generation),
                                 {crate::i18n::text("Choose image", &[])}
-                                input {
-                                    r#type: "file",
-                                    accept: "image/*",
-                                    class: "hidden",
-                                    onchange: move |evt: FormEvent| {
-                                        let files = evt.files();
-                                        let mut err = err;
-                                        spawn(async move {
-                                            let Some(file) = files.into_iter().next() else { return };
-                                            match file.read_bytes().await {
-                                                Ok(bytes) => {
-                                                    let mime = image_mime(file.content_type());
-
-                                                    if let Err(msg) = check_image(&bytes, &mime, crate::image_edit::MAX_AVATAR_INPUT_BYTES) {
-
-                                                        err.set(Some(msg));
-
-                                                        return;
-
-                                                    }
-
-                                                    editing_avatar.set(Some(to_data_url(&bytes, &mime)));
-                                                }
-                                                Err(_) => err.set(Some("Couldn't read that file.".into())),
-                                            }
-                                        });
-                                    },
-                                }
                             }
                             if avatar().is_some() {
                                 button {
                                     r#type: "button",
                                     class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                    onclick: move |_| avatar.set(None),
+                                    onclick: move |_| { reset_images(); avatar.set(None); },
                                     {crate::i18n::text("Remove", &[])}
                                 }
                             }
@@ -734,43 +822,17 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                             }
                         }
                         div { class: "flex gap-2 mt-1",
-                            label {
+                            button {
+                                r#type: "button",
                                 class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
+                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_BANNER_INPUT_BYTES, editing_banner, err, image_generation),
                                 {crate::i18n::text("Choose banner", &[])}
-                                input {
-                                    r#type: "file",
-                                    accept: "image/*",
-                                    class: "hidden",
-                                    onchange: move |evt: FormEvent| {
-                                        let files = evt.files();
-                                        let mut err = err;
-                                        spawn(async move {
-                                            let Some(file) = files.into_iter().next() else { return };
-                                            match file.read_bytes().await {
-                                                Ok(bytes) => {
-                                                    let mime = image_mime(file.content_type());
-
-                                                    if let Err(msg) = check_image(&bytes, &mime, crate::image_edit::MAX_BANNER_INPUT_BYTES) {
-
-                                                        err.set(Some(msg));
-
-                                                        return;
-
-                                                    }
-
-                                                    editing_banner.set(Some(to_data_url(&bytes, &mime)));
-                                                }
-                                                Err(_) => err.set(Some("Couldn't read that file.".into())),
-                                            }
-                                        });
-                                    },
-                                }
                             }
                             if banner().is_some() {
                                 button {
                                     r#type: "button",
                                     class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                    onclick: move |_| banner.set(None),
+                                    onclick: move |_| { reset_images(); banner.set(None); },
                                     {crate::i18n::text("Remove", &[])}
                                 }
                             }
@@ -853,7 +915,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
                             aria_label: crate::i18n::text("Cancel", &[]),
-                            onclick: move |_| open.set(false),
+                            onclick: move |_| close.call(()),
                             {crate::i18n::text("Cancel", &[])}
                         }
                         button {
@@ -1051,7 +1113,179 @@ mod profile_name_tests {
 }
 
 #[cfg(test)]
+mod picker_race_tests {
+    use super::*;
+    use futures_util::poll;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    use tokio::sync::oneshot;
+
+    #[derive(Clone, Copy)]
+    struct Draft {
+        generation: Signal<u64>,
+        avatar: Signal<Option<String>>,
+        banner: Signal<Option<String>>,
+        error: Signal<Option<String>>,
+    }
+
+    fn fixture() -> (VirtualDom, Draft) {
+        type Export = Rc<RefCell<Option<Draft>>>;
+        let export: Export = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let draft = Draft {
+                    generation: use_signal(|| 1),
+                    avatar: use_signal(|| None),
+                    banner: use_signal(|| None),
+                    error: use_signal(|| None),
+                };
+                *export.borrow_mut() = Some(draft);
+                rsx! {}
+            },
+            export.clone(),
+        );
+        dom.rebuild_in_place();
+        let draft = export.borrow().unwrap();
+        (dom, draft)
+    }
+
+    #[tokio::test]
+    async fn a_newer_avatar_or_banner_wins_over_an_older_read_or_error() {
+        for result in [Ok("old image".into()), Err("old error".into())] {
+            for banner in [false, true] {
+                let (_dom, mut draft) = fixture();
+                let (finish, reading) = oneshot::channel();
+                let mut old = Box::pin(load_profile_image(
+                    1,
+                    draft.generation,
+                    draft.avatar,
+                    draft.error,
+                    std::future::ready(Ok(Some(()))),
+                    |_| async move { reading.await.unwrap() },
+                ));
+                assert!(poll!(old.as_mut()).is_pending());
+                draft.generation.set(2);
+                let target = if banner { draft.banner } else { draft.avatar };
+                load_profile_image(
+                    2,
+                    draft.generation,
+                    target,
+                    draft.error,
+                    std::future::ready(Ok(Some(()))),
+                    |_| std::future::ready(Ok("latest image".into())),
+                )
+                .await;
+                finish.send(result.clone()).unwrap();
+                old.await;
+                assert_eq!(target.peek().as_deref(), Some("latest image"));
+                assert!(draft.error.peek().is_none());
+                if banner {
+                    assert!(draft.avatar.peek().is_none());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stale_picker_never_reads_its_file_or_overwrites_the_current_error() {
+        for picked in [Ok(Some(())), Ok(None), Err("old picker error".into())] {
+            let (_dom, mut draft) = fixture();
+            let reads = Rc::new(Cell::new(0));
+            let counted = reads.clone();
+            let (finish, picking) = oneshot::channel();
+            let mut old = Box::pin(load_profile_image(
+                1,
+                draft.generation,
+                draft.avatar,
+                draft.error,
+                async move { picking.await.unwrap() },
+                move |_| {
+                    counted.set(counted.get() + 1);
+                    std::future::ready(Ok("old image".into()))
+                },
+            ));
+            assert!(poll!(old.as_mut()).is_pending());
+            draft.generation.set(2);
+            load_profile_image::<(), _>(
+                2,
+                draft.generation,
+                draft.banner,
+                draft.error,
+                std::future::ready(Err("current picker error".into())),
+                |_| std::future::ready(Ok("unused".into())),
+            )
+            .await;
+            finish.send(picked).unwrap();
+            old.await;
+            assert_eq!(reads.get(), 0);
+            assert!(draft.avatar.peek().is_none());
+            assert_eq!(draft.error.peek().as_deref(), Some("current picker error"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_latest_selection_does_not_restore_an_older_pending_image() {
+        let (_dom, mut draft) = fixture();
+        let (finish, reading) = oneshot::channel();
+        let mut old = Box::pin(load_profile_image(
+            1,
+            draft.generation,
+            draft.avatar,
+            draft.error,
+            std::future::ready(Ok(Some(()))),
+            |_| async move { reading.await.unwrap() },
+        ));
+        assert!(poll!(old.as_mut()).is_pending());
+        draft.generation.set(2);
+        load_profile_image::<(), _>(
+            2,
+            draft.generation,
+            draft.avatar,
+            draft.error,
+            std::future::ready(Ok(None)),
+            |_| std::future::ready(Err("cancelled pick must not be read".into())),
+        )
+        .await;
+        finish.send(Ok("old image".into())).unwrap();
+        old.await;
+        assert!(draft.avatar.peek().is_none());
+        assert!(draft.error.peek().is_none());
+    }
+}
+
+#[cfg(test)]
 mod account_avatar_tests {
+    #[test]
+    fn native_profile_picker_reads_an_extensionless_jpeg_and_keeps_it_crop_ready() {
+        let root =
+            std::env::temp_dir().join(format!("profile-picker-{}", crate::protocol::Id::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("selected-document");
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(4, 4)
+            .write_to(&mut bytes, image::ImageFormat::Jpeg)
+            .unwrap();
+        std::fs::write(&path, bytes.get_ref()).unwrap();
+        let url = read_profile_image(&path, crate::image_edit::MAX_AVATAR_INPUT_BYTES).unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+        assert_eq!(data_url_bytes(&url), *bytes.get_ref());
+        assert!(crate::image_edit::decode(&url, crate::image_edit::MAX_AVATAR_INPUT_BYTES).is_ok());
+        assert!(
+            read_profile_image(&path, 16)
+                .unwrap_err()
+                .contains("too big")
+        );
+        std::fs::write(&path, b"This is not an image").unwrap();
+        assert!(
+            read_profile_image(&path, 1024)
+                .unwrap_err()
+                .contains("not a supported image")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     use dioxus::core::{AttributeValue, Mutation};
     use std::{cell::RefCell, rc::Rc};
@@ -1072,11 +1306,19 @@ mod account_avatar_tests {
                         }
                         .into(),
                     ));
+                    state.profiles.insert(
+                        "self".into(),
+                        crate::protocol::Profile {
+                            pubkey: "self".into(),
+                            avatar: None,
+                            ..Default::default()
+                        },
+                    );
                     state
                 });
                 provide_context(state);
                 *export.borrow_mut() = Some(state);
-                rsx! { Avatar { pubkey: "self", name: "Self", size: "w-8 h-8" } }
+                rsx! { Avatar { pubkey: "self", name: "Self", size: "w-8 h-8", account: true } }
             },
             export.clone(),
         );
