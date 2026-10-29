@@ -18,7 +18,7 @@ function fixture() {
   const el = element('DIV');
   el.innerHTML = '';
   el.contains = node => node === el || el.childNodes.includes(node);
-  el.focus = () => {};
+  el.focus = () => operations.push('focus');
   let before = [];
   const range = {
     startContainer: el,
@@ -180,6 +180,22 @@ function fixture() {
     assert.equal(f.inserted[0].nodeValue, '@María ');
     assert(f.operations.includes('delete'));
   }
+}
+
+{
+  const f = fixture();
+  const draft = text('mensaje sin enviar');
+  f.el.childNodes = [draft];
+  const range = f.selection.getRangeAt(0);
+  range.startContainer = draft;
+  range.startOffset = 7;
+  f.event('selectionchange');
+  const sent = f.messages.length;
+  f.api.focus();
+  assert(f.operations.includes('focus'));
+  assert.equal(f.el.childNodes[0].nodeValue, 'mensaje sin enviar');
+  assert.equal(f.selection.getRangeAt(0).startOffset, 7);
+  assert.equal(f.messages.length, sent);
 }
 
 console.log('Chat composer tests passed');

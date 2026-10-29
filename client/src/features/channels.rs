@@ -2209,6 +2209,7 @@ fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) 
         let mut s = state.write();
         s.dm_mode = true;
         s.selected_channel = Some(channel_id);
+        s.request_composer_focus(channel_id);
         s.mark_dm_read(channel_id);
         !s.messages.contains_key(&channel_id)
     };

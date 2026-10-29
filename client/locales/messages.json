@@ -1965,5 +1965,7 @@
   "Your stream's viewer sounds": ["Espectadores de tu transmisión", "Espectadores da sua transmissão", "直播观众提示音", "自分の配信の視聴者通知音"],
   "Do Not Disturb silences incoming alerts. Sounds for your own actions remain available.": ["No molestar silencia las alertas entrantes. Los sonidos de tus propias acciones siguen disponibles.", "Não perturbe silencia os alertas recebidos. Os sons das suas próprias ações continuam disponíveis.", "请勿打扰会静音传入提醒，但仍保留自己操作的提示音。", "取り込み中は着信通知を消音します。自分の操作音は引き続き利用できます。"],
   "This invitation has expired.": ["Esta invitación venció.", "Este convite expirou.", "此邀请已过期。", "この招待は期限切れです。"],
-  "Invitations expire after 7 days and disappear from the chat.": ["Las invitaciones vencen a los 7 días y desaparecen del chat.", "Os convites expiram após 7 dias e desaparecem do chat.", "邀请将在7天后过期并从聊天中消失。", "招待は7日後に期限切れとなり、チャットから消えます。"]
+  "Invitations expire after 7 days and disappear from the chat.": ["Las invitaciones vencen a los 7 días y desaparecen del chat.", "Os convites expiram após 7 dias e desaparecem do chat.", "邀请将在7天后过期并从聊天中消失。", "招待は7日後に期限切れとなり、チャットから消えます。"],
+  "Could not start the server connection.": ["No se pudo iniciar la conexión al servidor.", "Não foi possível iniciar a conexão com o servidor.", "无法启动服务器连接。", "サーバーへの接続を開始できませんでした。"],
+  "Server connection details are missing from this invitation.": ["A esta invitación le faltan los datos de conexión al servidor.", "Este convite não inclui os dados de conexão com o servidor.", "此邀请缺少服务器连接信息。", "この招待にはサーバー接続情報がありません。"]
 }

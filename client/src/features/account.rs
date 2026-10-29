@@ -117,6 +117,34 @@ pub fn AccountView(
         name_nostr.send(crate::nostr::service::NostrCmd::PublishName(name));
     }));
     provide_context(identity.clone());
+    let (invite_connector, invite_receiver) = use_hook(|| {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            super::voice_invite::VoiceInviteConnector(tx),
+            std::rc::Rc::new(std::cell::RefCell::new(Some(rx))),
+        )
+    });
+    provide_context(invite_connector);
+    let invite_identity = use_memo(use_reactive((&identity,), |(identity,)| identity));
+    use_future(move || {
+        let receiver = invite_receiver.borrow_mut().take();
+        async move {
+            let Some(mut receiver) = receiver else { return };
+            while let Some((server, invite)) = receiver.recv().await {
+                if super::voice_invite::prepare_home_invite(&mut state.write(), invite) {
+                    on_connect.call(SessionParams {
+                        mode: server.mode,
+                        identity: invite_identity.peek().clone(),
+                    });
+                } else {
+                    state.write().error_toast = Some(crate::i18n::text(
+                        "Could not start the server connection.",
+                        &[],
+                    ));
+                }
+            }
+        }
+    });
     #[cfg(any(target_os = "android", target_os = "windows"))]
     crate::dm_notifications::use_notifications(state, identity.pubkey.clone());
     #[cfg(target_os = "android")]

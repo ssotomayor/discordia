@@ -543,6 +543,7 @@ pub(super) fn SocialPanel(
                                         let mut s = state.write();
                                         s.dm_mode = true;
                                         s.selected_channel = Some(cid);
+                                        s.request_composer_focus(cid);
                                         s.mark_dm_read(cid);
                                         drop(s);
                                         if let Some(on_open) = on_open { on_open.call(()); }

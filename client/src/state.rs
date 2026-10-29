@@ -532,6 +532,7 @@ pub struct AppState {
     pub error_toast: Option<String>,
     /// Set by a switch from the server rail; the next Ready opens this guild.
     pub open_guild_on_ready: Option<Id>,
+    pub composer_focus_request: Option<(Id, u64)>,
     /// Set when following a voice invite; joins this voice channel upon ready or guild join.
     pub voice_invite_on_ready: Option<PendingVoiceInvite>,
     pub gateway_failure: Option<String>,
@@ -701,6 +702,7 @@ impl AppState {
             invites: HashMap::new(),
             error_toast: None,
             open_guild_on_ready: None,
+            composer_focus_request: None,
             voice_invite_on_ready: None,
             gateway_failure: None,
             is_operator: false,
@@ -753,6 +755,13 @@ impl AppState {
         self.clear_server_session();
         self.open_guild_on_ready = guild;
         self.voice_invite_on_ready = invite;
+    }
+
+    pub fn request_composer_focus(&mut self, channel_id: Id) {
+        let revision = self
+            .composer_focus_request
+            .map_or(0, |(_, revision)| revision.wrapping_add(1));
+        self.composer_focus_request = Some((channel_id, revision));
     }
 
     pub fn follow_voice_invite(&mut self, invite: PendingVoiceInvite) -> Option<ClientMessage> {
