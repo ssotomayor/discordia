@@ -50,6 +50,9 @@ pub struct SyncedProfile {
     pub hide_guild_owner: bool,
     #[serde(default)]
     pub hide_operator: bool,
+    /// `None` from a build older than name sync: it claims no name.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 pub fn profile_event(
@@ -80,6 +83,10 @@ pub fn parse_profile(secret: &SecretKey, our_pubkey: &str, event: &Event) -> Opt
     profile.status = profile
         .status
         .filter(|s| crate::protocol::PRESENCES.contains(&s.as_str()));
+    profile.name = profile
+        .name
+        .filter(|n| !crate::protocol::truncate_username(n).trim().is_empty())
+        .map(|n| crate::protocol::canonical_username(&n));
     Some(profile)
 }
 
@@ -99,6 +106,7 @@ impl SyncedProfile {
             custom_status: self.custom_status,
             hide_guild_owner: self.hide_guild_owner,
             hide_operator: self.hide_operator,
+            name: self.name.or_else(|| current.name.clone()),
             updated_at: self.updated_at,
         }
     }
@@ -135,6 +143,7 @@ impl SyncedProfile {
             custom_status: local.custom_status,
             hide_guild_owner: local.hide_guild_owner,
             hide_operator: local.hide_operator,
+            name: local.name,
         }
     }
 }
@@ -256,6 +265,7 @@ mod tests {
             custom_status: None,
             hide_guild_owner: true,
             hide_operator: false,
+            name: Some("Ana".into()),
         }
     }
 
@@ -278,6 +288,31 @@ mod tests {
         let event = profile_event(&theirs, &pubkey(&theirs), &sample()).unwrap();
         let mine = key(3);
         assert_eq!(parse_profile(&mine, &pubkey(&mine), &event), None);
+    }
+
+    #[test]
+    fn a_profile_without_a_name_keeps_ours_and_a_blank_one_is_no_claim() {
+        let current = LocalProfile {
+            name: Some("Ours".into()),
+            ..Default::default()
+        };
+        let mut unnamed = sample();
+        unnamed.name = None;
+        assert_eq!(
+            unnamed.into_local(&current, None, None).name.as_deref(),
+            Some("Ours")
+        );
+        assert_eq!(
+            sample().into_local(&current, None, None).name.as_deref(),
+            Some("Ana")
+        );
+
+        let secret = key(3);
+        let me = pubkey(&secret);
+        let mut blank = sample();
+        blank.name = Some(" \u{0007} ".into());
+        let event = profile_event(&secret, &me, &blank).unwrap();
+        assert_eq!(parse_profile(&secret, &me, &event).unwrap().name, None);
     }
 
     #[test]

@@ -20,6 +20,10 @@ pub struct LocalProfile {
     pub hide_guild_owner: bool,
     #[serde(default)]
     pub hide_operator: bool,
+    /// The account name as last renamed on any device. The key file holds it
+    /// too, but has no edit time to tell an old name from a new one.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Milliseconds at the last save on any device; 0 for a file older than
     /// the stamp, which then loses to every stamped copy.
     #[serde(default)]
@@ -85,6 +89,20 @@ fn save_at(root: &std::path::Path, pubkey: &str, profile: &LocalProfile) -> Resu
     let content =
         serde_json::to_string_pretty(&stored).map_err(|e| format!("serialize profile: {e}"))?;
     crate::identity::write_private(&path, &content)
+}
+
+pub fn save_name(pubkey: &str, name: &str, now_ms: i64) -> Result<LocalProfile, String> {
+    let local = renamed(load(pubkey).unwrap_or_default(), name, now_ms);
+    save(pubkey, &local)?;
+    Ok(local)
+}
+
+/// Stamped past the last save, so the rename outranks every device's older
+/// copy even when this clock runs behind the one that saved it.
+fn renamed(mut local: LocalProfile, name: &str, now_ms: i64) -> LocalProfile {
+    local.name = Some(name.to_owned());
+    local.updated_at = now_ms.max(local.updated_at.saturating_add(1));
+    local
 }
 
 pub fn load(pubkey: &str) -> Option<LocalProfile> {
@@ -218,6 +236,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_rename_outranks_the_last_save_even_from_a_slow_clock() {
+        let local = LocalProfile {
+            bio: Some("kept".into()),
+            updated_at: 5_000,
+            ..Default::default()
+        };
+        let ahead = renamed(local.clone(), "New", 9_000);
+        assert_eq!(ahead.name.as_deref(), Some("New"));
+        assert_eq!(ahead.updated_at, 9_000);
+        assert_eq!(ahead.bio, local.bio);
+        assert_eq!(renamed(local, "New", 1_000).updated_at, 5_001);
+    }
 
     #[test]
     fn accounts_keep_separate_profiles_and_legacy_moves_only_once() {

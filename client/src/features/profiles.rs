@@ -688,6 +688,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             custom_status: custom_opt.clone(),
             hide_guild_owner: !show_crown(),
             hide_operator: !show_operator(),
+            name: crate::profile::load(&profile_owner.peek()).and_then(|p| p.name),
             updated_at: chrono::Utc::now().timestamp_millis(),
         };
         let kind = |v: &Option<String>| match v {

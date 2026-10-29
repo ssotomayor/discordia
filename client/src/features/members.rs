@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::VoiceState;
-use crate::protocol::{ClientMessage, Id, LevelTier, Leveling, Member, Permission};
+use crate::protocol::{ClientMessage, Id, LevelTier, Leveling, Member, Permission, XpChange};
 use crate::state::{use_app_state, use_gateway};
 use std::collections::HashMap;
 
@@ -93,6 +93,7 @@ struct MemberMenu {
     x: f64,
     y: f64,
     confirming: Option<ModAction>,
+    adjusting_xp: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -123,6 +124,11 @@ fn member_menu_permissions(
         state.can(gid, Permission::ManageRoles) && (!protected || state.is_owner(gid)),
         !protected && state.can(gid, Permission::DisconnectMembers),
     )
+}
+
+/// Owners only, by choice: `ManageXp` on a role still lets the server accept it.
+fn can_adjust_xp(state: &crate::state::AppState, member: &Member) -> bool {
+    !member.bot && state.is_owner(member.guild_id)
 }
 
 fn voice_here<'a>(
@@ -323,7 +329,7 @@ fn GuildMembersPanel() -> Element {
 
     let on_context = use_callback(move |(member, x, y): (Member, f64, f64)| {
         let (kick, ban, roles, disconnect) = member_menu_permissions(&state.read(), &member);
-        if !kick && !ban && !roles && !disconnect {
+        if !kick && !ban && !roles && !disconnect && !can_adjust_xp(&state.read(), &member) {
             return;
         }
         menu.set(Some(MemberMenu {
@@ -332,6 +338,7 @@ fn GuildMembersPanel() -> Element {
             x,
             y,
             confirming: None,
+            adjusting_xp: false,
         }));
     });
 
@@ -370,11 +377,11 @@ fn GuildMembersPanel() -> Element {
 
             if let Some(m) = menu() {
                 {
-                    let access = {
+                    let (access, can_xp) = {
                         let state = state.read();
                         state.members.iter()
                             .find(|member| member.guild_id == m.guild_id && member.user.pubkey == m.pubkey)
-                            .map(|member| member_menu_permissions(&state, member))
+                            .map(|member| (member_menu_permissions(&state, member), can_adjust_xp(&state, member)))
                             .unwrap_or_default()
                     };
                     rsx! {
@@ -384,7 +391,13 @@ fn GuildMembersPanel() -> Element {
                             can_ban: access.1,
                             can_roles: access.2,
                             can_disconnect: access.3,
+                            can_xp,
                             on_close: move |_| menu.set(None),
+                            on_adjust_xp: move |_| {
+                                if let Some(cur) = menu.write().as_mut() {
+                                    cur.adjusting_xp = true;
+                                }
+                            },
                             on_confirm: move |action: ModAction| {
                                 if let Some(cur) = menu.write().as_mut() {
                                     cur.confirming = Some(action);
@@ -405,7 +418,9 @@ fn MemberMenuPopover(
     can_ban: bool,
     can_roles: bool,
     can_disconnect: bool,
+    can_xp: bool,
     on_close: EventHandler<()>,
+    on_adjust_xp: EventHandler<()>,
     on_confirm: EventHandler<ModAction>,
 ) -> Element {
     let state = use_app_state();
@@ -444,6 +459,9 @@ fn MemberMenuPopover(
                 div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)] border-b border-[var(--border)] mb-1 truncate",
                     "{username}"
                 }
+                if menu.adjusting_xp {
+                    XpAdjust { guild_id: gid, pubkey: menu.pubkey.clone(), on_close }
+                } else {
                 match menu.confirming {
                     None => rsx! {
                         if can_roles && !guild_roles.is_empty() {
@@ -477,6 +495,13 @@ fn MemberMenuPopover(
                                         }
                                     }
                                 }
+                            }
+                        }
+                        if can_xp {
+                            button {
+                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                onclick: move |_| on_adjust_xp.call(()),
+                                {crate::i18n::text("Adjust XP…", &[])}
                             }
                         }
                         if can_disconnect && in_a_call_here {
@@ -541,6 +566,93 @@ fn MemberMenuPopover(
                         }
                     }
                 }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn XpAdjust(guild_id: Id, pubkey: String, on_close: EventHandler<()>) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut amount = use_signal(String::new);
+    let xp = state
+        .read()
+        .members
+        .iter()
+        .find(|m| m.guild_id == guild_id && m.user.pubkey == pubkey)
+        .map_or(0, |m| m.xp);
+    let level = crate::protocol::level_progress(xp).0;
+    let delta = amount().trim().parse::<i64>().ok();
+    let set_to = amount().trim().parse::<u64>().ok();
+    let send = {
+        let pubkey = pubkey.clone();
+        move |change: XpChange| {
+            gateway.send(ClientMessage::AdjustXp {
+                guild_id,
+                user_pubkey: pubkey.clone(),
+                change,
+            });
+            on_close.call(());
+        }
+    };
+    let on_add = send.clone();
+    let on_enter = send.clone();
+    let on_set = send;
+
+    rsx! {
+        div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
+            {crate::i18n::text("{0} XP", &[xp.to_string()])}
+            " · Lv{level}"
+        }
+        div { class: "px-1 pb-1",
+            input {
+                class: "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
+                r#type: "number",
+                step: "1",
+                autofocus: true,
+                placeholder: crate::i18n::text("Amount", &[]),
+                aria_label: crate::i18n::text("Amount", &[]),
+                value: "{amount}",
+                oninput: move |e| amount.set(e.value()),
+                onkeydown: move |e| {
+                    if e.key() == Key::Enter
+                        && let Some(delta) = delta
+                    {
+                        on_enter(XpChange::Add(delta));
+                    }
+                },
+            }
+            div { class: "px-1 pt-1 text-[10px] text-[var(--text-dim)]",
+                {crate::i18n::text("Add a negative number to take XP away.", &[])}
+            }
+        }
+        div { class: "flex gap-1 px-1 pb-0.5",
+            button {
+                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--accent)]/40 hover:bg-[var(--accent-soft)] transition-colors disabled:opacity-40",
+                disabled: delta.is_none(),
+                onclick: move |_| {
+                    if let Some(delta) = delta {
+                        on_add(XpChange::Add(delta));
+                    }
+                },
+                {crate::i18n::text("Add", &[])}
+            }
+            button {
+                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--accent)]/40 hover:bg-[var(--accent-soft)] transition-colors disabled:opacity-40",
+                disabled: set_to.is_none(),
+                onclick: move |_| {
+                    if let Some(xp) = set_to {
+                        on_set(XpChange::Set(xp));
+                    }
+                },
+                {crate::i18n::text("Set", &[])}
+            }
+            button {
+                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                onclick: move |_| on_close.call(()),
+                {crate::i18n::text("Cancel", &[])}
             }
         }
     }
@@ -834,6 +946,45 @@ mod tests {
             member_menu_permissions(&state, &member("regular", gid, true)),
             (true, false, true, false)
         );
+    }
+
+    #[test]
+    fn only_the_owner_is_offered_xp_adjustment_and_never_on_a_bot() {
+        let mut state = AppState::empty();
+        let gid = Id::new_v4();
+        let owner = member("owner", gid, true);
+        let other = member("other", gid, true);
+        let mut bot = member("bot", gid, true);
+        bot.bot = true;
+        state.guilds.push(
+            serde_json::from_value(serde_json::json!({
+                "id": gid, "name": "Community", "icon": null, "owner_pubkey": "owner"
+            }))
+            .unwrap(),
+        );
+        state.self_user = Some(owner.user.clone());
+        assert!(can_adjust_xp(&state, &owner));
+        assert!(can_adjust_xp(&state, &other));
+        assert!(!can_adjust_xp(&state, &bot));
+
+        let role = Id::new_v4();
+        let mut keeper = other.clone();
+        keeper.roles.push(role);
+        state.members.push(keeper.clone());
+        state.roles.insert(
+            gid,
+            vec![crate::protocol::Role {
+                id: role,
+                guild_id: gid,
+                name: "XP keeper".into(),
+                color: None,
+                permissions: vec![Permission::ManageXp],
+                position: 0,
+            }],
+        );
+        state.self_user = Some(keeper.user.clone());
+        assert!(state.can(gid, Permission::ManageXp));
+        assert!(!can_adjust_xp(&state, &owner));
     }
 
     #[test]
