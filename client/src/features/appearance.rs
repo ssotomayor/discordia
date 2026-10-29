@@ -111,7 +111,7 @@ pub fn AppearanceButton() -> Element {
                     class: "dxf-pop-in fixed z-[60] w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     // Drops from the button, which now lives in the title bar:
                     // anchored upward it opened off the top of the screen.
-                    style: "left: min(max({at_x}px - 280px, 8px), calc(100vw - 328px)); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;",
+                    style: "width: min(320px, calc(100vw - 16px)); left: min(max({at_x}px - 280px, 8px), max(8px, calc(100vw - 328px))); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Appearance", &[])} }
 
@@ -146,10 +146,11 @@ pub fn AppearanceButton() -> Element {
                     }
 
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Theme", &[])} }
-                    div { class: "grid grid-cols-5 gap-2 mb-4",
+                    div { class: "dxf-theme-grid", role: "group", aria_label: crate::i18n::text("Theme", &[]),
                         for theme in THEMES.iter() {
                             {
                                 let id = theme.id;
+                                let preview_vars = crate::app::theme_vars(id);
                                 let selected = current.theme == id;
                                 let ring = if selected {
                                     "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
@@ -159,14 +160,16 @@ pub fn AppearanceButton() -> Element {
                                 rsx! {
                                     button {
                                         key: "{id}",
-                                        class: "flex flex-col items-center gap-1 group",
+                                        class: "dxf-theme-tile",
                                         title: crate::i18n::label(theme.label),
+                                        aria_label: crate::i18n::label(theme.label),
+                                        aria_pressed: selected,
                                         onclick: move |_| update(&|s| s.theme = id.to_string()),
                                         span {
-                                            class: "w-full h-11 rounded-lg {ring}",
-                                            style: "background: linear-gradient(150deg, {theme.swatch}, transparent 78%), #12100e;",
+                                            class: "dxf-theme-swatch {ring}",
+                                            style: "{preview_vars}background-color:var(--bg);background-image:linear-gradient(150deg,{theme.swatch},transparent 78%);",
                                         }
-                                        span { class: "text-[9px] text-[var(--text-dim)] group-hover:text-[var(--text-muted)]",
+                                        span { class: "dxf-theme-name",
                                             {crate::i18n::label(theme.label)}
                                         }
                                     }
