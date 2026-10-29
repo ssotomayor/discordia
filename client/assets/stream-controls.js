@@ -13,9 +13,11 @@
     let pressed = false;
     let touchSurface = false;
     let touchAt = 0;
-    let visible = true;
+    let visible = null;
+    let disposed = false;
     const pinned = () => pressed || (keyboard && tile.contains(document.activeElement));
     const setVisible = value => {
+      if (disposed || visible === value) return;
       visible = value;
       tile.dataset.controlsVisible = String(value);
     };
@@ -23,6 +25,7 @@
     const hide = () => { clear(); if (!pinned()) setVisible(false); };
     const arm = () => {
       clear();
+      if (disposed) return;
       if (!pinned()) timer = setTimeout(hide, idleMs);
     };
     const reveal = () => { setVisible(true); arm(); };
@@ -76,6 +79,7 @@
       },
       cancel() { pressed = false; inside = false; hide(); },
       destroy() {
+        disposed = true;
         clear();
         bindings.forEach(([name, fn, capture]) => tile.removeEventListener(name, fn, capture));
         tile.removeAttribute('data-controls-visible');
