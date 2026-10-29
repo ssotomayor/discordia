@@ -754,7 +754,7 @@ fn adopt_profile(theirs: profile::SyncedProfile, our_pubkey: String, mut state: 
         }
         let mut app = state.write();
         app.profile_synced_at = local.updated_at;
-        app.account_pictures = Some((our_pubkey, local.into()));
+        app.note_account_profile(our_pubkey, local);
     });
 }
 

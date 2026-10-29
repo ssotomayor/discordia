@@ -14,7 +14,7 @@ fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) ->
     let channel = conversation_id(&message.peer);
     let at = message.created_at - state.clock_offset(&message.author);
     if !live
-        || state.presence_of(account) == "dnd"
+        || state.account_is_dnd(account)
         || message.author == account
         || message.author != message.peer
         || state.dm_standing(&message.peer) != DmStanding::Inbox
@@ -393,6 +393,17 @@ mod tests {
             },
         );
         assert!(notice(&state, &message(), "self", true).is_none());
+        state.note_account_profile(
+            "self".into(),
+            crate::profile::LocalProfile {
+                status: Some("dnd".into()),
+                ..Default::default()
+            },
+        );
+        state.clear_server_session();
+        assert!(notice(&state, &message(), "self", true).is_none());
+        state.account_dnd.as_mut().unwrap().0 = "another-account".into();
+        assert!(notice(&state, &message(), "self", true).is_some());
     }
 
     fn message() -> ChatMessage {

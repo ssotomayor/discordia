@@ -127,7 +127,7 @@ pub fn MessageSounds() -> Element {
     let policy = use_memo(move || {
         (
             settings.read().disabled_sound_categories.clone(),
-            state.read().presence_of(&identity.pubkey) == "dnd",
+            state.read().account_is_dnd(&identity.pubkey),
         )
     });
     use_effect(move || {

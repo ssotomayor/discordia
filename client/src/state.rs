@@ -319,6 +319,7 @@ pub struct AppState {
     /// server gets it too; `net` sends the account cache only on connect.
     pub profile_synced_at: i64,
     pub account_pictures: Option<(String, crate::profile::Pictures)>,
+    pub account_dnd: Option<(String, bool)>,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
@@ -552,6 +553,7 @@ impl AppState {
             history_loaded: HashSet::new(),
             profile_synced_at: 0,
             account_pictures: None,
+            account_dnd: None,
             message_search: None,
             file_upload_result: None,
             server_chat_tools: false,
@@ -1106,6 +1108,22 @@ impl AppState {
 
     pub fn profile_of(&self, pubkey: &str) -> Option<&Profile> {
         self.profiles.get(pubkey)
+    }
+
+    pub fn note_account_profile(&mut self, owner: String, profile: crate::profile::LocalProfile) {
+        let dnd = profile
+            .status
+            .as_deref()
+            .is_some_and(|status| status.trim() == "dnd");
+        self.account_dnd = Some((owner.clone(), dnd));
+        self.account_pictures = Some((owner, profile.into()));
+    }
+
+    pub fn account_is_dnd(&self, pubkey: &str) -> bool {
+        self.account_dnd
+            .as_ref()
+            .filter(|(owner, _)| owner == pubkey)
+            .map_or_else(|| self.presence_of(pubkey) == "dnd", |(_, dnd)| *dnd)
     }
 
     pub fn presence_of(&self, pubkey: &str) -> &str {

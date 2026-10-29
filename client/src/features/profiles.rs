@@ -706,7 +706,9 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             return;
         }
         let updated_at = local.updated_at;
-        state.write().account_pictures = Some((profile_owner.peek().clone(), local.clone().into()));
+        state
+            .write()
+            .note_account_profile(profile_owner.peek().clone(), local.clone());
         nostr.send(crate::nostr::service::NostrCmd::PublishProfile(local));
         gateway.send(ClientMessage::SetProfile {
             avatar: avatar(),
