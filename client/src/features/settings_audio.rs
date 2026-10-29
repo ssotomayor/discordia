@@ -35,7 +35,7 @@ pub(super) fn OutputDevice(disabled: bool) -> Element {
                                     if let Some(config) = mic { config.apply_state(&mut s); v.send(crate::features::voice::VoiceCmd::ApplyMicrophone { config }); }
                                     v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
                                 },
-                                option { value: "", {crate::i18n::text("System default", &[])} }
+                                option { value: "", selected: selected_output_device.is_none(), {crate::i18n::text("System default", &[])} }
                                 if let Some(name) = selected_output_device.as_ref().filter(|name| !available_output_devices.contains(name)) {
                                     option { value: "{name}", {crate::i18n::text("{0} (unavailable)", std::slice::from_ref(name))} }
                                 }
@@ -70,26 +70,9 @@ pub(super) fn AppSounds() -> Element {
                     output { "for": "app-sounds-volume", "{settings.read().sfx_volume}%" }
                 }
             }
-            if !cfg!(target_os = "android") { div { class: "dxf-audio-sound-row",
+            div { class: "dxf-audio-sound-row",
                 span { {crate::i18n::text("Soundboard volume", &[])} }
                 crate::features::soundboard::SoundboardVolume {}
-            } }
-            for category in crate::native_sounds::SoundCategory::ALL {
-                label { class: "dxf-audio-sound-row",
-                    span { "{category.label()}" }
-                    input { r#type: "checkbox",
-                        checked: !settings.read().disabled_sound_categories.contains(&category),
-                        onchange: move |event: FormEvent| {
-                            let mut next = settings.peek().clone();
-                            next.disabled_sound_categories.retain(|saved| *saved != category);
-                            if !event.checked() {
-                                next.disabled_sound_categories.push(category);
-                            }
-                            crate::settings::save(&next);
-                            settings.set(next);
-                        },
-                    }
-                }
             }
             p { class: "dxf-audio-sounds-note",
                 {crate::i18n::text("Do Not Disturb silences incoming alerts. Sounds for your own actions remain available.", &[])}

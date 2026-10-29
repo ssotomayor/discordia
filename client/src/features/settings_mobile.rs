@@ -9,7 +9,7 @@ pub(super) fn group(tab: SettingsTab) -> SettingsTab {
         }
         SettingsTab::Audio => SettingsTab::Audio,
         SettingsTab::Video => SettingsTab::Video,
-        SettingsTab::Diagnostics | SettingsTab::Updates => SettingsTab::Diagnostics,
+        SettingsTab::Diagnostics | SettingsTab::Updates => SettingsTab::Updates,
     }
 }
 
@@ -22,7 +22,7 @@ pub(super) fn Navigation(mut selected: Signal<SettingsTab>) -> Element {
                 (SettingsTab::General, "General", super::icons::GEAR),
                 (SettingsTab::Audio, "Audio", super::icons::SPEAKER),
                 (SettingsTab::Video, "Video", super::icons::CAMERA),
-                (SettingsTab::Diagnostics, "Support", super::icons::ACTIVITY),
+                (SettingsTab::Updates, "App", super::icons::DOWNLOAD),
             ] {
                 button { key: "{label}", r#type: "button",
                     aria_current: if current == tab { Some("page") } else { None },
@@ -38,8 +38,7 @@ pub(super) fn Navigation(mut selected: Signal<SettingsTab>) -> Element {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum AudioSection {
     Microphone,
-    Output,
-    Sounds,
+    Sound,
 }
 
 #[component]
@@ -48,8 +47,7 @@ pub(super) fn AudioTabs(mut selected: Signal<AudioSection>) -> Element {
         nav { class: "dxf-settings-audio-tabs", aria_label: crate::i18n::text("Voice and audio", &[]),
             for (section, label) in [
                 (AudioSection::Microphone, "Microphone"),
-                (AudioSection::Output, "Output"),
-                (AudioSection::Sounds, "App sounds"),
+                (AudioSection::Sound, "Sound"),
             ] {
                 button { key: "{label}", r#type: "button", aria_pressed: selected() == section,
                     onclick: move |_| selected.set(section),
@@ -61,51 +59,13 @@ pub(super) fn AudioTabs(mut selected: Signal<AudioSection>) -> Element {
 }
 
 #[component]
-pub(super) fn SupportTabs(mut selected: Signal<SettingsTab>) -> Element {
+pub(super) fn AppTabs(mut selected: Signal<SettingsTab>) -> Element {
     rsx! {
-        nav { class: "dxf-settings-audio-tabs", aria_label: crate::i18n::text("Support", &[]),
-            for (tab, label) in [(SettingsTab::Diagnostics, "Diagnostics"), (SettingsTab::Updates, "Updates")] {
+        nav { class: "dxf-settings-audio-tabs", aria_label: crate::i18n::text("App", &[]),
+            for (tab, label) in [(SettingsTab::Updates, "Updates"), (SettingsTab::Diagnostics, "Diagnostics")] {
                 button { key: "{label}", r#type: "button", aria_pressed: selected() == tab,
                     onclick: move |_| selected.set(tab),
                     {crate::i18n::label(label)}
-                }
-            }
-        }
-    }
-}
-
-#[component]
-pub(super) fn Appearance() -> Element {
-    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    rsx! {
-        section { class: "dxf-mobile-settings-section",
-            h3 { {crate::i18n::text("Appearance", &[])} }
-            label { class: "dxf-mobile-settings-field",
-                span { {crate::i18n::text("Theme", &[])} }
-                select { value: settings.read().theme.clone(), aria_label: crate::i18n::text("Theme", &[]),
-                    onchange: move |event: FormEvent| {
-                        let mut next = settings.peek().clone();
-                        next.theme = event.value();
-                        crate::settings::save(&next);
-                        settings.set(next);
-                    },
-                    for theme in crate::app::THEMES {
-                        option { value: theme.id, {crate::i18n::label(theme.label)} }
-                    }
-                }
-            }
-            label { class: "dxf-mobile-settings-field",
-                span { {crate::i18n::text("Text size", &[])} output { "{settings.read().text_size_percent}%" } }
-                input { r#type: "range", min: "80", max: "140", step: "10",
-                    aria_label: crate::i18n::text("Text size", &[]), value: "{settings.read().text_size_percent}",
-                    oninput: move |event: FormEvent| {
-                        if let Ok(value) = event.value().parse::<u16>() {
-                            let mut next = settings.peek().clone();
-                            next.text_size_percent = value.clamp(80, 140);
-                            settings.set(next);
-                        }
-                    },
-                    onchange: move |_| crate::settings::save(&settings.peek()),
                 }
             }
         }
@@ -128,9 +88,9 @@ mod tests {
     }
 
     #[test]
-    fn update_requests_still_select_support() {
-        assert!(group(SettingsTab::Updates) == SettingsTab::Diagnostics);
-        assert!(group(SettingsTab::Diagnostics) == SettingsTab::Diagnostics);
+    fn updates_are_the_default_app_page() {
+        assert!(group(SettingsTab::Updates) == SettingsTab::Updates);
+        assert!(group(SettingsTab::Diagnostics) == SettingsTab::Updates);
         assert!(group(SettingsTab::Audio) == SettingsTab::Audio);
         assert!(group(SettingsTab::Video) == SettingsTab::Video);
     }

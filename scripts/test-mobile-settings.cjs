@@ -23,13 +23,13 @@ const fixture = (language, large) => {
   <div class="${cls(dialog, 'dxf-settings-backdrop')}"><div class="${cls(dialog, 'dxf-settings dxf-modal-in')}">
   <div class="${cls(dialog, 'dxf-settings-heading')}"><span>${text('Settings')}</span><button aria-label="${text('Close')}">×</button></div>
   <div class="${cls(dialog, 'dxf-settings-body')}"><div class="${cls(dialog, 'dxf-settings-content')}">
-  <nav class="${cls(mobile, 'dxf-settings-audio-tabs')}">${['Microphone','Output','App sounds'].map(key => `<button type="button" aria-pressed="${key === 'Microphone'}">${text(key)}</button>`).join('')}</nav>
+  <nav class="${cls(mobile, 'dxf-settings-audio-tabs')}">${['Microphone','Sound'].map(key => `<button type="button" aria-pressed="${key === 'Microphone'}">${text(key)}</button>`).join('')}</nav>
   <label class="dxf-mobile-settings-field"><span>${text('Theme')}</span><select aria-label="${text('Theme')}"><option>Una opción de dispositivo con un nombre muy largo</option></select></label>
   <details class="dxf-mic-advanced" open><summary>${text('Advanced voice settings')}</summary>
   <label class="flex items-center gap-2"><span>${text('Listening with')}</span><select><option>${text('Headphones')}</option></select></label>
   <div class="dxf-settings-control"><label>${text('Sensitivity')}</label><output>40%</output><input type="range"></div></details>
   <div class="${cls(audio, 'dxf-audio-sounds')}">${Array.from({length:12},(_,i)=>`<label class="dxf-audio-sound-row"><span>${i%2 ? 'Espectadores que dejan de ver tu transmisión de pantalla' : text('App sounds')}</span><input aria-label="Sound ${i}" type="checkbox"></label>`).join('')}</div>
-  </div></div><nav class="${cls(mobile, 'dxf-mobile-settings-nav')}">${['General','Audio','Video','Support'].map(key=>button(key,key==='Audio')).join('')}</nav>
+  </div></div><nav class="${cls(mobile, 'dxf-mobile-settings-nav')}">${['General','Audio','Video','App'].map(key=>button(key,key==='Audio')).join('')}</nav>
   </div></div></body>`;
 };
 

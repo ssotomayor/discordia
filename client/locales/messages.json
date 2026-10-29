@@ -1,4 +1,9 @@
 {
+  "App": ["App", "App", "应用", "アプリ"],
+  "Sound": ["Sonido", "Som", "声音", "サウンド"],
+  "Front camera": ["Cámara frontal", "Câmera frontal", "前置摄像头", "前面カメラ"],
+  "Back camera": ["Cámara trasera", "Câmera traseira", "后置摄像头", "背面カメラ"],
+  "Refresh cameras": ["Actualizar cámaras", "Atualizar câmeras", "刷新摄像头", "カメラを更新"],
   "GitHub Dark": ["GitHub Dark", "GitHub Dark", "GitHub Dark", "GitHub Dark"],
   "One Dark Pro": ["One Dark Pro", "One Dark Pro", "One Dark Pro", "One Dark Pro"],
   "Dracula": ["Dracula", "Dracula", "Dracula", "Dracula"],

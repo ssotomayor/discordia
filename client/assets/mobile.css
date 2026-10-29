@@ -33,12 +33,13 @@
 .dxf-platform-mobile .dxf-settings-audio-tabs button[aria-pressed="true"] {
   background-color: var(--panel-solid); color: var(--accent);
 }
-.dxf-platform-mobile .dxf-mobile-settings-section { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 20px; }
-.dxf-platform-mobile .dxf-mobile-settings-field { display: block; margin-top: 16px; }
-.dxf-platform-mobile .dxf-mobile-settings-field > span { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.dxf-platform-mobile .dxf-mobile-settings-field output { color: var(--text-muted); }
-.dxf-platform-mobile .dxf-mobile-settings-field :is(input, select) { width: 100%; }
-.dxf-platform-mobile .dxf-mobile-settings-field select { border: 1px solid var(--border); padding: 8px 12px; background-color: var(--panel2); }
+.dxf-platform-mobile :is(.dxf-general-language, .dxf-general-notifications) {
+  margin-top: 16px; padding: 16px; border: 1px solid var(--border);
+  border-radius: 14px; background-color: var(--panel2);
+}
+.dxf-platform-mobile .dxf-general-language > label { flex-direction: column; align-items: stretch; gap: 10px; font-size: 14px; }
+.dxf-platform-mobile .dxf-general-language select { width: 100%; }
+.dxf-platform-mobile .dxf-general-notifications > section { margin: 0; padding: 0; border: 0; }
 .dxf-platform-mobile .dxf-settings-body { flex-direction: column; overflow: hidden; }
 .dxf-platform-mobile .dxf-settings-nav {
   width: 100%; flex-direction: row; overflow-x: auto; overflow-y: hidden;
@@ -59,11 +60,6 @@
 .dxf-platform-mobile .dxf-mic-advanced > label:has(select) { flex-direction: column; align-items: stretch; }
 .dxf-platform-mobile .dxf-mic-advanced select { width: 100%; }
 .dxf-platform-mobile .dxf-audio-sounds { border: 0; padding: 0; margin-top: 0; }
-.dxf-platform-mobile .dxf-audio-sounds label.dxf-audio-sound-row {
-  display: flex; justify-content: space-between; gap: 16px; padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.dxf-platform-mobile .dxf-audio-sounds label.dxf-audio-sound-row input[type="checkbox"] { width: 20px; height: 20px; }
 .dxf-platform-mobile .dxf-mic-device-grid,
 .dxf-platform-mobile .dxf-mic-main-controls,
 .dxf-platform-mobile .dxf-audio-sound-row,
