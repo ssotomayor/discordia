@@ -1734,7 +1734,7 @@ fn VoiceOccupant(
             "data-voice-movable": if can_move { "true" } else { "false" },
             onclick: move |_| state.write().profile_card = Some(pk_card.clone()),
             oncontextmenu: open_menu,
-            div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
+            div { class: "flex min-w-0 items-center gap-1.5 text-xs text-[var(--text-muted)]",
                 span { class: "shrink-0 flex",
                     crate::features::profiles::Avatar {
                         pubkey: pubkey.clone(),
@@ -1742,12 +1742,9 @@ fn VoiceOccupant(
                         size: "w-5 h-5 text-[9px] {ring}",
                     }
                 }
-                span { class: "truncate flex-1",
+                span { class: "truncate min-w-0 flex-1",
                     "{name}"
                     if is_self { {crate::i18n::text(" (you)", &[])} }
-                }
-                if same_channel {
-                    VoiceQualitySignal { health, stats: track_stats, ping_ms: state.read().voice_ping_ms, is_self }
                 }
                 crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
@@ -1837,6 +1834,9 @@ fn VoiceOccupant(
                         },
                         dangerous_inner_html: crate::features::icons::CAMERA,
                     }
+                }
+                if same_channel {
+                    VoiceQualitySignal { health, stats: track_stats, ping_ms: state.read().voice_ping_ms, is_self }
                 }
             }
         }
