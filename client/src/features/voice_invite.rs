@@ -6,6 +6,25 @@ use crate::nostr::service::{NostrCmd, NostrTx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission};
 use crate::state::{AppState, ConnectionStatus, SessionMode, use_app_state, use_gateway};
 
+pub(crate) const INVITE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
+
+pub(crate) fn message_expiry(message: &crate::protocol::Message) -> Option<i64> {
+    let invite = parse_voice_invite(&message.content)?;
+    let deadline = message
+        .created_at
+        .timestamp()
+        .saturating_add(INVITE_LIFETIME_SECS as i64);
+    Some(
+        invite
+            .expires_at
+            .map_or(deadline, |expires| expires.min(deadline)),
+    )
+}
+
+pub(crate) fn is_expired_message(message: &crate::protocol::Message, now: i64) -> bool {
+    message_expiry(message).is_some_and(|expires| now >= expires)
+}
+
 pub(super) fn can_invite_to(state: &AppState, channel: &Channel) -> bool {
     state.status == ConnectionStatus::Ready
         && channel.kind == ChannelKind::Voice
@@ -296,6 +315,7 @@ mod tests {
             channel_name: "Lounge".into(),
             server: Some("wss://inviting.example".into()),
             code: Some("invite-from-target".into()),
+            expires_at: None,
         }
     }
 
@@ -369,6 +389,7 @@ mod tests {
             guild_id: channel.guild_id,
             channel_id: channel.id,
             code: Some("target-code".into()),
+            expires_at: None,
         };
         state.prepare_server_switch(Some(guild.id), Some(pending));
         assert!(state.resume_voice_invite(None).is_none());
@@ -396,13 +417,63 @@ mod tests {
             guild_id: channel.guild_id,
             channel_id: channel.id,
             code: Some("unused".into()),
+            expires_at: None,
         };
-        state.voice_invite_on_ready = Some(pending.clone());
         assert!(
-            matches!(state.resume_voice_invite(None), Some(ClientMessage::JoinVoice { channel_id, .. }) if channel_id == channel.id)
+            matches!(state.follow_voice_invite(pending.clone()), Some(ClientMessage::JoinVoice { channel_id, .. }) if channel_id == channel.id)
         );
+        assert!(state.open_guild_on_ready.is_none());
+        state.guilds.clear();
+        assert!(matches!(
+            state.follow_voice_invite(pending.clone()),
+            Some(ClientMessage::JoinByInvite { .. })
+        ));
+        assert!(state.open_guild_on_ready.is_none());
         state.voice_invite_on_ready = Some(pending);
         state.clear_server_session();
+        assert!(state.voice_invite_on_ready.is_none());
+    }
+
+    #[test]
+    fn invitations_expire_after_seven_days_and_history_cannot_restore_them() {
+        let (mut state, channel) = fixture();
+        let before = chrono::Utc::now().timestamp();
+        let content = invitation(&state, &channel, "alice", None, None).unwrap();
+        let parsed = parse_voice_invite(&content).unwrap();
+        let deadline = parsed.expires_at.unwrap();
+        assert!(deadline >= before + INVITE_LIFETIME_SECS as i64);
+        assert!(deadline <= chrono::Utc::now().timestamp() + INVITE_LIFETIME_SECS as i64);
+        let mut message: crate::protocol::Message = serde_json::from_value(serde_json::json!({
+            "id": Id::new_v4(), "channel_id": channel.id,
+            "author": {"pubkey":"alice", "username":"Alice"},
+            "content": content, "created_at": chrono::Utc::now(),
+        }))
+        .unwrap();
+        assert!(!is_expired_message(&message, deadline - 1));
+        assert!(is_expired_message(&message, deadline));
+        message.content = format!("discordia://voice/{}/{}", channel.guild_id, channel.id);
+        message.created_at = chrono::Utc::now() - chrono::Duration::days(8);
+        assert!(is_expired_message(&message, before));
+        assert!(!state.insert_message(channel.id, message.clone()));
+        state.merge_history(channel.id, vec![message.clone()]);
+        assert!(state.messages.get(&channel.id).is_none_or(Vec::is_empty));
+        message.content = "An ordinary message stays in the chat".into();
+        assert!(state.insert_message(channel.id, message));
+    }
+
+    #[test]
+    fn an_expired_pending_invite_cannot_join_after_a_slow_switch() {
+        let (mut state, channel) = fixture();
+        assert!(
+            state
+                .follow_voice_invite(crate::state::PendingVoiceInvite {
+                    guild_id: channel.guild_id,
+                    channel_id: channel.id,
+                    code: Some("old".into()),
+                    expires_at: Some(chrono::Utc::now().timestamp() - 1),
+                })
+                .is_none()
+        );
         assert!(state.voice_invite_on_ready.is_none());
     }
 }
@@ -486,6 +557,10 @@ fn invitation(
         let mut pairs = url.query_pairs_mut();
         pairs.append_pair("g", &guild.name);
         pairs.append_pair("c", &channel.name);
+        pairs.append_pair(
+            "exp",
+            &(chrono::Utc::now().timestamp() + INVITE_LIFETIME_SECS as i64).to_string(),
+        );
         if let Some(srv) = address {
             pairs.append_pair("server", srv);
         }
@@ -530,6 +605,7 @@ pub struct VoiceInviteInfo {
     pub channel_name: String,
     pub server: Option<String>,
     pub code: Option<String>,
+    pub expires_at: Option<i64>,
 }
 
 pub fn parse_voice_invite(content: &str) -> Option<VoiceInviteInfo> {
@@ -546,12 +622,14 @@ pub fn parse_voice_invite(content: &str) -> Option<VoiceInviteInfo> {
     let mut channel_name = String::new();
     let mut server = None;
     let mut code = None;
+    let mut expires_at = None;
     for (k, v) in url.query_pairs() {
         match k.as_ref() {
             "g" => guild_name = v.into_owned(),
             "c" => channel_name = v.into_owned(),
             "server" => server = Some(v.into_owned()),
             "code" => code = Some(v.into_owned()),
+            "exp" => expires_at = Some(v.parse().ok()?),
             _ => {}
         }
     }
@@ -562,6 +640,7 @@ pub fn parse_voice_invite(content: &str) -> Option<VoiceInviteInfo> {
         channel_name,
         server,
         code,
+        expires_at,
     })
 }
 
@@ -654,6 +733,14 @@ pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
     };
 
     let on_join = move |_| {
+        if invite
+            .expires_at
+            .is_some_and(|expires| chrono::Utc::now().timestamp() >= expires)
+        {
+            state.write().error_toast =
+                Some(crate::i18n::text("This invitation has expired.", &[]));
+            return;
+        }
         if state.peek().dm_call.is_some() {
             state.write().error_toast = Some(crate::i18n::text(
                 "End your DM call before joining a voice channel.",
@@ -674,15 +761,14 @@ pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
             guild_id: invite.guild_id,
             channel_id: invite.channel_id,
             code: invite.code.clone(),
+            expires_at: invite.expires_at,
         };
         if route == InviteRoute::Current {
             if let Some(mut tab) = mobile_tab {
                 tab.set(super::workspace::MobileTab::Chat);
             }
             let mut s = state.write();
-            s.open_guild_on_ready = Some(invite.guild_id);
-            s.voice_invite_on_ready = Some(pending);
-            let join_msg = s.resume_voice_invite(None);
+            let join_msg = s.follow_voice_invite(pending);
             drop(s);
             if let Some(message) = join_msg {
                 gateway.send(message);
@@ -751,7 +837,7 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
             gateway.send(ClientMessage::CreateInvite {
                 guild_id,
                 rotate: false,
-                expires_in_secs: None,
+                expires_in_secs: Some(INVITE_LIFETIME_SECS),
                 max_uses: None,
             });
         }
@@ -788,6 +874,7 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
                     button { r#type: "button", aria_label: crate::i18n::text("Close", &[]), onclick: move |_| on_close.call(()), "✕" }
                 }
                 p { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Send a private invitation with the voice channel and connection details.", &[])} }
+                p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Invitations expire after 7 days and disappear from the chat.", &[])} }
                 if channel.access.is_some() {
                     p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Only members with access to this channel are shown.", &[])} }
                 }

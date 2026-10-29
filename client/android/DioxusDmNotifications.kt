@@ -28,6 +28,10 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         if (account != value) viewedPeer = null
         account = value.takeIf { validKey(it) }
         manager.createNotificationChannel(NotificationChannel(CHANNEL, channelName, NotificationManager.IMPORTANCE_HIGH))
+        val quiet = NotificationChannel(QUIET_CHANNEL, channelName, NotificationManager.IMPORTANCE_LOW)
+        quiet.setSound(null, null)
+        quiet.enableVibration(false)
+        manager.createNotificationChannel(quiet)
     }
 
     fun clearAccount(value: String) {
@@ -94,12 +98,13 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         launch.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val pending = PendingIntent.getActivity(activity, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val text = value.getString("message")
-        val publicVersion = Notification.Builder(activity, CHANNEL)
+        val channel = if (value.optBoolean("silent", false)) QUIET_CHANNEL else CHANNEL
+        val publicVersion = Notification.Builder(activity, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(activity.getString(R.string.app_name))
             .setContentText(text)
             .build()
-        val notification = Notification.Builder(activity, CHANNEL)
+        val notification = Notification.Builder(activity, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(value.getString("sender").take(100))
             .setContentText(text)
@@ -143,6 +148,7 @@ class DioxusDmNotifications(private val activity: MainActivity) {
     companion object {
         const val PERMISSION_REQUEST = 43
         private const val CHANNEL = "discordia-dm-v1"
+        private const val QUIET_CHANNEL = "discordia-dm-quiet-v1"
         private const val PREFIX = "discordia-dm:"
         private fun validKey(value: String) = value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
         private fun tag(account: String, peer: String) = "$PREFIX$account:$peer"

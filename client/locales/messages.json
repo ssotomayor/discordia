@@ -1955,5 +1955,15 @@
   "简体中文": ["简体中文", "简体中文", "简体中文", "简体中文"],
   "日本語": ["日本語", "日本語", "日本語", "日本語"],
   "Voice channel": ["Canal de voz", "Canal de voz", "语音频道", "ボイスチャンネル"],
-  "Community": ["Comunidad", "Comunidade", "社区", "コミュニティ"]
+  "Community": ["Comunidad", "Comunidade", "社区", "コミュニティ"],
+  "Message sounds": ["Sonidos de mensajes", "Sons de mensagens", "消息提示音", "メッセージ音"],
+  "Call sounds": ["Sonidos de llamadas", "Sons de chamadas", "通话提示音", "通話音"],
+  "Connection sounds": ["Sonidos de conexión", "Sons de conexão", "连接提示音", "接続音"],
+  "Voice participant sounds": ["Entrada y salida del canal de voz", "Entrada e saída do canal de voz", "语音频道成员进出提示音", "ボイスチャンネルの参加・退出音"],
+  "Microphone and deafen sounds": ["Sonidos de micrófono y ensordecimiento", "Sons de microfone e áudio desativado", "麦克风与静音提示音", "マイクとスピーカーミュート音"],
+  "Stream sounds": ["Sonidos de transmisiones", "Sons de transmissões", "直播提示音", "配信音"],
+  "Your stream's viewer sounds": ["Espectadores de tu transmisión", "Espectadores da sua transmissão", "直播观众提示音", "自分の配信の視聴者通知音"],
+  "Do Not Disturb silences incoming alerts. Sounds for your own actions remain available.": ["No molestar silencia las alertas entrantes. Los sonidos de tus propias acciones siguen disponibles.", "Não perturbe silencia os alertas recebidos. Os sons das suas próprias ações continuam disponíveis.", "请勿打扰会静音传入提醒，但仍保留自己操作的提示音。", "取り込み中は着信通知を消音します。自分の操作音は引き続き利用できます。"],
+  "This invitation has expired.": ["Esta invitación venció.", "Este convite expirou.", "此邀请已过期。", "この招待は期限切れです。"],
+  "Invitations expire after 7 days and disappear from the chat.": ["Las invitaciones vencen a los 7 días y desaparecen del chat.", "Os convites expiram após 7 dias e desaparecem do chat.", "邀请将在7天后过期并从聊天中消失。", "招待は7日後に期限切れとなり、チャットから消えます。"]
 }
