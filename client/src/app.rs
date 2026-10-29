@@ -1108,6 +1108,7 @@ pub(crate) fn AppHead() -> Element {
         document::Script { {LIVEKIT_JS} }
         document::Script { {include_str!("../assets/gif-playback.js")} }
         document::Script { {include_str!("../assets/activity-clock.js")} }
+        document::Script { {include_str!("../assets/stream-controls.js")} }
         document::Script {
             {format!(
                 "window.__dxfE2eeWorkerSrc = {};",

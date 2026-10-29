@@ -3129,14 +3129,6 @@ pub fn ScreenWatchWindow() -> Element {
             min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
             class: if fullscreen().is_some() { "dxf-streams dxf-streams-expanded" } else { "dxf-streams" },
             div { class: "dxf-stream-panel panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
-                div { class: "dxf-stream-heading h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
-                    span { class: "text-sm font-semibold text-[var(--text)]", {crate::i18n::text("Streams", &[])} }
-                    span { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("{0} live", &[(count).to_string()])} }
-                    if count > 1 && selected.is_some() {
-                        button { class: "ml-auto text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]",
-                            onclick: move |_| { focused.set(None); fullscreen.set(None); }, {crate::i18n::text("Mosaic", &[])} }
-                    }
-                }
                 div { class: "dxf-stream-grid flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
                     onmounted: move |event| {
                         let data = event.data();
@@ -3270,20 +3262,32 @@ fn ScreenWatchTile(
     let pk_popout = pk.clone();
     let pk_focus = pk.clone();
     let pk_focus_key = pk.clone();
+    let pk_focus_button = pk.clone();
 
     rsx! {
         div {
             class: "dxf-stream-tile flex flex-col min-w-0 min-h-0 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg overflow-hidden",
+            "data-stream-controls": "true",
             style: "{layout}",
             div {
                 class: "dxf-stream-toolbar min-h-9 px-3 flex flex-wrap items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", {crate::i18n::text("{0}'s screen", std::slice::from_ref(&(name)))} }
+                span { class: "dxf-stream-name min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", {crate::i18n::text("{0}'s screen", std::slice::from_ref(&(name)))} }
                 StreamViewers { names: state.read().screen_viewer_names(&pk) }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", {crate::i18n::text("Live", &[])} }
+                if can_focus {
+                    button { r#type: "button", class: "dxf-stream-button w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                        title: crate::i18n::text(if selected { "Return to mosaic" } else { "Focus stream" }, &[]),
+                        aria_label: crate::i18n::text(if selected { "Return to mosaic" } else { "Focus stream" }, &[]),
+                        aria_pressed: selected,
+                        onmousedown: move |e| e.stop_propagation(),
+                        onclick: move |_| focused.set(if selected { None } else { Some(pk_focus_button.clone()) }),
+                        dangerous_inner_html: crate::features::icons::LAYOUT,
+                    }
+                }
                 button {
                     r#type: "button",
-                    class: "dxf-stream-button w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                    class: "dxf-stream-button dxf-stream-popout w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
                     title: crate::i18n::text("Open in separate window", &[]),
                     aria_label: crate::i18n::text("Open in separate window", &[]),
                     onmousedown: move |e| e.stop_propagation(),

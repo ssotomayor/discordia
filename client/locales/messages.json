@@ -1988,5 +1988,8 @@
   "Invitation queued. Open the DM to check delivery.": ["Invitación en cola. Abrí el DM para comprobar el envío.", "Convite na fila. Abra a DM para verificar o envio.", "邀请已加入队列。打开私信以查看发送状态。", "招待を送信待ちに追加しました。DM で送信状況を確認できます。"],
   "Invite": ["Invitar", "Convidar", "邀请", "招待"],
   "1 person": ["1 persona", "1 pessoa", "1 人", "1 人"],
-  "{0} people": ["{0} personas", "{0} pessoas", "{0} 人", "{0} 人"]
+  "{0} people": ["{0} personas", "{0} pessoas", "{0} 人", "{0} 人"],
+  "Focus stream": ["Enfocar transmisión", "Focar transmissão", "聚焦直播", "配信にフォーカス"],
+  "Return to mosaic": ["Volver al mosaico", "Voltar ao mosaico", "返回网格视图", "モザイク表示に戻る"],
+  "Return all to app": ["Devolver todas a la app", "Retornar todas ao aplicativo", "全部返回应用", "すべてアプリに戻す"]
 }
