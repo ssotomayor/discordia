@@ -835,7 +835,9 @@ fn VoiceSounds() -> Element {
         last_phase.set(now);
         match now {
             VoicePhase::Connected => sfx("connect"),
-            VoicePhase::Idle | VoicePhase::Error if prev == VoicePhase::Connected => {
+            VoicePhase::Idle | VoicePhase::Error
+                if matches!(prev, VoicePhase::Connected | VoicePhase::Connecting) =>
+            {
                 sfx("disconnect")
             }
             _ => {}
@@ -843,17 +845,19 @@ fn VoiceSounds() -> Element {
     });
 
     let viewing = use_memo(move || state.read().screen_viewing.clone());
-    let mut last_viewing = use_signal(std::collections::HashSet::<String>::new);
+    let mut last_viewing = use_signal(|| state.peek().screen_viewing.clone());
     use_effect(move || {
         let now = viewing();
-        if now == *last_viewing.peek() {
+        let prev = last_viewing.peek().clone();
+        if now == prev {
             return;
         }
-        let was_watching = !last_viewing.peek().is_empty();
+        let started = now.iter().any(|pk| !prev.contains(pk));
+        let stopped = prev.iter().any(|pk| !now.contains(pk));
         last_viewing.set(now.clone());
-        if !now.is_empty() {
+        if started {
             sfx("watch-start");
-        } else if was_watching {
+        } else if stopped {
             sfx("watch-stop");
         }
     });
@@ -871,21 +875,6 @@ fn VoiceSounds() -> Element {
             (ConnectionStatus::Connecting, ConnectionStatus::Ready) => sfx("connect"),
             (_, ConnectionStatus::Disconnected) => sfx("server-disconnect"),
             _ => {}
-        }
-    });
-
-    let muted = use_memo(move || state.read().voice.muted);
-    let mut last_muted = use_signal(|| false);
-    use_effect(move || {
-        let now = muted();
-        if now == *last_muted.peek() {
-            return;
-        }
-        last_muted.set(now);
-        if now {
-            sfx("mute");
-        } else {
-            sfx("unmute");
         }
     });
 
@@ -907,7 +896,7 @@ fn VoiceSounds() -> Element {
     let voice_channel = use_memo(move || state.read().voice.channel_id);
     let voice_states = use_memo(move || state.read().voice_states.clone());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
-    let mut last_channel = use_signal(|| None::<Id>);
+    let mut last_peers_channel = use_signal(|| None::<Id>);
     let mut last_peers = use_signal(Vec::<String>::new);
     use_effect(move || {
         let ch = voice_channel();
@@ -921,8 +910,8 @@ fn VoiceSounds() -> Element {
                 .collect(),
             _ => Vec::new(),
         };
-        if ch != *last_channel.peek() {
-            last_channel.set(ch);
+        if ch != *last_peers_channel.peek() {
+            last_peers_channel.set(ch);
             last_peers.set(peers);
             return;
         }
@@ -939,6 +928,7 @@ fn VoiceSounds() -> Element {
     });
 
     let screen_shares = use_memo(move || state.read().screen_shares.clone());
+    let mut last_shares_channel = use_signal(|| None::<Id>);
     let mut last_sharers = use_signal(Vec::<String>::new);
     use_effect(move || {
         let ch = voice_channel();
@@ -951,7 +941,8 @@ fn VoiceSounds() -> Element {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        if ch != *last_channel.peek() {
+        if ch != *last_shares_channel.peek() {
+            last_shares_channel.set(ch);
             last_sharers.set(sharers);
             return;
         }
