@@ -46,6 +46,22 @@ const fixture = (popout = false, mobile = false, expanded = false) => `<style>${
     await page.locator('#outside').focus();
     await page.keyboard.press('Tab');
     await page.clock.fastForward(5000); assert.equal(await visible(), 'true', 'keyboard focus keeps controls available');
+    for (let i = 0; i < 6; i++) await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'volume');
+    await pointer('pointermove');
+    await page.clock.fastForward(5000);
+    assert.equal(await visible(), 'true', 'pointer movement must preserve keyboard focus on the volume control');
+    await page.locator('#tile').evaluate(node => {
+      const other = node.cloneNode(true);
+      other.id = 'other-tile';
+      other.querySelectorAll('[id]').forEach(child => child.removeAttribute('id'));
+      document.body.append(other);
+    });
+    await pointer('pointermove', {}, '#other-tile');
+    await page.clock.fastForward(5000);
+    assert.equal(await visible(), 'true', 'pointer movement over another stream must preserve keyboard focus');
+    assert.equal(await page.locator('#other-tile').getAttribute('data-controls-visible'), 'false', 'an unfocused stream still hides after inactivity');
+    await page.locator('#other-tile').evaluate(node => node.remove());
     await pointer('pointerleave'); assert.equal(await visible(), 'true');
     await page.locator('#outside').focus(); assert.equal(await visible(), 'false');
     await pointer('pointermove');
