@@ -77,10 +77,15 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         return state()
     }
 
-    fun permissionReturned() { permissionPending = false }
+    fun permissionReturned() {
+        permissionPending = false
+        activity.onDmNotificationSettingsChanged()
+    }
     fun onResume() {
         resumed = true
+        val returnedFromSettings = settingsPending
         settingsPending = false
+        if (returnedFromSettings) activity.onDmNotificationSettingsChanged()
         viewedPeer?.let { dismiss(it) }
     }
 

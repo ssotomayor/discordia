@@ -38,6 +38,7 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_onPlaybackAudioError",
     "Java_dev_dioxus_main_MainActivity_onDmNotificationOpened",
     "Java_dev_dioxus_main_MainActivity_onDmNotificationVisibility",
+    "Java_dev_dioxus_main_MainActivity_onDmNotificationSettingsChanged",
 }
 BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
 

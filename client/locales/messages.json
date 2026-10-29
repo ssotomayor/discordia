@@ -1980,5 +1980,6 @@
   "This invitation has expired.": ["Esta invitación venció.", "Este convite expirou.", "此邀请已过期。", "この招待は期限切れです。"],
   "Invitations expire after 7 days and disappear from the chat.": ["Las invitaciones vencen a los 7 días y desaparecen del chat.", "Os convites expiram após 7 dias e desaparecem do chat.", "邀请将在7天后过期并从聊天中消失。", "招待は7日後に期限切れとなり、チャットから消えます。"],
   "Could not start the server connection.": ["No se pudo iniciar la conexión al servidor.", "Não foi possível iniciar a conexão com o servidor.", "无法启动服务器连接。", "サーバーへの接続を開始できませんでした。"],
-  "Server connection details are missing from this invitation.": ["A esta invitación le faltan los datos de conexión al servidor.", "Este convite não inclui os dados de conexão com o servidor.", "此邀请缺少服务器连接信息。", "この招待にはサーバー接続情報がありません。"]
+  "Server connection details are missing from this invitation.": ["A esta invitación le faltan los datos de conexión al servidor.", "Este convite não inclui os dados de conexão com o servidor.", "此邀请缺少服务器连接信息。", "この招待にはサーバー接続情報がありません。"],
+  "Waiting for Android notification permission…": ["Esperando el permiso de notificaciones de Android…", "Aguardando a permissão de notificações do Android…", "正在等待 Android 通知权限…", "Android の通知許可を待っています…"]
 }

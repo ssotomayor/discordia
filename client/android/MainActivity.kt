@@ -43,6 +43,7 @@ class MainActivity : WryActivity() {
     private val dmNotifications by lazy { com.discordia.app.DioxusDmNotifications(this) }
     external fun onDmNotificationOpened(account: String, peer: String)
     external fun onDmNotificationVisibility(resumed: Boolean)
+    external fun onDmNotificationSettingsChanged()
     fun setDmNotificationAccount(account: String, channel: String) { dmNotifications.setAccount(account, channel) }
     fun clearDmNotificationAccount(account: String) { dmNotifications.clearAccount(account) }
     fun dmNotificationState(): String = dmNotifications.state()
