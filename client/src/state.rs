@@ -286,6 +286,7 @@ pub struct DmInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingDmEdit {
+    pub author: String,
     pub content: String,
     pub created_at: i64,
     pub emoji: Vec<(String, String)>,
@@ -366,6 +367,7 @@ pub struct AppState {
     pub nostr_event_ids: HashMap<Id, String>,
     pub dm_deleted_ids: HashSet<String>,
     pub pending_dm_edits: HashMap<String, PendingDmEdit>,
+    pub pending_dm_deletions: HashMap<String, String>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
     pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
@@ -588,6 +590,7 @@ impl AppState {
             nostr_event_ids: HashMap::new(),
             dm_deleted_ids: HashSet::new(),
             pending_dm_edits: HashMap::new(),
+            pending_dm_deletions: HashMap::new(),
             dm_delivery: HashMap::new(),
             dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
@@ -1472,7 +1475,10 @@ impl AppState {
         {
             search_msgs.retain(|m| m.id != message_id);
         }
-        self.nostr_event_ids.remove(&message_id);
+        if let Some(rumor_id) = self.nostr_event_ids.remove(&message_id) {
+            self.pending_dm_edits.remove(&rumor_id);
+            self.pending_dm_deletions.remove(&rumor_id);
+        }
         self.dm_delivery.remove(&message_id);
         self.dm_emoji.remove(&message_id);
         self.pending_edits.remove(&message_id);
