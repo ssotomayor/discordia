@@ -32,7 +32,6 @@
     const enter = event => { if (event.pointerType !== 'touch') { inside = true; reveal(); } };
     const move = event => {
       if (event.pointerType === 'touch') return;
-      keyboard = false;
       inside = true;
       reveal();
     };
