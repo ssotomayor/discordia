@@ -29,7 +29,7 @@ mod tests {
             serde_json::json!({
                 "buttons":1,"client_x":x,"client_y":y,"pointer_id":pointer,"width":1.0,"height":1.0,
                 "pressure":0.5,"tangential_pressure":0.0,"tilt_x":0,"tilt_y":0,"twist":0,
-                "pointer_type":kind,"is_primary":true
+                "pointer_type":kind,"is_primary":pointer == 7
             })
             .as_object()
             .unwrap()
@@ -84,8 +84,31 @@ mod tests {
                 "{kind} did not pan the image"
             );
             assert!(pointer(&mut dom, "pointermove", viewport, kind, 8, 180.0, 120.0).is_empty());
+            pointer(&mut dom, "pointerdown", viewport, kind, 9, 140.0, 120.0);
+            for (ending, x) in [
+                ("pointercancel", 150.0),
+                ("lostpointercapture", 160.0),
+                ("pointerup", 170.0),
+            ] {
+                pointer(&mut dom, ending, viewport, kind, 9, x, 120.0);
+                let continued = pointer(&mut dom, "pointermove", viewport, kind, 7, x, 120.0);
+                let expected = format!("translate({}px,0px)", x - 100.0);
+                assert!(continued.iter().any(|edit| matches!(edit,
+                    Mutation::SetAttribute { name: "style", value: AttributeValue::Text(style), .. }
+                        if style.contains(&expected)
+                )), "{kind}: {ending} from another pointer ended the active drag");
+            }
             pointer(&mut dom, "pointercancel", viewport, kind, 7, 140.0, 120.0);
             assert!(pointer(&mut dom, "pointermove", viewport, kind, 7, 180.0, 120.0).is_empty());
+            for ending in ["pointerup", "lostpointercapture"] {
+                pointer(&mut dom, "pointerdown", viewport, kind, 7, 170.0, 120.0);
+                pointer(&mut dom, "pointermove", viewport, kind, 7, 180.0, 120.0);
+                pointer(&mut dom, ending, viewport, kind, 7, 180.0, 120.0);
+                assert!(
+                    pointer(&mut dom, "pointermove", viewport, kind, 7, 190.0, 120.0).is_empty(),
+                    "{kind}: {ending} did not end its own drag"
+                );
+            }
             let apply = edits
                 .iter()
                 .filter_map(|edit| match edit {
@@ -305,8 +328,12 @@ pub fn ImageEditor(
                     onpointerup: move |e: PointerEvent| {
                         if pan().is_some_and(|p| p.pointer == e.pointer_id()) { pan.set(None); }
                     },
-                    onpointercancel: move |_| pan.set(None),
-                    onlostpointercapture: move |_| pan.set(None),
+                    onpointercancel: move |e: PointerEvent| {
+                        if pan().is_some_and(|p| p.pointer == e.pointer_id()) { pan.set(None); }
+                    },
+                    onlostpointercapture: move |e: PointerEvent| {
+                        if pan().is_some_and(|p| p.pointer == e.pointer_id()) { pan.set(None); }
+                    },
                     img {
                         src: "{preview}",
                         draggable: false,
