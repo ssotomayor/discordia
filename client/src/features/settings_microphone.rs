@@ -1,3 +1,4 @@
+use super::settings_mobile::AudioSection;
 use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::mic_profile::{Config, Profile};
 use crate::state::use_app_state;
@@ -5,6 +6,7 @@ use dioxus::prelude::*;
 
 #[component]
 pub(super) fn MicrophoneSettings() -> Element {
+    let section = use_signal(|| AudioSection::Microphone);
     let mut state = use_app_state();
     let voice = use_voice_tx();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -80,6 +82,8 @@ pub(super) fn MicrophoneSettings() -> Element {
     rsx! {
         h3 { {crate::i18n::text("Voice and audio", &[])} }
         p { class: "mt-1 mb-4 text-[13px] text-[var(--text-dim)]", {crate::i18n::text("Choose your devices, check your voice and make yourself heard.", &[])} }
+        if cfg!(target_os = "android") { super::settings_mobile::AudioTabs { selected: section } }
+        if !cfg!(target_os = "android") || section() == AudioSection::Microphone {
         fieldset { disabled, class: "min-w-0 mb-4",
             div { class: "dxf-mic-device-grid",
                 div {
@@ -108,11 +112,11 @@ pub(super) fn MicrophoneSettings() -> Element {
                         else { {crate::i18n::text("Start a test to see which microphone is in use.", &[])} }
                     }
                 }
-                div {
+                if !cfg!(target_os = "android") { div {
                     super::settings_audio::OutputDevice { disabled }
                     p { class: "dxf-mic-device-note", if active { {crate::i18n::text("In use: {0}", &[output_used])} } else { {crate::i18n::text("What you hear", &[])} } }
 
-                }
+                } }
             }
             if let Some(device) = fallback {
                 p { class: "dxf-mic-device-note", style: "color: var(--accent);", {crate::i18n::text("Selected microphone unavailable. Using {0}.", &[device])} }
@@ -213,7 +217,19 @@ pub(super) fn MicrophoneSettings() -> Element {
                 }
             }
         }
-        fieldset { disabled, class: "min-w-0", super::settings_audio::AppSounds {} }
+        }
+        if cfg!(target_os = "android") && section() == AudioSection::Output {
+            fieldset { disabled, class: "min-w-0",
+                super::settings_audio::OutputDevice { disabled }
+                div { class: "dxf-audio-sound-row",
+                    span { {crate::i18n::text("Soundboard volume", &[])} }
+                    crate::features::soundboard::SoundboardVolume {}
+                }
+            }
+        }
+        if !cfg!(target_os = "android") || section() == AudioSection::Sounds {
+            fieldset { disabled, class: "min-w-0", super::settings_audio::AppSounds {} }
+        }
     }
 }
 

@@ -43,6 +43,7 @@ mod settings_audio;
 pub mod settings_dialog;
 mod settings_mic_status;
 mod settings_microphone;
+mod settings_mobile;
 mod social_window;
 pub mod soundboard;
 pub mod sounds;

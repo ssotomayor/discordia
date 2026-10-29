@@ -7,6 +7,38 @@
 .dxf-platform-mobile .dxf-settings { width: 100%; height: 100%; }
 .dxf-platform-mobile .dxf-settings-heading { min-height: 48px; padding: 0 12px; }
 .dxf-platform-mobile .dxf-settings-heading button { width: 44px; height: 44px; }
+.dxf-platform-mobile .dxf-settings-heading > span { font-size: 20px; }
+.dxf-platform-mobile .dxf-mobile-settings-nav {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); flex-shrink: 0;
+  gap: 4px; padding: 8px; border-top: 1px solid var(--border); background-color: var(--panel2);
+}
+.dxf-platform-mobile .dxf-mobile-settings-nav button {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; min-width: 0; min-height: 58px; padding: 8px 2px; border-radius: 12px;
+  color: var(--text-muted); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere;
+}
+.dxf-platform-mobile .dxf-mobile-settings-nav button[aria-current="page"] {
+  background-color: color-mix(in srgb, var(--accent) 15%, var(--panel2)); color: var(--accent);
+}
+.dxf-platform-mobile .dxf-mobile-settings-nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dxf-platform-mobile .dxf-mobile-settings-icon, .dxf-platform-mobile .dxf-mobile-settings-icon svg { display: block; width: 20px; height: 20px; }
+.dxf-platform-mobile .dxf-settings-audio-tabs {
+  display: flex; gap: 4px; padding: 4px; margin-bottom: 20px;
+  border: 1px solid var(--border); border-radius: 12px; background-color: var(--panel2);
+}
+.dxf-platform-mobile .dxf-settings-audio-tabs button {
+  flex: 1 1 0; min-width: 0; padding: 8px 4px; border-radius: 8px;
+  font-size: 13px; line-height: 1.4; overflow-wrap: anywhere;
+}
+.dxf-platform-mobile .dxf-settings-audio-tabs button[aria-pressed="true"] {
+  background-color: var(--panel-solid); color: var(--accent);
+}
+.dxf-platform-mobile .dxf-mobile-settings-section { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 20px; }
+.dxf-platform-mobile .dxf-mobile-settings-field { display: block; margin-top: 16px; }
+.dxf-platform-mobile .dxf-mobile-settings-field > span { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.dxf-platform-mobile .dxf-mobile-settings-field output { color: var(--text-muted); }
+.dxf-platform-mobile .dxf-mobile-settings-field :is(input, select) { width: 100%; }
+.dxf-platform-mobile .dxf-mobile-settings-field select { border: 1px solid var(--border); padding: 8px 12px; background-color: var(--panel2); }
 .dxf-platform-mobile .dxf-settings-body { flex-direction: column; overflow: hidden; }
 .dxf-platform-mobile .dxf-settings-nav {
   width: 100%; flex-direction: row; overflow-x: auto; overflow-y: hidden;
@@ -22,6 +54,16 @@
 .dxf-platform-mobile .dxf-settings-content summary { display: flex; align-items: center; }
 .dxf-platform-mobile .dxf-settings-content label:has(input[type="checkbox"]) { min-height: 44px; }
 .dxf-platform-mobile .dxf-settings-content input[type="range"] { height: 44px; }
+.dxf-platform-mobile .dxf-settings-content select { min-height: 48px; font-size: 16px; }
+.dxf-platform-mobile .dxf-settings-content :is(fieldset, label, details, summary) { min-width: 0; }
+.dxf-platform-mobile .dxf-mic-advanced > label:has(select) { flex-direction: column; align-items: stretch; }
+.dxf-platform-mobile .dxf-mic-advanced select { width: 100%; }
+.dxf-platform-mobile .dxf-audio-sounds { border: 0; padding: 0; margin-top: 0; }
+.dxf-platform-mobile .dxf-audio-sounds label.dxf-audio-sound-row {
+  display: flex; justify-content: space-between; gap: 16px; padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dxf-platform-mobile .dxf-audio-sounds label.dxf-audio-sound-row input[type="checkbox"] { width: 20px; height: 20px; }
 .dxf-platform-mobile .dxf-mic-device-grid,
 .dxf-platform-mobile .dxf-mic-main-controls,
 .dxf-platform-mobile .dxf-audio-sound-row,

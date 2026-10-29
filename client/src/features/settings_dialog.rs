@@ -126,7 +126,13 @@ pub fn SettingsDialog() -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let mut show_stats = use_signal(|| false);
-    let mut settings_tab = use_signal(|| SettingsTab::Audio);
+    let mut settings_tab = use_signal(|| {
+        if cfg!(target_os = "android") {
+            SettingsTab::General
+        } else {
+            SettingsTab::Audio
+        }
+    });
     let updates = try_consume_context::<crate::update::Updates>();
     let mut update_request = use_signal(|| {
         updates
@@ -183,6 +189,7 @@ pub fn SettingsDialog() -> Element {
                 }
 
                     div { class: "dxf-settings-body flex-1 flex min-h-0",
+                        if !cfg!(target_os = "android") {
                         div { class: "dxf-settings-nav shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
                             for (group, t, label, icon) in SETTINGS_TABS.iter().copied().filter(|(_, tab, _, _)| {
                                 settings_tab_visible(*tab, cfg!(target_os = "android"), cfg!(target_os = "ios"))
@@ -222,10 +229,22 @@ pub fn SettingsDialog() -> Element {
                                 }
                             }
                         }
+                        }
                         div { class: "dxf-settings-content flex-1 min-w-0 overflow-y-auto",
+                        if cfg!(target_os = "android") && super::settings_mobile::group(settings_tab()) == SettingsTab::Diagnostics {
+                            super::settings_mobile::SupportTabs { selected: settings_tab }
+                        }
                         if settings_tab() == SettingsTab::General {
                             h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("Language", &[])} }
                             div { class: "mt-4", crate::i18n::LanguageSelector {} }
+                            if cfg!(target_os = "android") {
+                                super::settings_mobile::Appearance {}
+                                { notification_settings() }
+                                details { class: "dxf-mic-advanced",
+                                    summary { {crate::i18n::text("Level and activity", &[])} }
+                                    ActivitySettings {}
+                                }
+                            }
                         }
                         if settings_tab() == SettingsTab::Notifications { { notification_settings() } }
                         if settings_tab() == SettingsTab::Updates { crate::update::UpdatePanel {} }
@@ -339,6 +358,45 @@ pub fn SettingsDialog() -> Element {
                             }
                         }
                         if settings_tab() == SettingsTab::Activity {
+                            ActivitySettings {}
+                        }
+                        if settings_tab() == SettingsTab::Diagnostics {
+                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Diagnostics", &[])} }
+                        p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                            {crate::i18n::text("The only thing here that configures nothing: it measures.", &[])}
+                        }
+                        div { class: "mb-1",
+                            label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                input {
+                                    r#type: "checkbox",
+                                    class: "accent-[var(--accent)]",
+                                    checked: show_stats(),
+                                    aria_label: crate::i18n::text("Connection stats", &[]),
+                                    onchange: move |e| show_stats.set(e.checked()),
+                                }
+                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Connection stats", &[])} }
+                            }
+                            if show_stats() {
+                                crate::features::channels::ConnectionStats {}
+                            }
+                        }
+                        CallRecording {}
+                        }
+                        }
+                    }
+                    if cfg!(target_os = "android") {
+                        super::settings_mobile::Navigation { selected: settings_tab }
+                    }
+            }
+        }
+    }
+}
+
+#[component]
+fn ActivitySettings() -> Element {
+    let state = use_app_state();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    rsx! {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Level", &[])} }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
                             {crate::i18n::text("Each server counts what you earned on it. Only this app can add those up across servers, so publishing the total is the only way anyone else sees one.", &[])}
@@ -449,33 +507,6 @@ pub fn SettingsDialog() -> Element {
                             }
                         }
                         }
-                        }
-                        if settings_tab() == SettingsTab::Diagnostics {
-                        h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", {crate::i18n::text("Diagnostics", &[])} }
-                        p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            {crate::i18n::text("The only thing here that configures nothing: it measures.", &[])}
-                        }
-                        div { class: "mb-1",
-                            label { class: "flex items-center gap-2 cursor-pointer select-none",
-                                input {
-                                    r#type: "checkbox",
-                                    class: "accent-[var(--accent)]",
-                                    checked: show_stats(),
-                                    aria_label: crate::i18n::text("Connection stats", &[]),
-                                    onchange: move |e| show_stats.set(e.checked()),
-                                }
-                                span { class: "text-[11px] text-[var(--text-muted)] flex-1", {crate::i18n::text("Connection stats", &[])} }
-                            }
-                            if show_stats() {
-                                crate::features::channels::ConnectionStats {}
-                            }
-                        }
-                        CallRecording {}
-                        }
-                        }
-                    }
-            }
-        }
     }
 }
 

@@ -240,7 +240,12 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
     let mut level = use_signal(|| (0_u32, false, 0_u32, 0_u32));
     let mut status = use_signal(Status::default);
     let gateway = crate::state::use_gateway();
-    use_drop(move || state.write().mic_test_active = false);
+    use_drop(move || {
+        if let Ok(mut locked) = exclusive.try_write() {
+            *locked = false;
+        }
+        state.write().mic_test_active = false;
+    });
     let mut error = use_signal(|| None::<Failure>);
     let mut recording_peak = use_signal(|| 0_u32);
     let mut prepared = use_signal(|| None::<Arc<Prepared>>);
