@@ -78,6 +78,10 @@ pub struct ClientSettings {
     /// relays replay; the relay copy replaces it once it arrives.
     #[serde(default)]
     pub dm_blocked: Vec<String>,
+    /// Nostr rumor IDs deleted by either participant. Persisted so replayed
+    /// gift wraps do not resurrect messages that were deleted.
+    #[serde(default)]
+    pub dm_deleted_ids: Vec<String>,
 
     /// Chosen by right-click in a picker: what a DM, which has no guild and
     /// no gateway, may offer and send.
@@ -378,6 +382,7 @@ impl Default for ClientSettings {
             dm_accepted: Vec::new(),
             dm_ignored: Vec::new(),
             dm_blocked: Vec::new(),
+            dm_deleted_ids: Vec::new(),
             saved_emoji: Vec::new(),
             emoji_blob_server: default_emoji_blob_server(),
             blob_servers: Vec::new(),
@@ -488,6 +493,12 @@ impl ClientSettings {
         match self.dm_cleared_at.iter_mut().find(|(p, _)| p == peer) {
             Some(entry) => entry.1 = entry.1.max(at),
             None => self.dm_cleared_at.push((peer.to_string(), at)),
+        }
+    }
+
+    pub fn delete_dm_message(&mut self, rumor_id: &str) {
+        if !self.dm_deleted_ids.iter().any(|id| id == rumor_id) {
+            self.dm_deleted_ids.push(rumor_id.to_string());
         }
     }
 
@@ -613,6 +624,14 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_dm_messages_are_deduplicated() {
+        let mut s = ClientSettings::default();
+        s.delete_dm_message("rumor_123");
+        s.delete_dm_message("rumor_123");
+        assert_eq!(s.dm_deleted_ids, vec!["rumor_123"]);
+    }
 
     #[test]
     fn legacy_sound_filters_are_ignored_without_resetting_volume() {

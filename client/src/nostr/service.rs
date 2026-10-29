@@ -37,6 +37,18 @@ pub enum NostrCmd {
     Retry {
         message_id: Id,
     },
+    /// Edit an existing direct message and publish the update.
+    Edit {
+        channel_id: Id,
+        message_id: Id,
+        text: String,
+        emoji: Vec<(String, String)>,
+    },
+    /// Delete a direct message and publish the deletion.
+    Delete {
+        channel_id: Id,
+        message_id: Id,
+    },
     /// Send `text` to `peer`, optionally answering a message. `emoji` are
     /// the NIP-30 tags for the custom emoji in `text`.
     Send {
@@ -145,6 +157,7 @@ pub fn spawn_nostr(
 
     crate::service_task::spawn(async move {
         let mut state = state;
+        let mut settings = settings;
         let our_pubkey = identity.pubkey.clone();
         let secret = identity.secret_key();
         let (call_outgoing, mut call_signals) = unbounded_channel();
@@ -227,18 +240,17 @@ pub fn spawn_nostr(
         let mut system_deliveries = std::collections::HashMap::<Id, u8>::new();
         for (peer, theirs, ours) in super::delivery::load(&our_pubkey).await {
             if let Ok(rumor) = nip59::unwrap(&secret, &ours)
-                && let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor)
-                && msg.author == our_pubkey
-                && msg.peer == peer
                 && theirs
                     .tags
                     .iter()
                     .any(|tag| tag.first().is_some_and(|t| t == "p") && tag.get(1) == Some(&peer))
             {
-                let Ok(history) = super::call_history::open(&our_pubkey, &rumor) else {
-                    continue;
-                };
-                let system = history.is_some();
+                let is_delete = rumor.kind == nip17::KIND_DELETION;
+                let is_edit = nip17::edit_target(&rumor).is_some();
+                let history = super::call_history::open(&our_pubkey, &rumor)
+                    .ok()
+                    .flatten();
+                let system = history.is_some() || is_delete || is_edit;
                 if let Some(record) = history {
                     insert_call_record(
                         record,
@@ -248,10 +260,15 @@ pub fn spawn_nostr(
                         Source::Ours,
                         rumor.created_at,
                     );
-                } else {
+                } else if !is_delete
+                    && !is_edit
+                    && let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor)
+                    && msg.author == our_pubkey
+                    && msg.peer == peer
+                {
                     insert_message(&msg, &our_pubkey, &mut state, Source::Ours, false);
                 }
-                let id = message_id(&msg.id);
+                let id = message_id(&rumor.id);
                 if system {
                     system_deliveries.insert(id, 0);
                 }
@@ -304,6 +321,78 @@ pub fn spawn_nostr(
                             .write()
                             .dm_delivery
                             .insert(message_id(&held.id), super::delivery::Delivery::Pending);
+                    }
+                    Some(NostrCmd::Edit { channel_id, message_id: mid, text, emoji }) => {
+                        let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
+                        let original_rumor_id = state.peek().nostr_event_ids.get(&mid).cloned();
+                        if let (Some(peer), Some(orig_id)) = (peer, original_rumor_id) {
+                            let ts = now();
+                            let rumor = nip17::chat_edit_rumor(&our_pubkey, &peer, &orig_id, &text, &emoji, ts);
+                            match nip17::wrap_both(&secret, &peer, &rumor, ts) {
+                                Ok((theirs, ours)) => {
+                                    let edited_at = chrono::DateTime::from_timestamp(ts, 0);
+                                    state.write().apply_message_edit(channel_id, mid, text, edited_at);
+                                    if !emoji.is_empty() {
+                                        state.write().dm_emoji.insert(mid, emoji);
+                                    }
+                                    let id = message_id(&rumor.id);
+                                    outbox.insert(
+                                        id,
+                                        super::delivery::Pending {
+                                            peer: peer.clone(),
+                                            theirs,
+                                            ours,
+                                            due: routes.ready_at(&peer, std::time::Instant::now()),
+                                            started: false,
+                                        },
+                                    );
+                                    if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
+                                        state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
+                                    }
+                                }
+                                Err(e) => {
+                                    state.write().error_toast = Some(format!("Not sent — {e}"));
+                                }
+                            }
+                        }
+                    }
+                    Some(NostrCmd::Delete { channel_id, message_id: mid }) => {
+                        let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
+                        let original_rumor_id = state.peek().nostr_event_ids.get(&mid).cloned();
+                        if let (Some(peer), Some(orig_id)) = (peer, original_rumor_id) {
+                            let ts = now();
+                            let rumor = nip17::chat_deletion_rumor(&our_pubkey, &peer, &orig_id, ts);
+                            match nip17::wrap_both(&secret, &peer, &rumor, ts) {
+                                Ok((theirs, ours)) => {
+                                    outbox.remove(&mid);
+                                    state.write().delete_message_locally(channel_id, mid);
+                                    state.write().dm_deleted_ids.insert(orig_id.clone());
+                                    state.write().pending_dm_edits.remove(&orig_id);
+                                    let mut next = settings.peek().clone();
+                                    next.delete_dm_message(&orig_id);
+                                    settings.set(next.clone());
+                                    crate::settings::save(&next);
+
+                                    let id = message_id(&rumor.id);
+                                    outbox.insert(
+                                        id,
+                                        super::delivery::Pending {
+                                            peer: peer.clone(),
+                                            theirs,
+                                            ours,
+                                            due: routes.ready_at(&peer, std::time::Instant::now()),
+                                            started: false,
+                                        },
+                                    );
+                                    if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
+                                        state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
+                                    }
+                                }
+                                Err(e) => {
+                                    state.write().error_toast = Some(format!("Not sent — {e}"));
+                                }
+                            }
+                        }
                     }
                     Some(NostrCmd::Send { peer, text, reply_to, emoji, replaces }) => {
                         if let Some(key) = replaces {
@@ -642,6 +731,88 @@ pub fn spawn_nostr(
                                 }
                                 Err(error) => { tracing::warn!(%error, "Rejected call history record"); continue; }
                                 Ok(None) => {},
+                            }
+                            if rumor.kind == nip17::KIND_DELETION {
+                                if let Some(target_id) = nip17::deletion_target(&rumor) {
+                                    let peer = if rumor.pubkey == our_pubkey {
+                                        rumor
+                                            .tags
+                                            .iter()
+                                            .find(|t| t.first().is_some_and(|k| k == "p"))
+                                            .and_then(|t| t.get(1))
+                                            .map(|s| s.as_str())
+                                            .unwrap_or("")
+                                    } else {
+                                        rumor.pubkey.as_str()
+                                    };
+                                    let target_mid = message_id(target_id);
+                                    let cid = conversation_id(peer);
+                                    let mut s = state.write();
+                                    let is_author = s
+                                        .messages
+                                        .get(&cid)
+                                        .and_then(|msgs| msgs.iter().find(|m| m.id == target_mid))
+                                        .is_none_or(|m| m.author.pubkey == rumor.pubkey);
+                                    if is_author {
+                                        s.dm_deleted_ids.insert(target_id.to_string());
+                                        s.pending_dm_edits.remove(target_id);
+                                        s.delete_message_locally(cid, target_mid);
+                                        let mut next = settings.peek().clone();
+                                        next.delete_dm_message(target_id);
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                    }
+                                }
+                                continue;
+                            }
+                            if let Some(target_id) = nip17::edit_target(&rumor) {
+                                let peer = if rumor.pubkey == our_pubkey {
+                                    rumor
+                                        .tags
+                                        .iter()
+                                        .find(|t| t.first().is_some_and(|k| k == "p"))
+                                        .and_then(|t| t.get(1))
+                                        .map(|s| s.as_str())
+                                        .unwrap_or("")
+                                } else {
+                                    rumor.pubkey.as_str()
+                                };
+                                let target_mid = message_id(target_id);
+                                let cid = conversation_id(peer);
+                                let mut s = state.write();
+                                if s.dm_deleted_ids.contains(target_id) {
+                                    continue;
+                                }
+                                let emojis = nip17::emoji_tags(&rumor);
+                                let edited_at = chrono::DateTime::from_timestamp(rumor.created_at, 0);
+                                let existing = s
+                                    .messages
+                                    .get(&cid)
+                                    .and_then(|msgs| msgs.iter().find(|m| m.id == target_mid));
+                                if let Some(m) = existing {
+                                    if m.author.pubkey == rumor.pubkey
+                                        && m.edited_at.is_none_or(|prev| prev.timestamp() < rumor.created_at)
+                                    {
+                                        s.apply_message_edit(cid, target_mid, rumor.content.clone(), edited_at);
+                                        if !emojis.is_empty() {
+                                            s.dm_emoji.insert(target_mid, emojis);
+                                        }
+                                    }
+                                } else if s
+                                    .pending_dm_edits
+                                    .get(target_id)
+                                    .is_none_or(|prev| prev.created_at < rumor.created_at)
+                                {
+                                    s.pending_dm_edits.insert(
+                                        target_id.to_string(),
+                                        crate::state::PendingDmEdit {
+                                            content: rumor.content.clone(),
+                                            created_at: rumor.created_at,
+                                            emoji: emojis,
+                                        },
+                                    );
+                                }
+                                continue;
                             }
                             let live = every_relay_replayed(&state, &replayed);
                             if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
@@ -1107,7 +1278,7 @@ fn insert_message(
         .map(|m| m.created_at.timestamp());
     let created_at = filed_at(created_at, newest_held, live || source == Source::Ours);
 
-    if hidden_by_delete(&s, &msg.peer, created_at, source) {
+    if hidden_by_delete(&s, &msg.peer, created_at, source) || s.dm_deleted_ids.contains(&msg.id) {
         return;
     }
 
@@ -1153,6 +1324,14 @@ fn insert_message(
     );
     if !fresh {
         return;
+    }
+
+    if let Some(pending) = s.pending_dm_edits.remove(&msg.id) {
+        let edited_at = chrono::DateTime::from_timestamp(pending.created_at, 0);
+        s.apply_message_edit(cid, mid, pending.content, edited_at);
+        if !pending.emoji.is_empty() {
+            s.dm_emoji.insert(mid, pending.emoji);
+        }
     }
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -1562,5 +1741,90 @@ mod tests {
             .unwrap();
         pending.retain(|id, _| *id == missed_id);
         assert!(pending.contains_key(&missed_id));
+    }
+
+    #[test]
+    fn deleted_dm_messages_are_dropped_and_cannot_be_replayed() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            state.write().dm_deleted_ids.insert("del-1".to_string());
+            insert_message(
+                &chat("del-1", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            assert!(!s.messages.contains_key(&conversation_id(&peer)));
+        });
+    }
+
+    #[test]
+    fn pending_edits_are_applied_when_original_message_arrives() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            state.write().pending_dm_edits.insert(
+                "orig-1".to_string(),
+                crate::state::PendingDmEdit {
+                    content: "updated text".to_string(),
+                    created_at: 250,
+                    emoji: vec![],
+                },
+            );
+            insert_message(
+                &chat("orig-1", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            let msg = &s.messages[&conversation_id(&peer)][0];
+            assert_eq!(msg.content, "updated text");
+            assert!(msg.edited_at.is_some());
+            assert_eq!(msg.edited_at.unwrap().timestamp(), 250);
+            assert!(s.pending_dm_edits.is_empty());
+        });
+    }
+
+    #[test]
+    fn delete_message_locally_cleans_up_state() {
+        let mut s = AppState::empty();
+        let cid = conversation_id("peer-1");
+        let mid = message_id("rumor-1");
+        s.messages.insert(
+            cid,
+            vec![Message {
+                id: mid,
+                channel_id: cid,
+                author: User {
+                    pubkey: "peer-1".into(),
+                    username: "peer".into(),
+                },
+                content: "hi".into(),
+                created_at: chrono::Utc::now(),
+                edited_at: None,
+                reactions: vec![],
+                reply_to: None,
+                image: None,
+                image_metadata: None,
+                attachment: None,
+                pinned: false,
+                author_bot: false,
+            }],
+        );
+        s.nostr_event_ids.insert(mid, "rumor-1".into());
+        s.dm_delivery
+            .insert(mid, super::super::delivery::Delivery::Accepted);
+        s.dm_emoji.insert(mid, vec![("smile".into(), "url".into())]);
+
+        s.delete_message_locally(cid, mid);
+        assert!(s.messages[&cid].is_empty());
+        assert!(!s.nostr_event_ids.contains_key(&mid));
+        assert!(!s.dm_delivery.contains_key(&mid));
+        assert!(!s.dm_emoji.contains_key(&mid));
     }
 }

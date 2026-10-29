@@ -1975,16 +1975,7 @@ fn apply(
         ServerMessage::MessageDelete {
             channel_id,
             message_id,
-        } => {
-            if let Some(msgs) = s.messages.get_mut(&channel_id) {
-                msgs.retain(|m| m.id != message_id);
-            }
-            if let Some((cid, _, messages)) = &mut s.message_search
-                && *cid == channel_id
-            {
-                messages.retain(|m| m.id != message_id);
-            }
-        }
+        } => s.delete_message_locally(channel_id, message_id),
         ServerMessage::ScreenShareState {
             channel_id,
             sharers,
