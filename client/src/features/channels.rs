@@ -2162,10 +2162,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             title: "{self_npub}",
                             "{self_npub_short}"
                         }
-                        div { class: "mt-1 h-0.5 rounded-full overflow-hidden", style: "background: var(--bg2);",
+                        div { class: "mt-1 h-0.5 rounded-full overflow-hidden", style: "background-color: var(--bg2);",
                             div {
                                 class: "h-full rounded-full",
-                                style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));",
+                                style: "width: {xp_pct}%; background-image: linear-gradient(90deg, #8fb0ff, var(--accent));",
                             }
                         }
                     }

@@ -445,72 +445,14 @@ pub fn WorkspaceView(
     });
     let mut edit_mode = use_signal(|| false);
     let mut workspace_width = use_signal(|| None::<f64>);
-    let mut normal_arrangement = use_signal(|| None::<super::stream_layout::Arrangement>);
-    use_effect(move || {
-        let active = streams_visible();
-        let mut store = layout;
-        if active && normal_arrangement.peek().is_none() {
-            let mut base = super::stream_layout::Arrangement {
-                cells: store.snapshot(),
-                free: store.free_snapshot(),
-            };
-            base.cells.retain(|(id, _)| id != "streams");
-            base.free.retain(|(id, _)| id != "streams");
-            let saved = settings.peek();
-            let next = if saved
-                .stream_layout_cells
-                .iter()
-                .any(|(id, _)| id == "streams")
-            {
-                let saved = super::stream_layout::Arrangement {
-                    cells: saved
-                        .stream_layout_cells
-                        .iter()
-                        .map(|(id, [x, y, w, h])| (id.clone(), GridPosition::new(*x, *y, *w, *h)))
-                        .collect(),
-                    free: saved
-                        .stream_layout_free
-                        .iter()
-                        .map(|(id, [x, y, w, h])| (id.clone(), FloatRect::new(*x, *y, *w, *h)))
-                        .collect(),
-                };
-                super::stream_layout::restore_streams(
-                    super::stream_layout::above_chat(base.clone(), 12, GRID_ROWS),
-                    saved,
-                )
-            } else {
-                super::stream_layout::above_chat(base.clone(), 12, GRID_ROWS)
-            };
-            drop(saved);
-            normal_arrangement.set(Some(base));
-            store.restore(next.cells, next.free);
-        } else if !active {
-            let previous = normal_arrangement.peek().clone();
-            if let Some(previous) = previous {
-                normal_arrangement.set(None);
-                store.restore(previous.cells, previous.free);
-            }
-        }
-    });
-
-    use_effect(move || {
-        if edit_mode() {
-            return;
-        }
-        let Some(width) = workspace_width() else {
-            return;
-        };
-        let base = super::stream_layout::Arrangement {
-            cells: layout.snapshot(),
-            free: layout.free_snapshot(),
-        };
-        if let Some(rects) = super::workspace_layout::compact_rail(&base, width, GRID_GAP) {
-            let mut store = layout;
-            for (id, rect) in rects {
-                store.set_free(id, rect);
-            }
-        }
-    });
+    super::workspace_layout::use_arrangement(
+        layout,
+        settings,
+        streams_visible,
+        workspace_width,
+        edit_mode,
+        GRID_GAP,
+    );
 
     // Media rooms survive an unmount; the gateway must finish its close
     // handshake before quitting can destroy the transport.

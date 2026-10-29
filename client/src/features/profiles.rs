@@ -524,8 +524,8 @@ pub fn ProfileCard(
                             },
                             "{progress.label}"
                         }
-                        div { class: "flex-1 h-2 rounded-full overflow-hidden", style: "background: var(--bg2);",
-                            div { class: "h-full rounded-full", style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));" }
+                        div { class: "flex-1 h-2 rounded-full overflow-hidden", style: "background-color: var(--bg2);",
+                            div { class: "h-full rounded-full", style: "width: {xp_pct}%; background-image: linear-gradient(90deg, #8fb0ff, var(--accent));" }
                         }
                         span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{xp_count}" }
                     }

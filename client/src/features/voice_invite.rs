@@ -962,6 +962,7 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
         } };
     };
     let peers = recipients(&s, &channel, &query());
+    let peer_count = peers.len();
     let addresses =
         super::invite::server_addresses(&mode, s.host_info.as_ref(), s.resolved_share.as_deref());
     let address = addresses
@@ -972,29 +973,47 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
     let code = s.invites.get(&channel.guild_id).cloned();
     drop(s);
     rsx! {
-        div { class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+        div { class: "dxf-voice-invite-backdrop dxf-backdrop-in",
             onclick: move |_| on_close.call(()),
-            section { class: "dxf-modal-in w-[22rem] flex flex-col p-4 gap-3 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl",
-                style: "max-height:80vh; max-width:calc(100vw - 2rem);",
+            section { class: "dxf-voice-invite dxf-modal-in",
                 role: "dialog", aria_modal: "true", aria_label: crate::i18n::text("Invite to voice by DM", &[]),
                 onclick: move |e| e.stop_propagation(),
-                header { class: "flex items-center gap-2",
-                    h3 { class: "flex-1 min-w-0 truncate text-sm font-medium", {crate::i18n::text("Invite to {0}", std::slice::from_ref(&channel.name))} }
-                    button { r#type: "button", aria_label: crate::i18n::text("Close", &[]), onclick: move |_| on_close.call(()), "✕" }
+                header { class: "dxf-voice-invite-header",
+                    div { class: "dxf-voice-invite-heading",
+                        h3 { class: "dxf-display", {crate::i18n::text("Better together", &[])} }
+                        p { class: "dxf-voice-invite-description", {crate::i18n::text("Invite someone to your voice channel.", &[])} }
+                    }
+                    button { r#type: "button", class: "dxf-voice-invite-close", aria_label: crate::i18n::text("Close", &[]), onclick: move |_| on_close.call(()),
+                        span { aria_hidden: "true", dangerous_inner_html: super::icons::CLOSE }
+                    }
                 }
-                p { class: "text-xs text-[var(--text-muted)]", {crate::i18n::text("Send a private invitation with the voice channel and connection details.", &[])} }
-                p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Invitations expire after 24 hours and disappear from the chat.", &[])} }
+                div { class: "dxf-voice-invite-channel",
+                    span { class: "dxf-voice-invite-channel-icon", aria_hidden: "true", dangerous_inner_html: super::icons::SPEAKER }
+                    div { class: "dxf-voice-invite-channel-info",
+                        span { class: "dxf-voice-invite-channel-name", title: "{channel.name}", "{channel.name}" }
+                        div { class: "dxf-voice-invite-channel-label", {crate::i18n::text("Voice channel", &[])} }
+                    }
+                }
                 if channel.access.is_some() {
-                    p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Only members with access to this channel are shown.", &[])} }
+                    p { class: "dxf-voice-invite-notice", {crate::i18n::text("Only members with access to this channel are shown.", &[])} }
                 }
-                input { r#type: "search", value: "{query}",
-                    class: "w-full rounded border border-[var(--border)] bg-[var(--panel2)] p-2 text-sm",
-                    aria_label: crate::i18n::text("Search people", &[]), placeholder: crate::i18n::text("Search people", &[]),
-                    oninput: move |e| query.set(e.value()),
+                label { class: "dxf-voice-invite-search",
+                    span { class: "dxf-voice-invite-search-icon", aria_hidden: "true", dangerous_inner_html: super::icons::SEARCH }
+                    input { r#type: "search", value: "{query}",
+                        aria_label: crate::i18n::text("Search people", &[]), placeholder: crate::i18n::text("Search people", &[]),
+                        oninput: move |e| query.set(e.value()),
+                    }
                 }
-                if error() { p { role: "alert", class: "text-xs text-[var(--danger)]", {crate::i18n::text("Could not queue the invitation. Try again.", &[])} } }
-                div { class: "min-h-0 overflow-y-auto flex flex-col gap-1",
-                    if peers.is_empty() { p { class: "text-xs text-[var(--text-dim)] p-2", {crate::i18n::text("No eligible people found. Add a contact or open a DM first.", &[])} } }
+                div { class: "dxf-voice-invite-people-heading",
+                    h4 { {crate::i18n::text("People", &[])} }
+                    span { class: "dxf-voice-invite-count",
+                        if peer_count == 1 { {crate::i18n::text("1 person", &[])} }
+                        else { {crate::i18n::text("{0} people", &[peer_count.to_string()])} }
+                    }
+                }
+                if error() { p { role: "alert", class: "dxf-voice-invite-notice dxf-voice-invite-error", {crate::i18n::text("Could not queue the invitation. Try again.", &[])} } }
+                div { class: "dxf-voice-invite-list",
+                    if peers.is_empty() { p { class: "dxf-voice-invite-empty", {crate::i18n::text("No eligible people found. Add a contact or open a DM first.", &[])} } }
                     for (peer, name) in peers {
                         {
                             let was_queued = queued.read().contains(&peer);
@@ -1008,18 +1027,23 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
                             let address = address.clone();
                             let code = code.clone();
                             rsx! {
-                                div { key: "{peer}", class: "flex items-center gap-2 rounded p-2 bg-[var(--panel2)]",
-                                    div { class: "flex-1 min-w-0", title: "{peer}",
-                                        span { class: "block truncate text-sm", "{name}" }
-                                        span { class: "block truncate text-[10px] text-[var(--text-dim)]", "#{crate::identity::discriminator(&peer)}" }
+                                div { key: "{peer}", class: "dxf-voice-invite-person",
+                                    super::profiles::Avatar { pubkey: peer.clone(), name: name.clone(), size: "dxf-voice-invite-avatar" }
+                                    div { class: "dxf-voice-invite-person-info", title: "{peer}",
+                                        span { class: "dxf-voice-invite-person-name", title: "{name}", "{name}" }
+                                        span { class: "dxf-voice-invite-person-id", "#{crate::identity::discriminator(&peer)}" }
                                     }
                                     if was_queued {
-                                        button { r#type: "button", class: "text-xs text-[var(--accent)]",
+                                        button { r#type: "button", class: "dxf-voice-invite-send dxf-voice-invite-queued",
+                                            aria_label: format!("{}: {name}", crate::i18n::text("Open DM", &[])),
+                                            title: crate::i18n::text("Open the DM to check delivery or retry. Invitations do not change channel access.", &[]),
                                             onclick: move |_| { open.send(NostrCmd::Open { peer: open_peer.clone() }); on_close.call(()); },
-                                            {crate::i18n::text("Open DM", &[])}
+                                            span { aria_hidden: "true", dangerous_inner_html: super::icons::CHECK }
+                                            span { {crate::i18n::text("Open DM", &[])} }
                                         }
                                     } else {
-                                        button { r#type: "button", class: "text-xs text-[var(--accent)] disabled:opacity-40", disabled: !can_send,
+                                        button { r#type: "button", class: "dxf-voice-invite-send", disabled: !can_send,
+                                            aria_label: format!("{}: {name}", crate::i18n::text("Invite", &[])),
                                             "data-voice-invite-peer": "{peer}",
                                             onclick: move |_| {
                                                 if queued.peek().contains(&send_peer) { return; }
@@ -1034,7 +1058,8 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
                                                     } else { error.set(true); }
                                                 }
                                             },
-                                            {crate::i18n::text("Send invitation", &[])}
+                                            span { aria_hidden: "true", dangerous_inner_html: super::icons::SEND }
+                                            span { {crate::i18n::text("Invite", &[])} }
                                         }
                                     }
                                 }
@@ -1042,11 +1067,23 @@ pub(super) fn VoiceInviteDialog(channel_id: Id, on_close: EventHandler<()>) -> E
                         }
                     }
                 }
-                p { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Open the DM to check delivery or retry. Invitations do not change channel access.", &[])} }
                 if address.is_none() {
-                    p { class: "text-xs text-[var(--warn)]", {crate::i18n::text("A public server address is needed to invite people outside this community.", &[])} }
+                    p { class: "dxf-voice-invite-notice dxf-voice-invite-warning", {crate::i18n::text("A public server address is needed to invite people outside this community.", &[])} }
                 } else if code.is_none() && super::invite::can_invite(&state.read(), channel.guild_id) {
-                    p { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Fetching the invite code…", &[])} }
+                    p { class: "dxf-voice-invite-notice", {crate::i18n::text("Fetching the invite code…", &[])} }
+                }
+                footer { class: "dxf-voice-invite-footer",
+                    p { class: "dxf-voice-invite-status", role: "status",
+                        if queued.read().is_empty() {
+                            {crate::i18n::text("Invitations arrive by private message.", &[])}
+                        } else {
+                            {crate::i18n::text("Invitation queued. Open the DM to check delivery.", &[])}
+                        }
+                    }
+                    div { class: "dxf-voice-invite-expiry",
+                        span { aria_hidden: "true", dangerous_inner_html: super::icons::CLOCK }
+                        span { {crate::i18n::text("Invitations expire after 24 hours and disappear from the chat.", &[])} }
+                    }
                 }
             }
         }
