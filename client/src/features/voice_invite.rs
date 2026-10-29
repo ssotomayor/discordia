@@ -8,6 +8,30 @@ use crate::state::{AppState, ConnectionStatus, SessionMode, use_app_state, use_g
 
 pub(crate) const INVITE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
 
+#[derive(Clone)]
+pub(super) struct VoiceInviteConnector(
+    pub  tokio::sync::mpsc::UnboundedSender<(
+        crate::known_servers::KnownServer,
+        crate::state::PendingVoiceInvite,
+    )>,
+);
+
+pub(super) fn prepare_home_invite(
+    state: &mut AppState,
+    invite: crate::state::PendingVoiceInvite,
+) -> bool {
+    if state.status != ConnectionStatus::Disconnected
+        || state.dm_call.is_some()
+        || invite
+            .expires_at
+            .is_some_and(|expires| chrono::Utc::now().timestamp() >= expires)
+    {
+        return false;
+    }
+    state.prepare_server_switch(Some(invite.guild_id), Some(invite));
+    true
+}
+
 pub(crate) fn message_expiry(message: &crate::protocol::Message) -> Option<i64> {
     let invite = parse_voice_invite(&message.content)?;
     let deadline = message
@@ -476,6 +500,71 @@ mod tests {
         );
         assert!(state.voice_invite_on_ready.is_none());
     }
+
+    #[test]
+    fn home_cards_connect_before_using_the_code_and_resume_voice_after_membership() {
+        let (mut state, channel) = fixture();
+        let guild = state.guilds[0].clone();
+        state.clear_server_session();
+        let invite = link(&channel);
+        assert!(matches!(
+            invite_route(&state, None, &[], &invite),
+            InviteRoute::Switch(_)
+        ));
+        let pending = crate::state::PendingVoiceInvite {
+            guild_id: invite.guild_id,
+            channel_id: invite.channel_id,
+            code: invite.code,
+            expires_at: invite.expires_at,
+        };
+        assert!(prepare_home_invite(&mut state, pending));
+        assert_eq!(state.open_guild_on_ready, Some(channel.guild_id));
+        assert!(state.resume_voice_invite(None).is_none());
+        state.status = ConnectionStatus::Ready;
+        assert!(
+            matches!(state.resume_voice_invite(None), Some(ClientMessage::JoinByInvite { code, .. }) if code == "invite-from-target")
+        );
+        state.guilds.push(guild);
+        state.channels.push(channel.clone());
+        assert!(
+            matches!(state.resume_voice_invite(Some(channel.guild_id)), Some(ClientMessage::JoinVoice { channel_id, .. }) if channel_id == channel.id)
+        );
+    }
+
+    #[test]
+    fn home_resolves_saved_guilds_without_an_address_and_rejects_expired_or_busy_requests() {
+        let (mut state, channel) = fixture();
+        let guild = crate::known_servers::KnownGuild {
+            id: channel.guild_id,
+            name: "Community".into(),
+            icon: None,
+        };
+        state.clear_server_session();
+        let mut invite = link(&channel);
+        invite.server = None;
+        invite.code = None;
+        let mut server = crate::known_servers::KnownServer::new(SessionMode::ByCode {
+            code: "KNOWN".into(),
+            rendezvous_url: "wss://rendezvous.example".into(),
+        });
+        server.guilds.push(guild);
+        assert_eq!(
+            invite_route(&state, None, std::slice::from_ref(&server), &invite),
+            InviteRoute::Switch(server)
+        );
+        let mut pending = crate::state::PendingVoiceInvite {
+            guild_id: invite.guild_id,
+            channel_id: invite.channel_id,
+            code: None,
+            expires_at: Some(chrono::Utc::now().timestamp() - 1),
+        };
+        assert!(!prepare_home_invite(&mut state, pending.clone()));
+        assert!(state.voice_invite_on_ready.is_none());
+        pending.expires_at = None;
+        state.status = ConnectionStatus::Connecting;
+        assert!(!prepare_home_invite(&mut state, pending));
+        assert!(state.open_guild_on_ready.is_none());
+    }
 }
 
 fn eligible(state: &AppState, channel: &Channel, peer: &str) -> bool {
@@ -718,6 +807,7 @@ pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
     let gateway = use_gateway();
     let rail = try_consume_context::<crate::features::server_rail::ServerRail>();
     let mode = try_consume_context::<SessionMode>();
+    let connector = try_consume_context::<VoiceInviteConnector>();
     let mobile_tab = try_consume_context::<Signal<super::workspace::MobileTab>>();
 
     let is_connected_here = state.read().connected_voice_channel() == Some(invite.channel_id);
@@ -754,7 +844,7 @@ pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
         }
         let route = match rail {
             Some(rail) => invite_route(&s, mode.as_ref(), &rail.known.peek(), &invite),
-            None => invite_route(&s, mode.as_ref(), &[], &invite),
+            None => invite_route(&s, mode.as_ref(), &crate::known_servers::load(), &invite),
         };
         drop(s);
         let pending = crate::state::PendingVoiceInvite {
@@ -773,11 +863,23 @@ pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
             if let Some(message) = join_msg {
                 gateway.send(message);
             }
-        } else if let (InviteRoute::Switch(server), Some(rail)) = (route, rail) {
-            rail.request_voice_invite(server, pending);
+        } else if let InviteRoute::Switch(server) = route {
+            if let Some(rail) = rail {
+                rail.request_voice_invite(server, pending);
+            } else {
+                let sent = connector
+                    .as_ref()
+                    .is_some_and(|connector| connector.0.send((server, pending)).is_ok());
+                if !sent {
+                    state.write().error_toast = Some(crate::i18n::text(
+                        "Could not start the server connection.",
+                        &[],
+                    ));
+                }
+            }
         } else {
             state.write().error_toast = Some(crate::i18n::text(
-                "You need to join this community to enter the voice channel.",
+                "Server connection details are missing from this invitation.",
                 &[],
             ));
         }

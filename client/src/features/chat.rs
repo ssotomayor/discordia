@@ -2143,6 +2143,17 @@ fn send_dm(
     true
 }
 
+fn dm_focus_key(state: &crate::state::AppState, channel_id: Id) -> (bool, Option<(Id, u64)>) {
+    (
+        state.dm_mode
+            && state.selected_channel == Some(channel_id)
+            && state.dm_of(channel_id).is_some(),
+        state
+            .composer_focus_request
+            .filter(|(id, _)| *id == channel_id),
+    )
+}
+
 #[component]
 fn Composer(
     channel_id: Id,
@@ -2174,6 +2185,21 @@ fn Composer(
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let identity = use_context::<crate::identity::Identity>();
     let composer_id = format!("dxf-composer-{channel_id}");
+    let mut mounted_editor = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let focus_request = use_memo(move || dm_focus_key(&state.read(), channel_id));
+    let focus_id = composer_id.clone();
+    use_effect(move || {
+        let (active, _revision) = focus_request();
+        if active && let Some(editor) = mounted_editor() {
+            let id = focus_id.clone();
+            spawn(async move {
+                if let Err(error) = editor.set_focus(true).await {
+                    tracing::debug!(%error, "Could not focus the DM composer");
+                }
+                composer_call(&id, "focus", &[]);
+            });
+        }
+    });
     // Names this mount's script, so a drop that lands after the next mount's
     // script has started leaves that one alone.
     let instance = use_hook(|| uuid::Uuid::new_v4().to_string());
@@ -2787,6 +2813,7 @@ fn Composer(
                     // here renders into it.
                     div {
                         id: "{composer_id}",
+                        onmounted: move |event| mounted_editor.set(Some(event.data())),
                         class: "dxf-composer flex-1 min-w-0 text-[14px] text-[var(--text)]",
                         style: "padding-top: 5.5px; padding-bottom: 5.5px;",
                         contenteditable: "true",
@@ -2862,6 +2889,28 @@ fn Composer(
 #[cfg(test)]
 mod composer_tests {
     use super::*;
+
+    #[test]
+    fn selecting_or_reselecting_a_dm_requests_focus_but_incoming_messages_do_not() {
+        let mut state = crate::state::AppState::empty();
+        let channel = Id::new_v4();
+        state.dms.push(crate::state::DmInfo {
+            channel_id: channel,
+            other_pubkey: "peer".into(),
+        });
+        state.dm_mode = true;
+        state.selected_channel = Some(channel);
+        state.request_composer_focus(channel);
+        let first = dm_focus_key(&state, channel);
+        assert!(first.0);
+        state.notify_tick += 1;
+        state.dm_notify_tick += 1;
+        assert_eq!(dm_focus_key(&state, channel), first);
+        state.request_composer_focus(channel);
+        assert_ne!(dm_focus_key(&state, channel), first);
+        state.selected_channel = Some(Id::new_v4());
+        assert!(!dm_focus_key(&state, channel).0);
+    }
 
     fn custom(code: &str) -> GuildEmoji {
         GuildEmoji {

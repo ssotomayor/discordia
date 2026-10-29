@@ -35,6 +35,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
     let nostr = use_context::<NostrTx>();
     let identity = use_context::<Identity>();
     let gateway = use_context::<GatewayTx>();
+    let invite_connector = use_context::<super::voice_invite::VoiceInviteConnector>();
     let parent = crate::platform::use_window();
     let locale = use_context::<crate::i18n::Locale>();
     let bookmarks = use_context::<crate::bookmarks::Bookmarks>();
@@ -94,6 +95,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
         .with_root_context(nostr.clone())
         .with_root_context(identity.clone())
         .with_root_context(gateway.clone());
+        let dom = dom.with_root_context(invite_connector.clone());
         let config = crate::app::desktop_config(crate::i18n::current())
             .with_window(
                 crate::platform::tao::window::WindowBuilder::new()

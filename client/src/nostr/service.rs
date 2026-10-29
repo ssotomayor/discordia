@@ -905,6 +905,7 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     }
     s.dm_mode = true;
     s.selected_channel = Some(cid);
+    s.request_composer_focus(cid);
     if let Some(account) = s.self_user.as_ref().map(|user| user.pubkey.clone()) {
         super::call_history::reconcile(&mut s, &account, now());
     }
