@@ -359,7 +359,11 @@ fn invitation(
         return None;
     }
     let guild = state.guilds.iter().find(|g| g.id == channel.guild_id)?;
-    let mut url = url::Url::parse(&format!("discordia://voice/{}/{}", channel.guild_id, channel.id)).ok()?;
+    let mut url = url::Url::parse(&format!(
+        "discordia://voice/{}/{}",
+        channel.guild_id, channel.id
+    ))
+    .ok()?;
     {
         let mut pairs = url.query_pairs_mut();
         pairs.append_pair("g", &guild.name);
