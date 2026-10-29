@@ -145,6 +145,8 @@ pub struct ClientSettings {
     pub screenshare_audio: bool,
     #[serde(default = "default_sfx_volume")]
     pub sfx_volume: u8,
+    #[serde(default)]
+    pub disabled_sound_categories: Vec<crate::native_sounds::SoundCategory>,
     #[serde(default = "default_soundboard_volume")]
     pub soundboard_volume: u8,
     /// Person pubkey → playback percent, and who is muted for us. A key is the
@@ -407,6 +409,7 @@ impl Default for ClientSettings {
             screenshare_encoder: crate::sysvideo::Encoder::default(),
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
+            disabled_sound_categories: Vec::new(),
             soundboard_volume: default_soundboard_volume(),
             user_volumes: Vec::new(),
             user_muted: Vec::new(),
@@ -613,6 +616,27 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_categories_default_on_for_old_settings_and_persist_independently() {
+        let mut old = serde_json::to_value(ClientSettings::default()).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("disabled_sound_categories");
+        let mut loaded: ClientSettings = serde_json::from_value(old).unwrap();
+        assert!(loaded.disabled_sound_categories.is_empty());
+        loaded.disabled_sound_categories = vec![
+            crate::native_sounds::SoundCategory::Messages,
+            crate::native_sounds::SoundCategory::StreamViewers,
+        ];
+        let restored: ClientSettings =
+            serde_json::from_str(&serde_json::to_string(&loaded).unwrap()).unwrap();
+        assert_eq!(
+            restored.disabled_sound_categories,
+            loaded.disabled_sound_categories
+        );
+        assert_eq!(restored.sfx_volume, loaded.sfx_volume);
+    }
 
     #[test]
     fn a_rendezvous_is_listed_once_however_it_is_typed() {

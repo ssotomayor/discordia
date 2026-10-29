@@ -648,6 +648,26 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
     let delivery = state.read().dm_delivery.get(&message.id).copied();
     let mut show_react = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
+    let expires_at = super::voice_invite::message_expiry(&message);
+    let expiry_channel = message.channel_id;
+    let expiry_id = message.id;
+    use_future(move || async move {
+        if let Some(expires) = expires_at {
+            let delay = expires
+                .saturating_sub(chrono::Utc::now().timestamp())
+                .max(0) as u64;
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            if let Some(messages) = state.write().messages.get_mut(&expiry_channel) {
+                messages.retain(|m| {
+                    m.id != expiry_id
+                        || !super::voice_invite::is_expired_message(
+                            m,
+                            chrono::Utc::now().timestamp(),
+                        )
+                });
+            }
+        }
+    });
 
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let mentions_me = state
@@ -665,7 +685,11 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .with_timezone(&chrono::Local)
         .format("%H:%M")
         .to_string();
-    let voice_invite = super::voice_invite::parse_voice_invite(&message.content);
+    let voice_invite =
+        super::voice_invite::parse_voice_invite(&message.content).map(|mut invite| {
+            invite.expires_at = expires_at;
+            invite
+        });
     let display_content = if voice_invite.is_some() {
         super::voice_invite::strip_voice_invite(&message.content)
     } else {
@@ -794,6 +818,10 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
     } else {
         "opacity-0 group-hover:opacity-100"
     };
+
+    if expires_at.is_some_and(|expires| chrono::Utc::now().timestamp() >= expires) {
+        return rsx! {};
+    }
 
     rsx! {
         if let Some(q) = quoted {

@@ -56,5 +56,6 @@ mod video_lifecycle;
 pub mod voice;
 mod voice_drag;
 mod voice_invite;
+pub(crate) use voice_invite::is_expired_message;
 pub mod voice_menu;
 pub mod workspace;

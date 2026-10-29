@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 
-const NAMES: [&str; 21] = [
+const NAMES: [&str; 23] = [
     "disconnect",
     "watch-start",
     "watch-stop",
@@ -28,7 +28,66 @@ const NAMES: [&str; 21] = [
     "call-ended",
     "deafen",
     "undeafen",
+    "viewer-join",
+    "viewer-leave",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundCategory {
+    Messages,
+    Calls,
+    Connections,
+    VoiceParticipants,
+    VoiceControls,
+    Streams,
+    StreamViewers,
+}
+
+impl SoundCategory {
+    pub const ALL: [Self; 7] = [
+        Self::Messages,
+        Self::Calls,
+        Self::Connections,
+        Self::VoiceParticipants,
+        Self::VoiceControls,
+        Self::Streams,
+        Self::StreamViewers,
+    ];
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Messages => crate::i18n::text("Message sounds", &[]),
+            Self::Calls => crate::i18n::text("Call sounds", &[]),
+            Self::Connections => crate::i18n::text("Connection sounds", &[]),
+            Self::VoiceParticipants => crate::i18n::text("Voice participant sounds", &[]),
+            Self::VoiceControls => crate::i18n::text("Microphone and deafen sounds", &[]),
+            Self::Streams => crate::i18n::text("Stream sounds", &[]),
+            Self::StreamViewers => crate::i18n::text("Your stream's viewer sounds", &[]),
+        }
+    }
+}
+
+const DND: u32 = 1 << 31;
+static SOUND_POLICY: AtomicU32 = AtomicU32::new(0);
+static SOUND_VOLUME: AtomicU32 = AtomicU32::new(70);
+
+pub fn configure_policy(disabled: &[SoundCategory], dnd: bool) {
+    let mask = disabled
+        .iter()
+        .fold(0, |mask, category| mask | (1 << *category as u32));
+    SOUND_POLICY.store(mask | if dnd { DND } else { 0 }, Ordering::Relaxed);
+}
+
+pub fn sound_enabled(name: &str) -> bool {
+    if SOUND_VOLUME.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    NAMES
+        .iter()
+        .position(|candidate| *candidate == name)
+        .is_some_and(|index| Sound(index).allowed(SOUND_POLICY.load(Ordering::Relaxed)))
+}
 const IDLE: Duration = Duration::from_millis(1500);
 const COOLDOWN: Duration = Duration::from_millis(250);
 const MAX_VOICES: usize = 32;
@@ -36,8 +95,28 @@ const MAX_VOICES: usize = 32;
 #[derive(Clone, Copy)]
 struct Sound(usize);
 
+impl Sound {
+    fn category(self) -> SoundCategory {
+        match self.0 {
+            3 | 4 => SoundCategory::Messages,
+            15..=18 => SoundCategory::Calls,
+            7 | 8 => SoundCategory::VoiceParticipants,
+            13 | 14 | 19 | 20 => SoundCategory::VoiceControls,
+            1 | 2 | 9..=12 => SoundCategory::Streams,
+            21 | 22 => SoundCategory::StreamViewers,
+            _ => SoundCategory::Connections,
+        }
+    }
+
+    fn allowed(self, policy: u32) -> bool {
+        let passive = matches!(self.0, 3 | 4 | 7 | 8 | 11 | 12 | 15 | 21 | 22);
+        policy & (1 << self.category() as u32) == 0 && !(passive && policy & DND != 0)
+    }
+}
+
 enum Command {
     Play(Sound),
+    Preview(Sound),
     /// A decoded sound at its own rate and gain: the soundboard preview.
     Clip {
         pcm: Arc<[f32]>,
@@ -87,6 +166,9 @@ fn service() -> Option<&'static Service> {
 }
 
 pub fn play(name: &str) {
+    if !sound_enabled(name) {
+        return;
+    }
     let Some(index) = NAMES.iter().position(|candidate| *candidate == name) else {
         return;
     };
@@ -95,6 +177,19 @@ pub fn play(name: &str) {
             Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 tracing::warn!("Notification audio worker stopped");
+            }
+        }
+    }
+}
+
+pub fn preview(name: &str) {
+    if let Some(index) = NAMES.iter().position(|candidate| *candidate == name)
+        && let Some(service) = service()
+    {
+        match service.tx.try_send(Command::Preview(Sound(index))) {
+            Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                tracing::warn!("Notification audio worker stopped")
             }
         }
     }
@@ -132,6 +227,7 @@ pub fn call_ring(name: Option<&str>) {
 }
 
 pub fn configure(volume: u8, output: Option<String>) {
+    SOUND_VOLUME.store(u32::from(volume.min(100)), Ordering::Relaxed);
     if let Some(service) = service() {
         service.control.volume.store(
             (f32::from(volume.min(100)) / 100.0).to_bits(),
@@ -193,13 +289,15 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
             output = None;
             selected = wanted;
         }
-        let (sound, clip) = match command {
-            Command::Play(sound) => (Some(sound), None),
-            Command::Clip { pcm, rate, gain } => (None, Some((pcm, rate, gain))),
+        let (sound, clip, preview) = match command {
+            Command::Play(sound) => (Some(sound), None, false),
+            Command::Preview(sound) => (Some(sound), None, true),
+            Command::Clip { pcm, rate, gain } => (None, Some((pcm, rate, gain)), false),
             Command::Wake => continue,
         };
         if let Some(sound) = sound
-            && (f32::from_bits(control.volume.load(Ordering::Relaxed)) == 0.0
+            && ((!preview && !sound.allowed(SOUND_POLICY.load(Ordering::Relaxed)))
+                || f32::from_bits(control.volume.load(Ordering::Relaxed)) == 0.0
                 || !cooldowns.accept(sound, origin.elapsed()))
         {
             continue;
@@ -221,6 +319,9 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
             match (sound, clip) {
                 (Some(sound), _) => {
                     player.push(bank.get(sound));
+                    if let Some(voice) = player.voices.last_mut() {
+                        voice.sound = (!preview).then_some(sound);
+                    }
                     if matches!(sound.0, 15 | 16)
                         && let Some(voice) = player.voices.last_mut()
                     {
@@ -265,6 +366,7 @@ struct Voice {
     samples: Arc<[f32]>,
     position: usize,
     call_ring: Option<u32>,
+    sound: Option<Sound>,
     /// Its own gain instead of the live app-sound volume.
     gain: Option<f32>,
 }
@@ -275,6 +377,10 @@ struct Player {
 }
 
 impl Player {
+    fn apply_policy(&mut self, policy: u32) {
+        self.voices
+            .retain(|voice| voice.sound.is_none_or(|sound| sound.allowed(policy)));
+    }
     fn cancel_rings(&mut self, active: u32) {
         self.voices
             .retain(|voice| voice.call_ring.is_none_or(|ring| ring == active));
@@ -296,6 +402,7 @@ impl Player {
             samples,
             position: 0,
             call_ring: None,
+            sound: None,
             gain,
         });
     }
@@ -403,6 +510,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
         *config,
         move |data: &mut [T], _| {
             if let Some(mut player) = player.try_lock() {
+                player.apply_policy(SOUND_POLICY.load(Ordering::Relaxed));
                 player.cancel_rings(control.call_ring.load(Ordering::Relaxed));
                 let volume = f32::from_bits(control.volume.load(Ordering::Relaxed));
                 write_samples(data, channels, &mut player, volume);
@@ -566,6 +674,14 @@ fn tones(sound: Sound) -> &'static [Tone] {
             tone(0.0, 200.0, 0.07, 0.10, Square),
             tone(0.06, 360.0, 0.11, 0.10, Square),
         ],
+        &[
+            tone(0.0, 660.0, 0.06, 0.07, Sine),
+            tone(0.06, 990.0, 0.10, 0.07, Sine),
+        ],
+        &[
+            tone(0.0, 990.0, 0.06, 0.06, Sine),
+            tone(0.06, 660.0, 0.10, 0.06, Sine),
+        ],
     ];
     BANK.get(sound.0).copied().unwrap_or(&[])
 }
@@ -640,6 +756,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn category_switches_are_independent_and_dnd_keeps_local_feedback() {
+        for index in 0..NAMES.len() {
+            let sound = Sound(index);
+            assert!(sound.allowed(0));
+            for category in SoundCategory::ALL {
+                assert_eq!(
+                    sound.allowed(1 << category as u32),
+                    category != sound.category()
+                );
+            }
+        }
+        for name in [
+            "notify",
+            "dm",
+            "call-incoming",
+            "peer-join",
+            "peer-leave",
+            "viewer-join",
+            "viewer-leave",
+            "peer-stream-start",
+        ] {
+            let index = NAMES
+                .iter()
+                .position(|candidate| *candidate == name)
+                .unwrap();
+            assert!(!Sound(index).allowed(DND), "{name}");
+        }
+        for name in [
+            "mute",
+            "unmute",
+            "deafen",
+            "undeafen",
+            "call-outgoing",
+            "call-connected",
+            "call-ended",
+            "watch-start",
+            "stream-start",
+            "disconnect",
+        ] {
+            let index = NAMES
+                .iter()
+                .position(|candidate| *candidate == name)
+                .unwrap();
+            assert!(Sound(index).allowed(DND), "{name}");
+        }
+    }
+
+    #[test]
+    fn live_policy_changes_stop_a_ringtone_but_preserve_soundboard_clips() {
+        let mut player = Player::default();
+        player.push(vec![0.1; 8].into());
+        player.voices[0].sound = Some(Sound(15));
+        player.push_clip(vec![0.2; 8].into(), 0.5);
+        player.apply_policy(DND);
+        assert_eq!(player.voices.len(), 1);
+        assert!(player.voices[0].gain.is_some());
+        assert!((player.next(1.0) - 0.1).abs() < 0.00001);
+    }
+
+    #[test]
     fn every_sound_is_finite_nonempty_and_fades_out_at_supported_rates() {
         for rate in [16_000, 44_100, 48_000, 96_000] {
             for index in 0..NAMES.len() {
@@ -681,6 +857,8 @@ mod tests {
             "call-ended",
             "notify",
             "dm",
+            "viewer-join",
+            "viewer-leave",
         ];
         for name in required {
             let index = NAMES.iter().position(|c| *c == name);

@@ -7,12 +7,14 @@ struct Notice {
     peer: String,
     sender: String,
     message: String,
+    silent: bool,
 }
 
 fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) -> Option<Notice> {
     let channel = conversation_id(&message.peer);
     let at = message.created_at - state.clock_offset(&message.author);
     if !live
+        || state.presence_of(account) == "dnd"
         || message.author == account
         || message.author != message.peer
         || state.dm_standing(&message.peer) != DmStanding::Inbox
@@ -34,6 +36,7 @@ fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) ->
             .take(100)
             .collect(),
         message: crate::i18n::text("New private message", &[]),
+        silent: !crate::native_sounds::sound_enabled("dm"),
     })
 }
 
@@ -375,6 +378,22 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn do_not_disturb_prevents_native_message_alerts_even_without_a_server() {
+        let mut state = AppState::empty();
+        state.dm_accepted.insert("peer".into());
+        assert!(notice(&state, &message(), "self", true).is_some());
+        state.profiles.insert(
+            "self".into(),
+            crate::protocol::Profile {
+                pubkey: "self".into(),
+                status: Some("dnd".into()),
+                ..Default::default()
+            },
+        );
+        assert!(notice(&state, &message(), "self", true).is_none());
+    }
 
     fn message() -> ChatMessage {
         ChatMessage {

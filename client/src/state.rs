@@ -229,6 +229,7 @@ pub struct PendingVoiceInvite {
     pub guild_id: Id,
     pub channel_id: Id,
     pub code: Option<String>,
+    pub expires_at: Option<i64>,
 }
 
 impl RulesPrompt {
@@ -752,8 +753,20 @@ impl AppState {
         self.voice_invite_on_ready = invite;
     }
 
+    pub fn follow_voice_invite(&mut self, invite: PendingVoiceInvite) -> Option<ClientMessage> {
+        self.voice_invite_on_ready = Some(invite);
+        self.resume_voice_invite(None)
+    }
+
     pub fn resume_voice_invite(&mut self, joined: Option<Id>) -> Option<ClientMessage> {
         let pending = self.voice_invite_on_ready.as_mut()?;
+        if pending
+            .expires_at
+            .is_some_and(|expires| chrono::Utc::now().timestamp() >= expires)
+        {
+            self.voice_invite_on_ready = None;
+            return None;
+        }
         if self.status != ConnectionStatus::Ready {
             return None;
         }
@@ -1413,6 +1426,9 @@ impl AppState {
     }
 
     pub fn insert_message(&mut self, channel_id: Id, message: Message) -> bool {
+        if crate::features::is_expired_message(&message, chrono::Utc::now().timestamp()) {
+            return false;
+        }
         if self
             .messages
             .get(&channel_id)
@@ -1488,6 +1504,9 @@ impl AppState {
         let mut seen: HashSet<Id> = held.iter().map(|m| m.id).collect();
         let mut incoming = Vec::with_capacity(page.len());
         for m in page {
+            if crate::features::is_expired_message(&m, chrono::Utc::now().timestamp()) {
+                continue;
+            }
             // Recorded as we go rather than sampled once: a page that repeats
             // an id would otherwise be believed twice.
             if seen.insert(m.id) {

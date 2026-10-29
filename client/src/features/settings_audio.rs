@@ -74,10 +74,30 @@ pub(super) fn AppSounds() -> Element {
                 span { {crate::i18n::text("Soundboard volume", &[])} }
                 crate::features::soundboard::SoundboardVolume {}
             }
+            for category in crate::native_sounds::SoundCategory::ALL {
+                label { class: "dxf-audio-sound-row",
+                    span { "{category.label()}" }
+                    input { r#type: "checkbox",
+                        checked: !settings.read().disabled_sound_categories.contains(&category),
+                        onchange: move |event: FormEvent| {
+                            let mut next = settings.peek().clone();
+                            next.disabled_sound_categories.retain(|saved| *saved != category);
+                            if !event.checked() {
+                                next.disabled_sound_categories.push(category);
+                            }
+                            crate::settings::save(&next);
+                            settings.set(next);
+                        },
+                    }
+                }
+            }
+            p { class: "dxf-audio-sounds-note",
+                {crate::i18n::text("Do Not Disturb silences incoming alerts. Sounds for your own actions remain available.", &[])}
+            }
             button { class: "dxf-audio-preview-sound", onclick: move |_| {
                 let saved = settings.read();
                 crate::native_sounds::configure(saved.sfx_volume, saved.selected_output_device.clone());
-                crate::native_sounds::play("call-connected");
+                crate::native_sounds::preview("call-connected");
             }, {crate::i18n::text("Test app sound", &[])} }
         }
     }

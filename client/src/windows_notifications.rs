@@ -52,7 +52,7 @@ pub fn show_dm_notification(account: &str, sender: &str, message: &str, peer: &s
         return;
     }
     let xml = format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><audio silent=\"true\"/></toast>",
         xml_escape(sender),
         xml_escape(message),
     );
