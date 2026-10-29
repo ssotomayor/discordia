@@ -177,8 +177,7 @@ pub fn AccountView(
                             guild: here,
                             target: target.server.label(),
                         }));
-                        state.write().clear_server_session();
-                        state.write().open_guild_on_ready = target.guild;
+                        state.write().prepare_server_switch(target.guild, target.voice_invite);
                         on_connect.call(SessionParams {
                             mode: target.server.mode,
                             identity: params.identity.clone(),

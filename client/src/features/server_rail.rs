@@ -26,6 +26,7 @@ enum Stage {
 pub struct Switch {
     pub server: KnownServer,
     pub guild: Option<Id>,
+    pub voice_invite: Option<crate::state::PendingVoiceInvite>,
     stage: Stage,
 }
 
@@ -70,15 +71,31 @@ impl ServerRail {
 
     /// A second click on a server already being asked is the same request.
     pub fn request_switch(mut self, server: KnownServer, guild: Option<Id>) {
-        let busy = self
-            .switch
-            .peek()
-            .as_ref()
-            .is_some_and(|s| s.server.key() == server.key());
+        self.request_switch_with_invite(server, guild, None);
+    }
+
+    pub fn request_voice_invite(
+        mut self,
+        server: KnownServer,
+        invite: crate::state::PendingVoiceInvite,
+    ) {
+        self.request_switch_with_invite(server, Some(invite.guild_id), Some(invite));
+    }
+
+    fn request_switch_with_invite(
+        &mut self,
+        server: KnownServer,
+        guild: Option<Id>,
+        voice_invite: Option<crate::state::PendingVoiceInvite>,
+    ) {
+        let busy = self.switch.peek().as_ref().is_some_and(|s| {
+            s.server.key() == server.key() && s.guild == guild && s.voice_invite == voice_invite
+        });
         if !busy {
             self.switch.set(Some(Switch {
                 server,
                 guild,
+                voice_invite,
                 stage: Stage::Checking,
             }));
         }
@@ -440,7 +457,7 @@ pub fn SwitchHost(on_go: EventHandler<Switch>) -> Element {
         spawn(async move {
             let answer = crate::net::probe(&asked.server.mode).await;
             let key = asked.server.key();
-            if switch.peek().as_ref().map(|s| s.server.key()) != Some(key.clone()) {
+            if switch.peek().as_ref() != Some(&asked) {
                 return;
             }
             learn_name(rail.known, &key, &answer);

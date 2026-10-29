@@ -287,6 +287,124 @@ mod tests {
         assert!(stripped.contains("Lounge"));
         assert!(stripped.contains("Community"));
     }
+
+    fn link(channel: &Channel) -> VoiceInviteInfo {
+        VoiceInviteInfo {
+            guild_id: channel.guild_id,
+            channel_id: channel.id,
+            guild_name: "Community".into(),
+            channel_name: "Lounge".into(),
+            server: Some("wss://inviting.example".into()),
+            code: Some("invite-from-target".into()),
+        }
+    }
+
+    #[test]
+    fn an_invite_code_routes_to_its_known_server_before_using_the_gateway() {
+        let (mut state, channel) = fixture();
+        state.guilds.clear();
+        let current = SessionMode::Remote {
+            server_url: "wss://other.example".into(),
+        };
+        let target = crate::known_servers::KnownServer::new(SessionMode::Remote {
+            server_url: "wss://inviting.example".into(),
+        });
+        assert_eq!(
+            invite_route(
+                &state,
+                Some(&current),
+                std::slice::from_ref(&target),
+                &link(&channel)
+            ),
+            InviteRoute::Switch(target)
+        );
+        assert!(state.voice_invite_on_ready.is_none());
+        let mut invite = link(&channel);
+        for address in [
+            "wss://new.example",
+            "quic://aabbcc@192.0.2.1:9000;[2001:db8::1]:9000",
+        ] {
+            invite.server = Some(address.into());
+            assert_eq!(
+                invite_route(&state, Some(&current), &[], &invite),
+                InviteRoute::Switch(crate::known_servers::KnownServer::new(
+                    SessionMode::Remote {
+                        server_url: address.into(),
+                    }
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_issuing_ready_server_can_use_a_code_without_switching() {
+        let (mut state, channel) = fixture();
+        state.guilds.clear();
+        let current = SessionMode::Remote {
+            server_url: "wss://inviting.example".into(),
+        };
+        let mut invite = link(&channel);
+        assert_eq!(
+            invite_route(&state, Some(&current), &[], &invite),
+            InviteRoute::Current
+        );
+        state.status = ConnectionStatus::Reconnecting;
+        assert_eq!(
+            invite_route(&state, Some(&current), &[], &invite),
+            InviteRoute::Unavailable
+        );
+        state.status = ConnectionStatus::Ready;
+        invite.server = None;
+        assert_eq!(
+            invite_route(&state, Some(&current), &[], &invite),
+            InviteRoute::Unavailable
+        );
+    }
+
+    #[test]
+    fn switching_then_ready_joins_the_community_before_the_requested_voice_channel() {
+        let (mut state, channel) = fixture();
+        let guild = state.guilds[0].clone();
+        let pending = crate::state::PendingVoiceInvite {
+            guild_id: channel.guild_id,
+            channel_id: channel.id,
+            code: Some("target-code".into()),
+        };
+        state.prepare_server_switch(Some(guild.id), Some(pending));
+        assert!(state.resume_voice_invite(None).is_none());
+        state.status = ConnectionStatus::Ready;
+        assert!(
+            matches!(state.resume_voice_invite(None), Some(ClientMessage::JoinByInvite { code, .. }) if code == "target-code")
+        );
+        assert!(state.resume_voice_invite(Some(Id::new_v4())).is_none());
+        assert!(state.voice_invite_on_ready.is_some());
+        state.guilds.push(guild);
+        state.channels.push(channel.clone());
+        assert!(
+            matches!(state.resume_voice_invite(Some(channel.guild_id)), Some(ClientMessage::JoinVoice { channel_id, .. }) if channel_id == channel.id)
+        );
+        assert_eq!(state.selected_guild, Some(channel.guild_id));
+        assert_eq!(state.selected_channel, Some(channel.id));
+        assert!(state.voice_invite_on_ready.is_none());
+        assert!(state.resume_voice_invite(None).is_none());
+    }
+
+    #[test]
+    fn existing_members_skip_the_code_and_disconnect_clears_the_pending_invite() {
+        let (mut state, channel) = fixture();
+        let pending = crate::state::PendingVoiceInvite {
+            guild_id: channel.guild_id,
+            channel_id: channel.id,
+            code: Some("unused".into()),
+        };
+        state.voice_invite_on_ready = Some(pending.clone());
+        assert!(
+            matches!(state.resume_voice_invite(None), Some(ClientMessage::JoinVoice { channel_id, .. }) if channel_id == channel.id)
+        );
+        state.voice_invite_on_ready = Some(pending);
+        state.clear_server_session();
+        assert!(state.voice_invite_on_ready.is_none());
+    }
 }
 
 fn eligible(state: &AppState, channel: &Channel, peer: &str) -> bool {
@@ -455,11 +573,72 @@ pub fn strip_voice_invite(content: &str) -> String {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum InviteRoute {
+    Current,
+    Switch(crate::known_servers::KnownServer),
+    Unavailable,
+}
+
+fn invite_route(
+    state: &AppState,
+    current: Option<&SessionMode>,
+    known: &[crate::known_servers::KnownServer],
+    invite: &VoiceInviteInfo,
+) -> InviteRoute {
+    if state.status == ConnectionStatus::Ready
+        && state.guilds.iter().any(|g| g.id == invite.guild_id)
+    {
+        return InviteRoute::Current;
+    }
+    let current_key = current.map(crate::known_servers::server_key);
+    let current_matches = current.is_some_and(|mode| {
+        matches!(mode, SessionMode::Remote { server_url } if invite.server.as_ref() == Some(server_url))
+            || super::invite::server_addresses(
+                mode,
+                state.host_info.as_ref(),
+                state.resolved_share.as_deref(),
+            )
+            .iter()
+            .any(|address| Some(address) == invite.server.as_ref())
+    });
+    let target = known
+        .iter()
+        .find(|server| server.guilds.iter().any(|g| g.id == invite.guild_id))
+        .or_else(|| {
+            known.iter().find(|server| {
+                matches!(&server.mode, SessionMode::Remote { server_url } if invite.server.as_ref() == Some(server_url))
+            })
+        });
+    if current_matches || target.is_some_and(|server| Some(server.key()) == current_key) {
+        return if state.status == ConnectionStatus::Ready && invite.code.is_some() {
+            InviteRoute::Current
+        } else {
+            InviteRoute::Unavailable
+        };
+    }
+    if let Some(target) = target {
+        return InviteRoute::Switch(target.clone());
+    }
+    if let Some(address) = &invite.server
+        && (crate::protocol::parse_quic_share(address).is_some()
+            || url::Url::parse(address).is_ok_and(|url| matches!(url.scheme(), "ws" | "wss")))
+    {
+        return InviteRoute::Switch(crate::known_servers::KnownServer::new(
+            SessionMode::Remote {
+                server_url: address.clone(),
+            },
+        ));
+    }
+    InviteRoute::Unavailable
+}
+
 #[component]
 pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
     let rail = try_consume_context::<crate::features::server_rail::ServerRail>();
+    let mode = try_consume_context::<SessionMode>();
     let mobile_tab = try_consume_context::<Signal<super::workspace::MobileTab>>();
 
     let is_connected_here = state.read().connected_voice_channel() == Some(invite.channel_id);
@@ -486,47 +665,30 @@ pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
         if s.connected_voice_channel() == Some(invite.channel_id) {
             return;
         }
-        let has_guild = s.guilds.iter().any(|g| g.id == invite.guild_id);
+        let route = match rail {
+            Some(rail) => invite_route(&s, mode.as_ref(), &rail.known.peek(), &invite),
+            None => invite_route(&s, mode.as_ref(), &[], &invite),
+        };
         drop(s);
-
-        if has_guild {
+        let pending = crate::state::PendingVoiceInvite {
+            guild_id: invite.guild_id,
+            channel_id: invite.channel_id,
+            code: invite.code.clone(),
+        };
+        if route == InviteRoute::Current {
             if let Some(mut tab) = mobile_tab {
                 tab.set(super::workspace::MobileTab::Chat);
             }
             let mut s = state.write();
-            s.dm_mode = false;
-            s.selected_guild = Some(invite.guild_id);
-            s.selected_channel = Some(invite.channel_id);
-            crate::channel_selection::remember_current(&mut s);
-            let join_msg = s.voice.join_message(invite.channel_id);
+            s.open_guild_on_ready = Some(invite.guild_id);
+            s.voice_invite_on_ready = Some(pending);
+            let join_msg = s.resume_voice_invite(None);
             drop(s);
-            gateway.send(join_msg);
-        } else if let Some(code) = invite.code.as_ref() {
-            state.write().open_guild_on_ready = Some(invite.guild_id);
-            state.write().join_voice_on_ready = Some(invite.channel_id);
-            gateway.send(ClientMessage::JoinByInvite {
-                code: code.clone(),
-                accept: false,
-                pow_nonce: None,
-            });
-        } else if let Some(rail) = rail {
-            let known = rail.known.read();
-            if let Some(srv) = known.iter().find(|s| {
-                s.guilds.iter().any(|g| g.id == invite.guild_id)
-                    || invite.server.as_ref().is_some_and(|addr| match &s.mode {
-                        SessionMode::Remote { server_url } => server_url == addr,
-                        _ => false,
-                    })
-            }) {
-                state.write().open_guild_on_ready = Some(invite.guild_id);
-                state.write().join_voice_on_ready = Some(invite.channel_id);
-                rail.request_switch(srv.clone(), Some(invite.guild_id));
-            } else {
-                state.write().error_toast = Some(crate::i18n::text(
-                    "You need to join this community to enter the voice channel.",
-                    &[],
-                ));
+            if let Some(message) = join_msg {
+                gateway.send(message);
             }
+        } else if let (InviteRoute::Switch(server), Some(rail)) = (route, rail) {
+            rail.request_voice_invite(server, pending);
         } else {
             state.write().error_toast = Some(crate::i18n::text(
                 "You need to join this community to enter the voice channel.",
