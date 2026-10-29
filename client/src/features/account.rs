@@ -67,8 +67,9 @@ pub fn AccountView(
     let mut state = use_account_state(settings);
     use_hook(|| {
         let owner = identity.pubkey.clone();
-        state.write().account_pictures =
-            crate::profile::load(&owner).map(|profile| (owner, profile.into()));
+        if let Some(profile) = crate::profile::load(&owner) {
+            state.write().note_account_profile(owner, profile);
+        }
     });
     crate::profile::use_avatar_recovery(state, identity.pubkey.clone());
     crate::bookmarks::use_bookmarks(&identity, state);
