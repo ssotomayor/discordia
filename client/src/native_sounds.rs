@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 
-const NAMES: [&str; 19] = [
+const NAMES: [&str; 21] = [
     "disconnect",
     "watch-start",
     "watch-stop",
@@ -26,6 +26,8 @@ const NAMES: [&str; 19] = [
     "call-outgoing",
     "call-connected",
     "call-ended",
+    "deafen",
+    "undeafen",
 ];
 const IDLE: Duration = Duration::from_millis(1500);
 const COOLDOWN: Duration = Duration::from_millis(250);
@@ -556,6 +558,14 @@ fn tones(sound: Sound) -> &'static [Tone] {
             tone(0.0, 440.0, 0.12, 0.10, Sine),
             tone(0.12, 294.0, 0.18, 0.10, Sine),
         ],
+        &[
+            tone(0.0, 360.0, 0.07, 0.10, Square),
+            tone(0.06, 200.0, 0.11, 0.10, Square),
+        ],
+        &[
+            tone(0.0, 200.0, 0.07, 0.10, Square),
+            tone(0.06, 360.0, 0.11, 0.10, Square),
+        ],
     ];
     BANK.get(sound.0).copied().unwrap_or(&[])
 }
@@ -644,6 +654,37 @@ mod tests {
                 assert!(samples.iter().any(|sample| sample.abs() > 0.001));
                 assert!(samples.last().unwrap().abs() < 0.00001);
             }
+        }
+    }
+
+    #[test]
+    fn required_action_sounds_exist_and_resolve() {
+        let required = [
+            "connect",
+            "disconnect",
+            "server-disconnect",
+            "peer-join",
+            "peer-leave",
+            "mute",
+            "unmute",
+            "deafen",
+            "undeafen",
+            "watch-start",
+            "watch-stop",
+            "stream-start",
+            "stream-stop",
+            "peer-stream-start",
+            "peer-stream-stop",
+            "call-incoming",
+            "call-outgoing",
+            "call-connected",
+            "call-ended",
+            "notify",
+            "dm",
+        ];
+        for name in required {
+            let index = NAMES.iter().position(|c| *c == name);
+            assert!(index.is_some(), "missing sound cue: {name}");
         }
     }
 

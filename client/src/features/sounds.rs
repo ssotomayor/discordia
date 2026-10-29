@@ -46,5 +46,35 @@ pub fn MessageSounds() -> Element {
         last_dm.set(now);
     });
 
+    let voice_controls = use_memo(move || {
+        let s = state.read();
+        (s.voice.muted, s.voice.deafened)
+    });
+    let mut last_controls = use_signal(|| {
+        let s = state.peek();
+        (s.voice.muted, s.voice.deafened)
+    });
+    use_effect(move || {
+        let (muted, deafened) = voice_controls();
+        let (last_m, last_d) = *last_controls.peek();
+        if (muted, deafened) == (last_m, last_d) {
+            return;
+        }
+        last_controls.set((muted, deafened));
+        if deafened != last_d {
+            if deafened {
+                sfx("deafen");
+            } else {
+                sfx("undeafen");
+            }
+        } else if muted != last_m {
+            if muted {
+                sfx("mute");
+            } else {
+                sfx("unmute");
+            }
+        }
+    });
+
     rsx! { Fragment {} }
 }

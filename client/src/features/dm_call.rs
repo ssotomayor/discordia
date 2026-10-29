@@ -1074,7 +1074,7 @@ pub fn CallAlert() -> Element {
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
             })));
-        } else if current == Some(Phase::Connected) && *previous.peek() == Some(Phase::Connecting) {
+        } else if current == Some(Phase::Connected) && *previous.peek() != Some(Phase::Connected) {
             super::sounds::sfx("call-connected");
         } else if current.is_none() && previous.peek().is_some() {
             super::sounds::sfx("call-ended");
