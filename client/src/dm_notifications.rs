@@ -157,6 +157,20 @@ mod native {
         objects::{JObject, JString, JValue},
     };
 
+    fn permission_changes() -> &'static tokio::sync::watch::Sender<u64> {
+        static CHANGES: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> =
+            std::sync::OnceLock::new();
+        CHANGES.get_or_init(|| tokio::sync::watch::channel(0).0)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_dev_dioxus_main_MainActivity_onDmNotificationSettingsChanged(
+        _env: JNIEnv<'_>,
+        _activity: JObject<'_>,
+    ) {
+        permission_changes().send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_dev_dioxus_main_MainActivity_onDmNotificationVisibility(
         _env: JNIEnv<'_>,
@@ -340,11 +354,17 @@ mod native {
             );
         });
         let enabled = status() == "enabled";
+        let status_label = match status().as_str() {
+            "loading" | "updating" => "Checking…",
+            "pending" => "Waiting for Android notification permission…",
+            "enabled" => "Enabled",
+            _ => "Disabled",
+        };
         rsx! {
-            section { class: "mt-6 border-t border-[var(--border)] pt-4",
+            section { class: "mt-6 border-t border-[var(--border)] pt-4", aria_busy: busy() || status() == "loading",
                 h3 { class: "font-semibold", {crate::i18n::text("DM notifications", &[])} }
                 p { class: "mt-2 text-sm text-[var(--text-muted)]", {crate::i18n::text("Notify about new private messages while Discordia is running. Notifications may stop if Android closes the app.", &[])} }
-                p { class: "mt-2 text-sm", {crate::i18n::text(if enabled { "Enabled" } else { "Disabled" }, &[])} }
+                p { role: "status", class: "mt-2 text-sm", {crate::i18n::text(status_label, &[])} }
                 if status() == "blocked" {
                     p { class: "text-sm text-[var(--text-muted)]", {crate::i18n::text("Allow notifications in Android settings to receive DM alerts.", &[])} }
                 }
@@ -353,12 +373,18 @@ mod native {
                 }
                 button { class: "mt-3 min-h-[44px] rounded border border-[var(--border)] px-3", disabled: busy() || status() == "loading",
                     onclick: move |_| {
+                        if busy() || status() == "loading" {
+                            return;
+                        }
                         busy.set(true);
-                        spawn(async move {
+                        status.set("updating".into());
+                        crate::service_task::spawn(async move {
                             let result = async {
+                                let mut changes = permission_changes().subscribe();
                                 let mut current = notification_state(Some(!enabled)).await?;
                                 while current == "pending" {
-                                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                    status.set("pending".into());
+                                    changes.changed().await.map_err(|error| error.to_string())?;
                                     current = notification_state(None).await?;
                                 }
                                 Ok::<_, String>(current)
@@ -368,7 +394,7 @@ mod native {
                             busy.set(false);
                         });
                     },
-                    {crate::i18n::text(if enabled { "Disable notifications" } else { "Enable notifications" }, &[])}
+                    {crate::i18n::text(if busy() { "Checking…" } else if enabled { "Disable notifications" } else { "Enable notifications" }, &[])}
                 }
             }
         }
