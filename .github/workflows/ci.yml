@@ -185,6 +185,7 @@ jobs:
           node "$RUNNER_TEMP/header-layout/node_modules/playwright/cli.js" install --with-deps chromium
           NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-home-header.cjs
           NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-mobile-settings.cjs
+          NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-appearance-backgrounds.cjs
           NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-accent-palette.cjs
           NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-image-viewer.cjs
           NODE_PATH="$RUNNER_TEMP/header-layout/node_modules" node scripts/test-voice-drag.cjs
