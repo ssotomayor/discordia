@@ -1981,5 +1981,12 @@
   "Invitations expire after 24 hours and disappear from the chat.": ["Las invitaciones vencen a las 24 horas y desaparecen del chat.", "Os convites expiram após 24 horas e desaparecem do chat.", "邀请将在24小时后过期并从聊天中消失。", "招待は24時間後に期限切れとなり、チャットから消えます。"],
   "Could not start the server connection.": ["No se pudo iniciar la conexión al servidor.", "Não foi possível iniciar a conexão com o servidor.", "无法启动服务器连接。", "サーバーへの接続を開始できませんでした。"],
   "Server connection details are missing from this invitation.": ["A esta invitación le faltan los datos de conexión al servidor.", "Este convite não inclui os dados de conexão com o servidor.", "此邀请缺少服务器连接信息。", "この招待にはサーバー接続情報がありません。"],
-  "Waiting for Android notification permission…": ["Esperando el permiso de notificaciones de Android…", "Aguardando a permissão de notificações do Android…", "正在等待 Android 通知权限…", "Android の通知許可を待っています…"]
+  "Waiting for Android notification permission…": ["Esperando el permiso de notificaciones de Android…", "Aguardando a permissão de notificações do Android…", "正在等待 Android 通知权限…", "Android の通知許可を待っています…"],
+  "Better together": ["Mejor en compañía", "Melhor em companhia", "一起更精彩", "一緒ならもっと楽しい"],
+  "Invite someone to your voice channel.": ["Invitá a alguien a tu canal de voz.", "Convide alguém para o seu canal de voz.", "邀请好友加入你的语音频道。", "ボイスチャンネルに誰かを招待しましょう。"],
+  "Invitations arrive by private message.": ["Las invitaciones llegan por mensaje privado.", "Os convites chegam por mensagem privada.", "邀请会通过私信送达。", "招待はダイレクトメッセージで届きます。"],
+  "Invitation queued. Open the DM to check delivery.": ["Invitación en cola. Abrí el DM para comprobar el envío.", "Convite na fila. Abra a DM para verificar o envio.", "邀请已加入队列。打开私信以查看发送状态。", "招待を送信待ちに追加しました。DM で送信状況を確認できます。"],
+  "Invite": ["Invitar", "Convidar", "邀请", "招待"],
+  "1 person": ["1 persona", "1 pessoa", "1 人", "1 人"],
+  "{0} people": ["{0} personas", "{0} pessoas", "{0} 人", "{0} 人"]
 }
