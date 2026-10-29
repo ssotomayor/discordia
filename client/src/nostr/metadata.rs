@@ -1,24 +1,5 @@
-//! Kind 0 — the name a key publishes for itself.
-//!
-//! Named for what it is rather than for its NIP: kind 0 is part of NIP-01, and
-//! `event` already owns that spec's ids and signatures. This is the one field
-//! of it this client wants, which is a name for somebody who is in no roster —
-//! a DM peer you share no server with was otherwise permanently `abcd1234…ef01`
-//! even though their name was sitting on the same relays the messages came
-//! from.
-//!
-//! **The content is a stranger's string, and it is treated like one.** Every
-//! other name in this app comes from somewhere with an owner: a gateway
-//! username belongs to a server that can moderate it, a petname you typed
-//! yourself. A kind 0 name is asserted by whoever holds the key and checked by
-//! nobody, so it ranks below both in `AppState::display_name` and it is
-//! sanitised here rather than at the render sites — `sanitize` is what stands
-//! between a relay and the strings this UI draws.
-//!
-//! What that does *not* claim to solve is impersonation: two keys may publish
-//! the same name, and the answer to that is the same one gateway usernames
-//! already need — those are mutable and non-unique too — the key-derived
-//! `#discriminator` and signature colour drawn beside every name.
+//! A signed kind 0 still contains untrusted text; sanitizing here keeps relay
+//! content from controlling the layout wherever names are rendered.
 
 use super::event::Event;
 

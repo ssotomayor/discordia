@@ -147,32 +147,66 @@ fn read_profile_image(path: &std::path::Path, limit: usize) -> Result<String, St
 
 fn pick_profile_image(
     limit: usize,
+    editing: Signal<Option<String>>,
+    error: Signal<Option<String>>,
+    mut generation: Signal<u64>,
+) {
+    let request = generation.peek().wrapping_add(1);
+    generation.set(request);
+    spawn(async move {
+        load_profile_image(
+            request,
+            generation,
+            editing,
+            error,
+            async {
+                crate::file_dialog::pick_file(&[(
+                    crate::i18n::label("Image"),
+                    crate::file_dialog::IMAGE_EXTENSIONS,
+                )])
+                .await
+            },
+            move |file| async move {
+                tokio::task::spawn_blocking(move || read_profile_image(&file, limit))
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result)
+            },
+        )
+        .await;
+    });
+}
+
+async fn load_profile_image<T, R: std::future::Future<Output = Result<String, String>>>(
+    request: u64,
+    generation: Signal<u64>,
     mut editing: Signal<Option<String>>,
     mut error: Signal<Option<String>>,
+    pick: impl std::future::Future<Output = Result<Option<T>, String>>,
+    read: impl FnOnce(T) -> R,
 ) {
-    spawn(async move {
-        let file = match crate::file_dialog::pick_file(&[(
-            crate::i18n::label("Image"),
-            crate::file_dialog::IMAGE_EXTENSIONS,
-        )])
-        .await
-        {
-            Ok(Some(file)) => file,
-            Ok(None) => return,
-            Err(message) => {
-                error.set(Some(message));
-                return;
-            }
-        };
-        let result = tokio::task::spawn_blocking(move || read_profile_image(&file, limit)).await;
-        match result.unwrap_or_else(|error| Err(error.to_string())) {
-            Ok(image) => {
-                error.set(None);
-                editing.set(Some(image));
-            }
-            Err(message) => error.set(Some(message)),
+    if *generation.peek() != request {
+        return;
+    }
+    let picked = pick.await;
+    if *generation.peek() != request {
+        return;
+    }
+    let result = match picked {
+        Ok(Some(file)) => read(file).await,
+        Ok(None) => return,
+        Err(message) => Err(message),
+    };
+    if *generation.peek() != request {
+        return;
+    }
+    match result {
+        Ok(image) => {
+            error.set(None);
+            editing.set(Some(image));
         }
-    });
+        Err(message) => error.set(Some(message)),
+    }
 }
 
 /// The server stores the picture and hands back an address, so the only
@@ -547,12 +581,16 @@ pub fn ProfileCard(
 /// rather than growing an icon beside it.
 pub fn ProfileEditor(class: String, children: Element) -> Element {
     let identity = use_context::<crate::identity::Identity>();
+    let identity_name = identity.display_name.clone();
+    let rename = try_use_context::<super::account::RenameAccount>();
     let profile_owner = use_signal(|| identity.pubkey);
     let mut state = use_app_state();
     let gateway = use_gateway();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
 
     let mut open = use_signal(|| false);
+    let mut display_name = use_signal(String::new);
+    let mut original_name = use_signal(String::new);
     let mut avatar = use_signal::<Option<String>>(|| None);
     let mut banner = use_signal::<Option<String>>(|| None);
     let mut bio = use_signal(String::new);
@@ -563,9 +601,23 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
     let mut err = use_signal::<Option<String>>(|| None);
     let mut editing_avatar = use_signal(|| None::<String>);
     let mut editing_banner = use_signal(|| None::<String>);
+    let mut image_generation = use_signal(|| 0_u64);
+    let mut reset_images = move || {
+        image_generation.with_mut(|n| *n = n.wrapping_add(1));
+        editing_avatar.set(None);
+        editing_banner.set(None);
+    };
+    let close = use_callback(move |()| {
+        reset_images();
+        open.set(false);
+    });
 
     let mut load_current = move || {
+        reset_images();
         let s = state.read();
+        let name = s.display_name_or(&profile_owner.peek(), &identity_name);
+        display_name.set(name.clone());
+        original_name.set(name);
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
         if let Some(pk) = me
             && let Some(p) = s.profile_of(&pk)
@@ -591,6 +643,19 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
     };
 
     let mut save = move || {
+        if let Some(rename) = rename {
+            if display_name.peek().trim().is_empty() {
+                return;
+            }
+            let name = crate::protocol::canonical_username(&display_name());
+            if name != *original_name.peek() {
+                if let Err(message) = rename.0.call(name.clone()) {
+                    err.set(Some(message));
+                    return;
+                }
+                original_name.set(name);
+            }
+        }
         let bio_val = bio();
         let bio_opt = {
             let t = bio_val.trim();
@@ -652,7 +717,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             hide_operator: !show_operator(),
             updated_at,
         });
-        open.set(false);
+        close.call(());
     };
 
     let (owns_a_guild, is_operator) = {
@@ -666,6 +731,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
         button {
             class: "{class}",
             title: crate::i18n::text("Edit your profile", &[]),
+            aria_label: crate::i18n::text("Edit your profile", &[]),
             onclick: move |_| { load_current(); err.set(None); open.set(true); },
             {children}
         }
@@ -674,7 +740,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             crate::features::image_editor::ImageEditor {
                 src,
                 shape: crate::features::image_editor::CropShape::Square,
-                on_cancel: move |_| editing_avatar.set(None),
+                on_cancel: move |_| reset_images(),
                 on_apply: move |cropped: String| {
                     editing_avatar.set(None);
                     let (val, note) = embed_image(cropped);
@@ -687,7 +753,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             crate::features::image_editor::ImageEditor {
                 src,
                 shape: crate::features::image_editor::CropShape::Banner,
-                on_cancel: move |_| editing_banner.set(None),
+                on_cancel: move |_| reset_images(),
                 on_apply: move |cropped: String| {
                     editing_banner.set(None);
                     let (val, note) = embed_image(cropped);
@@ -699,11 +765,26 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
         if open() {
             div {
                 class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-                onclick: move |_| open.set(false),
+                onclick: move |_| close.call(()),
                 div {
                     class: "dxf-modal-in w-80 max-h-[90vh] overflow-y-auto bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Edit profile", &[])} }
+
+                    if rename.is_some() {
+                        label { class: "block mb-3 text-xs text-[var(--text-muted)]",
+                            {crate::i18n::text("Display name", &[])}
+                            input {
+                                class: "w-full mt-1 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-sm text-[var(--text)] outline-none transition-colors",
+                                r#type: "text",
+                                aria_label: crate::i18n::text("Display name", &[]),
+                                maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
+                                value: "{display_name}",
+                                oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
+                            }
+                            span { class: "block mt-1 text-[10px] text-[var(--text-dim)]", {crate::i18n::text("This changes your account name across Discordia.", &[])} }
+                        }
+                    }
 
                     div { class: "flex items-center gap-3 mb-3",
                         div { class: "w-16 h-16 rounded-md border border-[var(--border)] overflow-hidden flex items-center justify-center text-[var(--text-dim)] text-xs shrink-0",
@@ -717,14 +798,14 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                             button {
                                 r#type: "button",
                                 class: "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer text-center",
-                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_AVATAR_INPUT_BYTES, editing_avatar, err),
+                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_AVATAR_INPUT_BYTES, editing_avatar, err, image_generation),
                                 {crate::i18n::text("Choose image", &[])}
                             }
                             if avatar().is_some() {
                                 button {
                                     r#type: "button",
                                     class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                    onclick: move |_| avatar.set(None),
+                                    onclick: move |_| { reset_images(); avatar.set(None); },
                                     {crate::i18n::text("Remove", &[])}
                                 }
                             }
@@ -744,14 +825,14 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                             button {
                                 r#type: "button",
                                 class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
-                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_BANNER_INPUT_BYTES, editing_banner, err),
+                                onclick: move |_| pick_profile_image(crate::image_edit::MAX_BANNER_INPUT_BYTES, editing_banner, err, image_generation),
                                 {crate::i18n::text("Choose banner", &[])}
                             }
                             if banner().is_some() {
                                 button {
                                     r#type: "button",
                                     class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                    onclick: move |_| banner.set(None),
+                                    onclick: move |_| { reset_images(); banner.set(None); },
                                     {crate::i18n::text("Remove", &[])}
                                 }
                             }
@@ -833,11 +914,14 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                     div { class: "mt-3 flex gap-2 justify-end",
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
-                            onclick: move |_| open.set(false),
+                            aria_label: crate::i18n::text("Cancel", &[]),
+                            onclick: move |_| close.call(()),
                             {crate::i18n::text("Cancel", &[])}
                         }
                         button {
                             class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                            aria_label: crate::i18n::text("Save", &[]),
+                            disabled: rename.is_some() && display_name.read().trim().is_empty(),
                             onclick: move |_| save(),
                             {crate::i18n::text("Save", &[])}
                         }
@@ -903,6 +987,271 @@ fn SavedEmojiSection() -> Element {
                 crate::features::connect::BlobServerField {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_name_tests {
+    use super::*;
+    use dioxus::core::{AttributeValue, ElementId, Mutation};
+    use std::{any::Any, cell::RefCell, rc::Rc};
+
+    fn labeled(edits: &[Mutation], label: &str) -> ElementId {
+        let label = crate::i18n::text(label, &[]);
+        edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: AttributeValue::Text(value),
+                    id,
+                    ..
+                } if *value == label => Some(*id),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn click(dom: &VirtualDom, id: ElementId) {
+        let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+            dioxus::html::SerializedMouseData::default(),
+        )));
+        dom.runtime()
+            .handle_event("click", Event::new(data, true), id);
+    }
+
+    fn input(dom: &VirtualDom, id: ElementId, value: &str) {
+        let data: dioxus::html::SerializedFormData =
+            serde_json::from_value(serde_json::json!({"value": value})).unwrap();
+        let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(data)));
+        dom.runtime()
+            .handle_event("input", Event::new(data, true), id);
+    }
+
+    #[test]
+    fn in_server_name_editor_uses_live_name_and_preserves_failed_or_cancelled_edits() {
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        type Requests = Rc<RefCell<Vec<String>>>;
+        let requests: Requests = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |requests: Requests| {
+                let state = use_signal(|| {
+                    let mut s = crate::state::AppState::empty();
+                    s.self_user = Some(crate::protocol::User {
+                        pubkey: "profile-name-test".into(),
+                        username: "Current name".into(),
+                    });
+                    s.profiles.insert(
+                        "profile-name-test".into(),
+                        crate::protocol::Profile {
+                            pubkey: "profile-name-test".into(),
+                            ..Default::default()
+                        },
+                    );
+                    s
+                });
+                provide_context(state);
+                use_context_provider(|| Signal::new(crate::settings::ClientSettings::default()));
+                use_context_provider(|| {
+                    let mut identity = crate::identity::Identity::restore_from_private_key(
+                        "01".repeat(32),
+                        "Stale name",
+                    )
+                    .unwrap();
+                    identity.pubkey = "profile-name-test".into();
+                    identity
+                });
+                use_context_provider(|| {
+                    crate::state::GatewayTx(tokio::sync::mpsc::unbounded_channel().0)
+                });
+                use_context_provider(crate::nostr::service::NostrTx::test_channel);
+                let rename = use_callback(move |name| {
+                    requests.borrow_mut().push(name);
+                    Err("rename failed".into())
+                });
+                provide_context(super::super::account::RenameAccount(rename));
+                rsx! { ProfileEditor { class: "", "Profile" } }
+            },
+            requests.clone(),
+        );
+        let initial = dom.rebuild_to_vec();
+        let trigger = labeled(&initial.edits, "Edit your profile");
+        click(&dom, trigger);
+        let opened = dom.render_immediate_to_vec();
+        let field = labeled(&opened.edits, "Display name");
+        let save = labeled(&opened.edits, "Save");
+        let cancel = labeled(&opened.edits, "Cancel");
+        assert!(opened.edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "value", value: AttributeValue::Text(value), id, .. } if *id == field && *value == "Current name"
+        )));
+        input(&dom, field, " \u{202e}New name\u{2029} ");
+        dom.render_immediate_to_vec();
+        click(&dom, save);
+        assert_eq!(*requests.borrow(), vec!["New name"]);
+        assert!(
+            dom.render_immediate_to_vec()
+                .edits
+                .iter()
+                .any(|edit| matches!(edit,
+                    Mutation::CreateTextNode { value, .. } if *value == "rename failed"
+                ))
+        );
+        input(&dom, field, "   ");
+        dom.render_immediate_to_vec();
+        click(&dom, save);
+        assert_eq!(requests.borrow().len(), 1);
+        click(&dom, cancel);
+        dom.render_immediate_to_vec();
+        click(&dom, trigger);
+        let reopened = dom.render_immediate_to_vec();
+        let field = labeled(&reopened.edits, "Display name");
+        assert!(reopened.edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "value", value: AttributeValue::Text(value), id, .. } if *id == field && *value == "Current name"
+        )));
+        assert_eq!(requests.borrow().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod picker_race_tests {
+    use super::*;
+    use futures_util::poll;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    use tokio::sync::oneshot;
+
+    #[derive(Clone, Copy)]
+    struct Draft {
+        generation: Signal<u64>,
+        avatar: Signal<Option<String>>,
+        banner: Signal<Option<String>>,
+        error: Signal<Option<String>>,
+    }
+
+    fn fixture() -> (VirtualDom, Draft) {
+        type Export = Rc<RefCell<Option<Draft>>>;
+        let export: Export = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let draft = Draft {
+                    generation: use_signal(|| 1),
+                    avatar: use_signal(|| None),
+                    banner: use_signal(|| None),
+                    error: use_signal(|| None),
+                };
+                *export.borrow_mut() = Some(draft);
+                rsx! {}
+            },
+            export.clone(),
+        );
+        dom.rebuild_in_place();
+        let draft = export.borrow().unwrap();
+        (dom, draft)
+    }
+
+    #[tokio::test]
+    async fn a_newer_avatar_or_banner_wins_over_an_older_read_or_error() {
+        for result in [Ok("old image".into()), Err("old error".into())] {
+            for banner in [false, true] {
+                let (_dom, mut draft) = fixture();
+                let (finish, reading) = oneshot::channel();
+                let mut old = Box::pin(load_profile_image(
+                    1,
+                    draft.generation,
+                    draft.avatar,
+                    draft.error,
+                    std::future::ready(Ok(Some(()))),
+                    |_| async move { reading.await.unwrap() },
+                ));
+                assert!(poll!(old.as_mut()).is_pending());
+                draft.generation.set(2);
+                let target = if banner { draft.banner } else { draft.avatar };
+                load_profile_image(
+                    2,
+                    draft.generation,
+                    target,
+                    draft.error,
+                    std::future::ready(Ok(Some(()))),
+                    |_| std::future::ready(Ok("latest image".into())),
+                )
+                .await;
+                finish.send(result.clone()).unwrap();
+                old.await;
+                assert_eq!(target.peek().as_deref(), Some("latest image"));
+                assert!(draft.error.peek().is_none());
+                if banner {
+                    assert!(draft.avatar.peek().is_none());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stale_picker_never_reads_its_file_or_overwrites_the_current_error() {
+        for picked in [Ok(Some(())), Ok(None), Err("old picker error".into())] {
+            let (_dom, mut draft) = fixture();
+            let reads = Rc::new(Cell::new(0));
+            let counted = reads.clone();
+            let (finish, picking) = oneshot::channel();
+            let mut old = Box::pin(load_profile_image(
+                1,
+                draft.generation,
+                draft.avatar,
+                draft.error,
+                async move { picking.await.unwrap() },
+                move |_| {
+                    counted.set(counted.get() + 1);
+                    std::future::ready(Ok("old image".into()))
+                },
+            ));
+            assert!(poll!(old.as_mut()).is_pending());
+            draft.generation.set(2);
+            load_profile_image::<(), _>(
+                2,
+                draft.generation,
+                draft.banner,
+                draft.error,
+                std::future::ready(Err("current picker error".into())),
+                |_| std::future::ready(Ok("unused".into())),
+            )
+            .await;
+            finish.send(picked).unwrap();
+            old.await;
+            assert_eq!(reads.get(), 0);
+            assert!(draft.avatar.peek().is_none());
+            assert_eq!(draft.error.peek().as_deref(), Some("current picker error"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_latest_selection_does_not_restore_an_older_pending_image() {
+        let (_dom, mut draft) = fixture();
+        let (finish, reading) = oneshot::channel();
+        let mut old = Box::pin(load_profile_image(
+            1,
+            draft.generation,
+            draft.avatar,
+            draft.error,
+            std::future::ready(Ok(Some(()))),
+            |_| async move { reading.await.unwrap() },
+        ));
+        assert!(poll!(old.as_mut()).is_pending());
+        draft.generation.set(2);
+        load_profile_image::<(), _>(
+            2,
+            draft.generation,
+            draft.avatar,
+            draft.error,
+            std::future::ready(Ok(None)),
+            |_| std::future::ready(Err("cancelled pick must not be read".into())),
+        )
+        .await;
+        finish.send(Ok("old image".into())).unwrap();
+        old.await;
+        assert!(draft.avatar.peek().is_none());
+        assert!(draft.error.peek().is_none());
     }
 }
 

@@ -313,6 +313,7 @@ fn ConnectingOverlay(target: String) -> Element {
 #[component]
 pub fn WorkspaceView(
     params: SessionParams,
+    display_name: String,
     on_disconnect: EventHandler<String>,
     on_switch: EventHandler<super::server_rail::Switch>,
 ) -> Element {
@@ -365,6 +366,18 @@ pub fn WorkspaceView(
         (gateway_tx, gateway_shutdown, voice_tx)
     });
     provide_context(gateway_tx.clone());
+    let name_gateway = gateway_tx.clone();
+    let mut sent_name = use_signal(|| None::<String>);
+    use_effect(use_reactive((&display_name,), move |(name,)| {
+        if state.read().status != ConnectionStatus::Ready {
+            sent_name.set(None);
+        } else if sent_name.peek().as_ref() != Some(&name) {
+            name_gateway.send(ClientMessage::UpdateUsername {
+                username: name.clone(),
+            });
+            sent_name.set(Some(name));
+        }
+    }));
     crate::route_reporting::use_route_reports(state, gateway_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     crate::voice_handoff::use_route(
@@ -1456,6 +1469,11 @@ fn GuildDialogHost() -> Element {
         },
         Some(crate::state::GuildDialog::Invite(gid)) => rsx! {
             super::invite::InviteDialog { guild_id: gid, on_close: close }
+        },
+        Some(crate::state::GuildDialog::VoiceInvite(cid)) => rsx! {
+            for channel_id in std::iter::once(cid) {
+                super::voice_invite::VoiceInviteDialog { key: "{channel_id}", channel_id, on_close: close }
+            }
         },
         Some(crate::state::GuildDialog::Integrations(gid)) => rsx! {
             crate::features::integrations::IntegrationsDialog { guild_id: gid, on_close: close }

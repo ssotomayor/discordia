@@ -96,6 +96,11 @@ impl NostrTx {
     pub(crate) fn test_channel() -> Self {
         Self(unbounded_channel().0)
     }
+    #[cfg(test)]
+    pub(crate) fn test_channel_pair() -> (Self, tokio::sync::mpsc::UnboundedReceiver<NostrCmd>) {
+        let (tx, rx) = unbounded_channel();
+        (Self(tx), rx)
+    }
     pub fn try_send(&self, cmd: NostrCmd) -> bool {
         self.0.send(cmd).is_ok()
     }
@@ -764,20 +769,6 @@ const SUB_DM: &str = "dxf-dm";
 const SUB_NAMES: &str = "dxf-names";
 fn apply_own_name(state: &mut AppState, pubkey: &str, name: &str, at: i64) {
     state.note_name(pubkey, name.to_owned(), at);
-    if let Some(user) = state
-        .self_user
-        .as_mut()
-        .filter(|user| user.pubkey == pubkey)
-    {
-        user.username = name.to_owned();
-    }
-    for member in state
-        .members
-        .iter_mut()
-        .filter(|member| !member.bot && member.user.pubkey == pubkey)
-    {
-        member.user.username = name.to_owned();
-    }
 }
 
 /// One app at a time: each lookup replaces the last under this id.

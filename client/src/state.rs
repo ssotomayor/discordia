@@ -211,6 +211,7 @@ pub enum GuildDialog {
     Integrations(Id),
     Roles(Id),
     Invite(Id),
+    VoiceInvite(Id),
     AddGuild,
 }
 /// The guild is not in `guilds` yet — we have not joined — so the name is
@@ -247,6 +248,7 @@ impl RulesPrompt {
 pub struct ReplyDraft {
     pub message_id: Id,
     pub channel_id: Id,
+    pub author_pubkey: String,
     pub author_username: String,
     pub excerpt: String,
 }
@@ -1184,16 +1186,28 @@ impl AppState {
     /// A roster name is one on a server you share, a petname is one you typed,
     /// and kind 0 is the peer's own — in that order of who stands behind it.
     pub fn display_name(&self, pubkey: &str) -> String {
+        self.known_display_name(pubkey)
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
+    }
+
+    pub fn display_name_or(&self, pubkey: &str, fallback: &str) -> String {
+        self.known_display_name(pubkey)
+            .unwrap_or(fallback)
+            .to_owned()
+    }
+
+    fn known_display_name(&self, pubkey: &str) -> Option<&str> {
         if let Some(u) = self.user_of(pubkey) {
-            return u.username.clone();
+            return Some(&u.username);
         }
         if let Some(pet) = self.contacts.petname(pubkey) {
-            return pet.to_string();
+            return Some(pet);
         }
         if let Some((published, _)) = self.nostr_names.get(pubkey) {
-            return published.clone();
+            return Some(published);
         }
-        crate::identity::truncate_pubkey(pubkey)
+        None
     }
 
     pub fn dm_of(&self, channel_id: Id) -> Option<&DmInfo> {
@@ -1552,15 +1566,21 @@ impl AppState {
         }
     }
 
-    /// Records a name a peer published for themselves, keeping the newest.
-    ///
-    /// Ties keep what is already there: two relays serving the same event is
-    /// the ordinary case, and re-inserting it would churn the signal for
-    /// nothing. Returns whether the map changed.
+    // Relays replay old events and duplicates; neither may undo a rename.
     pub fn note_name(&mut self, pubkey: &str, name: String, at: i64) -> bool {
         match self.nostr_names.get(pubkey) {
             Some((_, seen)) if *seen >= at => false,
             _ => {
+                if let Some(user) = self.self_user.as_mut().filter(|u| u.pubkey == pubkey) {
+                    user.username.clone_from(&name);
+                }
+                for member in self
+                    .members
+                    .iter_mut()
+                    .filter(|m| !m.bot && m.user.pubkey == pubkey)
+                {
+                    member.user.username.clone_from(&name);
+                }
                 self.nostr_names.insert(pubkey.to_string(), (name, at));
                 true
             }
@@ -2110,6 +2130,28 @@ mod tests {
         assert!(s.note_name("abcd", "Alice".into(), 100));
         assert!(s.note_name("abcd", "Bob".into(), 200));
         assert_eq!(s.display_name("abcd"), "Bob");
+    }
+
+    #[test]
+    fn kind_0_refreshes_shared_rosters_without_renaming_bots() {
+        let mut s = AppState::empty();
+        let mut first = member("peer", true);
+        first.user.username = "Before".into();
+        let mut second = first.clone();
+        second.guild_id = Id::new_v4();
+        let mut bot = first.clone();
+        bot.bot = true;
+        bot.guild_id = Id::new_v4();
+        s.members = vec![first, second, bot];
+        assert!(s.note_name("peer", "After".into(), 200));
+        assert_eq!(s.display_name("peer"), "After");
+        assert_eq!(s.members[0].user.username, "After");
+        assert_eq!(s.members[1].user.username, "After");
+        assert_eq!(s.members[2].user.username, "Before");
+        assert!(!s.note_name("peer", "Before".into(), 100));
+        assert!(!s.note_name("peer", "Duplicate".into(), 200));
+        assert_eq!(s.members[0].user.username, "After");
+        assert_eq!(s.members[1].user.username, "After");
     }
 
     /// Two relays serving the same event is the ordinary case, not a change.
