@@ -665,7 +665,13 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .with_timezone(&chrono::Local)
         .format("%H:%M")
         .to_string();
-    let has_text = !message.content.is_empty();
+    let voice_invite = super::voice_invite::parse_voice_invite(&message.content);
+    let display_content = if voice_invite.is_some() {
+        super::voice_invite::strip_voice_invite(&message.content)
+    } else {
+        message.content.clone()
+    };
+    let has_text = !display_content.is_empty();
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
     let message_id = message.id;
@@ -673,8 +679,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .read()
         .display_name_or(&message.author.pubkey, &message.author.username);
     let content_for_reply = {
-        let flat = message
-            .content
+        let flat = display_content
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
@@ -891,7 +896,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     }
                 } else if has_text {
                     div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
-                        MessageContent { content: message.content.clone(), channel_id, message_id }
+                        MessageContent { content: display_content.clone(), channel_id, message_id }
                         if let Some(when) = edited.clone() {
                             span {
                                 class: "ml-1 text-[10px] text-[var(--text-dim)] select-none",
@@ -931,6 +936,9 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             span { {crate::i18n::text(" · {0} × {1} px", &[(width).to_string(), (height).to_string()])} }
                         }
                     }
+                }
+                if let Some(invite) = voice_invite.clone() {
+                    super::voice_invite::VoiceInviteCardRow { invite }
                 }
                 if !message.reactions.is_empty() {
                     div { class: "flex flex-wrap gap-1 mt-1",

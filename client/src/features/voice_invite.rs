@@ -9,6 +9,7 @@ use crate::state::{AppState, ConnectionStatus, SessionMode, use_app_state, use_g
 pub(super) fn can_invite_to(state: &AppState, channel: &Channel) -> bool {
     state.status == ConnectionStatus::Ready
         && channel.kind == ChannelKind::Voice
+        && state.voice.channel_id == Some(channel.id)
         && state.self_user.as_ref().is_some_and(|user| {
             state
                 .members
@@ -42,6 +43,7 @@ mod tests {
         }))
         .unwrap();
         state.channels.push(channel.clone());
+        state.voice.channel_id = Some(channel.id);
         for (pk, name, bot) in [
             ("me", "Me", false),
             ("alice", "Alice", false),
@@ -267,6 +269,24 @@ mod tests {
             "inviting must not join or move voice"
         );
     }
+
+    #[test]
+    fn parse_and_strip_voice_invite_roundtrips() {
+        let (state, channel) = fixture();
+        let text = invitation(&state, &channel, "alice", None, None).unwrap();
+        let parsed = parse_voice_invite(&text).expect("must parse voice invite");
+        assert_eq!(parsed.guild_id, channel.guild_id);
+        assert_eq!(parsed.channel_id, channel.id);
+        assert_eq!(parsed.guild_name, "Community");
+        assert_eq!(parsed.channel_name, "Lounge");
+        assert!(parsed.server.is_none());
+        assert!(parsed.code.is_none());
+
+        let stripped = strip_voice_invite(&text);
+        assert!(!stripped.contains("discordia://voice/"));
+        assert!(stripped.contains("Lounge"));
+        assert!(stripped.contains("Community"));
+    }
 }
 
 fn eligible(state: &AppState, channel: &Channel, peer: &str) -> bool {
@@ -339,25 +359,208 @@ fn invitation(
         return None;
     }
     let guild = state.guilds.iter().find(|g| g.id == channel.guild_id)?;
+    let mut url = url::Url::parse(&format!("discordia://voice/{}/{}", channel.guild_id, channel.id)).ok()?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("g", &guild.name);
+        pairs.append_pair("c", &channel.name);
+        if let Some(srv) = address {
+            pairs.append_pair("server", srv);
+        }
+        if let Some(c) = code {
+            pairs.append_pair("code", c);
+        }
+    }
+    let uri = url.as_str();
     if state
         .members_of(channel.guild_id)
         .into_iter()
         .any(|m| m.user.pubkey == peer)
     {
-        Some(crate::i18n::text(
-            "You're invited to voice channel {0} in {1} on Discordia.\nOpen {1}, then select voice channel {0}.",
-            &[channel.name.clone(), guild.name.clone()],
+        Some(format!(
+            "{}\n{uri}",
+            crate::i18n::text(
+                "You're invited to voice channel {0} in {1} on Discordia.\nOpen {1}, then select voice channel {0}.",
+                &[channel.name.clone(), guild.name.clone()],
+            )
         ))
     } else {
-        Some(crate::i18n::text(
-            "You're invited to voice channel {0} in {1} on Discordia.\n1. Add the server: {2}\n2. Join the community with invite code: {3}\n3. Select voice channel: {0}",
-            &[
-                channel.name.clone(),
-                guild.name.clone(),
-                address?.to_owned(),
-                code?.to_owned(),
-            ],
+        Some(format!(
+            "{}\n{uri}",
+            crate::i18n::text(
+                "You're invited to voice channel {0} in {1} on Discordia.\n1. Add the server: {2}\n2. Join the community with invite code: {3}\n3. Select voice channel: {0}",
+                &[
+                    channel.name.clone(),
+                    guild.name.clone(),
+                    address?.to_owned(),
+                    code?.to_owned(),
+                ],
+            )
         ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceInviteInfo {
+    pub guild_id: Id,
+    pub channel_id: Id,
+    pub guild_name: String,
+    pub channel_name: String,
+    pub server: Option<String>,
+    pub code: Option<String>,
+}
+
+pub fn parse_voice_invite(content: &str) -> Option<VoiceInviteInfo> {
+    let pos = content.find("discordia://voice/")?;
+    let raw = content[pos..].split_whitespace().next()?;
+    let url = url::Url::parse(raw).ok()?;
+    if url.scheme() != "discordia" || url.host_str() != Some("voice") {
+        return None;
+    }
+    let mut segs = url.path_segments()?;
+    let guild_id = Id::parse_str(segs.next()?).ok()?;
+    let channel_id = Id::parse_str(segs.next()?).ok()?;
+    let mut guild_name = String::new();
+    let mut channel_name = String::new();
+    let mut server = None;
+    let mut code = None;
+    for (k, v) in url.query_pairs() {
+        match k.as_ref() {
+            "g" => guild_name = v.into_owned(),
+            "c" => channel_name = v.into_owned(),
+            "server" => server = Some(v.into_owned()),
+            "code" => code = Some(v.into_owned()),
+            _ => {}
+        }
+    }
+    Some(VoiceInviteInfo {
+        guild_id,
+        channel_id,
+        guild_name,
+        channel_name,
+        server,
+        code,
+    })
+}
+
+pub fn strip_voice_invite(content: &str) -> String {
+    if let Some(pos) = content.find("discordia://voice/") {
+        content[..pos].trim_end().to_string()
+    } else {
+        content.to_string()
+    }
+}
+
+#[component]
+pub fn VoiceInviteCardRow(invite: VoiceInviteInfo) -> Element {
+    let mut state = use_app_state();
+    let gateway = use_gateway();
+    let rail = try_consume_context::<crate::features::server_rail::ServerRail>();
+    let mobile_tab = try_consume_context::<Signal<super::workspace::MobileTab>>();
+
+    let is_connected_here = state.read().connected_voice_channel() == Some(invite.channel_id);
+    let channel_title = if invite.channel_name.is_empty() {
+        crate::i18n::text("Voice channel", &[])
+    } else {
+        invite.channel_name.clone()
+    };
+    let guild_title = if invite.guild_name.is_empty() {
+        crate::i18n::text("Community", &[])
+    } else {
+        invite.guild_name.clone()
+    };
+
+    let on_join = move |_| {
+        if state.peek().dm_call.is_some() {
+            state.write().error_toast = Some(crate::i18n::text(
+                "End your DM call before joining a voice channel.",
+                &[],
+            ));
+            return;
+        }
+        let s = state.peek();
+        if s.connected_voice_channel() == Some(invite.channel_id) {
+            return;
+        }
+        let has_guild = s.guilds.iter().any(|g| g.id == invite.guild_id);
+        drop(s);
+
+        if has_guild {
+            if let Some(mut tab) = mobile_tab {
+                tab.set(super::workspace::MobileTab::Chat);
+            }
+            let mut s = state.write();
+            s.dm_mode = false;
+            s.selected_guild = Some(invite.guild_id);
+            s.selected_channel = Some(invite.channel_id);
+            crate::channel_selection::remember_current(&mut s);
+            let join_msg = s.voice.join_message(invite.channel_id);
+            drop(s);
+            gateway.send(join_msg);
+        } else if let Some(code) = invite.code.as_ref() {
+            state.write().open_guild_on_ready = Some(invite.guild_id);
+            state.write().join_voice_on_ready = Some(invite.channel_id);
+            gateway.send(ClientMessage::JoinByInvite {
+                code: code.clone(),
+                accept: false,
+                pow_nonce: None,
+            });
+        } else if let Some(rail) = rail {
+            let known = rail.known.read();
+            if let Some(srv) = known.iter().find(|s| {
+                s.guilds.iter().any(|g| g.id == invite.guild_id)
+                    || invite.server.as_ref().is_some_and(|addr| match &s.mode {
+                        SessionMode::Remote { server_url } => server_url == addr,
+                        _ => false,
+                    })
+            }) {
+                state.write().open_guild_on_ready = Some(invite.guild_id);
+                state.write().join_voice_on_ready = Some(invite.channel_id);
+                rail.request_switch(srv.clone(), Some(invite.guild_id));
+            } else {
+                state.write().error_toast = Some(crate::i18n::text(
+                    "You need to join this community to enter the voice channel.",
+                    &[],
+                ));
+            }
+        } else {
+            state.write().error_toast = Some(crate::i18n::text(
+                "You need to join this community to enter the voice channel.",
+                &[],
+            ));
+        }
+    };
+
+    rsx! {
+        div {
+            class: "flex items-center justify-between gap-3 p-3 mt-1.5 rounded-xl border border-[var(--border)] bg-[var(--panel2)] max-w-md",
+            div { class: "flex items-center gap-3 min-w-0",
+                div {
+                    class: "w-9 h-9 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)] flex items-center justify-center shrink-0",
+                    span {
+                        class: "w-5 h-5",
+                        dangerous_inner_html: crate::features::icons::SPEAKER,
+                    }
+                }
+                div { class: "flex-1 min-w-0",
+                    div { class: "font-semibold text-sm truncate text-[var(--text)]", "{channel_title}" }
+                    div { class: "text-xs text-[var(--text-dim)] truncate", "{guild_title}" }
+                }
+            }
+            if is_connected_here {
+                span {
+                    class: "text-xs font-medium text-[var(--up)] px-3 py-1.5 rounded-lg bg-green-500/10 shrink-0",
+                    {crate::i18n::text("Connected", &[])}
+                }
+            } else {
+                button {
+                    r#type: "button",
+                    class: "px-3 py-1.5 rounded-lg bg-[var(--accent)] text-black font-semibold text-xs hover:brightness-110 active:scale-[0.98] transition-all shrink-0",
+                    onclick: on_join,
+                    {crate::i18n::text("Join voice channel", &[])}
+                }
+            }
+        }
     }
 }
 
