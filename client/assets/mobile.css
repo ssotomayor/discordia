@@ -33,7 +33,7 @@
 .dxf-platform-mobile .dxf-settings-audio-tabs button[aria-pressed="true"] {
   background-color: var(--panel-solid); color: var(--accent);
 }
-.dxf-platform-mobile :is(.dxf-general-language, .dxf-general-notifications) {
+.dxf-platform-mobile :is(.dxf-general-language, .dxf-general-notifications, .dxf-general-level) {
   margin-top: 16px; padding: 16px; border: 1px solid var(--border);
   border-radius: 14px; background-color: var(--panel2);
 }
