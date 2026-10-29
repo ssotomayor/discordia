@@ -550,9 +550,6 @@ fn WindowControls(props: WindowControlsProps) -> Element {
     let commands = props.commands;
     let generation = props.generation;
     let pin_window = crate::platform::use_window();
-    let mut fullscreen = props.fullscreen;
-    let mut focused = props.focused;
-    let pk_fullscreen = props.pubkey.clone();
     rsx! {
         div { class: "flex flex-wrap items-center justify-end gap-2",
             button { r#type: "button", class: "dxf-stream-icon-button", title: if pinned() { crate::i18n::text("Unpin", &[]) } else { crate::i18n::text("Keep window on top", &[]) },
@@ -560,17 +557,30 @@ fn WindowControls(props: WindowControlsProps) -> Element {
                 onclick: move |_| { pinned.toggle(); pin_window.window.set_always_on_top(pinned()); },
                 dangerous_inner_html: super::icons::PIN,
             }
-            button { r#type: "button", class: "dxf-stream-icon-button",
-                title: crate::i18n::text(if fullscreen() { "Exit full screen" } else { "Full screen" }, &[]),
-                aria_label: crate::i18n::text(if fullscreen() { "Exit full screen" } else { "Full screen" }, &[]),
-                onclick: move |_| {
-                    if !fullscreen() { focused.set(Some(pk_fullscreen.clone())); }
-                    fullscreen.toggle();
-                }, dangerous_inner_html: if fullscreen() { super::icons::CONTRACT } else { super::icons::EXPAND } }
+            FullscreenControl { fullscreen: props.fullscreen, focused: props.focused, pubkey: props.pubkey }
             button { r#type: "button", class: "dxf-stream-icon-button",
                 title: crate::i18n::text(if props.multiple_streams { "Return all to app" } else { "Return to app" }, &[]),
                 aria_label: crate::i18n::text(if props.multiple_streams { "Return all to app" } else { "Return to app" }, &[]),
                 onclick: move |_| send(&commands, generation, Command::DockAll), dangerous_inner_html: super::icons::WINDOW_POP_IN }
+        }
+    }
+}
+
+#[component]
+fn FullscreenControl(
+    mut fullscreen: Signal<bool>,
+    mut focused: Signal<Option<String>>,
+    pubkey: String,
+) -> Element {
+    rsx! {
+        button { r#type: "button", class: "dxf-stream-icon-button",
+            title: crate::i18n::text(if fullscreen() { "Exit full screen" } else { "Full screen" }, &[]),
+            aria_label: crate::i18n::text(if fullscreen() { "Exit full screen" } else { "Full screen" }, &[]),
+            onclick: move |_| {
+                focused.set(if fullscreen() { None } else { Some(pubkey.clone()) });
+                fullscreen.toggle();
+            },
+            dangerous_inner_html: if fullscreen() { super::icons::CONTRACT } else { super::icons::EXPAND },
         }
     }
 }
@@ -796,6 +806,46 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
 mod tests {
     use super::{grid_style, reconcile_detached};
     use std::collections::HashSet;
+
+    #[test]
+    fn exiting_fullscreen_from_the_button_restores_the_mosaic() {
+        use dioxus::{core::Mutation, prelude::*};
+        use std::{any::Any, cell::RefCell, rc::Rc};
+        type Export = Rc<RefCell<Option<(Signal<bool>, Signal<Option<String>>)>>>;
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let export: Export = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let fullscreen = use_signal(|| false);
+                let focused = use_signal(|| None::<String>);
+                *export.borrow_mut() = Some((fullscreen, focused));
+                rsx! { super::FullscreenControl { fullscreen, focused, pubkey: "B" } }
+            },
+            export.clone(),
+        );
+        let button = dom
+            .rebuild_to_vec()
+            .edits
+            .into_iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "click" => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        let (fullscreen, focused) = export.borrow().unwrap();
+        for entering in [true, false, true, false] {
+            let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+                dioxus::html::SerializedMouseData::default(),
+            )));
+            dom.runtime()
+                .handle_event("click", Event::new(data, false), button);
+            dom.render_immediate_to_vec();
+            dom.in_runtime(|| {
+                assert_eq!(fullscreen(), entering);
+                assert_eq!(focused().as_deref(), entering.then_some("B"));
+            });
+        }
+    }
 
     #[test]
     fn a_rewatched_stream_stays_in_the_app_until_explicitly_detached_again() {

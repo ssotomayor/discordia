@@ -36,7 +36,7 @@
       inside = true;
       reveal();
     };
-    const leave = () => { inside = false; hide(); };
+    const leave = event => { if (event.pointerType !== 'touch') { inside = false; hide(); } };
     const down = event => {
       keyboard = false;
       const interactive = event.target.closest('button, input, select, textarea, a, [tabindex]');

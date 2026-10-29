@@ -30,7 +30,10 @@ const fixture = (popout = false, mobile = false, expanded = false) => `<style>${
     await mount();
     await page.clock.fastForward(2600);
     assert.equal(await visible(), 'false');
+    assert.equal(await page.locator('#tile').evaluate(node => getComputedStyle(node, '::after').opacity), '0', 'the contrast frame hides with the controls');
     await pointer('pointermove'); assert.equal(await visible(), 'true');
+    assert.equal(await page.locator('#tile').evaluate(node => getComputedStyle(node, '::after').opacity), '1');
+    assert.match(await page.locator('.dxf-stream-toolbar').evaluate(node => getComputedStyle(node, '::before').backdropFilter), /blur/);
     await page.clock.fastForward(2000); assert.equal(await visible(), 'true');
     await pointer('pointermove'); await page.clock.fastForward(1000); assert.equal(await visible(), 'true');
     await pointer('pointerleave'); assert.equal(await visible(), 'false');
@@ -91,6 +94,14 @@ const fixture = (popout = false, mobile = false, expanded = false) => `<style>${
       await page.touchscreen.tap(rect.x + rect.width / 2, rect.y + rect.height / 2);
       assert.equal(await page.locator('#tile').getAttribute('data-controls-visible'), 'true');
       assert.equal(await page.evaluate(() => window.videoClicks), 0, 'revealing touch controls must not exit fullscreen or focus the video');
+      await page.locator('#tile').evaluate(node => node.dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'touch' })));
+      assert.equal(await page.locator('#tile').getAttribute('data-controls-visible'), 'true', 'the touch leave emitted after lifting a finger must not hide the revealed controls');
+      await page.clock.fastForward(2000);
+      assert.equal(await page.locator('#tile').getAttribute('data-controls-visible'), 'true');
+      await page.clock.fastForward(600);
+      assert.equal(await page.locator('#tile').getAttribute('data-controls-visible'), 'false', 'touch controls still expire after the idle timeout');
+      await page.touchscreen.tap(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      assert.equal(await page.locator('#tile').getAttribute('data-controls-visible'), 'true');
       await page.touchscreen.tap(rect.x + rect.width / 2, rect.y + rect.height / 2);
       assert.equal(await page.locator('#tile').getAttribute('data-controls-visible'), 'false');
       for (const width of [320, 390, 640]) {

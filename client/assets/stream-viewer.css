@@ -8,13 +8,18 @@
 .dxf-stream-icon-button[data-muted="true"] { color: var(--danger); }
 .dxf-stream-icon-button:disabled { opacity: .4; }
 .dxf-stream-tile[data-stream-controls] { position:relative; isolation:isolate; container-type:inline-size; }
+.dxf-stream-tile[data-stream-controls]::after { content:""; position:absolute; inset:0; z-index:1; border-radius:inherit; pointer-events:none; box-shadow:inset 0 0 60px rgba(0,0,0,.6); opacity:1; transition:opacity .16s ease; }
+.dxf-stream-tile[data-controls-visible="false"]::after { opacity:0; }
 .dxf-stream-tile[data-stream-controls] > .dxf-stream-video { position:absolute; inset:0; width:100%; height:100%; }
 .dxf-stream-tile[data-stream-controls] > :is(.dxf-stream-toolbar,.dxf-stream-footer) {
   --text:#f5f6f8; --text-muted:#d5dae3; --text-dim:#c2c8d2; --border:rgba(255,255,255,.2); --panel2:rgba(255,255,255,.12);
   position:absolute; left:0; right:0; z-index:2; border:0; color:var(--text); transition:opacity .16s ease; opacity:1;
 }
-.dxf-stream-tile[data-stream-controls] > .dxf-stream-toolbar { top:0; padding:10px 12px 20px; flex-wrap:wrap; background:linear-gradient(180deg,rgba(5,8,13,.86),rgba(5,8,13,.5) 68%,transparent); }
-.dxf-stream-tile[data-stream-controls] > .dxf-stream-footer { bottom:0; padding:22px 12px 10px; background:linear-gradient(0deg,rgba(5,8,13,.88),rgba(5,8,13,.5) 68%,transparent); }
+.dxf-stream-tile[data-stream-controls] > :is(.dxf-stream-toolbar,.dxf-stream-footer)::before { content:""; position:absolute; inset:0; z-index:-1; pointer-events:none; background:rgba(5,8,13,.78); -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); }
+.dxf-stream-tile[data-stream-controls] > .dxf-stream-toolbar { top:0; padding:10px 12px 20px; flex-wrap:wrap; }
+.dxf-stream-tile[data-stream-controls] > .dxf-stream-toolbar::before { -webkit-mask-image:linear-gradient(180deg,#000 75%,transparent); mask-image:linear-gradient(180deg,#000 75%,transparent); }
+.dxf-stream-tile[data-stream-controls] > .dxf-stream-footer { bottom:0; padding:22px 12px 10px; }
+.dxf-stream-tile[data-stream-controls] > .dxf-stream-footer::before { -webkit-mask-image:linear-gradient(0deg,#000 75%,transparent); mask-image:linear-gradient(0deg,#000 75%,transparent); }
 .dxf-stream-tile[data-controls-visible="false"] > :is(.dxf-stream-toolbar,.dxf-stream-footer) { opacity:0; pointer-events:none; }
 .dxf-stream-footer-popout { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); }
 .dxf-stream-video { overflow:hidden; }
@@ -35,5 +40,6 @@
   .dxf-stream-tile .dxf-stream-button { width:44px; height:44px; min-width:44px; }
 }
 @media(prefers-reduced-motion:reduce) {
+  .dxf-stream-tile[data-stream-controls]::after { transition:none; }
   .dxf-stream-tile[data-stream-controls] > :is(.dxf-stream-toolbar,.dxf-stream-footer) { transition:none; }
 }
