@@ -313,7 +313,8 @@ pub fn spawn_nostr(
                             state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
                             continue;
                         }
-                        if let Some((id, pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, emoji, &mut state) {
+                        if let Some((id, mut pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, emoji, &mut state) {
+                            pending.due = routes.ready_at(&peer, std::time::Instant::now());
                             outbox.insert(id, pending);
                             if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                 state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
@@ -946,7 +947,7 @@ fn send_message(
                     peer: peer.to_string(),
                     theirs,
                     ours,
-                    due: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    due: std::time::Instant::now(),
                     started: false,
                 },
             ))

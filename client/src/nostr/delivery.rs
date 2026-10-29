@@ -52,6 +52,15 @@ impl Routes {
             .map(|(_, _, urls)| urls.clone())
             .unwrap_or_else(|| fallback.iter().take(8).cloned().collect())
     }
+
+    pub fn ready_at(&self, peer: &str, now: Instant) -> Instant {
+        // An unknown inbox needs time for the standing kind-10050 request to answer.
+        if self.0.contains_key(peer) {
+            now
+        } else {
+            now + Duration::from_secs(2)
+        }
+    }
 }
 
 fn valid_relay(raw: &str) -> bool {
@@ -301,6 +310,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn known_inboxes_publish_without_the_discovery_delay() {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let peer = event::xonly_hex(&secret);
+        let mut routes = Routes::default();
+        let now = Instant::now();
+        assert_eq!(routes.ready_at(&peer, now), now + Duration::from_secs(2));
+        routes.note(&nip17::dm_relay_list(
+            &secret,
+            &["wss://inbox.example".into()],
+            1,
+        ));
+        assert_eq!(routes.ready_at(&peer, now), now);
+        routes.note(&nip17::dm_relay_list(&secret, &[], 2));
+        assert_eq!(routes.ready_at(&peer, now), now);
+        assert!(
+            routes
+                .targets(&peer, &["wss://fallback.example".into()])
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn newest_signed_recipient_list_wins_and_empty_does_not_fall_back() {
         let secret = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
         let peer = event::xonly_hex(&secret);
@@ -335,6 +366,91 @@ mod tests {
 
     async fn fake_relay(accepted: bool) -> (String, tokio::task::JoinHandle<()>) {
         fake_relay_delayed(accepted, Duration::ZERO).await
+    }
+
+    #[tokio::test]
+    #[ignore = "manual local DM latency measurement"]
+    async fn measure_encrypted_dm_publication_latency() {
+        use futures_util::{SinkExt, StreamExt};
+        let sender = secp256k1::SecretKey::from_slice(&[31; 32]).unwrap();
+        let recipient = secp256k1::SecretKey::from_slice(&[32; 32]).unwrap();
+        let author = event::xonly_hex(&sender);
+        let peer = event::xonly_hex(&recipient);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let recipient_key = peer.clone();
+        let relay = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for index in 0..12 {
+                let raw = socket.next().await.unwrap().unwrap().into_text().unwrap();
+                let frame: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(frame[0], "EVENT");
+                let gift: Event = serde_json::from_value(frame[1].clone()).unwrap();
+                assert!(gift.verify());
+                let message = nip17::open_chat(&recipient, &recipient_key, &gift).unwrap();
+                assert_eq!(message.content, format!("latency probe {index}"));
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::json!(["OK", gift.id, true, ""]).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut routes = Routes::default();
+        let mut senders = Senders::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        eprintln!(
+            "Local encrypted DMs: crypto / scheduled wait / relay+recipient decrypt / total (ms); excludes UI, disk and Internet"
+        );
+        for index in 0..12 {
+            if index == 1 {
+                routes.note(&nip17::dm_relay_list(
+                    &recipient,
+                    &["wss://inbox.example".into()],
+                    1,
+                ));
+            }
+            let start = Instant::now();
+            let ts = chrono::Utc::now().timestamp();
+            let rumor = nip17::chat_rumor(
+                &author,
+                &peer,
+                &format!("latency probe {index}"),
+                None,
+                &[],
+                ts,
+            );
+            let (theirs, _) = nip17::wrap_both(&sender, &peer, &rumor, ts).unwrap();
+            let encrypted = start.elapsed();
+            let due = routes.ready_at(&peer, Instant::now());
+            loop {
+                tick.tick().await;
+                if Instant::now() >= due {
+                    break;
+                }
+            }
+            let scheduled = start.elapsed();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                senders.publish(theirs, vec![url.clone()]),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, Delivery::Accepted);
+            let total = start.elapsed();
+            eprintln!(
+                "{index:02} {}: {:.2} / {:.2} / {:.2} / {:.2}",
+                if index == 0 { "unknown" } else { "known  " },
+                encrypted.as_secs_f64() * 1000.,
+                (scheduled - encrypted).as_secs_f64() * 1000.,
+                (total - scheduled).as_secs_f64() * 1000.,
+                total.as_secs_f64() * 1000.
+            );
+        }
+        relay.await.unwrap();
     }
 
     async fn fake_relay_delayed(
