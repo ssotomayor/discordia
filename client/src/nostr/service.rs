@@ -266,7 +266,14 @@ pub fn spawn_nostr(
                     && msg.author == our_pubkey
                     && msg.peer == peer
                 {
-                    insert_message(&msg, &our_pubkey, &mut state, Source::Ours, false);
+                    insert_message_with_settings(
+                        &msg,
+                        &our_pubkey,
+                        &mut state,
+                        Some(&mut settings),
+                        Source::Ours,
+                        false,
+                    );
                 }
                 let id = message_id(&rumor.id);
                 if system {
@@ -316,7 +323,7 @@ pub fn spawn_nostr(
                             reply_to,
                             emoji,
                         };
-                        insert_message(&held, &our_pubkey, &mut state, Source::Ours, false);
+                        insert_message_with_settings(&held, &our_pubkey, &mut state, Some(&mut settings), Source::Ours, false);
                         state
                             .write()
                             .dm_delivery
@@ -368,6 +375,7 @@ pub fn spawn_nostr(
                                     state.write().delete_message_locally(channel_id, mid);
                                     state.write().dm_deleted_ids.insert(orig_id.clone());
                                     state.write().pending_dm_edits.remove(&orig_id);
+                                    state.write().pending_dm_deletions.remove(&orig_id);
                                     let mut next = settings.peek().clone();
                                     next.delete_dm_message(&orig_id);
                                     settings.set(next.clone());
@@ -748,19 +756,25 @@ pub fn spawn_nostr(
                                     let target_mid = message_id(target_id);
                                     let cid = conversation_id(peer);
                                     let mut s = state.write();
-                                    let is_author = s
+                                    let existing = s
                                         .messages
                                         .get(&cid)
-                                        .and_then(|msgs| msgs.iter().find(|m| m.id == target_mid))
-                                        .is_none_or(|m| m.author.pubkey == rumor.pubkey);
-                                    if is_author {
-                                        s.dm_deleted_ids.insert(target_id.to_string());
-                                        s.pending_dm_edits.remove(target_id);
-                                        s.delete_message_locally(cid, target_mid);
-                                        let mut next = settings.peek().clone();
-                                        next.delete_dm_message(target_id);
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
+                                        .and_then(|msgs| msgs.iter().find(|m| m.id == target_mid));
+                                    if let Some(m) = existing {
+                                        if m.author.pubkey == rumor.pubkey {
+                                            s.dm_deleted_ids.insert(target_id.to_string());
+                                            s.pending_dm_edits.remove(target_id);
+                                            s.pending_dm_deletions.remove(target_id);
+                                            s.delete_message_locally(cid, target_mid);
+                                            drop(s);
+                                            let mut next = settings.peek().clone();
+                                            next.delete_dm_message(target_id);
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                        }
+                                    } else {
+                                        s.pending_dm_deletions
+                                            .insert(target_id.to_string(), rumor.pubkey.clone());
                                     }
                                 }
                                 continue;
@@ -806,6 +820,7 @@ pub fn spawn_nostr(
                                     s.pending_dm_edits.insert(
                                         target_id.to_string(),
                                         crate::state::PendingDmEdit {
+                                            author: rumor.pubkey.clone(),
                                             content: rumor.content.clone(),
                                             created_at: rumor.created_at,
                                             emoji: emojis,
@@ -816,7 +831,14 @@ pub fn spawn_nostr(
                             }
                             let live = every_relay_replayed(&state, &replayed);
                             if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
-                                insert_message(&msg, &our_pubkey, &mut state, Source::Relay, live);
+                                insert_message_with_settings(
+                                    &msg,
+                                    &our_pubkey,
+                                    &mut state,
+                                    Some(&mut settings),
+                                    Source::Relay,
+                                    live,
+                                );
                             }
                             request_names(&pool, &state, &our_pubkey, &mut named);
                         }
@@ -1254,6 +1276,17 @@ fn insert_message(
     source: Source,
     live: bool,
 ) {
+    insert_message_with_settings(msg, our_pubkey, state, None, source, live);
+}
+
+fn insert_message_with_settings(
+    msg: &nip17::ChatMessage,
+    our_pubkey: &str,
+    state: &mut Signal<AppState>,
+    settings: Option<&mut Signal<crate::settings::ClientSettings>>,
+    source: Source,
+    live: bool,
+) {
     if state.peek().mutes.contains(&msg.peer) {
         return;
     }
@@ -1279,6 +1312,19 @@ fn insert_message(
     let created_at = filed_at(created_at, newest_held, live || source == Source::Ours);
 
     if hidden_by_delete(&s, &msg.peer, created_at, source) || s.dm_deleted_ids.contains(&msg.id) {
+        return;
+    }
+
+    if s.pending_dm_deletions.remove(&msg.id).as_deref() == Some(&msg.author) {
+        s.dm_deleted_ids.insert(msg.id.clone());
+        s.pending_dm_edits.remove(&msg.id);
+        drop(s);
+        if let Some(settings) = settings {
+            let mut next = settings.peek().clone();
+            next.delete_dm_message(&msg.id);
+            settings.set(next.clone());
+            crate::settings::save(&next);
+        }
         return;
     }
 
@@ -1326,7 +1372,11 @@ fn insert_message(
         return;
     }
 
-    if let Some(pending) = s.pending_dm_edits.remove(&msg.id) {
+    if let Some(pending) = s
+        .pending_dm_edits
+        .remove(&msg.id)
+        .filter(|p| p.author == msg.author)
+    {
         let edited_at = chrono::DateTime::from_timestamp(pending.created_at, 0);
         s.apply_message_edit(cid, mid, pending.content, edited_at);
         if !pending.emoji.is_empty() {
@@ -1769,6 +1819,7 @@ mod tests {
             state.write().pending_dm_edits.insert(
                 "orig-1".to_string(),
                 crate::state::PendingDmEdit {
+                    author: peer.clone(),
                     content: "updated text".to_string(),
                     created_at: 250,
                     emoji: vec![],
@@ -1787,6 +1838,84 @@ mod tests {
             assert!(msg.edited_at.is_some());
             assert_eq!(msg.edited_at.unwrap().timestamp(), 250);
             assert!(s.pending_dm_edits.is_empty());
+        });
+    }
+
+    #[test]
+    fn unsynced_edit_from_non_author_is_rejected_when_message_arrives() {
+        in_scope(|| {
+            let (me, peer, imposter) = (key('a'), key('b'), key('c'));
+            let mut state = Signal::new(AppState::empty());
+            // Imposter attempts to edit peer's message before it syncs
+            state.write().pending_dm_edits.insert(
+                "orig-1".to_string(),
+                crate::state::PendingDmEdit {
+                    author: imposter,
+                    content: "malicious edit".to_string(),
+                    created_at: 250,
+                    emoji: vec![],
+                },
+            );
+            insert_message(
+                &chat("orig-1", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            let msg = &s.messages[&conversation_id(&peer)][0];
+            assert_eq!(msg.content, "hello");
+            assert!(msg.edited_at.is_none());
+            assert!(s.pending_dm_edits.is_empty());
+        });
+    }
+
+    #[test]
+    fn unsynced_deletion_from_non_author_is_rejected_when_message_arrives() {
+        in_scope(|| {
+            let (me, peer, imposter) = (key('a'), key('b'), key('c'));
+            let mut state = Signal::new(AppState::empty());
+            // Imposter attempts to delete peer's message before it syncs
+            state
+                .write()
+                .pending_dm_deletions
+                .insert("del-target".to_string(), imposter);
+            insert_message(
+                &chat("del-target", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            assert!(s.messages.contains_key(&conversation_id(&peer)));
+            assert_eq!(s.messages[&conversation_id(&peer)].len(), 1);
+            assert!(!s.dm_deleted_ids.contains("del-target"));
+            assert!(s.pending_dm_deletions.is_empty());
+        });
+    }
+
+    #[test]
+    fn unsynced_deletion_from_author_is_applied_when_message_arrives() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            state
+                .write()
+                .pending_dm_deletions
+                .insert("del-target".to_string(), peer.clone());
+            insert_message(
+                &chat("del-target", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            assert!(!s.messages.contains_key(&conversation_id(&peer)));
+            assert!(s.dm_deleted_ids.contains("del-target"));
+            assert!(s.pending_dm_deletions.is_empty());
         });
     }
 
