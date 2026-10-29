@@ -274,7 +274,7 @@ pub fn SoundChip(pubkey: String) -> Element {
     match recent().filter(|(_, at)| at.elapsed() < CHIP_SHOWN_FOR) {
         Some((name, _)) => rsx! {
             span {
-                class: "text-[9px] text-[var(--accent)] truncate shrink-0 max-w-[40%]",
+                class: "text-[9px] text-[var(--accent)] truncate min-w-0 max-w-[40%]",
                 title: crate::i18n::text("played {0}", std::slice::from_ref(&(name))),
                 "♪ {name}"
             }
