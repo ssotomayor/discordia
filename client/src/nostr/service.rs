@@ -189,15 +189,12 @@ pub fn spawn_nostr(
         );
 
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
-        // Reading kind 0 is half a loop: between two Discordia clients neither
-        // had ever published one, so both read the other as a truncated key.
-        let mut published_name = identity.display_name.clone();
-        let mut name_published_at = now();
-        pool.publish(metadata::own_metadata_event(
-            &secret,
-            &published_name,
-            name_published_at,
-        ));
+        // Without kind 0 two Discordia clients read each other as keys. It waits
+        // for the synced profile: this device's name may be another's old one.
+        let mut own_name = OwnName {
+            pending: Some(identity.display_name.clone()),
+            ..Default::default()
+        };
 
         // Offline nothing else ever sets this, and your own messages then read
         // as your own truncated key. The gateway's `Ready` overwrites it with
@@ -393,14 +390,10 @@ pub fn spawn_nostr(
                         }
                     }
                     Some(NostrCmd::PublishName(name)) => {
-                        let name = crate::protocol::canonical_username(&name);
-                        if name != published_name {
-                            let observed = state.peek().nostr_names.get(&our_pubkey).map(|(_, at)| *at).unwrap_or(0);
-                            name_published_at = now().max(name_published_at.max(observed).saturating_add(1));
-                            let event = metadata::own_metadata_event(&secret, &name, name_published_at);
-                            apply_own_name(&mut state.write(), &our_pubkey, &name, name_published_at);
-                            published_name = name;
-                            pool.publish(event);
+                        if profile_checked {
+                            own_name.publish(&pool, &secret, state, &our_pubkey, name);
+                        } else {
+                            own_name.pending = Some(name);
                         }
                     }
                     Some(NostrCmd::PublishProfile(local)) => {
@@ -702,10 +695,16 @@ pub fn spawn_nostr(
                         // Saved here while no relay answered, or before profiles synced.
                         if !profile_checked && every_relay_replayed(&state, &replayed) {
                             profile_checked = true;
-                            if let Some(local) = crate::profile::load(&our_pubkey)
-                                && local.updated_at > synced.as_ref().map_or(0, |s| s.updated_at)
+                            let local = crate::profile::load(&our_pubkey);
+                            let synced_at = synced.as_ref().map_or(0, |s| s.updated_at);
+                            let newest_name = newest_name(local.as_ref(), synced.as_ref());
+                            if let Some(local) = local
+                                && local.updated_at > synced_at
                             {
                                 share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
+                            }
+                            if let Some(name) = newest_name.or(own_name.pending.take()) {
+                                own_name.publish(&pool, &secret, state, &our_pubkey, name);
                             }
                         }
                     }
@@ -767,6 +766,53 @@ const SUB_DM: &str = "dxf-dm";
 /// replays everything under the id it names — sharing `SUB_DM` would have
 /// re-delivered every gift wrap each time somebody new said hello.
 const SUB_NAMES: &str = "dxf-names";
+
+/// The name from the newest profile edit on any device; `None` when that edit
+/// came from a build that did not sync names.
+fn newest_name(
+    local: Option<&crate::profile::LocalProfile>,
+    synced: Option<&profile::SyncedProfile>,
+) -> Option<String> {
+    match (local, synced) {
+        (Some(local), Some(synced)) if synced.updated_at > local.updated_at => synced.name.clone(),
+        (Some(local), _) => local.name.clone(),
+        (None, synced) => synced.and_then(|s| s.name.clone()),
+    }
+}
+
+#[derive(Default)]
+struct OwnName {
+    pending: Option<String>,
+    published: String,
+    at: i64,
+}
+
+impl OwnName {
+    fn publish(
+        &mut self,
+        pool: &RelayPool,
+        secret: &secp256k1::SecretKey,
+        mut state: Signal<AppState>,
+        our_pubkey: &str,
+        name: String,
+    ) {
+        let name = crate::protocol::canonical_username(&name);
+        if name == self.published {
+            return;
+        }
+        let observed = state
+            .peek()
+            .nostr_names
+            .get(our_pubkey)
+            .map_or(0, |(_, at)| *at);
+        self.at = now().max(self.at.max(observed).saturating_add(1));
+        let event = metadata::own_metadata_event(secret, &name, self.at);
+        apply_own_name(&mut state.write(), our_pubkey, &name, self.at);
+        self.published = name;
+        pool.publish(event);
+    }
+}
+
 fn apply_own_name(state: &mut AppState, pubkey: &str, name: &str, at: i64) {
     state.note_name(pubkey, name.to_owned(), at);
 }
@@ -1117,6 +1163,38 @@ fn insert_message(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_newest_edit_names_the_account_and_an_unnamed_one_defers() {
+        let local = |at, name: Option<&str>| crate::profile::LocalProfile {
+            name: name.map(str::to_owned),
+            updated_at: at,
+            ..Default::default()
+        };
+        let synced = |at, name: Option<&str>| profile::SyncedProfile {
+            name: name.map(str::to_owned),
+            updated_at: at,
+            ..Default::default()
+        };
+        let other_device = synced(20, Some("Windows"));
+        assert_eq!(
+            newest_name(Some(&local(10, Some("Mac"))), Some(&other_device)).as_deref(),
+            Some("Windows")
+        );
+        assert_eq!(
+            newest_name(Some(&local(30, Some("Mac"))), Some(&other_device)).as_deref(),
+            Some("Mac")
+        );
+        assert_eq!(
+            newest_name(None, Some(&other_device)).as_deref(),
+            Some("Windows")
+        );
+        assert_eq!(
+            newest_name(Some(&local(10, None)), Some(&synced(20, None))),
+            None
+        );
+        assert_eq!(newest_name(None, None), None);
+    }
+
     #[test]
     fn renaming_updates_the_live_account_and_every_human_membership() {
         let mut state = AppState::empty();

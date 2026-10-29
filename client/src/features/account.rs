@@ -86,7 +86,30 @@ pub fn AccountView(
         crate::nostr::service::spawn_nostr(identity.clone(), relays, state, settings)
     });
     provide_context(state);
-    provide_context(RenameAccount(on_rename));
+    let rename_owner = identity.pubkey.clone();
+    let rename_nostr = nostr.clone();
+    let rename = use_callback(move |name: String| {
+        let name = crate::protocol::canonical_username(&name);
+        let local =
+            crate::profile::save_name(&rename_owner, &name, chrono::Utc::now().timestamp_millis())?;
+        on_rename.call(name)?;
+        rename_nostr.send(crate::nostr::service::NostrCmd::PublishProfile(local));
+        Ok(())
+    });
+    provide_context(RenameAccount(rename));
+    // Another device's newer rename lands in the synced profile. It goes
+    // through the unstamped rename, so adopting it does not republish it as ours.
+    let adopt_owner = identity.pubkey.clone();
+    let synced_at = use_memo(move || state.read().profile_synced_at);
+    use_effect(use_reactive((&identity.display_name,), move |(current,)| {
+        synced_at();
+        if let Some(name) = crate::profile::load(&adopt_owner).and_then(|p| p.name)
+            && name != current
+            && let Err(e) = on_rename.call(name)
+        {
+            tracing::warn!(error = %e, "synced account name not applied");
+        }
+    }));
     provide_context(nostr.clone());
     let name_nostr = nostr.clone();
     use_effect(use_reactive((&identity.display_name,), move |(name,)| {
@@ -189,7 +212,7 @@ pub fn AccountView(
         } else {
             super::home::HomeView { identity, error, last_session, on_connect,
                 on_rename: move |name| {
-                    if let Err(message) = on_rename.call(name) {
+                    if let Err(message) = rename.call(name) {
                         state.write().error_toast = Some(message);
                     }
                 },
