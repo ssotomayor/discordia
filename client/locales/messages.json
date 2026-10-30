@@ -15,6 +15,7 @@
   "Image authentication failed.": ["No se pudo verificar la imagen cifrada.", "Não foi possível verificar a imagem criptografada.", "无法验证加密图片。", "暗号化画像を検証できませんでした。"],
   "Could not queue the image. Your draft was kept.": ["No se pudo preparar el envío. Conservamos tu borrador.", "Não foi possível preparar o envio. Seu rascunho foi mantido.", "无法准备发送，草稿已保留。", "送信の準備ができませんでした。下書きは保持されています。"],
   "Image queue is full or this contact is blocked. Your draft was kept.": ["La cola de imágenes está llena o el contacto está bloqueado. Conservamos tu borrador.", "A fila de imagens está cheia ou o contato está bloqueado. Seu rascunho foi mantido.", "图片队列已满或联系人已被屏蔽。草稿已保留。", "画像の送信待ちがいっぱいか、連絡先がブロックされています。下書きは保持されています。"],
+  "Off": ["Desactivado", "Desativado", "关闭", "オフ"],
   "App": ["App", "App", "应用", "アプリ"],
   "Sound": ["Sonido", "Som", "声音", "サウンド"],
   "Front camera": ["Cámara frontal", "Câmera frontal", "前置摄像头", "前面カメラ"],
