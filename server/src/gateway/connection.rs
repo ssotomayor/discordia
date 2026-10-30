@@ -869,35 +869,37 @@ pub(crate) async fn handle_connection_with_route<S>(
                         // empty answer means "no such blob" and the client stops
                         // asking, while an absent one is asked for again later.
                         let mut budget = MAX_BLOB_RESPONSE_BYTES;
-                        let mut allowed_images = Vec::new();
-                        for image in images.into_iter().take(MAX_EMOJI_FETCH) {
-                            if !crate::media::is_address(&format!("media:{image}")) { continue; }
-                            let viewer = &user.as_ref().unwrap().pubkey;
-                            let allowed = if image.ends_with(".bin") {
-                                ctx.state.file_available(viewer, &format!("media:{image}")).await
-                            } else if image.ends_with(".dxa") {
-                                ctx.state.bundle_available(viewer, &image)
-                            } else {
-                                true
+                        let mut asked: Vec<String> = images.into_iter().take(MAX_EMOJI_FETCH).collect();
+                        asked.sort_unstable();
+                        asked.dedup();
+                        let viewer = &user.as_ref().unwrap().pubkey;
+                        let mut blobs = Vec::new();
+                        for image in asked {
+                            let stored = format!("media:{image}");
+                            if !crate::media::is_address(&stored) { continue; }
+                            // By the exact extension the store writes; anything else is refused.
+                            let allowed = match image.rsplit_once('.').map(|(_, ext)| ext) {
+                                Some("bin") => ctx.state.file_available(viewer, &stored).await,
+                                Some("dxa") => ctx.state.bundle_available(viewer, &image),
+                                Some("png" | "jpg" | "gif" | "webp" | "avif" | "mp3" | "ogg" | "wav") => true,
+                                _ => false,
                             };
-                            if allowed { allowed_images.push(image); }
+                            if !allowed { continue; }
+                            // Sized from metadata first: nothing past the budget is read or encoded.
+                            let Some(len) = ctx.state.media.inlined_len(&stored) else {
+                                blobs.push(EmojiBlob { image, data_url: String::new() });
+                                continue;
+                            };
+                            if len > budget { continue; }
+                            let media = ctx.state.media.clone();
+                            let inlined = tokio::task::spawn_blocking(move || media.inline(&stored))
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
+                            budget = budget.saturating_sub(inlined.len());
+                            blobs.push(EmojiBlob { image, data_url: inlined });
                         }
-                        let blobs: Vec<EmojiBlob> = allowed_images
-                            .into_iter()
-                            .take(MAX_EMOJI_FETCH)
-                            .filter_map(|image| {
-                                let data_url = ctx
-                                    .state
-                                    .media
-                                    .inline(&format!("media:{image}"))
-                                    .unwrap_or_default();
-                                if data_url.len() > budget {
-                                    return None;
-                                }
-                                budget -= data_url.len();
-                                Some(EmojiBlob { image, data_url })
-                            })
-                            .collect();
                         if send(&mut ws_tx, &ServerMessage::EmojiBlobs { blobs }).await.is_err() {
                             break;
                         }

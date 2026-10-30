@@ -17,6 +17,8 @@ pub struct HostEntry {
     pub transport_key: Option<String>,
     pub transport_addrs: Vec<String>,
     pub location: Option<GeoPoint>,
+    /// Who registered it, as `origin` spells them: what the per-address caps count.
+    pub address: Option<String>,
     pub last_seen_ms: AtomicI64,
     /// Woken when the same key registers this name from a newer session.
     pub superseded: tokio::sync::Notify,
@@ -53,21 +55,45 @@ pub fn now_unix() -> u64 {
         .unwrap_or_default()
 }
 
+/// Keys are free, so a cap per key bounds a key and not a requester: names
+/// and live hosts are also counted per address, which is not free.
 #[derive(Debug, Clone, Copy)]
 pub struct ReservationCaps {
     pub per_owner: usize,
+    pub per_address: usize,
     pub total: usize,
     /// How long a name outlives its last session.
     pub ttl_secs: u64,
+    pub hosts_per_address: usize,
+    pub hosts_total: usize,
 }
 
 impl Default for ReservationCaps {
     fn default() -> Self {
         Self {
             per_owner: 3,
+            per_address: 16,
             total: 10_000,
             ttl_secs: 24 * 60 * 60,
+            hosts_per_address: 16,
+            hosts_total: 10_000,
         }
+    }
+}
+
+/// An IPv6 host is handed a /64, so one address in it is not one requester.
+pub fn origin(ip: std::net::IpAddr) -> String {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let mut bits = v6.octets();
+                bits[8..].fill(0);
+                format!("{}/64", std::net::Ipv6Addr::from(bits))
+            }
+        },
+        v4 => v4.to_string(),
     }
 }
 
@@ -83,6 +109,7 @@ pub enum ClaimError {
     Taken,
     LiveElsewhere,
     OwnerLimit,
+    AddressLimit,
     Full,
     Storage,
 }
@@ -109,6 +136,17 @@ const SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS reservations_by_owner ON reservations (owner_pubkey);
 ";
+
+/// Rows from before addresses were recorded count against none.
+fn migrate(db: &Connection) -> rusqlite::Result<()> {
+    let has_address = db
+        .prepare("SELECT 1 FROM pragma_table_info('reservations') WHERE name = 'address'")?
+        .exists([])?;
+    if !has_address {
+        db.execute_batch("ALTER TABLE reservations ADD COLUMN address TEXT")?;
+    }
+    db.execute_batch("CREATE INDEX IF NOT EXISTS reservations_by_address ON reservations (address)")
+}
 
 /// Returns the join code `name` claims; the name itself stays as written,
 /// so a host can be "Friday Game Night" and still be typed.
@@ -149,6 +187,7 @@ impl Registry {
     pub fn new() -> Self {
         let db = Connection::open_in_memory().expect("in-memory sqlite");
         db.execute_batch(SCHEMA).expect("reservations schema");
+        migrate(&db).expect("reservations schema");
         Self::with_db(db)
     }
 
@@ -165,6 +204,7 @@ impl Registry {
         db.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
             .map_err(fail)?;
         db.execute_batch(SCHEMA).map_err(fail)?;
+        migrate(&db).map_err(fail)?;
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM reservations", [], |row| row.get(0))
             .map_err(fail)?;
@@ -201,27 +241,42 @@ impl Registry {
     }
 
     pub fn claim_name(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
-        self.claim_name_at(slug, owner, now_unix())
+        self.claim_name_at(slug, owner, None, now_unix())
     }
 
-    fn claim_name_at(&self, slug: &str, owner: &str, now: u64) -> Result<(), ClaimError> {
+    fn claim_name_at(
+        &self,
+        slug: &str,
+        owner: &str,
+        address: Option<&str>,
+        now: u64,
+    ) -> Result<(), ClaimError> {
         let _registration = self.registration();
-        self.claim_name_locked(slug, owner, now)
+        self.claim_name_locked(slug, owner, address, now)
     }
 
     /// The owner's own live session is no obstacle: `claim_host` replaces it,
     /// which is how a host back from a dropped link skips the heartbeat timeout.
-    fn claim_name_locked(&self, slug: &str, owner: &str, now: u64) -> Result<(), ClaimError> {
+    fn claim_name_locked(
+        &self,
+        slug: &str,
+        owner: &str,
+        address: Option<&str>,
+        now: u64,
+    ) -> Result<(), ClaimError> {
         let db = self.db();
-        self.claim_in(&db, slug, owner, now)
+        self.claim_in(&db, slug, owner, address, now)
             .unwrap_or_else(|e| Err(storage(e, ClaimError::Storage)))
     }
 
+    /// A name its owner already holds is kept whatever the caps now say, so a
+    /// host keeps its name across restarts and address changes.
     fn claim_in(
         &self,
         db: &Connection,
         slug: &str,
         owner: &str,
+        address: Option<&str>,
         now: u64,
     ) -> rusqlite::Result<Result<(), ClaimError>> {
         self.expire(db, now)?;
@@ -229,6 +284,10 @@ impl Registry {
             Some(held) if !held.eq_ignore_ascii_case(owner) => return Ok(Err(ClaimError::Taken)),
             Some(_) => {
                 set_live(db, slug, now)?;
+                if let Some(address) = address {
+                    db.prepare_cached("UPDATE reservations SET address = ?2 WHERE slug = ?1")?
+                        .execute(params![slug, address])?;
+                }
                 return Ok(Ok(()));
             }
             None => {}
@@ -248,9 +307,19 @@ impl Registry {
         if owned as usize >= self.caps.per_owner {
             return Ok(Err(ClaimError::OwnerLimit));
         }
+        if let Some(address) = address {
+            let from_here: i64 = db.query_row(
+                "SELECT COUNT(*) FROM reservations WHERE address = ?1",
+                [address],
+                |row| row.get(0),
+            )?;
+            if from_here as usize >= self.caps.per_address {
+                return Ok(Err(ClaimError::AddressLimit));
+            }
+        }
         db.execute(
-            "INSERT INTO reservations (slug, owner_pubkey, last_live_unix) VALUES (?1, ?2, ?3)",
-            params![slug, owner.to_ascii_lowercase(), now as i64],
+            "INSERT INTO reservations (slug, owner_pubkey, last_live_unix, address) VALUES (?1, ?2, ?3, ?4)",
+            params![slug, owner.to_ascii_lowercase(), now as i64, address],
         )?;
         Ok(Ok(()))
     }
@@ -357,8 +426,28 @@ impl Registry {
         entry: HostEntry,
     ) -> Result<Arc<HostEntry>, ClaimError> {
         let _registration = self.registration();
+        // A session replacing its own listing is not one more host.
+        let replacing = owner.is_some() && self.hosts.contains_key(shortcode);
+        if !replacing {
+            if self.hosts.len() >= self.caps.hosts_total {
+                return Err(ClaimError::Full);
+            }
+            let from_here = |address: &String| {
+                self.hosts
+                    .iter()
+                    .filter(|h| h.value().address.as_ref() == Some(address))
+                    .count()
+            };
+            if entry
+                .address
+                .as_ref()
+                .is_some_and(|a| from_here(a) >= self.caps.hosts_per_address)
+            {
+                return Err(ClaimError::AddressLimit);
+            }
+        }
         if let Some(owner) = owner {
-            self.claim_name_locked(shortcode, owner, now_unix())?;
+            self.claim_name_locked(shortcode, owner, entry.address.as_deref(), now_unix())?;
         } else if holder(&self.db(), shortcode)
             .map_err(|e| storage(e, ClaimError::Storage))?
             .is_some()
@@ -399,6 +488,7 @@ impl Registry {
         }
     }
 
+    /// At most `MAX_DISCOVER`, so one answer stays small whatever is registered.
     pub fn discover(&self) -> Vec<DiscoverEntry> {
         let mut entries: Vec<DiscoverEntry> = self
             .hosts
@@ -411,6 +501,7 @@ impl Registry {
             let bn = b.name.as_deref().unwrap_or("\u{FFFF}").to_lowercase();
             an.cmp(&bn).then_with(|| a.shortcode.cmp(&b.shortcode))
         });
+        entries.truncate(MAX_DISCOVER);
         entries
     }
 
@@ -420,6 +511,8 @@ impl Registry {
         self.hosts.get(code).map(|h| entry_for(h.key(), h.value()))
     }
 }
+
+pub const MAX_DISCOVER: usize = 500;
 
 fn entry_for(shortcode: &str, host: &HostEntry) -> DiscoverEntry {
     DiscoverEntry {
@@ -446,9 +539,91 @@ mod tests {
             transport_key: None,
             transport_addrs: Vec::new(),
             location: None,
+            address: None,
             last_seen_ms: AtomicI64::new(0),
             superseded: Default::default(),
         }
+    }
+
+    fn from(address: &str) -> HostEntry {
+        HostEntry {
+            address: Some(address.to_string()),
+            public: true,
+            ..host_entry()
+        }
+    }
+
+    /// Keys are free and addresses are not: a handful of keys from one place
+    /// cannot fill the table, and a host keeps the name it already holds.
+    #[test]
+    fn names_are_capped_per_address_but_an_owner_keeps_its_own() {
+        let reg = Registry::new().with_caps(ReservationCaps {
+            per_address: 2,
+            ..Default::default()
+        });
+        let here = "203.0.113.4";
+        for (slug, owner) in [("one", "key_a"), ("two", "key_b")] {
+            let entry = reg.claim_host(slug, Some(owner), from(here)).unwrap();
+            reg.release(slug, &entry, None);
+        }
+        assert_eq!(
+            reg.claim_host("three", Some("key_c"), from(here)).err(),
+            Some(ClaimError::AddressLimit)
+        );
+        assert!(
+            reg.claim_host("three", Some("key_c"), from("198.51.100.1"))
+                .is_ok()
+        );
+        assert!(
+            reg.claim_host("one", Some("key_a"), from(here)).is_ok(),
+            "a restarted host reclaims its name whatever the address count"
+        );
+    }
+
+    #[test]
+    fn live_hosts_are_capped_per_address_and_in_all_and_discover_stays_small() {
+        let reg = Registry::new().with_caps(ReservationCaps {
+            hosts_per_address: 2,
+            hosts_total: 4,
+            ..Default::default()
+        });
+        let here = "203.0.113.4";
+        reg.claim_host("anon-1", None, from(here)).unwrap();
+        reg.claim_host("anon-2", None, from(here)).unwrap();
+        assert_eq!(
+            reg.claim_host("anon-3", None, from(here)).err(),
+            Some(ClaimError::AddressLimit)
+        );
+        reg.claim_host("named", Some("owner"), from("198.51.100.1"))
+            .unwrap();
+        assert!(
+            reg.claim_host("named", Some("owner"), from("198.51.100.1"))
+                .is_ok(),
+            "a host re-registering after a dropped link replaces its session"
+        );
+        reg.claim_host("other", None, from("198.51.100.2")).unwrap();
+        assert_eq!(
+            reg.claim_host("full", None, from("198.51.100.3")).err(),
+            Some(ClaimError::Full)
+        );
+
+        let wide = Registry::new().with_caps(ReservationCaps {
+            hosts_per_address: usize::MAX,
+            hosts_total: usize::MAX,
+            ..Default::default()
+        });
+        for n in 0..MAX_DISCOVER + 20 {
+            wide.claim_host(&format!("h{n}"), None, from(here)).unwrap();
+        }
+        assert_eq!(wide.discover().len(), MAX_DISCOVER);
+    }
+
+    #[test]
+    fn an_ipv6_host_is_one_address_across_its_prefix() {
+        let a = origin("2001:db8::1".parse().unwrap());
+        assert_eq!(a, origin("2001:db8::ffff:2".parse().unwrap()));
+        assert_ne!(a, origin("2001:db8:0:1::1".parse().unwrap()));
+        assert_eq!(origin("::ffff:192.0.2.1".parse().unwrap()), "192.0.2.1");
     }
 
     #[test]
@@ -536,7 +711,7 @@ mod tests {
         Connection::open(&path)
             .unwrap()
             .execute(
-                "INSERT INTO reservations VALUES ('legacy', ?1, ?2)",
+                "INSERT INTO reservations (slug, owner_pubkey, last_live_unix) VALUES ('legacy', ?1, ?2)",
                 params![uppercase, now_unix() as i64],
             )
             .unwrap();
@@ -656,8 +831,8 @@ mod tests {
     fn a_name_expires_a_day_after_its_last_session_and_not_while_live() {
         let reg = Registry::new();
         let day = ReservationCaps::default().ttl_secs;
-        reg.claim_name_at("idle", "owner_a", 1_000).unwrap();
-        reg.claim_name_at("busy", "owner_a", 1_000).unwrap();
+        reg.claim_name_at("idle", "owner_a", None, 1_000).unwrap();
+        reg.claim_name_at("busy", "owner_a", None, 1_000).unwrap();
         reg.hosts.insert("busy".into(), Arc::new(host_entry()));
 
         reg.sweep(1_000 + day - 1);
@@ -684,13 +859,13 @@ mod tests {
             ..Default::default()
         });
         let day = ReservationCaps::default().ttl_secs;
-        reg.claim_name_at("old", "owner_a", 0).unwrap();
+        reg.claim_name_at("old", "owner_a", None, 0).unwrap();
         assert_eq!(
-            reg.claim_name_at("new", "owner_a", day - 1),
+            reg.claim_name_at("new", "owner_a", None, day - 1),
             Err(ClaimError::OwnerLimit)
         );
-        assert!(reg.claim_name_at("new", "owner_a", day).is_ok());
-        assert!(reg.claim_name_at("old", "owner_b", day).is_ok());
+        assert!(reg.claim_name_at("new", "owner_a", None, day).is_ok());
+        assert!(reg.claim_name_at("old", "owner_b", None, day).is_ok());
     }
 
     #[test]

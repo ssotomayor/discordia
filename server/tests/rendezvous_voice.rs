@@ -167,6 +167,7 @@ async fn a_proxied_friend_is_handed_the_lan_address_when_nothing_better_exists()
         api_secret: "secret-must-be-at-least-32-chars-long".into(),
         minter: None,
         ice_servers: Default::default(),
+        local_sfu: Default::default(),
     })
     .await;
 
@@ -190,6 +191,7 @@ async fn a_mapped_host_hands_proxied_friends_its_public_address() {
         api_secret: "secret-must-be-at-least-32-chars-long".into(),
         minter: None,
         ice_servers: Default::default(),
+        local_sfu: Default::default(),
     })
     .await;
 

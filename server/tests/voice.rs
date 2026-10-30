@@ -265,6 +265,7 @@ fn local_signing() -> LiveKitConfig {
         api_secret: API_SECRET.into(),
         minter: None,
         ice_servers: Default::default(),
+        local_sfu: Default::default(),
     }
 }
 
