@@ -591,7 +591,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                         evict_from_call(&ctx, &call.cleared.user_pubkey, channel);
                                     }
                                     let caller = vec![call.cleared.user_pubkey.clone()];
-                                    send_voice_state(&ctx.state, caller, call.cleared);
+                                    send_voice_state(&ctx.state, caller, call.previous.channel_id, call.cleared);
                                 }
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
                                 if was_default {
@@ -1026,6 +1026,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             Ok((previous, joined, target_conn)) => {
                                 let guild_id = joined.guild_id;
                                 let was_sharing = previous.screen_sharing;
+                                let came_from = previous.channel_id;
                                 let left = crate::protocol::VoiceState {
                                     channel_id: None,
                                     speaking: false,
@@ -1035,8 +1036,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     ..previous
                                 };
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                send_voice_state(&ctx.state, targets.clone(), left);
-                                send_voice_state(&ctx.state, targets, joined);
+                                send_voice_state(&ctx.state, targets.clone(), came_from, left);
+                                send_voice_state(&ctx.state, targets, None, joined);
                                 evict_from_call(&ctx, &user_pubkey, from_channel_id);
                                 if was_sharing {
                                     broadcast_screen_state(&ctx.state, guild_id, from_channel_id);
@@ -1090,7 +1091,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 if !targets.contains(&user_pubkey) {
                                     targets.push(user_pubkey.clone());
                                 }
-                                send_voice_state(&ctx.state, targets, cleared);
+                                send_voice_state(&ctx.state, targets, was_in, cleared);
                                 if let Some((gid, cid)) = was_sharing {
                                     broadcast_screen_state(&ctx.state, gid, cid);
                                 }
@@ -1604,7 +1605,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         if let Some(vs) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_screen_watching(&u.pubkey, sharers)) {
                             let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
-                            send_voice_state(&ctx.state, targets, vs);
+                            send_voice_state(&ctx.state, targets, vs.channel_id, vs);
                         }
                     }
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
@@ -1618,7 +1619,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
                         let guild_id = vs.guild_id;
                         let channel = vs.channel_id;
-                        send_voice_state(&ctx.state, targets, vs);
+                        send_voice_state(&ctx.state, targets, channel, vs);
                         if let Some(cid) = channel {
                             broadcast_screen_state(&ctx.state, guild_id, cid);
                         }
@@ -1656,32 +1657,37 @@ pub(crate) async fn handle_connection_with_route<S>(
                             .state
                             .voice_states
                             .get(&u.pubkey)
-                            .map(|v| (v.guild_id, v.channel_id));
+                            .map(|v| (v.guild_id, v.channel_id, v.muted, v.deafened));
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         let new_state =
                             ctx.state.set_voice_channel_owned(conn_id, &u.pubkey, guild_id, channel_id, preferences);
                         // A move is a leave and then a join, for everyone including the
                         // mover. The leave goes first: one client can be in both guilds.
-                        if let Some((old_guild, Some(old_channel))) = previous
+                        if let Some((old_guild, Some(old_channel), muted, deafened)) = previous
                             && old_channel != channel_id
                         {
+                            // The flags they left with: the new room's are its own business.
                             let left = crate::protocol::VoiceState {
                                 user_pubkey: u.pubkey.clone(),
                                 guild_id: old_guild,
                                 channel_id: None,
-                                muted: new_state.muted,
-                                deafened: new_state.deafened,
+                                muted,
+                                deafened,
                                 speaking: false,
                                 camera_on: false,
                                 screen_sharing: false,
                                 screen_watching: Vec::new(),
                             };
                             let targets = ctx.state.guild_member_pubkeys(old_guild);
-                            send_voice_state(&ctx.state, targets, left);
+                            send_voice_state(&ctx.state, targets, Some(old_channel), left);
                             evict_from_call(&ctx, &u.pubkey, old_channel);
                         }
+                        // After a leave above, the join starts from outside any call.
+                        let stayed = previous
+                            .and_then(|(_, c, ..)| c)
+                            .filter(|c| *c == channel_id);
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
-                        send_voice_state(&ctx.state, targets, new_state);
+                        send_voice_state(&ctx.state, targets, stayed, new_state);
                         if let Some((gid, cid)) = was_sharing {
                             broadcast_screen_state(&ctx.state, gid, cid);
                         }
@@ -1759,9 +1765,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let Some(u) = user.as_ref() else { continue };
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         let was_in = ctx.state.voice_channel_of(&u.pubkey);
-                        if let Some((_, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
+                        if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
                             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
-                            send_voice_state(&ctx.state, targets, cleared);
+                            send_voice_state(&ctx.state, targets, previous.channel_id, cleared);
                         }
                         if let Some(channel) = was_in {
                             evict_from_call(&ctx, &u.pubkey, channel);
@@ -1777,7 +1783,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_voice_flags(&u.pubkey, muted, deafened)) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
-                            send_voice_state(&ctx.state, targets, state);
+                            send_voice_state(&ctx.state, targets, state.channel_id, state);
                         }
                     }
                     ClientMessage::SetSpeaking { speaking } => {
@@ -1787,7 +1793,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_speaking(&u.pubkey, speaking)) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
-                            send_voice_state(&ctx.state, targets, state);
+                            send_voice_state(&ctx.state, targets, state.channel_id, state);
                         }
                     }
                     ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
@@ -1830,7 +1836,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_camera(&u.pubkey, on)) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
-                            send_voice_state(&ctx.state, targets, state);
+                            send_voice_state(&ctx.state, targets, state.channel_id, state);
                         }
                     }
                     ClientMessage::CreateRole { guild_id, name, color, permissions } => {
@@ -2047,7 +2053,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }
                                 tracing::info!(%guild_id, target = ?user_pubkey, by = ?u.username, "member kicked");
                                 ctx.state.audit(guild_id, &u.pubkey, "kick", &user_pubkey, "").await;
-                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice, was_sharing);
+                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice, was_in, was_sharing);
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -2075,7 +2081,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }
                                 tracing::info!(%guild_id, target = ?user_pubkey, by = ?u.username, "member banned");
                                 ctx.state.audit(guild_id, &u.pubkey, "ban", &user_pubkey, "").await;
-                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice, was_sharing);
+                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice, was_in, was_sharing);
                                 let _ = send(&mut ws_tx, &ServerMessage::GuildBanUpdate {
                                     guild_id,
                                     user: ctx.state.resolve_user(&user_pubkey),
@@ -2151,7 +2157,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     evict_from_call(&ctx, &u.pubkey, channel);
                                 }
                                 tracing::info!(%guild_id, by = ?u.username, "left guild");
-                                removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice, was_sharing);
+                                removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice, was_in, was_sharing);
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -2291,13 +2297,17 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 ctx.state.end_channel_instances(channel_id);
                                 tracing::info!(%guild_id, %channel_id, by = ?u.username, "channel deleted");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                // The channel is gone, so only who could see it is told who was inside.
+                                let told = seen_by.unwrap_or_else(|| targets.clone());
                                 ctx.state.deliver(
-                                    seen_by.unwrap_or_else(|| targets.clone()),
+                                    told.clone(),
                                     ServerMessage::ChannelDelete { guild_id, channel_id },
                                 );
                                 for vs in evicted {
                                     evict_from_call(&ctx, &vs.user_pubkey, channel_id);
-                                    send_voice_state(&ctx.state, targets.clone(), vs);
+                                    let mut to = told.clone();
+                                    to.push(vs.user_pubkey.clone());
+                                    send_voice_state(&ctx.state, to, Some(channel_id), vs);
                                 }
                             }
                             Err(e) => {
@@ -2610,7 +2620,7 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
     }
     if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
         let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
-        send_voice_state(&ctx.state, targets, cleared);
+        send_voice_state(&ctx.state, targets, previous.channel_id, cleared);
         if let Some(channel) = previous.channel_id {
             evict_from_call(ctx, &u.pubkey, channel);
             if previous.screen_sharing {
@@ -2979,6 +2989,7 @@ fn removal_broadcasts(
     target: &str,
     was_member: bool,
     cleared_voice: Option<crate::protocol::VoiceState>,
+    was_in: Option<Id>,
     was_sharing: Option<(Id, Id)>,
 ) {
     // `was_sharing` and `cleared_voice` are read by the caller *before* the
@@ -3001,7 +3012,7 @@ fn removal_broadcasts(
     if let Some(vs) = cleared_voice {
         let mut vs_targets = rest.clone();
         vs_targets.push(target.to_string());
-        send_voice_state(state, vs_targets, vs);
+        send_voice_state(state, vs_targets, was_in, vs);
     }
     if let Some((gid, cid)) = was_sharing {
         broadcast_screen_state(state, gid, cid);
@@ -3024,30 +3035,44 @@ fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     state.deliver(targets, ServerMessage::GuildEmojis { guild_id, emojis });
 }
 
-/// Every voice state goes out through here: someone inside a channel the
-/// recipient cannot see is shown to them as not in voice (trap 30).
+/// Every voice state goes out through here (trap 30). `from` is the channel the
+/// state was in before this change. Who can't see where it is now is sent one
+/// only if they could see where it was, so nothing inside a hidden room reaches
+/// them: not its changes, not its count, not an entry from outside any call.
 fn send_voice_state(
     state: &crate::state::AppState,
     targets: Vec<String>,
+    from: Option<Id>,
     vs: crate::protocol::VoiceState,
 ) {
-    let restricted = vs
-        .channel_id
-        .and_then(|c| state.channel(c))
-        .filter(|c| c.access.is_some());
-    let Some(channel) = restricted else {
+    // None: not in a call. Some(None): a channel since deleted, which hides nothing.
+    let room = |c: Option<Id>| c.map(|c| state.channel(c));
+    let (now, before) = (room(vs.channel_id), room(from));
+    let hidden = |r: &Option<Option<crate::protocol::Channel>>| matches!(r, Some(Some(c)) if c.access.is_some());
+    if !hidden(&now) && !hidden(&before) {
         state.deliver(targets, ServerMessage::VoiceStateUpdate(vs));
         return;
-    };
-    let (see, blind): (Vec<String>, Vec<String>) = targets
-        .into_iter()
-        .partition(|t| state.can_see_channel(t, &channel));
-    if !blind.is_empty() {
-        let masked = crate::state::masked_voice_state(vs.clone());
-        state.deliver(blind, ServerMessage::VoiceStateUpdate(masked));
     }
-    if !see.is_empty() {
-        state.deliver(see, ServerMessage::VoiceStateUpdate(vs));
+    let sees = |who: &str, r: &Option<Option<crate::protocol::Channel>>| match r {
+        None => false,
+        Some(None) => true,
+        Some(Some(c)) => state.can_see_channel(who, c),
+    };
+    let (mut told, mut masked) = (Vec::new(), Vec::new());
+    for t in targets {
+        let saw = sees(&t, &before);
+        if t == vs.user_pubkey || sees(&t, &now) || (vs.channel_id.is_none() && saw) {
+            told.push(t);
+        } else if saw {
+            masked.push(t);
+        }
+    }
+    if !masked.is_empty() {
+        let shown = crate::state::masked_voice_state(vs.clone());
+        state.deliver(masked, ServerMessage::VoiceStateUpdate(shown));
+    }
+    if !told.is_empty() {
+        state.deliver(told, ServerMessage::VoiceStateUpdate(vs));
     }
 }
 
@@ -3126,8 +3151,11 @@ fn apply_sight_change(
             for vs in &occupants {
                 if lost.contains(&vs.user_pubkey) {
                     let was_sharing = sharing_in(state, &vs.user_pubkey);
+                    // Everyone who saw them inside, before the change or after; the
+                    // rule in send_voice_state reads only the access as it is now.
                     if let Some(cleared) = state.clear_voice(&vs.user_pubkey) {
-                        send_voice_state(state, state.guild_member_pubkeys(guild_id), cleared);
+                        let told: Vec<String> = was.union(&now).cloned().collect();
+                        state.deliver(told, ServerMessage::VoiceStateUpdate(cleared));
                     }
                     if let Some((gid, c)) = was_sharing {
                         broadcast_screen_state(state, gid, c);
@@ -3205,7 +3233,12 @@ fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_
         .collect();
     for pk in stopped {
         for vs in state.clear_screen_watchers(&pk) {
-            send_voice_state(state, state.guild_member_pubkeys(vs.guild_id), vs);
+            send_voice_state(
+                state,
+                state.guild_member_pubkeys(vs.guild_id),
+                vs.channel_id,
+                vs,
+            );
         }
     }
     let targets = match state.channel(channel_id) {
@@ -3365,7 +3398,7 @@ fn announce_seat(
             }
             let mut vs_targets = targets;
             vs_targets.push(bot_pubkey.to_string());
-            send_voice_state(state, vs_targets, ended.cleared);
+            send_voice_state(state, vs_targets, ended.previous.channel_id, ended.cleared);
             if let (true, Some(channel)) =
                 (ended.previous.screen_sharing, ended.previous.channel_id)
             {
@@ -3550,7 +3583,7 @@ where
     let voice_states: Vec<crate::protocol::VoiceState> = state
         .voice_states_in(guild_id)
         .into_iter()
-        .map(|v| state.voice_state_seen_by(&joiner.pubkey, v))
+        .filter_map(|v| state.voice_state_seen_by(&joiner.pubkey, v))
         .collect();
     if send(
         ws_tx,

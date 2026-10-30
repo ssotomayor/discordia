@@ -1282,6 +1282,7 @@
   "Only for a rendezvous behind a TLS proxy. Most are not, so leave this off unless its owner says otherwise.": ["Solo para un rendezvous detrás de un proxy TLS. La mayoría no lo usa; déjalo desactivado salvo indicación del propietario.", "Só para um rendezvous atrás de um proxy TLS. A maioria não usa; deixe desativado salvo indicação do proprietário.", "仅适用于 TLS 代理后面的集合点。大多数都不是，所以除非其所有者另有说明，否则请将其保留。", "TLS プロキシの背後でのランデブーのみ。ほとんどはそうではないので、所有者が別の指示をしない限り、これをオフのままにしておきます。"],
   "Only the roles and people below": ["Solo los roles y personas de abajo", "Só os cargos e pessoas abaixo", "仅以下角色和人员", "以下の役割と人物のみ"],
   "Only the ticked channels earn.": ["Solo los canales marcados otorgan experiencia.", "Só os canais marcados concedem experiência.", "只有勾选的频道才能赚钱。", "チェックを入れたチャンネルのみが収益を獲得します。"],
+  "Hidden channels never earn.": ["Los canales ocultos nunca otorgan experiencia.", "Canais ocultos nunca concedem experiência.", "隐藏频道从不获得经验。", "非表示のチャンネルでは経験値を獲得できません。"],
   "Only you and this contact can hear this call.": ["Solo tú y este contacto pueden escuchar la llamada.", "Só você e este contato podem ouvir a chamada.", "只有您和此联系人才能听到此呼叫。", "この通話を聞くことができるのは、あなたとこの連絡先だけです。"],
   "Only you can see this preview.": ["Solo tú puedes ver esta vista previa.", "Só você pode ver esta prévia.", "只有您可以看到此预览。", "このプレビューを表示できるのはあなただけです。"],
   "Only {0} more can be added here.": ["Solo puedes agregar {0} más aquí.", "Você só pode adicionar mais {0} aqui.", "只能在此处添加 {0}。", "ここには {0} 件のみを追加できます。"],

@@ -20,12 +20,13 @@ const HINT: &str = "text-[10px] text-[var(--text-dim)] mt-1";
 pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
     let state = use_app_state();
 
-    let channels: Vec<Channel> = {
+    // A hidden channel never earns (the server's rule, trap 20), so it isn't offered.
+    let (channels, any_hidden): (Vec<Channel>, bool) = {
         let s = state.read();
-        let mut v: Vec<Channel> = s
-            .channels
-            .iter()
-            .filter(|c| c.guild_id == guild_id && !c.kind.is_divider())
+        let here = || s.channels.iter().filter(|c| c.guild_id == guild_id);
+        let any_hidden = here().any(|c| c.access.is_some() && !c.kind.is_divider());
+        let mut v: Vec<Channel> = here()
+            .filter(|c| !c.kind.is_divider() && c.access.is_none())
             .cloned()
             .collect();
         v.sort_by(|a, b| {
@@ -33,7 +34,7 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
                 .cmp(&b.position)
                 .then_with(|| a.name.cmp(&b.name))
         });
-        v
+        (v, any_hidden)
     };
 
     let enabled = draft.read().enabled;
@@ -128,6 +129,10 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
                             {crate::i18n::text("Nothing ticked means every channel earns.", &[])}
                         } else {
                             {crate::i18n::text("Only the ticked channels earn.", &[])}
+                        }
+                        if any_hidden {
+                            " "
+                            {crate::i18n::text("Hidden channels never earn.", &[])}
                         }
                     }
                 }

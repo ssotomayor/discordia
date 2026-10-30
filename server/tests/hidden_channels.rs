@@ -120,6 +120,72 @@ async fn next_state_of(session: &mut Bot, who: &str) -> VoiceState {
     }
 }
 
+/// Every voice state sent to `session` so far: the reply to this probe is
+/// queued behind anything delivered before it.
+async fn voice_states_so_far(session: &mut Bot) -> Vec<VoiceState> {
+    let probe = Id::new_v4();
+    session.fetch_messages(probe, 1, None).await.unwrap();
+    let mut seen = Vec::new();
+    loop {
+        match next_timeout(session).await {
+            ServerMessage::VoiceStateUpdate(vs) => seen.push(vs),
+            ServerMessage::MessageHistory { channel_id, .. } if channel_id == probe => return seen,
+            ServerMessage::Error { .. } => return seen,
+            _ => {}
+        }
+    }
+}
+
+async fn voice_channel(owner: &mut Bot, guild_id: Id, name: &str) -> Id {
+    owner
+        .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
+            guild_id,
+            name: name.into(),
+            kind: ChannelKind::Voice,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelCreate(ch) = next_timeout(owner).await
+            && ch.name == name
+        {
+            return ch.id;
+        }
+    }
+}
+
+async fn hide(owner: &mut Bot, voice: Id, role: Id) {
+    owner
+        .send(&ClientMessage::SetChannelAccess {
+            channel_id: voice,
+            access: Some(ChannelAccess {
+                roles: vec![role],
+                users: vec![],
+            }),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelUpdate(ch) = next_timeout(owner).await
+            && ch.id == voice
+        {
+            return;
+        }
+    }
+}
+
+async fn join_voice(session: &mut Bot, channel_id: Id) {
+    session
+        .send(&ClientMessage::JoinVoice {
+            channel_id,
+            preferences: None,
+        })
+        .await
+        .unwrap();
+}
+
 async fn next_error(session: &mut Bot) -> String {
     loop {
         if let ServerMessage::Error { message } = next_timeout(session).await {
@@ -198,15 +264,14 @@ async fn a_hidden_channel_is_only_sent_to_those_allowed_and_follows_their_roles(
         })
         .await
         .unwrap();
-    let seen_by_guest = next_state_of(&mut guest, &staffer_key).await;
-    assert_eq!(
-        seen_by_guest.channel_id, None,
-        "who is inside is hidden along with the channel"
-    );
     assert_eq!(
         next_state_of(&mut owner, &staffer_key).await.channel_id,
         Some(voice),
         "the owner manages channels, so sees it"
+    );
+    assert!(
+        voice_states_so_far(&mut guest).await.is_empty(),
+        "who is inside is hidden along with the channel"
     );
 
     set_role(&mut owner, guild_id, staff, &guest_key, true).await;
@@ -383,5 +448,146 @@ async fn a_hidden_divider_goes_only_to_those_allowed() {
     let (_guest, visible) = connect_user(&url, &guest_id, "Guest").await;
     assert!(!visible.contains(&divider), "never sent on connect either");
 
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_non_viewer_hears_nothing_from_inside_a_hidden_room() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, _) = connect_user(&url, &BotIdentity::generate(), "Owner").await;
+    let (guild_id, voice, staff) = setup(&mut owner).await;
+    let lounge = voice_channel(&mut owner, guild_id, "Lounge").await;
+    hide(&mut owner, voice, staff).await;
+    let staffer_id = BotIdentity::generate();
+    let staffer_key = staffer_id.pubkey().to_string();
+    let (mut staffer, _) = connect_user(&url, &staffer_id, "Staffer").await;
+    join_guild(&mut staffer, guild_id).await;
+    set_role(&mut owner, guild_id, staff, &staffer_key, true).await;
+    let (mut guest, _) = connect_user(&url, &BotIdentity::generate(), "Guest").await;
+    join_guild(&mut guest, guild_id).await;
+
+    join_voice(&mut staffer, voice).await;
+    for msg in [
+        ClientMessage::SetVoiceMute {
+            muted: true,
+            deafened: true,
+        },
+        ClientMessage::SetSpeaking { speaking: true },
+        ClientMessage::SetSpeaking { speaking: false },
+        ClientMessage::LeaveVoice,
+    ] {
+        staffer.send(&msg).await.unwrap();
+    }
+    while next_state_of(&mut owner, &staffer_key)
+        .await
+        .channel_id
+        .is_some()
+    {}
+    assert!(
+        voice_states_so_far(&mut guest).await.is_empty(),
+        "a whole call in a hidden room, from entry to leaving, sends a non-viewer nothing"
+    );
+
+    join_voice(&mut staffer, lounge).await;
+    while next_state_of(&mut owner, &staffer_key).await.channel_id != Some(lounge) {}
+    staffer
+        .send(&ClientMessage::SetVoiceMute {
+            muted: true,
+            deafened: true,
+        })
+        .await
+        .unwrap();
+    while !next_state_of(&mut owner, &staffer_key).await.muted {}
+    join_voice(&mut staffer, voice).await;
+    staffer
+        .send(&ClientMessage::SetSpeaking { speaking: true })
+        .await
+        .unwrap();
+    while !next_state_of(&mut owner, &staffer_key).await.speaking {}
+    let seen: Vec<_> = voice_states_so_far(&mut guest)
+        .await
+        .into_iter()
+        .filter(|v| v.user_pubkey == staffer_key)
+        .map(|v| (v.channel_id, v.muted, v.deafened, v.speaking))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (Some(lounge), false, false, false),
+            (Some(lounge), true, true, false),
+            (None, true, true, false)
+        ],
+        "leaving a room they could see is one frame, saying only what they saw there"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_moderator_who_cannot_see_the_room_cannot_disconnect_or_find_who_is_in_it() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, _) = connect_user(&url, &BotIdentity::generate(), "Owner").await;
+    let (guild_id, voice, staff) = setup(&mut owner).await;
+    hide(&mut owner, voice, staff).await;
+    owner
+        .send(&ClientMessage::CreateRole {
+            guild_id,
+            name: "Bouncer".into(),
+            color: None,
+            permissions: vec![Permission::DisconnectMembers],
+        })
+        .await
+        .unwrap();
+    let bouncer_role = loop {
+        if let ServerMessage::GuildRoles { roles, .. } = next_timeout(&mut owner).await
+            && let Some(r) = roles.iter().find(|r| r.name == "Bouncer")
+        {
+            break r.id;
+        }
+    };
+    let staffer_id = BotIdentity::generate();
+    let staffer_key = staffer_id.pubkey().to_string();
+    let (mut staffer, _) = connect_user(&url, &staffer_id, "Staffer").await;
+    join_guild(&mut staffer, guild_id).await;
+    set_role(&mut owner, guild_id, staff, &staffer_key, true).await;
+    let idle_id = BotIdentity::generate();
+    let (mut idle, _) = connect_user(&url, &idle_id, "Idle").await;
+    join_guild(&mut idle, guild_id).await;
+    let bouncer_id = BotIdentity::generate();
+    let (mut bouncer, _) = connect_user(&url, &bouncer_id, "Bouncer").await;
+    join_guild(&mut bouncer, guild_id).await;
+    set_role(
+        &mut owner,
+        guild_id,
+        bouncer_role,
+        bouncer_id.pubkey(),
+        true,
+    )
+    .await;
+
+    join_voice(&mut staffer, voice).await;
+    while next_state_of(&mut owner, &staffer_key).await.channel_id != Some(voice) {}
+    let mut replies = Vec::new();
+    for target in [staffer_key.clone(), idle_id.pubkey().to_string()] {
+        bouncer
+            .send(&ClientMessage::DisconnectVoice {
+                guild_id,
+                user_pubkey: target,
+            })
+            .await
+            .unwrap();
+        replies.push(next_error(&mut bouncer).await);
+    }
+    assert_eq!(
+        replies[0], replies[1],
+        "the hidden occupant answers like someone not in voice"
+    );
+    assert!(
+        voice_states_so_far(&mut staffer)
+            .await
+            .iter()
+            .all(|v| v.channel_id == Some(voice)),
+        "they are still in the call"
+    );
+    drop(idle);
     handle.abort();
 }
