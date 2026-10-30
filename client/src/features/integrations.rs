@@ -223,11 +223,17 @@ fn ManualInstall(guild_id: Id) -> Element {
     let mut confirming = use_signal(|| false);
 
     let mut submit = move || {
-        let pk = pubkey().trim().to_string();
-        if pk.is_empty() {
+        if pubkey().trim().is_empty() {
             error.set(Some("Enter the bot's public key.".into()));
             return;
         }
+        let pk = match pubkey_from_input(&pubkey()) {
+            Ok(pk) => pk,
+            Err(e) => {
+                error.set(Some(e));
+                return;
+            }
+        };
         if !confirming() && intents().iter().any(|i| i.is_privileged()) {
             confirming.set(true);
             error.set(None);

@@ -41,6 +41,7 @@ pub const MAX_CONNECTIONS: usize = 4096;
 pub const MAX_CONNECTIONS_PER_IP: u32 = 32;
 pub const MAX_SESSIONS_PER_PUBKEY: usize = 8;
 pub const MAX_GUILDS_PER_OWNER: usize = 10;
+pub const MAX_GUILD_INSTALLS: usize = 50;
 const CATALOG_FIRST_PAGE: u32 = 100;
 
 /// Counted on the data URL a client sends, per pubkey, over a sliding day.
@@ -3487,11 +3488,27 @@ impl AppState {
                 &curator[..12]
             ));
         }
-        if bot_pubkey.trim().is_empty() {
-            return Err("bot pubkey is required".into());
+        if !crate::protocol::is_pubkey_hex(bot_pubkey)
+            || bot_pubkey.bytes().any(|b| b.is_ascii_uppercase())
+        {
+            return Err("a bot's key is 64 lowercase hex characters".into());
         }
         if bot_pubkey == by_pubkey {
             return Err("a bot must have its own identity, distinct from yours".into());
+        }
+        let current = self.bot_install(guild_id, bot_pubkey);
+        if current.is_none() && self.guild_installs(guild_id).len() >= MAX_GUILD_INSTALLS {
+            return Err(format!(
+                "a guild installs at most {MAX_GUILD_INSTALLS} apps"
+            ));
+        }
+        if self
+            .members
+            .get(&guild_id)
+            .and_then(|g| g.get(bot_pubkey).map(|m| !m.bot))
+            .unwrap_or(false)
+        {
+            return Err("that key belongs to a member of this guild, not an app".into());
         }
         if let Some(bad) = permissions
             .iter()
@@ -3517,16 +3534,13 @@ impl AppState {
             name: name.clone(),
             permissions: unique(permissions),
             intents: unique(intents),
-            may_call: self
-                .bot_install(guild_id, bot_pubkey)
-                .map(|i| i.may_call)
+            may_call: current
+                .as_ref()
+                .map(|i| i.may_call.clone())
                 .unwrap_or_default(),
             app: app.as_ref().map(|a| a.manifest.clone()),
             pending: None,
-            look: self
-                .bot_install(guild_id, bot_pubkey)
-                .map(|i| i.look)
-                .unwrap_or_default(),
+            look: current.map(|i| i.look).unwrap_or_default(),
         };
         let seat = self.seat_for(&install);
         durable(self.store.install_bot(&install, &seat).await, "bot install")?;
@@ -3543,9 +3557,12 @@ impl AppState {
         guild_id: Id,
         bot_pubkey: &str,
         by_pubkey: &str,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        // A person leaves only through kick or ban, which hold the moderation guard.
+        self.bot_install(guild_id, bot_pubkey)
+            .ok_or("that bot isn't installed here")?;
         durable(
             self.store.uninstall_bot(guild_id, bot_pubkey).await,
             "bot uninstall",
@@ -3570,11 +3587,13 @@ impl AppState {
         };
         if now_empty {
             self.bot_installs.remove(bot_pubkey);
+            self.forget_unused_commands(bot_pubkey);
         }
-        if let Some(gm) = self.members.get(&guild_id) {
-            gm.remove(bot_pubkey);
-        }
-        Ok(())
+        let seated = self
+            .members
+            .get(&guild_id)
+            .is_some_and(|gm| gm.remove_if(bot_pubkey, |_, m| m.bot).is_some());
+        Ok(seated)
     }
 
     pub fn snapshot_for_bot(&self, bot: &User) -> ServerMessage {

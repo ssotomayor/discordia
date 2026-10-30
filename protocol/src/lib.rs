@@ -1925,7 +1925,18 @@ pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String
                 id: opt.id,
                 required: opt.required,
                 kind,
-                when: opt.when,
+                // Checked against the choices above, so what is left is bounded.
+                when: opt.when.map(|mut w| {
+                    let mut seen: Vec<String> = Vec::new();
+                    w.any_of.retain(|v| {
+                        let fresh = !seen.contains(v);
+                        if fresh {
+                            seen.push(v.clone());
+                        }
+                        fresh
+                    });
+                    w
+                }),
             });
         }
         out.push(BotCommand {
@@ -3491,6 +3502,20 @@ mod command_tests {
             id: id.into(),
             value,
         }
+    }
+
+    #[test]
+    fn a_repeated_dependency_value_is_kept_once() {
+        let mut cmd = per_game();
+        let repeated: Vec<&str> = std::iter::repeat_n("cod", 10_000)
+            .chain(["smash", "cod"])
+            .collect();
+        cmd.options[3] = cmd.options[3].clone().shown_when("game", &repeated);
+        let out = validate_commands(vec![cmd]).unwrap().remove(0);
+        assert_eq!(
+            out.options[3].when.as_ref().unwrap().any_of,
+            ["cod", "smash"]
+        );
     }
 
     #[test]

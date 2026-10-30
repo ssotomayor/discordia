@@ -137,14 +137,15 @@ impl Store {
 
     pub async fn uninstall_bot(&self, guild_id: Id, pubkey: &str) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        for (table, column) in [("bot_installs", "bot_pubkey"), ("members", "pubkey")] {
-            sqlx::query(&format!(
-                "DELETE FROM {table} WHERE guild_id = ? AND {column} = ?"
-            ))
-            .bind(guild_id.to_string())
-            .bind(pubkey)
-            .execute(&mut *tx)
-            .await?;
+        for stmt in [
+            "DELETE FROM bot_installs WHERE guild_id = ? AND bot_pubkey = ?",
+            "DELETE FROM members WHERE guild_id = ? AND pubkey = ? AND bot = 1",
+        ] {
+            sqlx::query(stmt)
+                .bind(guild_id.to_string())
+                .bind(pubkey)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await
     }
@@ -313,6 +314,14 @@ impl Store {
         }
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_file_media ON messages(json_extract(attachment, '$.media')) WHERE attachment IS NOT NULL")
             .execute(&self.pool).await?;
+        // Installs once took any string as a key and seated it; loading only
+        // truncates, so the megabyte rows would stay on disk.
+        for stmt in [
+            "DELETE FROM bot_installs WHERE length(bot_pubkey) != 64 OR bot_pubkey GLOB '*[^0-9a-fA-F]*'",
+            "DELETE FROM members WHERE bot = 1 AND (length(pubkey) != 64 OR pubkey GLOB '*[^0-9a-fA-F]*')",
+        ] {
+            sqlx::query(stmt).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
