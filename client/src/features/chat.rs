@@ -1400,14 +1400,7 @@ fn ChatImage(address: String) -> Element {
                 .media_src(&address)
                 .map(|data| std::sync::Arc::new(data.to_owned())),
         }?;
-        let thumb = if let Some((_mime, raw)) = crate::nostr::blossom::split_data_url(&data) {
-            crate::chat_image::thumbnail_data_url(&raw)
-                .map(std::sync::Arc::new)
-                .unwrap_or_else(|_| data.clone())
-        } else {
-            data.clone()
-        };
-        Some(crate::image_assets::chat_source(thumb))
+        Some(crate::image_assets::chat_source(data))
     }));
     rsx! {
         if let Some(src) = resolved() {
