@@ -78,6 +78,33 @@ pub struct LiveKitConfig {
     /// Handed to every client with its voice tokens. Shared because a
     /// self-host swaps in renewed relay credentials while the gateway runs.
     pub ice_servers: SharedIceServers,
+    pub local_sfu: LocalSfu,
+}
+
+/// Whether whatever answers on `port` is this host's own SFU. Off after the
+/// bundled one failed to start: then the port may be anyone's, and it gets no
+/// tokens, no admin calls and no `/sfu` tunnels.
+#[derive(Clone, Debug)]
+pub struct LocalSfu(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl LocalSfu {
+    pub fn new(ours: bool) -> Self {
+        Self(std::sync::Arc::new(ours.into()))
+    }
+
+    pub fn ours(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set(&self, ours: bool) {
+        self.0.store(ours, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Default for LocalSfu {
+    fn default() -> Self {
+        Self::new(true)
+    }
 }
 
 pub type SharedIceServers = std::sync::Arc<std::sync::RwLock<Vec<IceServer>>>;
@@ -137,7 +164,13 @@ impl LiveKitConfig {
             alternate_hosts: Vec::new(),
             fallback: None,
             ice_servers: shared_ice_servers(ice_servers),
+            local_sfu: LocalSfu::default(),
         }
+    }
+
+    /// Whether voice may go to the SFU on `port`.
+    pub fn local_refused(&self) -> bool {
+        self.explicit_url.is_none() && !self.local_sfu.ours()
     }
 
     /// Over QUIC the `Host` header is a fixed loopback placeholder, so the
@@ -254,6 +287,8 @@ pub fn mint_token(
         .map_err(|e| format!("livekit token: {e}"))
 }
 
+const NO_LOCAL_SFU: &str = "this host's voice server is not running";
+
 pub async fn voice_token(
     cfg: &LiveKitConfig,
     user_pubkey: &str,
@@ -270,6 +305,7 @@ pub async fn voice_token(
             })
             .await
         }
+        None if cfg.local_refused() => Err(NO_LOCAL_SFU.into()),
         None => mint_token(cfg, user_pubkey, username, channel_id),
     }
 }
@@ -303,6 +339,7 @@ pub async fn screen_token_as(
             })
             .await
         }
+        None if cfg.local_refused() => Err(NO_LOCAL_SFU.into()),
         None => mint_screen_token(cfg, identity, username, channel_id, can_publish),
     }
 }
@@ -325,7 +362,7 @@ impl LiveKitConfig {
 
     /// `None` when a rendezvous mints the tokens: its SFU, its keys.
     fn admin_url(&self) -> Option<String> {
-        if self.minter.is_some() {
+        if self.minter.is_some() || self.local_refused() {
             return None;
         }
         Some(match &self.explicit_url {
@@ -411,6 +448,35 @@ mod tests {
         }
     }
 
+    /// After the bundled SFU failed to start, the port may be anyone's.
+    #[tokio::test]
+    async fn a_local_sfu_that_is_not_ours_gets_no_tokens_or_admin_calls() {
+        let cfg = LiveKitConfig {
+            alternate_hosts: Vec::new(),
+            fallback: None,
+            ..direct_routes()
+        };
+        assert!(voice_token(&cfg, "pk", "name", Id::new_v4()).await.is_ok());
+        cfg.local_sfu.set(false);
+        assert!(voice_token(&cfg, "pk", "name", Id::new_v4()).await.is_err());
+        assert!(
+            screen_token_as(&cfg, "pk", "name", Id::new_v4(), true)
+                .await
+                .is_err()
+        );
+        assert!(cfg.admin_url().is_none());
+        let shared = LiveKitConfig {
+            explicit_url: Some("wss://shared.example".into()),
+            ..cfg
+        };
+        assert!(
+            voice_token(&shared, "pk", "name", Id::new_v4())
+                .await
+                .is_ok(),
+            "a shared SFU is unaffected"
+        );
+    }
+
     fn direct_routes() -> LiveKitConfig {
         LiveKitConfig {
             explicit_url: None,
@@ -429,6 +495,7 @@ mod tests {
             api_key: "key".into(),
             api_secret: "secret".into(),
             minter: None,
+            local_sfu: Default::default(),
         }
     }
 
@@ -519,6 +586,7 @@ mod tests {
             public_host: None,
             alternate_hosts: Vec::new(),
             fallback: None,
+            local_sfu: Default::default(),
         };
         let channel = Id::new_v4();
         let verifier = TokenVerifier::with_api_key(&cfg.api_key, &cfg.api_secret);
@@ -574,6 +642,7 @@ mod tests {
             public_host: None,
             alternate_hosts: Vec::new(),
             fallback: None,
+            local_sfu: Default::default(),
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000"), None),
@@ -594,6 +663,7 @@ mod tests {
             public_host: None,
             alternate_hosts: Vec::new(),
             fallback: None,
+            local_sfu: Default::default(),
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000"), None),
@@ -615,6 +685,7 @@ mod tests {
             public_host: None,
             alternate_hosts: Vec::new(),
             fallback: None,
+            local_sfu: Default::default(),
         };
         for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {
             assert_eq!(cfg.url_for_client(Some(h), None), "ws://192.168.0.61:7880");
@@ -638,6 +709,7 @@ mod tests {
             public_host: Some("203.0.113.5".into()),
             alternate_hosts: Vec::new(),
             fallback: None,
+            local_sfu: Default::default(),
         };
         assert_eq!(
             cfg.url_for_client(Some("127.0.0.1:9000"), None),
@@ -662,6 +734,7 @@ mod tests {
             public_host: Some("203.0.113.5".into()),
             alternate_hosts: Vec::new(),
             fallback: None,
+            local_sfu: Default::default(),
         };
         let quic_host = Some("127.0.0.1");
         assert_eq!(

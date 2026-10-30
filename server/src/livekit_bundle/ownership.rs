@@ -26,6 +26,43 @@ fn claim(path: &Path) -> Result<OwnershipLock, String> {
     Ok(OwnershipLock { file })
 }
 
+/// Shared by this user's hosts and nobody else's: another user's SFU on the
+/// same port already fails to bind, and a directory others can write to was
+/// theirs to fill first.
+fn lock_root() -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+            return std::path::PathBuf::from(run).join("discordia-media-ownership");
+        }
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        std::env::temp_dir().join(format!("discordia-media-ownership-{uid}"))
+    }
+    #[cfg(not(unix))]
+    std::env::temp_dir().join("discordia-media-ownership")
+}
+
+/// A private directory that is a real one and this user's; a name someone
+/// else created first, or a symlink, is refused rather than used.
+fn owned_private_dir(dir: &Path) -> std::io::Result<()> {
+    super::private_dir(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::symlink_metadata(dir)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        if !meta.file_type().is_dir() || meta.uid() != me {
+            return Err(std::io::Error::other(format!(
+                "{} is not a directory this user owns",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub struct HostLease {
     _directory: OwnershipLock,
 }
@@ -46,11 +83,7 @@ pub(super) struct MediaOwnership {
 
 impl MediaOwnership {
     pub(super) fn claim(data_dir: &Path, ports: super::LivekitPorts) -> Result<Self, String> {
-        Self::claim_in(
-            data_dir,
-            &std::env::temp_dir().join("discordia-media-ownership"),
-            ports,
-        )
+        Self::claim_in(data_dir, &lock_root(), ports)
     }
 
     fn claim_in(
@@ -59,7 +92,7 @@ impl MediaOwnership {
         ports: super::LivekitPorts,
     ) -> Result<Self, String> {
         super::private_dir(data_dir).map_err(|e| format!("media directory: {e}"))?;
-        super::private_dir(lock_dir).map_err(|e| format!("media ownership directory: {e}"))?;
+        owned_private_dir(lock_dir).map_err(|e| format!("media ownership directory: {e}"))?;
         let directory = claim(&data_dir.join("owner.lock"))?;
         let mut locks = Vec::new();
         for (protocol, port) in [("tcp", ports.ws), ("tcp", ports.tcp), ("udp", ports.udp)] {
@@ -116,6 +149,41 @@ mod tests {
         assert_eq!(super::super::credentials(&first).unwrap(), first_creds);
         assert!(HostLease::claim(&second).is_err());
         drop((two, restarted));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_directory_that_is_a_symlink_is_refused() {
+        let root = scratch();
+        super::super::private_dir(&root).unwrap();
+        let elsewhere = root.join("elsewhere");
+        super::super::private_dir(&elsewhere).unwrap();
+        let planted = root.join("locks");
+        std::os::unix::fs::symlink(&elsewhere, &planted).unwrap();
+        assert!(
+            MediaOwnership::claim_in(
+                &root.join("host"),
+                &planted,
+                super::super::ports_from(Some("17950"))
+            )
+            .is_err(),
+            "a planted symlink was taken for the lock directory"
+        );
+        assert!(
+            std::fs::read_dir(&elsewhere).unwrap().next().is_none(),
+            "nothing was written through it"
+        );
+        assert!(
+            lock_root()
+                .to_string_lossy()
+                .contains("discordia-media-ownership")
+        );
+        assert_ne!(
+            lock_root(),
+            std::env::temp_dir().join("discordia-media-ownership"),
+            "per user"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

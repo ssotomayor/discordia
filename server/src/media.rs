@@ -85,9 +85,16 @@ pub struct MediaStore {
 impl MediaStore {
     pub fn open(dir: PathBuf, max_bytes: u64) -> std::io::Result<MediaStore> {
         std::fs::create_dir_all(&dir)?;
+        // The sweep deletes in here, so it must be the directory it says it is.
+        if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "{} is a symlink; the media directory must be a real one",
+                dir.display()
+            )));
+        }
         let used = std::fs::read_dir(&dir)?
             .flatten()
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .filter(is_blob)
             .filter_map(|e| e.metadata().ok())
             .map(|m| m.len())
             .sum();
@@ -126,6 +133,13 @@ impl MediaStore {
         self.store_kind(data_url, Kind::Bundle)
     }
 
+    /// The name a bundle would be stored under, without storing it: what is
+    /// not the bundle a manifest names never reaches the disk or the quota.
+    pub fn bundle_name(data_url: &str) -> Result<String, StoreError> {
+        let (bytes, ext) = decode(data_url, Kind::Bundle, 0)?;
+        Ok(format!("{}.{ext}", hex::encode(Sha256::digest(&bytes))))
+    }
+
     fn store_kind(&self, data_url: &str, kind: Kind) -> Result<String, StoreError> {
         self.store_kind_with_image_limit(data_url, kind, crate::protocol::MAX_IMAGE_BYTES)
     }
@@ -136,26 +150,7 @@ impl MediaStore {
         kind: Kind,
         max_image_bytes: usize,
     ) -> Result<String, StoreError> {
-        let unsupported = match kind {
-            Kind::Image => StoreError::Unsupported,
-            Kind::Sound => StoreError::UnsupportedSound,
-            Kind::File | Kind::Bundle => StoreError::UnsupportedFile,
-        };
-        let rest = data_url.strip_prefix("data:").ok_or(unsupported)?;
-        let (mime, payload) = rest.split_once(";base64,").ok_or(unsupported)?;
-        let ext = ext_for_mime(mime, kind).ok_or(unsupported)?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(payload)
-            .map_err(|_| unsupported)?;
-        if matches!(kind, Kind::Image) && bytes.len() > max_image_bytes {
-            return Err(StoreError::ImageTooLarge);
-        }
-        if matches!(kind, Kind::Bundle) && bytes.len() > crate::protocol::MAX_BUNDLE_BYTES {
-            return Err(StoreError::UnsupportedFile);
-        }
-        if !looks_like(ext, &bytes) {
-            return Err(unsupported);
-        }
+        let (bytes, ext) = decode(data_url, kind, max_image_bytes)?;
         let hash = hex::encode(Sha256::digest(&bytes));
         let name = format!("{hash}.{ext}");
         let path = self.dir.join(&name);
@@ -203,6 +198,14 @@ impl MediaStore {
         Some(format!("data:{mime};base64,{b64}"))
     }
 
+    /// What `inline` would return, sized from the file's metadata alone, so a
+    /// response budget is checked before a blob is read and encoded.
+    pub fn inlined_len(&self, stored: &str) -> Option<usize> {
+        let size = self.stored_size(stored)? as usize;
+        let name = stored.strip_prefix(SENTINEL)?;
+        Some("data:;base64,".len() + mime_for_name(name).len() + size.div_ceil(3) * 4)
+    }
+
     pub fn sweep(&self, referenced: &HashSet<String>, grace: Duration) -> SweepReport {
         self.sweep_kind(referenced, grace, false)
     }
@@ -223,8 +226,11 @@ impl MediaStore {
         };
         let now = SystemTime::now();
         for entry in entries.flatten() {
+            if !is_blob(&entry) {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || (files_only && !name.ends_with(".bin")) {
+            if files_only && !name.ends_with(".bin") {
                 continue;
             }
             if referenced.contains(&name) {
@@ -281,17 +287,53 @@ pub fn is_address(stored: &str) -> bool {
     sanitize(stored.strip_prefix(SENTINEL).unwrap_or(stored)).is_some()
 }
 
+/// Exactly the names the store writes. Any other spelling of one — capitals
+/// above all — opens the same file on a case-insensitive volume while slipping
+/// past every check that compares names.
 fn sanitize(name: &str) -> Option<String> {
     let (hash, ext) = name.split_once('.')?;
-    if hash.len() == 64
-        && hash.chars().all(|c| c.is_ascii_hexdigit())
-        && (1..=5).contains(&ext.len())
-        && ext.chars().all(|c| c.is_ascii_alphanumeric())
-    {
-        Some(name.to_string())
-    } else {
-        None
+    let lower_hex = |c: char| c.is_ascii_digit() || ('a'..='f').contains(&c);
+    (hash.len() == 64 && hash.chars().all(lower_hex) && STORED_EXTENSIONS.contains(&ext))
+        .then(|| name.to_string())
+}
+
+const STORED_EXTENSIONS: [&str; 10] = [
+    "png", "jpg", "gif", "webp", "avif", "mp3", "ogg", "wav", "bin", "dxa",
+];
+
+/// A blob the store wrote: a regular file under a sentinel name. The sweep
+/// deletes only these, so nothing it finds in the directory leads it elsewhere.
+fn is_blob(entry: &std::fs::DirEntry) -> bool {
+    entry.file_type().is_ok_and(|t| t.is_file())
+        && sanitize(&entry.file_name().to_string_lossy()).is_some()
+}
+
+fn decode(
+    data_url: &str,
+    kind: Kind,
+    max_image_bytes: usize,
+) -> Result<(Vec<u8>, &'static str), StoreError> {
+    let unsupported = match kind {
+        Kind::Image => StoreError::Unsupported,
+        Kind::Sound => StoreError::UnsupportedSound,
+        Kind::File | Kind::Bundle => StoreError::UnsupportedFile,
+    };
+    let rest = data_url.strip_prefix("data:").ok_or(unsupported)?;
+    let (mime, payload) = rest.split_once(";base64,").ok_or(unsupported)?;
+    let ext = ext_for_mime(mime, kind).ok_or(unsupported)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| unsupported)?;
+    if matches!(kind, Kind::Image) && bytes.len() > max_image_bytes {
+        return Err(StoreError::ImageTooLarge);
     }
+    if matches!(kind, Kind::Bundle) && bytes.len() > crate::protocol::MAX_BUNDLE_BYTES {
+        return Err(StoreError::UnsupportedFile);
+    }
+    if !looks_like(ext, &bytes) {
+        return Err(unsupported);
+    }
+    Ok((bytes, ext))
 }
 
 pub fn is_image_address(raw: &str) -> bool {
@@ -439,6 +481,57 @@ mod tests {
         assert_eq!(report.deleted, 1);
         assert!(media.inline(&file).is_none());
         assert!(media.inline(&image).is_some());
+    }
+
+    /// The sweep deletes in its directory, so that must be a real one, and it
+    /// deletes only what the store wrote there.
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_touches_only_blobs_in_a_real_directory() {
+        let root = tempdir::Dir::new();
+        let precious = root.path().join("operator");
+        std::fs::create_dir_all(&precious).unwrap();
+        std::fs::write(precious.join("notes.txt"), b"keep").unwrap();
+        let linked = root.path().join("media");
+        std::os::unix::fs::symlink(&precious, &linked).unwrap();
+        assert!(
+            MediaStore::open(linked, DEFAULT_MAX_BYTES).is_err(),
+            "a symlinked media directory was opened"
+        );
+
+        let (media, dir) = store();
+        let image = media.store_data_url(PNG).unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(
+            precious.join("notes.txt"),
+            dir.path().join(format!("{}.png", "a".repeat(64))),
+        )
+        .unwrap();
+        let report = media.sweep(&HashSet::new(), Duration::ZERO);
+        assert_eq!(report.deleted, 1, "only the stored blob");
+        assert!(media.inline(&image).is_none());
+        assert!(dir.path().join("notes.txt").exists());
+        assert!(precious.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn a_name_is_an_address_only_as_the_store_writes_it() {
+        let hash = "ab".repeat(32);
+        assert!(is_address(&format!("media:{hash}.png")));
+        for odd in [
+            format!("media:{}.png", hash.to_uppercase()),
+            format!("media:{hash}.PNG"),
+            format!("media:{hash}.exe"),
+            format!("media:{hash}.png.bin"),
+        ] {
+            assert!(!is_address(&odd), "{odd}");
+        }
+        let (media, _dir) = store();
+        let image = media.store_data_url(PNG).unwrap();
+        assert_eq!(
+            media.inlined_len(&image),
+            media.inline(&image).map(|s| s.len())
+        );
     }
 
     fn store() -> (MediaStore, tempdir::Dir) {

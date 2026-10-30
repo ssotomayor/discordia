@@ -237,16 +237,25 @@ impl AppState {
         if wanted.is_empty() {
             return Err("that app's manifest has no activity".into());
         }
-        let stored = self
-            .media
-            .store_bundle_data_url(data_url)
-            .map_err(|e| e.to_string())?;
-        let name = stored.strip_prefix("media:").unwrap_or(&stored);
-        if !wanted.iter().any(|w| w == name) {
-            // Left for the sweep: nothing references it.
+        let name = crate::media::MediaStore::bundle_name(data_url).map_err(|e| e.to_string())?;
+        if !wanted.iter().any(|w| w == &name) {
             return Err("that file is not the bundle the manifest names".into());
         }
-        Ok(())
+        self.store_bundle(&name, data_url, by_pubkey)
+    }
+
+    /// Only after its hash matched a manifest, and charged like any upload:
+    /// a bundle stored first and checked after filled the shared quota.
+    fn store_bundle(&self, name: &str, data_url: &str, by_pubkey: &str) -> Result<(), String> {
+        let stored = format!("media:{name}");
+        if self.media.existing(&stored).is_some() {
+            return Ok(());
+        }
+        self.charge_upload(by_pubkey, data_url.len() as u64)?;
+        self.media
+            .store_bundle_data_url(data_url)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Bundles some guild approved for this app (or is asked to) that the
@@ -286,19 +295,16 @@ impl AppState {
         if wanted.is_empty() {
             return Err("no guild here has installed this app's activity".into());
         }
-        let stored = self
-            .media
-            .store_bundle_data_url(data_url)
-            .map_err(|e| e.to_string())?;
-        let name = stored.strip_prefix("media:").unwrap_or(&stored);
+        let name = crate::media::MediaStore::bundle_name(data_url).map_err(|e| e.to_string())?;
         let mut guilds: Vec<Id> = wanted
             .into_iter()
-            .filter(|(_, w)| w == name)
+            .filter(|(_, w)| w == &name)
             .map(|(g, _)| g)
             .collect();
         if guilds.is_empty() {
             return Err("that bundle isn't the one any guild approved".into());
         }
+        self.store_bundle(&name, data_url, bot_pubkey)?;
         guilds.sort_unstable();
         guilds.dedup();
         Ok(guilds)

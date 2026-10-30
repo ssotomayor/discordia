@@ -152,6 +152,8 @@ peer tests use synthesized PCM and real Opus decoding without audio hardware.
 | Coordinator restarts | Reloads reservations from disk; hosts register again |
 | Same identity registers a name it holds | Accepted, even while an earlier session lingers: that one gets `Superseded` and its client stops re-registering. Hexadecimal key casing is ignored |
 | Another identity requests a reserved name | `already taken — reserved by a different identity` |
+| One address claims many names or hosts | Past 16 new names, or 16 live hosts, from one address (an IPv6 /64) it is refused: keys are free, addresses are not. A name the key already holds is kept regardless. 10,000 names and 10,000 live hosts in all (`ReservationCaps`) |
+| `/discover` | The first 500 public hosts by name; each entry at most 16 transport addresses |
 | Owner sends signed `ListNames` | Its names, live or with seconds until expiry — the Create tab's "Your names here" |
 | Owner sends signed `ReleaseName` | Removes the reservation only after the live session has ended |
 | Operator frees a name | `sqlite3 reservations.db "DELETE FROM reservations WHERE slug = '<code>'"` while it runs; the table is the only copy, read on every claim |

@@ -548,6 +548,7 @@ pub async fn start_self_host(
         public_host: advertise_ip.map(|ip| ip.to_string()),
         alternate_hosts: voice_hosts,
         ice_servers: ice_servers.clone(),
+        local_sfu: discordia_server::livekit::LocalSfu::new(voice_bundled),
     };
     tracing::info!(
         bundled = voice_bundled,

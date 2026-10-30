@@ -492,3 +492,17 @@ async fn http_get(addr: SocketAddr, path: &str) -> (u16, String) {
     let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
     (status, body.to_string())
 }
+
+/// A bundled SFU that failed to start leaves its port to whoever takes it, so
+/// the gateway opens no tunnel there, however good the caller's token.
+#[tokio::test]
+async fn no_tunnel_goes_to_a_local_sfu_that_is_not_ours() {
+    let (sfu_port, _sfu) = fake_sfu().await;
+    let livekit = bundled(sfu_port);
+    livekit.local_sfu.set(false);
+    let (addr, _gateway) = gateway(livekit).await;
+    let refused = tokio_tungstenite::connect_async(format!("ws://{addr}/sfu/rtc?access_token=x"))
+        .await
+        .expect_err("no tunnel");
+    assert_eq!(refusal(refused), StatusCode::NOT_FOUND);
+}

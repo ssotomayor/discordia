@@ -50,6 +50,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "livekit subprocess not started — voice will be unavailable unless you set LIVEKIT_URL");
+                livekit_cfg.local_sfu.set(false);
                 None
             }
         }

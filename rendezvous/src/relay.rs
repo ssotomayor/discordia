@@ -28,6 +28,11 @@ fn is_local(ip: IpAddr) -> bool {
 
 /// An address is `ip:port` for a hole-punch candidate or a relay URL; the only
 /// relay a friend should ever be sent to is this coordinator's own.
+const MAX_TRANSPORT_ADDRS: usize = 16;
+const MAX_TRANSPORT_ADDR_CHARS: usize = 256;
+/// An iroh endpoint id is 64 hex characters.
+const MAX_TRANSPORT_KEY_CHARS: usize = 128;
+
 fn admits_transport_addr(addr: &str, peer: Option<IpAddr>, relay_url: Option<&str>) -> bool {
     if let Ok(socket) = addr.parse::<std::net::SocketAddr>() {
         return peer.is_none_or(|peer| socket.ip() == peer || is_local(socket.ip()));
@@ -201,16 +206,25 @@ pub async fn handle_host_control(
 
     // Only the name and the transport key are signed, so where the entry points
     // is checked against where the frame came from: else it aims friends at a stranger.
-    let transport_addrs: Vec<String> = transport_addrs
+    // A host has a handful; every one rides in each /discover answer.
+    let mut transport_addrs: Vec<String> = transport_addrs
         .into_iter()
+        .filter(|a| a.len() <= MAX_TRANSPORT_ADDR_CHARS)
         .filter(|a| admits_transport_addr(a, peer, cfg.relay_url.as_deref()))
         .collect();
+    transport_addrs.sort_unstable();
+    transport_addrs.dedup();
+    transport_addrs.truncate(MAX_TRANSPORT_ADDRS);
     let description = description
         .map(|d| discordia_protocol::sanitize_line(&d, MAX_DESCRIPTION_CHARS))
         .filter(|d| !d.is_empty());
     let location = location.and_then(|p| p.coarse());
 
     let transport = match (&transport_key, &pubkey, &transport_signature) {
+        (Some(key), _, _) if key.len() > MAX_TRANSPORT_KEY_CHARS => {
+            tracing::warn!("transport key too long — publishing without it");
+            None
+        }
         (Some(key), Some(pk), Some(sig)) => {
             match verify::verify_ownership(Proof::Transport, &audience, &nonce, pk, sig, key) {
                 Ok(()) => Some((key.clone(), transport_addrs)),
@@ -264,6 +278,7 @@ pub async fn handle_host_control(
         transport_key: transport.as_ref().map(|(k, _)| k.clone()),
         transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
         location,
+        address: peer.map(crate::registry::origin),
         last_seen_ms: Default::default(),
         superseded: Default::default(),
     };
@@ -281,7 +296,10 @@ pub async fn handle_host_control(
                 ClaimError::OwnerLimit => {
                     "this key already holds its share of names — release one first".to_string()
                 }
-                ClaimError::Full => "this rendezvous is not taking new names".to_string(),
+                ClaimError::AddressLimit => {
+                    "your address already holds its share of hosts and names here".to_string()
+                }
+                ClaimError::Full => "this rendezvous is not taking new hosts or names".to_string(),
                 ClaimError::Storage => "this rendezvous cannot record names right now".to_string(),
             };
             send_err(&mut tx, &message).await;

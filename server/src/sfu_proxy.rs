@@ -44,7 +44,7 @@ pub async fn proxy(
     relay: Option<axum::Extension<crate::admission::RelayPeer>>,
 ) -> Response {
     let (cfg, _) = ctx.livekit.route();
-    if cfg.explicit_url.is_some() {
+    if cfg.explicit_url.is_some() || cfg.local_refused() {
         return (
             StatusCode::NOT_FOUND,
             "this server runs no local voice server",

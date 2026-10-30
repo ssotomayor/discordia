@@ -1279,6 +1279,7 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
         ),
         minter: None,
         ice_servers: Default::default(),
+        local_sfu: Default::default(),
     };
     discordia_server::livekit::evict(&cfg, channel, &who).await;
 

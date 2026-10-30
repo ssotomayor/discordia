@@ -68,7 +68,7 @@ async fn main() {
 }
 
 async fn listen(coordination: Coordination) {
-    let dir = std::env::temp_dir().join(format!("discordia-reach-{}", std::process::id()));
+    let dir = fresh_dir().expect("scratch data dir");
     let router = discordia_server::build_router(discordia_server::ServerConfig {
         livekit: discordia_server::livekit::LiveKitConfig::from_env(&dir),
         operators: Default::default(),
@@ -217,4 +217,21 @@ where
         .as_str()
         .unwrap_or_default()
         .to_string())
+}
+
+/// Made here, now, under a name nobody could have guessed, and refused if it
+/// exists: a path another local user created first is theirs to point anywhere.
+fn fresh_dir() -> std::io::Result<std::path::PathBuf> {
+    use rand::Rng;
+    let name: String = rand::thread_rng()
+        .sample_iter(rand::distributions::Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect();
+    let dir = std::env::temp_dir().join(format!("discordia-reach-{name}"));
+    let mut create = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut create, 0o700);
+    create.create(&dir)?;
+    Ok(dir)
 }

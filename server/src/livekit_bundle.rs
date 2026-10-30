@@ -8,6 +8,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
 
+mod listener;
 mod ownership;
 pub use ownership::HostLease;
 
@@ -629,14 +630,23 @@ async fn wait_for_ready(
                  and the server's startup log"
             ));
         }
+        let holder = child
+            .id()
+            .map_or(listener::Holder::Other, |pid| listener::holder(port, pid));
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "port {port} did not accept this host's credentials after {timeout:?}; \
-                 another instance may be using the media port"
-            ));
+            return Err(match holder {
+                listener::Holder::Other => format!(
+                    "another process holds media port {port}; this host's credentials were not sent to it"
+                ),
+                _ => format!(
+                    "port {port} did not accept this host's credentials after {timeout:?}; \
+                     another instance may be using the media port"
+                ),
+            });
         }
-        // Another profile's SFU can already own this port while our child is still starting.
-        if authenticated_ready(&client, deadline).await {
+        // Credentials go only to a port the child is shown to hold: an old SFU
+        // still shutting down, or anyone else's listener, waits out the deadline.
+        if holder == listener::Holder::Child && authenticated_ready(&client, deadline).await {
             if child
                 .try_wait()
                 .map_err(|e| format!("livekit status: {e}"))?

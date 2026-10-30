@@ -880,3 +880,56 @@ async fn a_proof_made_out_to_another_rendezvous_is_refused() {
         Some(&owner[..])
     );
 }
+
+/// Every listed entry rides in each /discover answer, so its size is bounded
+/// whatever a host sends: a handful of distinct addresses and a key-sized key.
+#[tokio::test]
+async fn a_registration_is_held_to_the_size_of_a_real_host() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(14);
+    let register = |key: String, addrs: Vec<String>, nonce: &str| {
+        let transport_sig = sign_as(Proof::Transport, AUDIENCE, &secret, nonce, &pubkey, &key);
+        serde_json::json!({
+            "op": "register",
+            "d": { "audience": AUDIENCE,
+                "name": "Bounded", "pubkey": pubkey, "signature": sign(&secret, nonce, &pubkey, "Bounded"),
+                "publish_public": true,
+                "transport_key": key,
+                "transport_signature": transport_sig,
+                "transport_addrs": addrs,
+            }
+        })
+    };
+    let mut addrs: Vec<String> = (0..40).map(|n| format!("10.0.0.{n}:41234")).collect();
+    addrs.extend(addrs.clone());
+    let (mut ws, nonce) = connect_control(&base).await;
+    ws.send(Message::Text(
+        register("k".repeat(64), addrs, &nonce).to_string(),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+    let entry = registry.lookup("bounded").expect("host is live");
+    let mut distinct = entry.transport_addrs.clone();
+    distinct.dedup();
+    assert!(
+        entry.transport_addrs.len() <= 16,
+        "{} addresses",
+        entry.transport_addrs.len()
+    );
+    assert_eq!(distinct, entry.transport_addrs, "duplicates were listed");
+    drop(ws);
+    wait_until_unregistered(&registry, "bounded").await;
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    ws.send(Message::Text(
+        register("k".repeat(4000), vec![], &nonce).to_string(),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+    assert!(
+        registry.lookup("bounded").unwrap().transport_key.is_none(),
+        "a key no endpoint has was published"
+    );
+}
