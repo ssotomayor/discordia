@@ -8,6 +8,8 @@ use crate::{
 };
 use dioxus::prelude::*;
 
+const MAX_READY_IMAGES: usize = 8;
+
 #[component]
 pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     let mut state = use_app_state();
@@ -62,8 +64,8 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                         .filter(|(id, image)| **id != message_id && image.status == Status::Ready)
                         .map(|(id, _)| *id)
                         .collect();
-                    // Keep at most two decoded private images alive, independent of message history size.
-                    for id in ready.into_iter().skip(1) {
+                    // Keep decoded private images bounded to avoid unbounded RAM growth.
+                    for id in ready.into_iter().skip(MAX_READY_IMAGES.saturating_sub(1)) {
                         if let Some(image) = s.dm_images.get_mut(&id) {
                             image.status = Status::Evicted;
                             image.data = None;
@@ -120,9 +122,17 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     if status == Status::Ready {
         return rsx! {
             if let Some(src) = source() {
-                img { class: "mt-1 rounded-md border border-[var(--border-strong)] max-w-full max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
-                    style: "cursor: zoom-in;", src: "{src}", alt: crate::i18n::text("attachment", &[]), title: crate::i18n::text("Click to view full size", &[]),
-                    onclick: move |_| { if let Some(data) = &data { state.write().image_viewer = Some(data.as_ref().clone()); } },
+                img {
+                    class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-cover block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
+                    style: "width: 280px; height: 190px; cursor: zoom-in;",
+                    src: "{src}",
+                    alt: crate::i18n::text("attachment", &[]),
+                    title: crate::i18n::text("Click to view full size", &[]),
+                    onclick: move |_| {
+                        if let Some(data) = &data {
+                            state.write().image_viewer = Some(data.as_ref().clone());
+                        }
+                    },
                 }
             }
         };
@@ -137,16 +147,31 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     };
     let retry_nostr = nostr.clone();
     rsx! {
-        div { class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]",
+        div {
+            class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex items-center justify-between",
+            style: "width: 280px; min-height: 48px;",
             span { {crate::i18n::message(label)} }
             if matches!(status, Status::Failed(_) | Status::Evicted) {
-                button { r#type: "button", class: "ml-3 text-[var(--accent)]", onclick: move |_| {
-                    if upload { retry_nostr.send(NostrCmd::Retry { message_id }); }
-                    else if let Some(image) = state.write().dm_images.get_mut(&message_id) { image.status = Status::Waiting; }
-                }, {crate::i18n::text(if status == Status::Evicted { "Load image" } else { "Retry" }, &[])} }
+                button {
+                    r#type: "button",
+                    class: "ml-3 text-[var(--accent)] hover:underline whitespace-nowrap",
+                    onclick: move |_| {
+                        if upload {
+                            retry_nostr.send(NostrCmd::Retry { message_id });
+                        } else if let Some(image) = state.write().dm_images.get_mut(&message_id) {
+                            image.status = Status::Waiting;
+                        }
+                    },
+                    {crate::i18n::text(if status == Status::Evicted { "Load image" } else { "Retry" }, &[])}
+                }
             }
             if upload {
-                button { r#type: "button", class: "ml-3 text-[var(--text-muted)]", onclick: move |_| nostr.send(NostrCmd::CancelImage { message_id }), {crate::i18n::text("Cancel", &[])} }
+                button {
+                    r#type: "button",
+                    class: "ml-3 text-[var(--text-muted)] hover:underline whitespace-nowrap",
+                    onclick: move |_| nostr.send(NostrCmd::CancelImage { message_id }),
+                    {crate::i18n::text("Cancel", &[])}
+                }
             }
         }
     }
