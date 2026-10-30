@@ -123,8 +123,8 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
         return rsx! {
             if let Some(src) = source() {
                 img {
-                    class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-cover block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
-                    style: "width: 280px; height: 190px; cursor: zoom-in;",
+                    class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
+                    style: "max-width: 320px; max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
                     src: "{src}",
                     alt: crate::i18n::text("attachment", &[]),
                     title: crate::i18n::text("Click to view full size", &[]),
@@ -149,7 +149,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     rsx! {
         div {
             class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex items-center justify-between",
-            style: "width: 280px; min-height: 48px;",
+            style: "max-width: 320px; min-height: 48px;",
             span { {crate::i18n::message(label)} }
             if matches!(status, Status::Failed(_) | Status::Evicted) {
                 button {
