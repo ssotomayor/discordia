@@ -824,14 +824,18 @@ impl Queue {
     ) {
         let mut jobs: Vec<_> = self.jobs.values().cloned().collect();
         jobs.sort_by_key(|job| (job.created_at, job.id.clone()));
-        let mut peers = std::collections::HashSet::new();
+        let mut peers: std::collections::HashSet<_> = self
+            .tasks
+            .keys()
+            .filter_map(|key| self.jobs.get(key).map(|job| job.peer.clone()))
+            .collect();
         for job in jobs {
             if self.tasks.len() >= 2 {
                 break;
             }
-            if !peers.insert(job.peer.clone())
+            if self.failed.contains(&job.id)
                 || self.tasks.contains_key(&job.id)
-                || self.failed.contains(&job.id)
+                || !peers.insert(job.peer.clone())
             {
                 continue;
             }
@@ -1115,5 +1119,100 @@ mod tests {
             assert!(public_url(url).is_err(), "{url}");
         }
         assert!(public_url("https://example.com/image.bin").is_ok());
+    }
+
+    #[tokio::test]
+    async fn queue_failed_job_does_not_block_later_jobs_to_same_peer() {
+        let secret = secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
+        let peer_a = "a".repeat(64);
+        let peer_b = "b".repeat(64);
+        let (image, _) = encrypt(PNG).unwrap();
+        let job1 = Job {
+            id: "job1".into(),
+            peer: peer_a.clone(),
+            text: "first".into(),
+            reply_to: None,
+            server: "https://example.com".into(),
+            created_at: 100,
+            image: image.clone(),
+        };
+        let job2 = Job {
+            id: "job2".into(),
+            peer: peer_a.clone(),
+            text: "second".into(),
+            reply_to: None,
+            server: "https://example.com".into(),
+            created_at: 200,
+            image: image.clone(),
+        };
+        let job3 = Job {
+            id: "job3".into(),
+            peer: peer_b.clone(),
+            text: "other peer".into(),
+            reply_to: None,
+            server: "https://example.com".into(),
+            created_at: 300,
+            image,
+        };
+
+        let mut queue = Queue::default();
+        queue.jobs.insert(job1.id.clone(), job1);
+        queue.jobs.insert(job2.id.clone(), job2);
+        queue.jobs.insert(job3.id.clone(), job3);
+        queue.failed.insert("job1".into());
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        queue.pump(secret, &tx);
+
+        assert!(
+            !queue.tasks.contains_key("job1"),
+            "failed job must not spawn"
+        );
+        assert!(
+            queue.tasks.contains_key("job2"),
+            "later job to same peer must spawn when earlier job failed"
+        );
+        assert!(
+            queue.tasks.contains_key("job3"),
+            "job to different peer must also spawn"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_active_job_blocks_concurrent_job_to_same_peer() {
+        let secret = secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
+        let peer_a = "a".repeat(64);
+        let (image, _) = encrypt(PNG).unwrap();
+        let job1 = Job {
+            id: "job1".into(),
+            peer: peer_a.clone(),
+            text: "first".into(),
+            reply_to: None,
+            server: "https://example.com".into(),
+            created_at: 100,
+            image: image.clone(),
+        };
+        let job2 = Job {
+            id: "job2".into(),
+            peer: peer_a.clone(),
+            text: "second".into(),
+            reply_to: None,
+            server: "https://example.com".into(),
+            created_at: 200,
+            image,
+        };
+
+        let mut queue = Queue::default();
+        queue.jobs.insert(job1.id.clone(), job1);
+        queue.jobs.insert(job2.id.clone(), job2);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        queue.pump(secret, &tx);
+
+        assert!(queue.tasks.contains_key("job1"), "first job should start");
+        assert!(
+            !queue.tasks.contains_key("job2"),
+            "second job to same peer must wait"
+        );
     }
 }
