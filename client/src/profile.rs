@@ -31,15 +31,24 @@ pub struct LocalProfile {
 }
 
 impl LocalProfile {
-    pub fn set_profile_message(self) -> crate::protocol::ClientMessage {
+    pub fn set_profile_message(
+        self,
+        server: Option<&crate::protocol::Profile>,
+    ) -> crate::protocol::ClientMessage {
         // A link saved by an older build would be refused now and take the whole
         // profile with it, so it is dropped here rather than sent.
         let picture = |v: Option<String>| {
             v.filter(|p| !p.starts_with("http://") && !p.starts_with("https://"))
         };
         crate::protocol::ClientMessage::SetProfile {
-            avatar: picture(self.avatar),
-            banner: picture(self.banner),
+            avatar: reuse_server_picture(
+                picture(self.avatar),
+                server.and_then(|profile| profile.avatar.as_deref()),
+            ),
+            banner: reuse_server_picture(
+                picture(self.banner),
+                server.and_then(|profile| profile.banner.as_deref()),
+            ),
             bio: self.bio,
             status: self.status,
             custom_status: self.custom_status,
@@ -48,6 +57,27 @@ impl LocalProfile {
             updated_at: self.updated_at,
         }
     }
+}
+
+fn reuse_server_picture(local: Option<String>, server: Option<&str>) -> Option<String> {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    // Reuploading an unchanged banner on every connection can exceed a mobile send deadline.
+    if let (Some(data), Some(address)) = (local.as_deref(), server)
+        && discordia_server::media::is_image_address(address)
+        && let Some((hash, _)) = address
+            .strip_prefix("media:")
+            .and_then(|name| name.split_once('.'))
+        && let Some((_, payload)) = data
+            .strip_prefix("data:image/")
+            .and_then(|image| image.split_once(";base64,"))
+        && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload)
+        && hash == hex::encode(Sha256::digest(&bytes))
+    {
+        return Some(address.to_owned());
+    }
+    local
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,6 +226,107 @@ fn migrate_at(root: &std::path::Path, pubkey: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+
+    #[test]
+    fn reconnect_reuses_existing_large_profile_images_without_changing_metadata() {
+        let root = std::env::temp_dir().join(format!("profile-reconnect-{}", uuid::Uuid::new_v4()));
+        let media =
+            discordia_server::media::MediaStore::open(root.clone(), 8 * 1024 * 1024).unwrap();
+        let mut bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+            .unwrap();
+        bytes.resize(1_000_000, 0);
+        let avatar = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        bytes.push(1);
+        let banner = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        let server = crate::protocol::Profile {
+            avatar: Some(media.store_data_url(&avatar).unwrap()),
+            banner: Some(media.store_data_url(&banner).unwrap()),
+            updated_at: 5,
+            ..Default::default()
+        };
+        let local = LocalProfile {
+            avatar: Some(avatar.clone()),
+            banner: Some(banner),
+            bio: Some("Updated bio".into()),
+            status: Some("dnd".into()),
+            custom_status: Some("Busy".into()),
+            hide_guild_owner: true,
+            hide_operator: true,
+            updated_at: 10,
+            ..Default::default()
+        };
+        let original = local.clone().set_profile_message(None);
+        assert!(serde_json::to_vec(&original).unwrap().len() > 2_000_000);
+        let compact = local.clone().set_profile_message(Some(&server));
+        assert!(serde_json::to_vec(&compact).unwrap().len() < 1_024);
+        let crate::protocol::ClientMessage::SetProfile {
+            avatar: sent_avatar,
+            banner: sent_banner,
+            bio,
+            status,
+            custom_status,
+            hide_guild_owner,
+            hide_operator,
+            updated_at,
+        } = compact
+        else {
+            panic!("expected profile update");
+        };
+        assert_eq!(sent_avatar, server.avatar);
+        assert_eq!(sent_banner, server.banner);
+        assert_eq!(
+            media.inline(sent_avatar.as_deref().unwrap()).as_deref(),
+            Some(avatar.as_str())
+        );
+        assert_eq!(bio, local.bio);
+        assert_eq!(status, local.status);
+        assert_eq!(custom_status, local.custom_status);
+        assert!(hide_guild_owner && hide_operator);
+        assert_eq!(updated_at, 10);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_missing_or_invalid_profile_images_are_not_replaced_by_server_references() {
+        let image = "data:image/png;base64,Zmlyc3Q=".to_owned();
+        let remote = format!("media:{}.png", "a".repeat(64));
+        assert_eq!(
+            reuse_server_picture(Some(image.clone()), Some(&remote)),
+            Some(image.clone())
+        );
+        assert_eq!(reuse_server_picture(Some(image.clone()), None), Some(image));
+        assert_eq!(reuse_server_picture(None, Some(&remote)), None);
+        assert_eq!(
+            reuse_server_picture(Some("data:image/png;base64,???".into()), Some(&remote)),
+            Some("data:image/png;base64,???".into())
+        );
+        assert_eq!(
+            reuse_server_picture(
+                Some("data:image/png;base64,Zmlyc3Q=".into()),
+                Some("https://example.com/image.png")
+            ),
+            Some("data:image/png;base64,Zmlyc3Q=".into())
+        );
+        let local = LocalProfile {
+            avatar: Some("https://example.com/avatar.png".into()),
+            ..Default::default()
+        };
+        let crate::protocol::ClientMessage::SetProfile { avatar, .. } =
+            local.set_profile_message(None)
+        else {
+            panic!("expected profile update");
+        };
+        assert!(avatar.is_none());
+    }
+
     #[test]
     fn a_missing_avatar_is_recovered_for_home_and_survives_a_restart_without_editing_metadata() {
         let root = std::env::temp_dir().join(format!("avatar-recovery-{}", uuid::Uuid::new_v4()));

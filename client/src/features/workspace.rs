@@ -407,7 +407,9 @@ pub fn WorkspaceView(
         }
         profile_sent_at.set(at);
         if let Some(local) = crate::profile::load(&profile_owner.peek()) {
-            profile_gateway.send(local.set_profile_message());
+            let snapshot = state.peek();
+            profile_gateway
+                .send(local.set_profile_message(snapshot.profile_of(&profile_owner.peek())));
         }
     });
     let streams_visible = use_memo(move || {

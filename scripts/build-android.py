@@ -245,12 +245,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--gateway-diagnostics", action="store_true",
+                        help="Log gateway operations, sizes and timings without payloads")
     parser.add_argument("--target", default="aarch64-linux-android")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--version-code", type=int)
     parser.add_argument("--version-name")
     args = parser.parse_args()
     env = dict(os.environ, LIVEKIT_BUNDLE_SKIP="1")
+    if args.gateway_diagnostics:
+        env["DISCORDIA_GATEWAY_DIAGNOSTICS"] = "1"
     if args.version_code is not None:
         if not 1 <= args.version_code <= 2_100_000_000:
             parser.error("--version-code must be between 1 and 2100000000")

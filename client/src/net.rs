@@ -18,6 +18,12 @@ use crate::state::{
     AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, Transport, VoicePhase,
 };
 
+fn gateway_diagnostic(detail: std::fmt::Arguments<'_>) {
+    if option_env!("DISCORDIA_GATEWAY_DIAGNOSTICS") == Some("1") {
+        eprintln!("[gateway-diag] {detail}");
+    }
+}
+
 fn solve_pow(challenge: &str, bits: u32) -> String {
     use sha2::{Digest, Sha256};
     let mut n: u64 = 0;
@@ -693,14 +699,21 @@ where
     };
     while rx.try_recv().is_ok() {}
     state.write().gateway_failure = None;
+    gateway_diagnostic(format_args!("admission accepted; applying Ready"));
     apply(&mut state, admitted, tx, voice_tx);
+    gateway_diagnostic(format_args!("Ready applied"));
 
     #[cfg(target_os = "android")]
     let (mut ws_tx, mut ws_rx, _transport) = background_socket::start(ws_tx, ws_rx);
 
-    if let Some(local) = crate::profile::load(&params.identity.pubkey)
-        && local != crate::profile::LocalProfile::default()
-        && let Ok(json) = serde_json::to_string(&local.set_profile_message())
+    let profile = crate::profile::load(&params.identity.pubkey)
+        .filter(|local| local != &crate::profile::LocalProfile::default())
+        .map(|local| {
+            let snapshot = state.peek();
+            local.set_profile_message(snapshot.profile_of(&params.identity.pubkey))
+        });
+    if let Some(profile) = profile
+        && let Ok(json) = serde_json::to_string(&profile)
     {
         gateway_send(
             &mut ws_tx,
@@ -711,6 +724,7 @@ where
         .await?;
     }
 
+    gateway_diagnostic(format_args!("entering session loop"));
     let watch = Arc::new(ArmWatch::default());
     let _dog = SessionWatchdog(watchdog(watch.clone(), "session".into()));
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
@@ -767,6 +781,7 @@ where
                     _ => {}
                 }
                 tracing::debug!(op = op_of(&json), "→ gateway");
+                gateway_diagnostic(format_args!("outbound op={} bytes={}", op_of(&json), json.len()));
                 watch.begin(format!("send {}", op_of(&json)));
                 let operation = op_of(&json).to_string();
                 gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), &operation).await?;
@@ -804,10 +819,12 @@ where
                     _ => continue,
                 };
                 tracing::debug!(op = op_of(&text), "← gateway");
+                gateway_diagnostic(format_args!("inbound op={} bytes={}", op_of(&text), text.len()));
                 watch.begin(format!("recv {}", op_of(&text)));
                 let parsed: ServerMessage = match serde_json::from_str(&text) {
                     Ok(m) => m,
                     Err(e) => {
+                        gateway_diagnostic(format_args!("invalid server frame category={:?} line={} column={}", e.classify(), e.line(), e.column()));
                         tracing::warn!(err = %e, "bad server frame");
                         continue;
                     }
@@ -1155,6 +1172,8 @@ where
         + Unpin,
 {
     let bytes = frame.len();
+    let started = std::time::Instant::now();
+    gateway_diagnostic(format_args!("send begin op={operation} bytes={bytes}"));
     let result = tokio::time::timeout(
         crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
         sink.send(frame),
@@ -1164,6 +1183,11 @@ where
         Ok(sent) => sent.map_err(|error| format!("gateway send: {error}")),
         Err(_) => Err("gateway send timed out".into()),
     };
+    gateway_diagnostic(format_args!(
+        "send complete op={operation} ok={} elapsed_ms={}",
+        result.is_ok(),
+        started.elapsed().as_millis()
+    ));
     if let Err(error) = result {
         // A peer may have sent its refusal just before stopping our writes.
         let peer_reason = tokio::time::timeout(std::time::Duration::from_millis(300), async {

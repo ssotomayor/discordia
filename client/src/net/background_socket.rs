@@ -47,6 +47,7 @@ where
     let budget = Arc::new(Semaphore::new(QUEUED_BYTES));
     // WebView edit acknowledgements can stop scoped tasks while Android hides the app.
     let task = tokio::spawn(async move {
+        super::gateway_diagnostic(format_args!("native transport started"));
         let result: Result<(), String> = async {
             let mut heartbeat = tokio::time::interval(interval);
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -56,6 +57,7 @@ where
                     _ = inbound.closed() => return Ok(()),
                     command = commands.recv() => {
                         let Some((frame, reply)) = command else { return Ok(()) };
+                        super::gateway_diagnostic(format_args!("native command bytes={}", frame.len()));
                         let result = super::gateway_send(&mut sink, &mut reader, frame, "background command").await;
                         let failed = result.as_ref().err().cloned();
                         if reply.send(result).is_err() {
@@ -72,6 +74,7 @@ where
                     frame = reader.next() => {
                         let Some(frame) = frame else { return Ok(()) };
                         let frame = frame.map_err(|error| format!("recv: {error}"))?;
+                        super::gateway_diagnostic(format_args!("native receive bytes={} text={} ping={} pong={}", frame.len(), frame.is_text(), frame.is_ping(), frame.is_pong()));
                         received = tokio::time::Instant::now();
                         match frame {
                             Message::Ping(payload) => {
@@ -98,6 +101,10 @@ where
         if let Err(error) = &result {
             tracing::warn!(%error, "background gateway transport stopped");
         }
+        super::gateway_diagnostic(format_args!(
+            "native transport stopped ok={}",
+            result.is_ok()
+        ));
         if finished.send(result).is_err() {
             tracing::debug!("background gateway consumer already closed");
         }
