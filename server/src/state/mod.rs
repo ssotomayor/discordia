@@ -634,8 +634,10 @@ impl AppState {
         if amount == 0 {
             return None;
         }
+        // Before the guild's own list, which cannot opt a hidden channel back in:
+        // an award goes to the whole guild, so it would tell who is inside (trap 30).
         if let Some(cid) = channel_id
-            && !rules.channel_earns(cid)
+            && (self.channel(cid).is_some_and(|c| c.access.is_some()) || !rules.channel_earns(cid))
         {
             return None;
         }
@@ -1285,7 +1287,7 @@ impl AppState {
             .map(|v| v.value().clone())
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|v| self.voice_state_seen_by(&user.pubkey, v))
+            .filter_map(|v| self.voice_state_seen_by(&user.pubkey, v))
             .collect();
 
         let (catalog, _) = self.guild_catalog_page(0, CATALOG_FIRST_PAGE);
@@ -2187,11 +2189,17 @@ impl AppState {
             return Err("leave the call instead".into());
         }
         self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
-        let in_a_call_here = self
+        let room = self
             .voice_states
             .get(target_pubkey)
-            .is_some_and(|v| v.guild_id == guild_id && v.channel_id.is_some());
-        if !in_a_call_here {
+            .filter(|v| v.guild_id == guild_id)
+            .and_then(|v| v.channel_id);
+        // Someone in a room the moderator can't see is, to them, not in voice:
+        // the same answer, or the error would say who is inside.
+        let visible = room
+            .and_then(|c| self.channel(c))
+            .is_some_and(|c| self.can_see_channel(by_pubkey, &c));
+        if !visible {
             return Err("they aren't in a voice channel here".into());
         }
         self.clear_voice(target_pubkey)
@@ -3431,12 +3439,14 @@ impl AppState {
 
     /// What one person is shown of someone's voice state: inside a channel
     /// they cannot see, they are not in voice at all.
-    pub fn voice_state_seen_by(&self, viewer: &str, vs: VoiceState) -> VoiceState {
+    /// Absent, not masked, for someone in a room the viewer cannot see: only
+    /// people in a call have a state, so even a masked one would name them.
+    pub fn voice_state_seen_by(&self, viewer: &str, vs: VoiceState) -> Option<VoiceState> {
         let hidden = vs
             .channel_id
             .and_then(|c| self.channel(c))
             .is_some_and(|c| !self.can_see_channel(viewer, &c));
-        if hidden { masked_voice_state(vs) } else { vs }
+        (!hidden).then_some(vs)
     }
 
     pub async fn set_channel_access(
@@ -3737,6 +3747,8 @@ impl AppState {
 pub fn masked_voice_state(vs: VoiceState) -> VoiceState {
     VoiceState {
         channel_id: None,
+        muted: false,
+        deafened: false,
         speaking: false,
         camera_on: false,
         screen_sharing: false,
