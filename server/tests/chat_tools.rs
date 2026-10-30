@@ -230,6 +230,8 @@ async fn invalid_and_oversized_files_cannot_create_messages_or_blobs() {
                 policy: FilePolicy {
                     max_bytes: 10,
                     retention_days: 7,
+                    max_avatar_bytes: 2_097_152,
+                    max_sticker_bytes: 2_097_152,
                 },
             },
         )
@@ -479,16 +481,33 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
 #[tokio::test]
 async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
     let (state, owner, guild_id, channel_id) = fixture().await;
-    assert_eq!(
-        state.store.file_policy(guild_id).await.unwrap().max_bytes,
-        2_000_000
-    );
+    let policy = state.store.file_policy(guild_id).await.unwrap();
+    assert_eq!(policy.max_bytes, 10_000_000);
+    assert_eq!(policy.max_avatar_bytes, 2_097_152);
+    assert_eq!(policy.max_sticker_bytes, 2_097_152);
+    assert_eq!(policy.retention_days, 7);
     let mut image = vec![0; 10_000_000];
     image[..6].copy_from_slice(b"GIF89a");
     let url = format!(
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&image)
     );
+    // Lower policy to 2 MB: 10 MB image should be rejected
+    state
+        .handle_chat_tool(
+            &owner,
+            ClientMessage::SetGuildFilePolicy {
+                guild_id,
+                policy: FilePolicy {
+                    max_bytes: 2_000_000,
+                    retention_days: 7,
+                    max_avatar_bytes: 2_097_152,
+                    max_sticker_bytes: 2_097_152,
+                },
+            },
+        )
+        .await
+        .unwrap();
     assert!(
         state
             .push_image_message(
@@ -503,6 +522,7 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
             .is_err()
     );
     assert_eq!(state.media.used_bytes(), 0);
+    // Restore policy to 10 MB: 10 MB image should succeed
     state
         .handle_chat_tool(
             &owner,
@@ -511,6 +531,8 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
                 policy: FilePolicy {
                     max_bytes: 10_000_000,
                     retention_days: 7,
+                    max_avatar_bytes: 2_097_152,
+                    max_sticker_bytes: 2_097_152,
                 },
             },
         )
@@ -570,7 +592,9 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
                     guild_id,
                     policy: FilePolicy {
                         max_bytes: 10_000_001,
-                        retention_days: 7
+                        retention_days: 7,
+                        max_avatar_bytes: 2_097_152,
+                        max_sticker_bytes: 2_097_152,
                     }
                 }
             )
@@ -589,7 +613,9 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
                     guild_id,
                     policy: FilePolicy {
                         max_bytes: 10_000_000,
-                        retention_days: 7
+                        retention_days: 7,
+                        max_avatar_bytes: 2_097_152,
+                        max_sticker_bytes: 2_097_152,
                     }
                 }
             )
@@ -610,9 +636,9 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
         state
             .handle_chat_tool(
                 &owner,
-                upload(channel_id, "default-too-large.bin", &image[..2_000_001])
+                upload(channel_id, "default-ok.bin", &image[..2_000_001])
             )
             .await
-            .is_err()
+            .is_ok()
     );
 }
