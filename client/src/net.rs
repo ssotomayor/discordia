@@ -706,9 +706,14 @@ where
     #[cfg(target_os = "android")]
     let (mut ws_tx, mut ws_rx, _transport) = background_socket::start(ws_tx, ws_rx);
 
-    if let Some(local) = crate::profile::load(&params.identity.pubkey)
-        && local != crate::profile::LocalProfile::default()
-        && let Ok(json) = serde_json::to_string(&local.set_profile_message())
+    let profile = crate::profile::load(&params.identity.pubkey)
+        .filter(|local| local != &crate::profile::LocalProfile::default())
+        .map(|local| {
+            let snapshot = state.peek();
+            local.set_profile_message(snapshot.profile_of(&params.identity.pubkey))
+        });
+    if let Some(profile) = profile
+        && let Ok(json) = serde_json::to_string(&profile)
     {
         gateway_send(
             &mut ws_tx,
