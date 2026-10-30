@@ -2649,12 +2649,14 @@ impl AppState {
     ) -> Result<Guild, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let policy = self.store.file_policy(guild_id).await.unwrap_or_default();
+        let limit = (policy.max_avatar_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
         let icon_image = icon_image
-            .map(|i| self.image_reference(by_pubkey, &i))
+            .map(|i| self.image_reference_with_limit(by_pubkey, &i, limit))
             .transpose()
             .map_err(|e| format!("guild icon: {e}"))?;
         let banner = banner
-            .map(|b| self.image_reference(by_pubkey, &b))
+            .map(|b| self.image_reference_with_limit(by_pubkey, &b, limit))
             .transpose()
             .map_err(|e| format!("guild banner: {e}"))?;
         let description = description
@@ -3137,6 +3139,15 @@ impl AppState {
     /// A link is refused: every viewer's webview would fetch it, handing the
     /// viewer's IP to whoever set it.
     pub fn image_reference(&self, by_pubkey: &str, img: &str) -> Result<String, String> {
+        self.image_reference_with_limit(by_pubkey, img, discordia_protocol::MAX_IMAGE_BYTES)
+    }
+
+    pub fn image_reference_with_limit(
+        &self,
+        by_pubkey: &str,
+        img: &str,
+        limit: usize,
+    ) -> Result<String, String> {
         if img.starts_with("media:") && !crate::media::is_image_address(img) {
             return Err("that attachment is not an image".into());
         }
@@ -3144,28 +3155,55 @@ impl AppState {
             if self
                 .media
                 .stored_size(&address)
-                .is_none_or(|size| size > discordia_protocol::MAX_IMAGE_BYTES as u64)
+                .is_none_or(|size| size > limit as u64)
             {
-                return Err("an image must be at most 2 MiB (2,097,152 bytes)".into());
+                let msg = if limit == discordia_protocol::MAX_IMAGE_BYTES {
+                    "an image must be at most 2 MiB (2,097,152 bytes)".to_string()
+                } else {
+                    format!("an image must be at most {limit} bytes")
+                };
+                return Err(msg);
             }
             return Ok(address);
         }
         if img.starts_with("data:image/") {
-            if img.len() > MAX_IMAGE_LEN {
-                return Err("an image must be at most 2 MiB (2,097,152 bytes)".into());
+            let max_data_len = limit.div_ceil(3) * 4 + 128;
+            if img.len() > max_data_len {
+                let msg = if limit == discordia_protocol::MAX_IMAGE_BYTES {
+                    "an image must be at most 2 MiB (2,097,152 bytes)".to_string()
+                } else {
+                    format!("an image must be at most {limit} bytes")
+                };
+                return Err(msg);
             }
-            return self.store_upload(by_pubkey, img);
+            return self.store_upload_with_limit(by_pubkey, img, limit);
         }
-        Err("must be an image file (PNG, JPEG, GIF, WebP or AVIF) up to 2 MiB, not a link".into())
+        let msg = if limit == discordia_protocol::MAX_IMAGE_BYTES {
+            "must be an image file (PNG, JPEG, GIF, WebP or AVIF) up to 2 MiB, not a link"
+                .to_string()
+        } else {
+            format!(
+                "must be an image file (PNG, JPEG, GIF, WebP or AVIF) up to {limit} bytes, not a link"
+            )
+        };
+        Err(msg)
     }
 
     pub fn store_upload(&self, by_pubkey: &str, data_url: &str) -> Result<String, String> {
-        self.charge_upload(by_pubkey, data_url.len() as u64)?;
-        self.media
-            .store_data_url(data_url)
-            .map_err(|e| e.to_string())
+        self.store_upload_with_limit(by_pubkey, data_url, crate::protocol::MAX_IMAGE_BYTES)
     }
 
+    pub fn store_upload_with_limit(
+        &self,
+        by_pubkey: &str,
+        data_url: &str,
+        limit: usize,
+    ) -> Result<String, String> {
+        self.charge_upload(by_pubkey, data_url.len() as u64)?;
+        self.media
+            .store_chat_image(data_url, limit)
+            .map_err(|e| e.to_string())
+    }
     pub fn store_sound_upload(&self, by_pubkey: &str, data_url: &str) -> Result<String, String> {
         self.charge_upload(by_pubkey, data_url.len() as u64)?;
         self.media

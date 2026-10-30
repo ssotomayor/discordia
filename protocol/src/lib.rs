@@ -7,7 +7,9 @@ pub mod rendezvous;
 pub type Id = Uuid;
 
 pub const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
-pub const DEFAULT_GUILD_UPLOAD_BYTES: u64 = 2_000_000;
+pub const DEFAULT_GUILD_UPLOAD_BYTES: u64 = 10_000_000;
+pub const DEFAULT_GUILD_AVATAR_BYTES: u64 = MAX_IMAGE_BYTES as u64;
+pub const DEFAULT_GUILD_STICKER_BYTES: u64 = MAX_IMAGE_BYTES as u64;
 pub const MAX_GUILD_UPLOAD_BYTES: usize = 10_000_000;
 pub const MAX_GUILD_UPLOAD_DATA_LEN: usize = MAX_GUILD_UPLOAD_BYTES.div_ceil(3) * 4 + 128;
 
@@ -1089,16 +1091,29 @@ pub struct ImageMetadata {
     pub height: Option<u32>,
 }
 
+const fn default_avatar_bytes() -> u64 {
+    DEFAULT_GUILD_AVATAR_BYTES
+}
+const fn default_sticker_bytes() -> u64 {
+    DEFAULT_GUILD_STICKER_BYTES
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FilePolicy {
     pub max_bytes: u64,
     pub retention_days: u32,
+    #[serde(default = "default_avatar_bytes")]
+    pub max_avatar_bytes: u64,
+    #[serde(default = "default_sticker_bytes")]
+    pub max_sticker_bytes: u64,
 }
 impl Default for FilePolicy {
     fn default() -> Self {
         Self {
             max_bytes: DEFAULT_GUILD_UPLOAD_BYTES,
             retention_days: 7,
+            max_avatar_bytes: DEFAULT_GUILD_AVATAR_BYTES,
+            max_sticker_bytes: DEFAULT_GUILD_STICKER_BYTES,
         }
     }
 }

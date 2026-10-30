@@ -390,26 +390,61 @@ fn ToolButton(
 fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
     let gateway = use_gateway();
     let initial = policy.clone();
-    let mut maximum = use_signal(move || (initial.max_bytes / 1000).to_string());
+    let mut files_kb = use_signal(move || (initial.max_bytes / 1000).to_string());
+    let mut avatars_kb = use_signal(move || (initial.max_avatar_bytes / 1000).to_string());
+    let mut stickers_kb = use_signal(move || (initial.max_sticker_bytes / 1000).to_string());
     let mut days = use_signal(move || policy.retention_days.to_string());
     let mut error = use_signal(|| None::<String>);
     rsx! {
-        form { class: "flex flex-col gap-2",
+        form { class: "flex flex-col gap-2.5",
             onsubmit: move |e: FormEvent| {
                 e.prevent_default();
-                match (maximum().parse::<u64>(), days().parse::<u32>()) {
-                    (Ok(kb), Ok(days)) if (1..=10_000).contains(&kb) && (1..=365).contains(&days) => { error.set(None); gateway.send(ClientMessage::SetGuildFilePolicy { guild_id, policy: FilePolicy { max_bytes: kb * 1000, retention_days: days } }); }
-                    _ => error.set(Some("Choose 1–10000 KB and 1–365 days.".into())),
+                match (
+                    files_kb().parse::<u64>(),
+                    avatars_kb().parse::<u64>(),
+                    stickers_kb().parse::<u64>(),
+                    days().parse::<u32>(),
+                ) {
+                    (Ok(f_kb), Ok(a_kb), Ok(s_kb), Ok(d))
+                        if (1..=10_000).contains(&f_kb)
+                            && (1..=10_000).contains(&a_kb)
+                            && (1..=10_000).contains(&s_kb)
+                            && (1..=365).contains(&d) =>
+                    {
+                        error.set(None);
+                        gateway.send(ClientMessage::SetGuildFilePolicy {
+                            guild_id,
+                            policy: FilePolicy {
+                                max_bytes: f_kb * 1000,
+                                retention_days: d,
+                                max_avatar_bytes: a_kb * 1000,
+                                max_sticker_bytes: s_kb * 1000,
+                            },
+                        });
+                    }
+                    _ => error.set(Some("Choose 1–10000 KB for limits and 1–365 days for retention.".into())),
                 }
             },
-            div { class: "flex gap-2",
-                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Largest file (KB)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
-                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", {crate::i18n::text("Keep for (days)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
+            div { class: "grid grid-cols-2 gap-2",
+                label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
+                    {crate::i18n::text("Chat files & photos (KB)", &[])},
+                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: files_kb(), oninput: move |e| files_kb.set(e.value()) }
+                }
+                label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
+                    {crate::i18n::text("Avatars & banners (KB)", &[])},
+                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: avatars_kb(), oninput: move |e| avatars_kb.set(e.value()) }
+                }
+                label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
+                    {crate::i18n::text("Emojis & stickers (KB)", &[])},
+                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: stickers_kb(), oninput: move |e| stickers_kb.set(e.value()) }
+                }
+                label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
+                    {crate::i18n::text("Keep for (days)", &[])},
+                    input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) }
+                }
             }
-            div { class: "flex items-center gap-2",
-                if let Some(error) = error() { span { class: "text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} } }
+            div { class: "flex items-center gap-2 mt-0.5",
+                if let Some(error) = error() { span { class: "text-[var(--danger)] text-xs", {crate::i18n::message(&(error).to_string())} } }
                 button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", {crate::i18n::text("Save", &[])} }
             }
         }

@@ -11,7 +11,6 @@ use std::time::Duration;
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::protocol::{ChannelKind, ClientMessage, Id, Message, ServerMessage, User};
-use discordia_server::state::MAX_IMAGE_LEN;
 use discordia_server::store::Store;
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -139,8 +138,14 @@ async fn an_image_over_the_size_limit_is_refused() {
     let (url, _h) = spawn_gateway().await;
     let (mut owner, channel) = owner_with_channel(&url, &BotIdentity::generate()).await;
 
-    let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_IMAGE_LEN));
-    assert!(huge.len() > MAX_IMAGE_LEN, "precondition");
+    let huge = format!(
+        "data:image/png;base64,{}",
+        "A".repeat(discordia_protocol::MAX_GUILD_UPLOAD_DATA_LEN)
+    );
+    assert!(
+        huge.len() > discordia_protocol::MAX_GUILD_UPLOAD_DATA_LEN,
+        "precondition"
+    );
     let refused = send_image(&mut owner, channel, &huge)
         .await
         .expect_err("an oversize image was accepted");

@@ -103,9 +103,13 @@ impl AppState {
                 if policy.max_bytes == 0
                     || policy.max_bytes > crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64
                     || !(1..=365).contains(&policy.retention_days)
+                    || policy.max_avatar_bytes == 0
+                    || policy.max_avatar_bytes > crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64
+                    || policy.max_sticker_bytes == 0
+                    || policy.max_sticker_bytes > crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64
                 {
                     return Err(
-                        "file limit must be 1 byte to 10 MB; expiry must be 1 to 365 days".into(),
+                        "file limits must be 1 byte to 10 MB; expiry must be 1 to 365 days".into(),
                     );
                 }
                 durable(
@@ -313,7 +317,10 @@ impl AppState {
                         "sticker name already exists or the community has 128 stickers".into(),
                     );
                 }
-                let image = self.store_upload(&user.pubkey, &image)?;
+                let policy = self.store.file_policy(guild_id).await.unwrap_or_default();
+                let limit = (policy.max_sticker_bytes as usize)
+                    .min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+                let image = self.store_upload_with_limit(&user.pubkey, &image, limit)?;
                 let sticker = GuildEmoji {
                     id: uuid::Uuid::new_v4(),
                     guild_id,

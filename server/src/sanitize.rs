@@ -244,6 +244,14 @@ pub fn archive(a: &mut GuildArchive) {
         .max_bytes
         .clamp(1, crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64);
     a.file_policy.retention_days = a.file_policy.retention_days.clamp(1, 365);
+    a.file_policy.max_avatar_bytes = a
+        .file_policy
+        .max_avatar_bytes
+        .clamp(1, crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64);
+    a.file_policy.max_sticker_bytes = a
+        .file_policy
+        .max_sticker_bytes
+        .clamp(1, crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64);
     a.sounds.retain_mut(sound);
     a.sounds.truncate(crate::protocol::MAX_SOUNDS_PER_GUILD);
     a.members.retain_mut(|m| user(&mut m.user));
