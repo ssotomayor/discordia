@@ -1901,6 +1901,19 @@ fn apply(
         ServerMessage::GuildBans { guild_id, users } => {
             s.bans.insert(guild_id, users);
         }
+        // An unfetched list stays unfetched: settings asks for the whole one on open.
+        ServerMessage::GuildBanUpdate {
+            guild_id,
+            user,
+            banned,
+        } => {
+            if let Some(list) = s.bans.get_mut(&guild_id) {
+                list.retain(|u| u.pubkey != user.pubkey);
+                if banned {
+                    list.push(user);
+                }
+            }
+        }
         ServerMessage::AuditLog { guild_id, entries } => {
             s.audit_logs.insert(guild_id, entries);
         }

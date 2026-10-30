@@ -336,7 +336,7 @@ async fn a_lockdown_defers_the_offer_until_it_lifts() {
 }
 
 #[tokio::test]
-async fn a_lobby_ban_outlasts_a_reconnect_whatever_spelling_it_was_given() {
+async fn a_lobby_ban_outlasts_a_reconnect_and_names_the_key_as_it_logs_in() {
     let operator_id = BotIdentity::generate();
     let (url, _h) = spawn_with(&operator_id).await;
     let (mut operator, guilds, ..) = arrive(&url, &operator_id, "Op").await;
@@ -354,9 +354,22 @@ async fn a_lobby_ban_outlasts_a_reconnect_whatever_spelling_it_was_given() {
         .await
         .unwrap();
     loop {
+        if let ServerMessage::Error { message } = next_timeout(&mut operator).await {
+            assert!(message.contains("64 lowercase hex"), "got: {message}");
+            break;
+        }
+    }
+    operator
+        .send(&ClientMessage::BanMember {
+            guild_id: lobby,
+            user_pubkey: rando_id.pubkey().to_string(),
+        })
+        .await
+        .unwrap();
+    loop {
         match next_timeout(&mut operator).await {
-            ServerMessage::GuildBans { users, .. } => {
-                assert!(users.iter().any(|u| u.pubkey == rando_id.pubkey()));
+            ServerMessage::GuildBanUpdate { user, banned, .. } => {
+                assert!(banned && user.pubkey == rando_id.pubkey());
                 break;
             }
             ServerMessage::Error { message } => panic!("ban refused: {message}"),

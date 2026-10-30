@@ -288,3 +288,146 @@ async fn an_uninstalled_bots_commands_end_with_its_session() {
     );
     w.handle.abort();
 }
+
+async fn media_keys_within(session: &mut Bot, wait: Duration) -> Vec<String> {
+    let mut from = Vec::new();
+    let deadline = tokio::time::Instant::now() + wait;
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, session.next_event()).await {
+        if let ServerMessage::MediaKey { from: f, .. } = event {
+            from.push(f);
+        }
+    }
+    from
+}
+
+async fn voice_channel(w: &mut World) -> Id {
+    w.owner
+        .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
+            guild_id: w.guild_id,
+            name: "Call".into(),
+            kind: ChannelKind::Voice,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelCreate(ch) = next_timeout(&mut w.owner).await
+            && ch.kind == ChannelKind::Voice
+        {
+            return ch.id;
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_uninstalled_app_leaves_the_call_and_its_media_keys() {
+    let mut w = world().await;
+    let voice = voice_channel(&mut w).await;
+    let app_id = BotIdentity::generate();
+    installed(&mut w, app_id.pubkey(), vec![]).await;
+    // Identifying as a person is the app's own claim (trap 12), and puts it in calls.
+    let mut app = user(&w.url, &app_id, "App").await;
+    let (mut m, m_id) = member(&w, "Member").await;
+    for session in [&mut app, &mut m] {
+        session
+            .send(&ClientMessage::JoinVoice {
+                channel_id: voice,
+                preferences: None,
+            })
+            .await
+            .unwrap();
+    }
+    for (session, who) in [(&mut m, app_id.pubkey()), (&mut app, m_id.pubkey())] {
+        loop {
+            if let ServerMessage::VoiceStateUpdate(vs) = next_timeout(session).await
+                && vs.user_pubkey == who
+                && vs.channel_id == Some(voice)
+            {
+                break;
+            }
+        }
+    }
+    let share = |to: &str, epoch| ClientMessage::ShareMediaKey {
+        channel_id: voice,
+        to: to.to_string(),
+        epoch,
+        blob: "11".into(),
+    };
+    m.send(&share(app_id.pubkey(), 1)).await.unwrap();
+    assert_eq!(
+        media_keys_within(&mut app, Duration::from_millis(500)).await,
+        [m_id.pubkey()],
+        "keys route between two callers"
+    );
+
+    w.owner
+        .send(&ClientMessage::UninstallBot {
+            guild_id: w.guild_id,
+            bot_pubkey: app_id.pubkey().to_string(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::VoiceStateUpdate(vs) = next_timeout(&mut m).await
+            && vs.user_pubkey == app_id.pubkey()
+        {
+            assert_eq!(vs.channel_id, None, "the call must end with the row");
+            break;
+        }
+    }
+    m.send(&share(app_id.pubkey(), 2)).await.unwrap();
+    app.send(&share(m_id.pubkey(), 3)).await.unwrap();
+    let wait = Duration::from_millis(800);
+    let (to_app, to_m) = tokio::join!(
+        media_keys_within(&mut app, wait),
+        media_keys_within(&mut m, wait)
+    );
+    assert!(
+        to_app.is_empty(),
+        "an uninstalled app still got keys: {to_app:?}"
+    );
+    assert!(
+        to_m.is_empty(),
+        "an uninstalled app still sent keys: {to_m:?}"
+    );
+    w.handle.abort();
+}
+
+#[tokio::test]
+async fn deleting_a_guild_ends_its_calls() {
+    let mut w = world().await;
+    let voice = voice_channel(&mut w).await;
+    let (mut m, m_id) = member(&w, "Member").await;
+    m.send(&ClientMessage::JoinVoice {
+        channel_id: voice,
+        preferences: None,
+    })
+    .await
+    .unwrap();
+    loop {
+        if let ServerMessage::VoiceStateUpdate(vs) = next_timeout(&mut m).await
+            && vs.user_pubkey == m_id.pubkey()
+            && vs.channel_id == Some(voice)
+        {
+            break;
+        }
+    }
+    w.owner
+        .send(&ClientMessage::DeleteGuild {
+            guild_id: w.guild_id,
+        })
+        .await
+        .unwrap();
+    loop {
+        match next_timeout(&mut m).await {
+            ServerMessage::VoiceStateUpdate(vs) if vs.user_pubkey == m_id.pubkey() => {
+                assert_eq!(vs.channel_id, None);
+                break;
+            }
+            ServerMessage::GuildDelete { .. } => panic!("the guild went with its call still up"),
+            _ => {}
+        }
+    }
+    w.handle.abort();
+}

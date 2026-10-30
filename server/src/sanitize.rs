@@ -5,8 +5,8 @@
 use crate::archive::GuildArchive;
 use crate::protocol::{
     AuditEntry, BotInstall, Channel, Guild, GuildEmoji, GuildSound, Message, PRESENCES, Permission,
-    Profile, REPLY_EXCERPT_CHARS, Role, User, canonical_username, is_pubkey_hex, sanitize_line,
-    sanitize_name, sanitize_paragraph, valid_shortcode,
+    Profile, REPLY_EXCERPT_CHARS, Role, User, canonical_username, is_canonical_pubkey,
+    is_pubkey_hex, sanitize_line, sanitize_name, sanitize_paragraph, valid_shortcode,
 };
 use crate::store::LoadedState;
 
@@ -237,8 +237,11 @@ pub fn archive(a: &mut GuildArchive) {
     a.bans = a
         .bans
         .iter()
-        .map(|b| pubkey(b))
-        .filter(|b| !b.is_empty())
+        .map(|b| b.to_ascii_lowercase())
+        .filter(|b| is_canonical_pubkey(b))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .take(crate::state::MAX_GUILD_BANS)
         .collect();
     a.bot_installs.retain_mut(bot_install);
     for (_, messages) in a.messages.iter_mut() {
@@ -261,10 +264,7 @@ pub fn loaded(l: &mut LoadedState) {
         *username = canonical_username(username);
         !pk.is_empty()
     });
-    l.bans.retain_mut(|(_, pk)| {
-        *pk = pubkey(pk);
-        !pk.is_empty()
-    });
+    l.bans.retain(|(_, pk)| is_canonical_pubkey(pk));
 }
 
 #[cfg(test)]

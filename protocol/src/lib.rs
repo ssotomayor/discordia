@@ -2703,6 +2703,13 @@ pub enum ServerMessage {
         guild_id: Id,
         users: Vec<User>,
     },
+    /// One ban made or lifted, answered to whoever did it; the whole list
+    /// comes only with `FetchBans`, so a ban costs one entry, not the list.
+    GuildBanUpdate {
+        guild_id: Id,
+        user: User,
+        banned: bool,
+    },
     JoinChallenge {
         guild_id: Id,
         #[serde(default)]

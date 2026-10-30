@@ -843,6 +843,16 @@ async fn kick_removes_and_ban_blocks() {
             break;
         }
     }
+    loop {
+        if let ServerMessage::GuildBanUpdate { user, banned, .. } = next_timeout(&mut owner).await {
+            assert!(banned && user.pubkey == target_id.pubkey());
+            break;
+        }
+    }
+    owner
+        .send(&ClientMessage::FetchBans { guild_id })
+        .await
+        .unwrap();
     let bans = loop {
         if let ServerMessage::GuildBans { users, .. } = next_timeout(&mut owner).await {
             break users;
@@ -894,6 +904,16 @@ async fn kick_removes_and_ban_blocks() {
             guild_id,
             user_pubkey: target_id.pubkey().to_string(),
         })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildBanUpdate { user, banned, .. } = next_timeout(&mut owner).await {
+            assert!(!banned && user.pubkey == target_id.pubkey());
+            break;
+        }
+    }
+    owner
+        .send(&ClientMessage::FetchBans { guild_id })
         .await
         .unwrap();
     let bans = loop {
@@ -2200,7 +2220,7 @@ async fn audit_log_records_moderation() {
     loop {
         if matches!(
             next_timeout(&mut owner).await,
-            ServerMessage::GuildBans { .. }
+            ServerMessage::GuildBanUpdate { .. }
         ) {
             break;
         }
