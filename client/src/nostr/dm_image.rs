@@ -14,8 +14,8 @@ pub const KIND: u16 = 15;
 pub const MAX_BYTES: usize = crate::chat_image::MAX_DM_BYTES;
 pub const MAX_CIPHER_BYTES: usize = MAX_BYTES + 16;
 pub const MAX_JOBS: usize = 8;
-const CACHE_BYTES: u64 = 64 * 1024 * 1024;
-const CACHE_TTL: Duration = Duration::from_secs(30 * 86400);
+const CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const CACHE_TTL: Duration = Duration::from_secs(7 * 86400);
 
 pub fn prepare_permit() -> Result<tokio::sync::OwnedSemaphorePermit, String> {
     static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
@@ -650,14 +650,21 @@ pub fn prepare(
         created_at: chrono::Utc::now().timestamp(),
         image,
     };
-    let path = job.path(&event::xonly_hex(secret))?;
+    let owner = event::xonly_hex(secret);
+    let path = job.path(&owner)?;
     std::fs::create_dir_all(path.parent().ok_or("Invalid image path.")?)
         .map_err(|_| "Could not create image queue.")?;
     let bin = path.with_extension("bin");
-    std::fs::write(&bin, bytes).map_err(|_| "Could not save encrypted image.")?;
+    std::fs::write(&bin, &bytes).map_err(|_| "Could not save encrypted image.")?;
     if let Err(error) = job.save(secret) {
         let _ = std::fs::remove_file(bin);
         return Err(error);
+    }
+    if let Ok(cache) = root(&owner).map(|r| r.join("cache"))
+        && std::fs::create_dir_all(&cache).is_ok()
+    {
+        let cache_path = cache.join(format!("{}.bin", job.image.hash));
+        cache_store(&cache, &cache_path, &bytes);
     }
     Ok(job)
 }
@@ -984,6 +991,34 @@ mod tests {
             std::fs::remove_file(path.with_extension(extension)).unwrap();
         }
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn prepare_saves_job_and_populates_local_cache() {
+        let secret = secp256k1::SecretKey::from_slice(&[5; 32]).unwrap();
+        let peer = secp256k1::SecretKey::from_slice(&[6; 32]).unwrap();
+        let peer_hex = event::xonly_hex(&peer);
+        let owner = event::xonly_hex(&secret);
+        let job = prepare(
+            &secret,
+            peer_hex,
+            "https://nostr.download".into(),
+            PNG,
+            "caption".into(),
+            None,
+        )
+        .unwrap();
+        let cache_file = root(&owner)
+            .unwrap()
+            .join("cache")
+            .join(format!("{}.bin", job.image.hash));
+        assert!(cache_file.exists());
+        let cached_bytes = std::fs::read(&cache_file).unwrap();
+        assert_eq!(job.image.decrypt(&cached_bytes).unwrap(), PNG);
+
+        job.remove(&owner);
+        let _ = std::fs::remove_file(job.path(&owner).unwrap().with_extension("cancel"));
+        let _ = std::fs::remove_file(&cache_file);
     }
 
     #[test]
