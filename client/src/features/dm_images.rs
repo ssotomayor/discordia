@@ -8,8 +8,6 @@ use crate::{
 };
 use dioxus::prelude::*;
 
-const MAX_READY_IMAGES: usize = 8;
-
 #[component]
 pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     let mut state = use_app_state();
@@ -22,7 +20,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             image.viewers.insert(viewer);
         }
     });
-    let owner = identity.pubkey;
+    let effect_owner = identity.pubkey.clone();
     use_effect(move || {
         let wanted = {
             let s = state.read();
@@ -42,7 +40,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
         if let Some(image) = state.write().dm_images.get_mut(&message_id) {
             image.status = Status::Loading(token);
         }
-        let account = owner.clone();
+        let account = effect_owner.clone();
         spawn(async move {
             let result = crate::nostr::dm_image::receive(&account, &image.descriptor).await;
             let mut s = state.write();
@@ -58,19 +56,6 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             }
             match result {
                 Ok(data) => {
-                    let ready: Vec<_> = s
-                        .dm_images
-                        .iter()
-                        .filter(|(id, image)| **id != message_id && image.status == Status::Ready)
-                        .map(|(id, _)| *id)
-                        .collect();
-                    // Keep decoded private images bounded to avoid unbounded RAM growth.
-                    for id in ready.into_iter().skip(MAX_READY_IMAGES.saturating_sub(1)) {
-                        if let Some(image) = s.dm_images.get_mut(&id) {
-                            image.status = Status::Evicted;
-                            image.data = None;
-                        }
-                    }
                     if let Some(image) = s.dm_images.get_mut(&message_id) {
                         image.status = Status::Ready;
                         image.data = Some(std::sync::Arc::new(data));
@@ -111,14 +96,16 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             .map(crate::image_assets::chat_source)
     });
     let Some(Image {
+        descriptor,
         status,
         upload,
-        data,
         ..
     }) = state.read().dm_images.get(&message_id).cloned()
     else {
         return rsx! {};
     };
+    let account = identity.pubkey.clone();
+    let mut opening_full = use_signal(|| false);
     if status == Status::Ready {
         return rsx! {
             if let Some(src) = source() {
@@ -129,9 +116,18 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                     alt: crate::i18n::text("attachment", &[]),
                     title: crate::i18n::text("Click to view full size", &[]),
                     onclick: move |_| {
-                        if let Some(data) = &data {
-                            state.write().image_viewer = Some(data.as_ref().clone());
+                        if *opening_full.peek() {
+                            return;
                         }
+                        opening_full.set(true);
+                        let desc = descriptor.clone();
+                        let acc = account.clone();
+                        spawn(async move {
+                            if let Ok(full) = crate::nostr::dm_image::load_original(&acc, &desc).await {
+                                state.write().image_viewer = Some(full);
+                            }
+                            opening_full.set(false);
+                        });
                     },
                 }
             }

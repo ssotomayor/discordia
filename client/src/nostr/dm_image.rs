@@ -175,7 +175,7 @@ impl Descriptor {
         Ok(descriptor)
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<String, String> {
+    pub fn decrypt_raw(&self, ciphertext: &[u8]) -> Result<(Zeroizing<Vec<u8>>, String), String> {
         self.validate()?;
         if ciphertext.len() > MAX_CIPHER_BYTES
             || (self.size != 0 && ciphertext.len() != self.size)
@@ -185,7 +185,7 @@ impl Descriptor {
         }
         let key = Zeroizing::new(hex::decode(&self.key).map_err(|_| "Invalid image key.")?);
         let nonce = hex::decode(&self.nonce).map_err(|_| "Invalid image nonce.")?;
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| "Invalid image key.")?;
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "Invalid image key.")?;
         let plain = Zeroizing::new(
             cipher
                 .decrypt(Nonce::from_slice(&nonce), ciphertext)
@@ -198,7 +198,41 @@ impl Descriptor {
         if !image.starts_with(&format!("data:{};base64,", self.mime)) {
             return Err("Image type does not match.".into());
         }
-        Ok(image)
+        Ok((plain, image))
+    }
+
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<String, String> {
+        self.decrypt_raw(ciphertext).map(|(_, image)| image)
+    }
+
+    pub fn encrypt_thumb(&self, thumb_bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let key = Zeroizing::new(hex::decode(&self.key).map_err(|_| "Invalid image key.")?);
+        let mut nonce = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let cipher =
+            Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "Could not create image key.")?;
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), thumb_bytes)
+            .map_err(|_| "Could not encrypt thumbnail.")?;
+        let mut result = Vec::with_capacity(12 + ciphertext.len());
+        result.extend_from_slice(&nonce);
+        result.extend_from_slice(&ciphertext);
+        Ok(result)
+    }
+
+    pub fn decrypt_thumb(&self, payload: &[u8]) -> Result<String, String> {
+        if payload.len() < 12 + 16 {
+            return Err("Invalid thumbnail payload.".into());
+        }
+        let (nonce, ciphertext) = payload.split_at(12);
+        let key = Zeroizing::new(hex::decode(&self.key).map_err(|_| "Invalid image key.")?);
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| "Invalid image key.")?;
+        let plain = Zeroizing::new(
+            cipher
+                .decrypt(Nonce::from_slice(nonce), ciphertext)
+                .map_err(|_| "Thumbnail decryption failed.")?,
+        );
+        String::from_utf8(plain.to_vec()).map_err(|_| "Invalid thumbnail string.".into())
     }
 }
 
@@ -429,29 +463,7 @@ fn root(owner: &str) -> Result<PathBuf, String> {
     Ok(crate::identity::config_dir().join("dm-images").join(owner))
 }
 
-pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> {
-    static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-    let _permit = DOWNLOADS
-        .acquire()
-        .await
-        .map_err(|_| "Image downloads unavailable.")?;
-    image.validate()?;
-    let cache = root(owner)?.join("cache");
-    let path = cache.join(format!("{}.bin", image.hash));
-    if tokio::fs::metadata(&path).await.is_ok_and(|m| {
-        m.len() <= MAX_CIPHER_BYTES as u64
-            && (image.size == 0 || m.len() == image.size as u64)
-            && m.modified()
-                .ok()
-                .and_then(|at| at.elapsed().ok())
-                .is_some_and(|age| age <= CACHE_TTL)
-    }) && let Ok(bytes) = tokio::fs::read(&path).await
-    {
-        let metadata = image.clone();
-        if let Ok(Ok(data)) = tokio::task::spawn_blocking(move || metadata.decrypt(&bytes)).await {
-            return Ok(data);
-        }
-    }
+async fn download_ciphertext(image: &Descriptor) -> Result<Vec<u8>, String> {
     let mut url = public_url(&image.url)?;
     let mut bytes = None;
     for _ in 0..4 {
@@ -490,17 +502,111 @@ pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> 
         );
         break;
     }
-    let bytes = bytes.ok_or("Too many file redirects.")?;
-    let metadata = image.clone();
-    let (data, bytes) =
-        tokio::task::spawn_blocking(move || metadata.decrypt(&bytes).map(|data| (data, bytes)))
-            .await
-            .map_err(|_| "Could not decode image.")??;
-    if tokio::fs::create_dir_all(&cache).await.is_ok() {
-        // Only authenticated ciphertext is cached; keys stay inside the encrypted DM.
-        let _ = tokio::task::spawn_blocking(move || cache_store(&cache, &path, &bytes)).await;
+    bytes.ok_or_else(|| "Too many file redirects.".into())
+}
+
+pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> {
+    static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let _permit = DOWNLOADS
+        .acquire()
+        .await
+        .map_err(|_| "Image downloads unavailable.")?;
+    image.validate()?;
+    let cache = root(owner)?.join("cache");
+    let thumb_path = cache.join(format!("{}.thumb", image.hash));
+    if tokio::fs::metadata(&thumb_path).await.is_ok_and(|m| {
+        m.is_file()
+            && m.modified()
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age <= CACHE_TTL)
+    }) && let Ok(bytes) = tokio::fs::read(&thumb_path).await
+    {
+        let metadata = image.clone();
+        if let Ok(Ok(data)) =
+            tokio::task::spawn_blocking(move || metadata.decrypt_thumb(&bytes)).await
+        {
+            return Ok(data);
+        }
     }
-    Ok(data)
+    let path = cache.join(format!("{}.bin", image.hash));
+    let bytes = if tokio::fs::metadata(&path).await.is_ok_and(|m| {
+        m.len() <= MAX_CIPHER_BYTES as u64
+            && (image.size == 0 || m.len() == image.size as u64)
+            && m.modified()
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age <= CACHE_TTL)
+    }) && let Ok(bytes) = tokio::fs::read(&path).await
+    {
+        bytes
+    } else {
+        let downloaded = download_ciphertext(image).await?;
+        if tokio::fs::create_dir_all(&cache).await.is_ok() {
+            let cache_ref = cache.clone();
+            let path_ref = path.clone();
+            let dl_bytes = downloaded.clone();
+            let _ =
+                tokio::task::spawn_blocking(move || cache_store(&cache_ref, &path_ref, &dl_bytes))
+                    .await;
+        }
+        downloaded
+    };
+    let metadata = image.clone();
+    let (thumb_url, thumb_enc) = tokio::task::spawn_blocking(move || {
+        let (plain, _orig) = metadata.decrypt_raw(&bytes)?;
+        let thumb_url = crate::chat_image::thumbnail_data_url(&plain)?;
+        let thumb_enc = metadata.encrypt_thumb(thumb_url.as_bytes())?;
+        Ok::<_, String>((thumb_url, thumb_enc))
+    })
+    .await
+    .map_err(|_| "Could not decode image.")??;
+
+    if tokio::fs::create_dir_all(&cache).await.is_ok() {
+        let cache_ref = cache.clone();
+        let thumb_ref = thumb_path.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || cache_store(&cache_ref, &thumb_ref, &thumb_enc))
+                .await;
+    }
+    Ok(thumb_url)
+}
+
+pub async fn load_original(owner: &str, image: &Descriptor) -> Result<String, String> {
+    static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let _permit = DOWNLOADS
+        .acquire()
+        .await
+        .map_err(|_| "Image downloads unavailable.")?;
+    image.validate()?;
+    let cache = root(owner)?.join("cache");
+    let path = cache.join(format!("{}.bin", image.hash));
+    let bytes = if tokio::fs::metadata(&path).await.is_ok_and(|m| {
+        m.len() <= MAX_CIPHER_BYTES as u64
+            && (image.size == 0 || m.len() == image.size as u64)
+            && m.modified()
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age <= CACHE_TTL)
+    }) && let Ok(bytes) = tokio::fs::read(&path).await
+    {
+        bytes
+    } else {
+        let downloaded = download_ciphertext(image).await?;
+        if tokio::fs::create_dir_all(&cache).await.is_ok() {
+            let cache_ref = cache.clone();
+            let path_ref = path.clone();
+            let dl_bytes = downloaded.clone();
+            let _ =
+                tokio::task::spawn_blocking(move || cache_store(&cache_ref, &path_ref, &dl_bytes))
+                    .await;
+        }
+        downloaded
+    };
+    let metadata = image.clone();
+    tokio::task::spawn_blocking(move || metadata.decrypt(&bytes))
+        .await
+        .map_err(|_| "Could not decode image.")?
 }
 
 fn cache_store(cache: &std::path::Path, path: &std::path::Path, bytes: &[u8]) {
@@ -665,6 +771,13 @@ pub fn prepare(
     {
         let cache_path = cache.join(format!("{}.bin", job.image.hash));
         cache_store(&cache, &cache_path, &bytes);
+        if let Some((_mime, raw)) = blossom::split_data_url(data)
+            && let Ok(thumb_url) = crate::chat_image::thumbnail_data_url(&raw)
+            && let Ok(thumb_enc) = job.image.encrypt_thumb(thumb_url.as_bytes())
+        {
+            let thumb_path = cache.join(format!("{}.thumb", job.image.hash));
+            cache_store(&cache, &thumb_path, &thumb_enc);
+        }
     }
     Ok(job)
 }
@@ -1016,9 +1129,19 @@ mod tests {
         let cached_bytes = std::fs::read(&cache_file).unwrap();
         assert_eq!(job.image.decrypt(&cached_bytes).unwrap(), PNG);
 
+        let thumb_file = root(&owner)
+            .unwrap()
+            .join("cache")
+            .join(format!("{}.thumb", job.image.hash));
+        assert!(thumb_file.exists());
+        let thumb_bytes = std::fs::read(&thumb_file).unwrap();
+        let thumb_url = job.image.decrypt_thumb(&thumb_bytes).unwrap();
+        assert!(thumb_url.starts_with("data:image/"));
+
         job.remove(&owner);
         let _ = std::fs::remove_file(job.path(&owner).unwrap().with_extension("cancel"));
         let _ = std::fs::remove_file(&cache_file);
+        let _ = std::fs::remove_file(&thumb_file);
     }
 
     #[test]
