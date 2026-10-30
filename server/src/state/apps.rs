@@ -80,7 +80,7 @@ impl AppState {
             .insert(bot_pubkey.to_string(), (v.manifest.version, v.event));
         let mut seats = Vec::new();
         for (install, seat) in changed {
-            self.apply_seat(&install, &seat);
+            let seat = self.apply_seat(&install, seat);
             seats.push((install.guild_id, seat));
             self.put_install(install);
         }
@@ -111,7 +111,7 @@ impl AppState {
             self.store.update_bot_install(&install, &seat).await,
             "app update",
         )?;
-        self.apply_seat(&install, &seat);
+        let seat = self.apply_seat(&install, seat);
         self.put_install(install);
         Ok(seat)
     }
@@ -155,7 +155,7 @@ impl AppState {
             self.store.update_bot_install(&install, &seat).await,
             "app look",
         )?;
-        self.apply_seat(&install, &seat);
+        let seat = self.apply_seat(&install, seat);
         self.put_install(install);
         Ok(seat)
     }
@@ -194,24 +194,26 @@ impl AppState {
                 xp: 0,
                 look: install.look.clone(),
             }),
-            (false, Some(m)) if m.bot => Seat::Vacated,
+            (false, Some(m)) if m.bot => Seat::Vacated(None),
             (false, _) => Seat::Unchanged,
         }
     }
 
-    pub(super) fn apply_seat(&self, install: &BotInstall, seat: &Seat) {
+    pub(super) fn apply_seat(&self, install: &BotInstall, seat: Seat) -> Seat {
         match seat {
-            Seat::Unchanged => {}
+            Seat::Unchanged => Seat::Unchanged,
             Seat::Taken(member) => {
                 self.members
                     .entry(install.guild_id)
                     .or_default()
                     .insert(install.bot_pubkey.clone(), member.clone());
+                Seat::Taken(member)
             }
-            Seat::Vacated => {
+            Seat::Vacated(_) => {
                 if let Some(g) = self.members.get(&install.guild_id) {
                     g.remove(&install.bot_pubkey);
                 }
+                Seat::Vacated(self.end_call_in(install.guild_id, &install.bot_pubkey))
             }
         }
     }

@@ -42,6 +42,7 @@ pub const MAX_CONNECTIONS_PER_IP: u32 = 32;
 pub const MAX_SESSIONS_PER_PUBKEY: usize = 8;
 pub const MAX_GUILDS_PER_OWNER: usize = 10;
 pub const MAX_GUILD_INSTALLS: usize = 50;
+pub const MAX_GUILD_BANS: usize = 10_000;
 const CATALOG_FIRST_PAGE: u32 = 100;
 
 /// Counted on the data URL a client sends, per pubkey, over a sliding day.
@@ -255,9 +256,9 @@ impl AppState {
         }
         for i in loaded.bot_installs {
             // Rows from before activity-only apps went unseated.
-            if let crate::store::Seat::Vacated = state.seat_for(&i) {
+            if let seat @ crate::store::Seat::Vacated(_) = state.seat_for(&i) {
                 state.store.delete_member(i.guild_id, &i.bot_pubkey).await?;
-                state.apply_seat(&i, &crate::store::Seat::Vacated);
+                state.apply_seat(&i, seat);
             }
             // The members table keeps no look: the install is its one copy.
             if let Some(g) = state.members.get(&i.guild_id)
@@ -1033,7 +1034,7 @@ impl AppState {
             .collect()
     }
 
-    fn resolve_user(&self, pubkey: &str) -> User {
+    pub fn resolve_user(&self, pubkey: &str) -> User {
         self.users
             .get(pubkey)
             .map(|u| u.clone())
@@ -2119,16 +2120,24 @@ impl AppState {
         if let Some(gm) = self.members.get(&guild_id) {
             gm.remove(target_pubkey);
         }
-        let in_this_guild = self
+        self.end_call_in(guild_id, target_pubkey)
+            .map(|ended| ended.cleared)
+    }
+
+    /// Every removal of a member row ends here, so no key outside a guild
+    /// stays in its call or keeps getting its media keys (traps 29, 30).
+    pub(crate) fn end_call_in(
+        &self,
+        guild_id: Id,
+        pubkey: &str,
+    ) -> Option<crate::store::EndedCall> {
+        let previous = self
             .voice_states
-            .get(target_pubkey)
-            .map(|v| v.guild_id == guild_id)
-            .unwrap_or(false);
-        if in_this_guild {
-            self.clear_voice(target_pubkey)
-        } else {
-            None
-        }
+            .get(pubkey)
+            .filter(|v| v.guild_id == guild_id)
+            .map(|v| v.clone())?;
+        let cleared = self.clear_voice(pubkey)?;
+        Some(crate::store::EndedCall { previous, cleared })
     }
 
     pub async fn kick_member(
@@ -2224,9 +2233,20 @@ impl AppState {
         target_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<Option<VoiceState>, String> {
+        // Identify admits only this spelling, so any other would ban nobody.
+        if !crate::protocol::is_canonical_pubkey(target_pubkey) {
+            return Err("a ban names a key as 64 lowercase hex characters".into());
+        }
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
         self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
+        let full = self
+            .bans
+            .get(&guild_id)
+            .is_some_and(|b| b.len() >= MAX_GUILD_BANS && !b.contains(target_pubkey));
+        if full {
+            return Err(format!("a guild bans at most {MAX_GUILD_BANS} keys"));
+        }
         durable(
             self.store.ban_member(guild_id, target_pubkey).await,
             "member ban",
@@ -2735,13 +2755,15 @@ impl AppState {
     }
 
     pub async fn audit(&self, guild_id: Id, actor: &str, action: &str, target: &str, detail: &str) {
-        let entry = crate::protocol::AuditEntry {
+        let mut entry = crate::protocol::AuditEntry {
             at_ms: chrono::Utc::now().timestamp_millis(),
             actor_pubkey: actor.to_string(),
             action: action.to_string(),
             target: target.to_string(),
             detail: detail.to_string(),
         };
+        // The import's caps, ignoring its verdict: the server itself audits with no actor.
+        crate::sanitize::audit(&mut entry);
         persist(self.store.append_audit(guild_id, &entry).await, "audit");
     }
 
@@ -2867,7 +2889,11 @@ impl AppState {
             .map_err(|e| format!("store error: {e}"))
     }
 
-    pub async fn delete_guild(&self, guild_id: Id, by_pubkey: &str) -> Result<(), String> {
+    pub async fn delete_guild(
+        &self,
+        guild_id: Id,
+        by_pubkey: &str,
+    ) -> Result<Vec<crate::store::EndedCall>, String> {
         let _write = self.durable_writes.lock().await;
         let owner = self
             .guilds
@@ -2900,6 +2926,11 @@ impl AppState {
         drop(default);
         self.guilds.remove(&guild_id);
         self.members.remove(&guild_id);
+        let ended = self
+            .voice_states_in(guild_id)
+            .into_iter()
+            .filter_map(|vs| self.end_call_in(guild_id, &vs.user_pubkey))
+            .collect();
         self.roles.remove(&guild_id);
         self.sounds.remove(&guild_id);
         self.bans.remove(&guild_id);
@@ -2911,7 +2942,7 @@ impl AppState {
                 self.channels.remove(&cid);
             }
         }
-        Ok(())
+        Ok(ended)
     }
 
     /// Rows come back as stored: a `media:` address, never the bytes. A page of
@@ -3506,9 +3537,7 @@ impl AppState {
                 &curator[..12]
             ));
         }
-        if !crate::protocol::is_pubkey_hex(bot_pubkey)
-            || bot_pubkey.bytes().any(|b| b.is_ascii_uppercase())
-        {
+        if !crate::protocol::is_canonical_pubkey(bot_pubkey) {
             return Err("a bot's key is 64 lowercase hex characters".into());
         }
         if bot_pubkey == by_pubkey {
@@ -3566,7 +3595,7 @@ impl AppState {
             .entry(bot_pubkey.to_string())
             .or_default()
             .insert(guild_id, install.clone());
-        self.apply_seat(&install, &seat);
+        let seat = self.apply_seat(&install, seat);
         Ok((install, seat))
     }
 
@@ -3575,7 +3604,7 @@ impl AppState {
         guild_id: Id,
         bot_pubkey: &str,
         by_pubkey: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<crate::store::Seat, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         // A person leaves only through kick or ban, which hold the moderation guard.
@@ -3611,7 +3640,11 @@ impl AppState {
             .members
             .get(&guild_id)
             .is_some_and(|gm| gm.remove_if(bot_pubkey, |_, m| m.bot).is_some());
-        Ok(seated)
+        Ok(if seated {
+            crate::store::Seat::Vacated(self.end_call_in(guild_id, bot_pubkey))
+        } else {
+            crate::store::Seat::Unchanged
+        })
     }
 
     pub fn snapshot_for_bot(&self, bot: &User) -> ServerMessage {

@@ -35,7 +35,7 @@ impl Fixture {
             username: "Owner".into(),
         };
         let guest = User {
-            pubkey: "guest".into(),
+            pubkey: "a".repeat(64),
             username: "Guest".into(),
         };
         let (guild, _, _, _) = state.create_guild("Durable", None, &owner).await.unwrap();

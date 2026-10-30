@@ -27,7 +27,14 @@ pub struct InviteRow {
 pub enum Seat {
     Unchanged,
     Taken(Member),
-    Vacated,
+    /// With the call the key was in there, which ends with the row.
+    Vacated(Option<EndedCall>),
+}
+
+#[derive(Debug, Clone)]
+pub struct EndedCall {
+    pub previous: crate::protocol::VoiceState,
+    pub cleared: crate::protocol::VoiceState,
 }
 
 #[derive(Default)]
@@ -124,7 +131,7 @@ impl Store {
         match seat {
             Seat::Unchanged => {}
             Seat::Taken(member) => Self::write_member(&mut **tx, member).await?,
-            Seat::Vacated => {
+            Seat::Vacated(_) => {
                 sqlx::query("DELETE FROM members WHERE guild_id = ? AND pubkey = ?")
                     .bind(install.guild_id.to_string())
                     .bind(&install.bot_pubkey)
@@ -319,6 +326,10 @@ impl Store {
         for stmt in [
             "DELETE FROM bot_installs WHERE length(bot_pubkey) != 64 OR bot_pubkey GLOB '*[^0-9a-fA-F]*'",
             "DELETE FROM members WHERE bot = 1 AND (length(pubkey) != 64 OR pubkey GLOB '*[^0-9a-fA-F]*')",
+            // Bans too, and a key banned in capitals is the lowercase key Identify now admits.
+            "UPDATE OR IGNORE bans SET pubkey = lower(pubkey) WHERE pubkey != lower(pubkey) AND length(pubkey) = 64 AND pubkey NOT GLOB '*[^0-9a-fA-F]*'",
+            "DELETE FROM bans WHERE length(pubkey) != 64 OR pubkey GLOB '*[^0-9a-f]*'",
+            "UPDATE audit_log SET target = substr(target, 1, 128) WHERE length(target) > 128",
         ] {
             sqlx::query(stmt).execute(&self.pool).await?;
         }

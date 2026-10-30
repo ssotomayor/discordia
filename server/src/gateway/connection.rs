@@ -582,9 +582,17 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         let was_default = ctx.state.default_guild() == Some(guild_id);
                         match ctx.state.delete_guild(guild_id, &u.pubkey).await {
-                            Ok(()) => {
+                            Ok(ended) => {
                                 share_instances(&ctx.state, ctx.state.prune_instances());
                                 tracing::info!(%guild_id, by = ?u.username, "guild deleted");
+                                // Ahead of `GuildDelete`, while the caller's client still knows the call.
+                                for call in ended {
+                                    if let Some(channel) = call.previous.channel_id {
+                                        evict_from_call(&ctx, &call.cleared.user_pubkey, channel);
+                                    }
+                                    let caller = vec![call.cleared.user_pubkey.clone()];
+                                    send_voice_state(&ctx.state, caller, call.cleared);
+                                }
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
                                 if was_default {
                                     ctx.state.broadcast(ServerMessage::DefaultGuild { guild_id: None });
@@ -1122,7 +1130,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         ).await {
                             Ok((install, seat)) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot installed");
-                                announce_seat(&ctx.state, guild_id, &bot_pubkey, seat);
+                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 if let Some(set) = ctx.state.commands_of(&bot_pubkey) {
                                     ctx.state.deliver(targets, ServerMessage::BotCommands(set));
@@ -1146,16 +1154,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
-                        let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
-                            Ok(seated) => {
+                            Ok(seat) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot uninstalled");
-                                if seated {
-                                    ctx.state.deliver(
-                                        targets.clone(),
-                                        ServerMessage::MemberRemove { guild_id, user_pubkey: bot_pubkey },
-                                    );
-                                }
+                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildActivities {
                                     guild_id,
                                     activities: ctx.state.guild_activities(guild_id),
@@ -1192,7 +1195,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             Ok(crate::state::ManifestOutcome::Recorded { changed }) => {
                                 tracing::info!(bot = %u.pubkey, guilds = changed.len(), "app manifest recorded");
                                 for (guild_id, seat) in changed {
-                                    announce_seat(&ctx.state, guild_id, &u.pubkey, seat);
+                                    announce_seat(&ctx, guild_id, &u.pubkey, seat);
                                     share_guild_apps(&ctx.state, guild_id);
                                 }
                                 ask_for_bundles(&ctx.state, &u.pubkey);
@@ -1213,7 +1216,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         match ctx.state.approve_app_update(guild_id, &bot_pubkey, &u.pubkey).await {
                             Ok(seat) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "app update approved");
-                                announce_seat(&ctx.state, guild_id, &bot_pubkey, seat);
+                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
                                 share_guild_apps(&ctx.state, guild_id);
                                 ask_for_bundles(&ctx.state, &bot_pubkey);
                             }
@@ -1350,7 +1353,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         match ctx.state.set_app_look(guild_id, &bot_pubkey, &name, look, &u.pubkey).await {
                             Ok(seat) => {
-                                announce_seat(&ctx.state, guild_id, &bot_pubkey, seat);
+                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
                                 share_guild_apps(&ctx.state, guild_id);
                             }
                             Err(message) => {
@@ -1792,7 +1795,10 @@ pub(crate) async fn handle_connection_with_route<S>(
                         };
                         // Both in that call: a key is useless anywhere else, and a
                         // hidden channel's key must not reach someone outside it.
-                        let in_call = |pk: &str| ctx.state.voice_channel_of(pk) == Some(channel_id);
+                        let in_call = |pk: &str| {
+                            ctx.state.voice_channel_of(pk) == Some(channel_id)
+                                && ctx.state.is_guild_member(guild_id, pk)
+                        };
                         if !in_call(&u.pubkey) || !in_call(&to) {
                             tracing::debug!(
                                 from = %u.pubkey, %to, %guild_id,
@@ -2043,8 +2049,6 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::BanMember { guild_id, user_pubkey } => {
-                        // Identify admits only lowercase, so a ban under another spelling bans nobody.
-                        let user_pubkey = user_pubkey.to_ascii_lowercase();
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -2066,12 +2070,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 tracing::info!(%guild_id, target = ?user_pubkey, by = ?u.username, "member banned");
                                 ctx.state.audit(guild_id, &u.pubkey, "ban", &user_pubkey, "").await;
                                 removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice, was_sharing);
-                                if let Ok(users) = ctx.state.ban_list(guild_id, &u.pubkey) {
-                                    let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
-                                        guild_id,
-                                        users,
-                                    }).await;
-                                }
+                                let _ = send(&mut ws_tx, &ServerMessage::GuildBanUpdate {
+                                    guild_id,
+                                    user: ctx.state.resolve_user(&user_pubkey),
+                                    banned: true,
+                                }).await;
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -2086,15 +2089,18 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         match ctx.state.unban_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(()) => {
                                 ctx.state.audit(guild_id, &u.pubkey, "unban", &user_pubkey, "").await;
-                                if let Ok(users) = ctx.state.ban_list(guild_id, &u.pubkey) {
-                                    let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
-                                        guild_id,
-                                        users,
-                                    }).await;
-                                }
+                                let _ = send(&mut ws_tx, &ServerMessage::GuildBanUpdate {
+                                    guild_id,
+                                    user: ctx.state.resolve_user(&user_pubkey),
+                                    banned: false,
+                                }).await;
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -3329,24 +3335,39 @@ fn ask_for_bundles(state: &crate::state::AppState, bot_pubkey: &str) {
 
 /// Managers see the installs, everyone sees the activities they can open.
 fn announce_seat(
-    state: &crate::state::AppState,
+    ctx: &Arc<AppContext>,
     guild_id: crate::protocol::Id,
     bot_pubkey: &str,
     seat: crate::store::Seat,
 ) {
+    let state = &ctx.state;
     let targets = state.guild_member_pubkeys(guild_id);
     match seat {
         crate::store::Seat::Unchanged => {}
         crate::store::Seat::Taken(member) => {
             state.deliver(targets, ServerMessage::MemberJoin(member))
         }
-        crate::store::Seat::Vacated => state.deliver(
-            targets,
-            ServerMessage::MemberRemove {
-                guild_id,
-                user_pubkey: bot_pubkey.to_string(),
-            },
-        ),
+        crate::store::Seat::Vacated(ended) => {
+            state.deliver(
+                targets.clone(),
+                ServerMessage::MemberRemove {
+                    guild_id,
+                    user_pubkey: bot_pubkey.to_string(),
+                },
+            );
+            let Some(ended) = ended else { return };
+            if let Some(channel) = ended.previous.channel_id {
+                evict_from_call(ctx, bot_pubkey, channel);
+            }
+            let mut vs_targets = targets;
+            vs_targets.push(bot_pubkey.to_string());
+            send_voice_state(state, vs_targets, ended.cleared);
+            if let (true, Some(channel)) =
+                (ended.previous.screen_sharing, ended.previous.channel_id)
+            {
+                broadcast_screen_state(state, guild_id, channel);
+            }
+        }
     }
 }
 
