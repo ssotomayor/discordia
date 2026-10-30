@@ -22,6 +22,15 @@ pub struct InviteRow {
     pub created_by: String,
 }
 
+pub enum Toggle {
+    NoMessage,
+    /// A new emoji on a message that already has the most it may.
+    Full,
+    Done {
+        added: bool,
+    },
+}
+
 /// What an install change does to the bot's member row.
 #[derive(Debug, Clone)]
 pub enum Seat {
@@ -1442,36 +1451,31 @@ impl Store {
         message_id: Id,
         emoji: &str,
         pubkey: &str,
-    ) -> Result<Option<Vec<Reaction>>> {
+        max_distinct: usize,
+    ) -> Result<Toggle> {
         let row = sqlx::query("SELECT reactions FROM messages WHERE id = ? AND channel_id = ?")
             .bind(message_id.to_string())
             .bind(channel_id.to_string())
             .fetch_optional(&self.pool)
             .await?;
-        let Some(row) = row else { return Ok(None) };
+        let Some(row) = row else {
+            return Ok(Toggle::NoMessage);
+        };
         let mut reactions: Vec<Reaction> =
             serde_json::from_str(&row.get::<String, _>(0)).unwrap_or_default();
-
-        if let Some(r) = reactions.iter_mut().find(|r| r.emoji == emoji) {
-            if let Some(pos) = r.users.iter().position(|u| u == pubkey) {
-                r.users.remove(pos);
-            } else {
-                r.users.push(pubkey.to_string());
-            }
-        } else {
-            reactions.push(Reaction {
-                emoji: emoji.to_string(),
-                users: vec![pubkey.to_string()],
-            });
+        let existing = reactions.iter().find(|r| r.emoji == emoji);
+        let added = !existing.is_some_and(|r| r.users.iter().any(|u| u == pubkey));
+        if existing.is_none() && reactions.len() >= max_distinct {
+            return Ok(Toggle::Full);
         }
-        reactions.retain(|r| !r.users.is_empty());
+        crate::protocol::apply_reaction(&mut reactions, emoji, pubkey, added);
 
         sqlx::query("UPDATE messages SET reactions = ? WHERE id = ?")
             .bind(serde_json::to_string(&reactions).unwrap_or_else(|_| "[]".into()))
             .bind(message_id.to_string())
             .execute(&self.pool)
             .await?;
-        Ok(Some(reactions))
+        Ok(Toggle::Done { added })
     }
 
     pub async fn message_author(&self, channel_id: Id, message_id: Id) -> Result<Option<String>> {

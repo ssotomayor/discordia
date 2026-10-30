@@ -43,6 +43,9 @@ pub const MAX_SESSIONS_PER_PUBKEY: usize = 8;
 pub const MAX_GUILDS_PER_OWNER: usize = 10;
 pub const MAX_GUILD_INSTALLS: usize = 50;
 pub const MAX_GUILD_BANS: usize = 10_000;
+pub use crate::protocol::MAX_CHANNELS_PER_GUILD;
+pub const MAX_MESSAGE_REACTIONS: usize = 20;
+pub const MAX_ROLES_PER_GUILD: usize = 50;
 const CATALOG_FIRST_PAGE: u32 = 100;
 
 /// Counted on the data URL a client sends, per pubkey, over a sliding day.
@@ -707,6 +710,10 @@ impl AppState {
     ) -> Result<Guild, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let mut leveling = leveling;
+        leveling
+            .channels
+            .retain(|c| self.channel_guild(*c) == Some(guild_id));
         let leveling = crate::protocol::sanitize_leveling(leveling);
         let updated = {
             let mut guild = self
@@ -750,22 +757,29 @@ impl AppState {
         moved
     }
 
+    /// Whether the toggle added, or why nothing changed. Serialised because it
+    /// rewrites the whole list: concurrent toggles lost each other's reactions.
     pub async fn toggle_reaction(
         &self,
         channel_id: Id,
         message_id: Id,
         emoji: &str,
         pubkey: &str,
-    ) -> Option<Vec<crate::protocol::Reaction>> {
+    ) -> Result<Option<bool>, String> {
+        let _write = self.durable_writes.lock().await;
         match self
             .store
-            .toggle_reaction(channel_id, message_id, emoji, pubkey)
+            .toggle_reaction(channel_id, message_id, emoji, pubkey, MAX_MESSAGE_REACTIONS)
             .await
         {
-            Ok(res) => res,
+            Ok(crate::store::Toggle::Done { added }) => Ok(Some(added)),
+            Ok(crate::store::Toggle::NoMessage) => Ok(None),
+            Ok(crate::store::Toggle::Full) => Err(format!(
+                "a message holds at most {MAX_MESSAGE_REACTIONS} different reactions"
+            )),
             Err(e) => {
                 tracing::error!(error = %e, "toggle_reaction store error");
-                None
+                Ok(None)
             }
         }
     }
@@ -891,7 +905,7 @@ impl AppState {
                 .get(&guild_id)
                 .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
-            guild.accent = accent;
+            guild.accent = accent.as_deref().and_then(canonical_hex_color);
             guild.clone()
         };
         durable(self.store.upsert_guild(&updated).await, "guild accent")?;
@@ -956,23 +970,21 @@ impl AppState {
             .collect()
     }
 
-    pub fn profiles_snapshot(&self) -> Vec<Profile> {
-        let mut out: Vec<Profile> = self
-            .profiles
-            .iter()
-            .map(|p| self.shown_profile(p.value().clone()))
-            .collect();
-        // An operator who never edited a profile still wears the badge; one
-        // who never connected is not named, so a configured key stays private.
-        for pk in &self.operators {
-            if !self.profiles.contains_key(pk) && self.users.contains_key(pk) {
-                out.push(self.shown_profile(Profile {
-                    pubkey: pk.clone(),
-                    ..Default::default()
-                }));
-            }
-        }
-        out
+    pub fn profiles_of(&self, keys: &std::collections::HashSet<&str>) -> Vec<Profile> {
+        keys.iter()
+            .filter_map(|pk| match self.profiles.get(*pk).map(|p| p.clone()) {
+                Some(p) => Some(self.shown_profile(p)),
+                // An operator who never edited a profile still wears the badge; one
+                // who never connected is not named, so a configured key stays private.
+                None if self.operators.contains(*pk) && self.users.contains_key(*pk) => {
+                    Some(self.shown_profile(Profile {
+                        pubkey: pk.to_string(),
+                        ..Default::default()
+                    }))
+                }
+                None => None,
+            })
+            .collect()
     }
 
     /// Everyone who shares a guild with this key, themselves included. The
@@ -1277,11 +1289,17 @@ impl AppState {
             .collect();
 
         let (catalog, _) = self.guild_catalog_page(0, CATALOG_FIRST_PAGE);
-        let profiles = self.profiles_snapshot();
         let roles = self.roles_for_guilds(&my_guild_ids);
         let emojis = self.emojis_for_guilds(&my_guild_ids);
         let sounds = self.sounds_for_guilds(&my_guild_ids);
         let seen: Vec<String> = members.iter().map(|m| m.user.pubkey.clone()).collect();
+        // Every key that ever set a profile would otherwise ride in every Ready.
+        let known: std::collections::HashSet<&str> = seen
+            .iter()
+            .map(String::as_str)
+            .chain([user.pubkey.as_str()])
+            .collect();
+        let profiles = self.profiles_of(&known);
         let activities = self.activities_of(&seen);
         let bot_commands = self.commands_for_guilds(&my_guild_ids);
 
@@ -1318,8 +1336,6 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    const MAX_ROLES_PER_GUILD: usize = 50;
-
     fn authorize_role_touch(
         &self,
         guild_id: Id,
@@ -1353,7 +1369,7 @@ impl AppState {
         color: Option<String>,
     ) -> Result<(String, Option<String>), String> {
         let name = crate::protocol::sanitize_name("role", name, 32)?;
-        let color = color.filter(|c| is_hex_color(c));
+        let color = color.as_deref().and_then(canonical_hex_color);
         Ok((name, color))
     }
 
@@ -1371,7 +1387,7 @@ impl AppState {
         let (name, color) = Self::sanitize_role(name, color)?;
         let role = {
             let roles = self.guild_roles(guild_id);
-            if roles.len() >= Self::MAX_ROLES_PER_GUILD {
+            if roles.len() >= MAX_ROLES_PER_GUILD {
                 return Err("role limit reached for this guild".into());
             }
             // Past the highest, not the count: after a deletion the count is
@@ -2335,6 +2351,12 @@ impl AppState {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
         let name = sanitize_channel_name(name)?;
+        let count = self.channels_by_guild.get(&guild_id).map_or(0, |c| c.len());
+        if count >= MAX_CHANNELS_PER_GUILD {
+            return Err(format!(
+                "a guild has at most {MAX_CHANNELS_PER_GUILD} channels, dividers included"
+            ));
+        }
         let next_pos = self
             .channels
             .iter()
@@ -2376,6 +2398,14 @@ impl AppState {
         positions: &[(Id, u32)],
         by_pubkey: &str,
     ) -> Result<Vec<Channel>, String> {
+        // Before the lock: a repeated id costs a clone and an UPDATE each, so a
+        // frame of them held every write on the server.
+        let mut ids: Vec<Id> = positions.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.len() != positions.len() {
+            return Err("a reorder names each channel once".into());
+        }
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
         for (id, _) in positions {
@@ -3803,7 +3833,7 @@ pub(crate) fn random_invite_code() -> String {
         .collect()
 }
 
-pub use crate::protocol::is_hex_color;
+pub use crate::protocol::canonical_hex_color;
 
 /// The read guard ends before the write. `match map.get(k)` keeps its guard
 /// alive through every arm, and an insert there on the same key hangs the thread.
