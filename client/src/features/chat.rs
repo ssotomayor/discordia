@@ -1406,7 +1406,7 @@ fn ChatImage(address: String) -> Element {
         if let Some(src) = resolved() {
             img {
                 class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
-                style: "max-width: 320px; max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
+                style: "max-width: min(320px, 82vw); max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
                 src: "{src}",
                 alt: crate::i18n::text("attachment", &[]),
                 title: crate::i18n::text("Click to view full size", &[]),
@@ -1420,7 +1420,7 @@ fn ChatImage(address: String) -> Element {
         } else {
             div {
                 class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                style: "max-width: 320px; width: 280px; height: 120px;",
+                style: "max-width: min(320px, 82vw); width: 280px; height: 120px;",
                 {crate::i18n::text("Loading image…", &[])}
             }
         }

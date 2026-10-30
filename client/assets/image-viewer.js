@@ -22,8 +22,13 @@ function (instance) {
     const height = stage.clientHeight - parseFloat(padding.paddingTop) - parseFloat(padding.paddingBottom);
     const maxX = Math.max(0, (image.clientWidth * scale - width) / 2);
     const maxY = Math.max(0, (image.clientHeight * scale - height) / 2);
-    x = Math.max(-maxX, Math.min(maxX, x));
-    y = Math.max(-maxY, Math.min(maxY, y));
+    if (scale <= 1) {
+      x = 0;
+      y = Math.max(0, y);
+    } else {
+      x = Math.max(-maxX, Math.min(maxX, x));
+      y = Math.max(-maxY, Math.min(maxY, y));
+    }
   };
   const paint = () => {
     frame = null;
@@ -79,26 +84,38 @@ function (instance) {
       const after = pair();
       zoom(scale * after.distance / Math.max(1, before.distance), before);
       x += after.x - before.x; y += after.y - before.y;
-    } else if (pointers.size === 1 && scale > 1) {
-      x += p.x - old.x; y += p.y - old.y;
+    } else if (pointers.size === 1) {
+      if (scale > 1) {
+        x += p.x - old.x; y += p.y - old.y;
+      } else {
+        y = Math.max(0, p.y - old.startY);
+      }
     }
     draw();
   });
   const release = (e, cancelled) => {
-    if (!pointers.has(e.pointerId)) return;
+    const old = pointers.get(e.pointerId);
+    if (!old) return;
     const p = point(e);
     pointers.delete(e.pointerId);
     try { if (stage.hasPointerCapture(e.pointerId)) stage.releasePointerCapture(e.pointerId); } catch (_) {}
-    if (!cancelled && !pointers.size && !moved) {
-      if (backgroundTap) close();
-      else if (e.pointerType === 'touch') {
-        const now = performance.now();
-        if (lastTap && now - lastTap.time < 300 && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 25) {
-          zoom(scale > 1 ? 1 : 2, p); touchZoomAt = now; lastTap = null;
-        } else lastTap = { ...p, time: now };
+    if (!cancelled && !pointers.size) {
+      if (scale === 1 && (p.y - old.startY > 80)) {
+        close();
+        return;
+      }
+      if (scale === 1) { y = 0; }
+      if (!moved) {
+        if (backgroundTap) close();
+        else if (e.pointerType === 'touch') {
+          const now = performance.now();
+          if (lastTap && now - lastTap.time < 300 && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 25) {
+            zoom(scale > 1 ? 1 : 2, p); touchZoomAt = now; lastTap = null;
+          } else lastTap = { ...p, time: now };
+        }
       }
     }
-    if (cancelled) { moved = true; lastTap = null; }
+    if (cancelled) { moved = true; lastTap = null; if (scale === 1) { y = 0; } }
     draw();
   };
   listen(stage, 'pointerup', e => release(e, false));
