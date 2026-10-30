@@ -348,10 +348,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         // History is the same text the live stream blanks for a
                         // bot without the content intent (`filter_for_bot`).
                         if is_bot && !bot_has_intent(&ctx.state, channel_id, &u.pubkey, Intent::MessageContent) {
-                            for m in &mut history {
-                                m.content.clear();
-                                m.image = None;
-                            }
+                            history.iter_mut().for_each(withhold_content);
                         }
                         if send(&mut ws_tx, &ServerMessage::MessageHistory {
                             channel_id,
@@ -1116,6 +1113,10 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         match ctx.state.install_bot(
                             guild_id, &bot_pubkey, &name, permissions, intents, manifest, &u.pubkey,
                         ).await {
@@ -1147,12 +1148,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                         };
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
-                            Ok(()) => {
+                            Ok(seated) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot uninstalled");
-                                ctx.state.deliver(
-                                    targets.clone(),
-                                    ServerMessage::MemberRemove { guild_id, user_pubkey: bot_pubkey },
-                                );
+                                if seated {
+                                    ctx.state.deliver(
+                                        targets.clone(),
+                                        ServerMessage::MemberRemove { guild_id, user_pubkey: bot_pubkey },
+                                    );
+                                }
                                 ctx.state.deliver(targets, ServerMessage::GuildActivities {
                                     guild_id,
                                     activities: ctx.state.guild_activities(guild_id),
@@ -2606,6 +2609,7 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
         tracing::info!(user = ?u.username, "a session closed; others remain");
         return;
     }
+    ctx.state.forget_unused_commands(&u.pubkey);
     share_instances(&ctx.state, ctx.state.leave_all_instances(&u.pubkey));
     if ctx.state.clear_activity(&u.pubkey) {
         ctx.state.deliver(
@@ -3369,6 +3373,18 @@ fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::I
     );
 }
 
+/// Everything a message says, for a bot installed without the content
+/// intent: a reply quotes its parent and a file's name is text too.
+fn withhold_content(m: &mut crate::protocol::Message) {
+    m.content.clear();
+    m.image = None;
+    m.image_metadata = None;
+    m.attachment = None;
+    if let Some(reply) = &mut m.reply_to {
+        reply.excerpt.clear();
+    }
+}
+
 fn filter_for_bot(
     state: &crate::state::AppState,
     bot_pubkey: &str,
@@ -3383,8 +3399,7 @@ fn filter_for_bot(
             }
             let mut m = m.clone();
             if !install.has_intent(Intent::MessageContent) {
-                m.content = String::new();
-                m.image = None;
+                withhold_content(&mut m);
             }
             Some(ServerMessage::MessageCreate(m))
         }
@@ -3409,8 +3424,29 @@ fn filter_for_bot(
             let install = state.bot_install(*guild_id, bot_pubkey)?;
             install.has_intent(Intent::Members).then(|| msg.clone())
         }
-        ServerMessage::MessageDelete { channel_id, .. }
-        | ServerMessage::MessageUpdate { channel_id, .. } => {
+        ServerMessage::MessageUpdate {
+            channel_id,
+            message_id,
+            content,
+            edited_at,
+        } => {
+            let gid = state.channel_guild(*channel_id)?;
+            let install = state.bot_install(gid, bot_pubkey)?;
+            if !install.has_intent(Intent::GuildMessages) {
+                return None;
+            }
+            Some(ServerMessage::MessageUpdate {
+                channel_id: *channel_id,
+                message_id: *message_id,
+                content: if install.has_intent(Intent::MessageContent) {
+                    content.clone()
+                } else {
+                    String::new()
+                },
+                edited_at: *edited_at,
+            })
+        }
+        ServerMessage::MessageDelete { channel_id, .. } => {
             let gid = state.channel_guild(*channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
             install

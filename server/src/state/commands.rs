@@ -42,6 +42,14 @@ impl AppState {
         Ok((guilds, commands))
     }
 
+    /// Nobody is shown an uninstalled bot's commands, and keys are free, so
+    /// they last only as long as one of its sessions.
+    pub fn forget_unused_commands(&self, bot_pubkey: &str) {
+        if self.bot_guilds(bot_pubkey).is_empty() && !self.has_sessions(bot_pubkey) {
+            self.bot_commands.remove(bot_pubkey);
+        }
+    }
+
     pub fn commands_of(&self, bot_pubkey: &str) -> Option<BotCommandSet> {
         self.bot_commands.get(bot_pubkey).map(|c| BotCommandSet {
             bot_pubkey: bot_pubkey.to_string(),

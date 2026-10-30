@@ -168,6 +168,7 @@ impl AppState {
             .get(&install.guild_id)
             .and_then(|g| g.get(&install.bot_pubkey).map(|m| m.clone()));
         match (install.seated(), current) {
+            (_, Some(m)) if !m.bot => Seat::Unchanged,
             (true, Some(m))
                 if m.bot && m.user.username == install.name && m.look == install.look =>
             {

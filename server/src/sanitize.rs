@@ -5,8 +5,8 @@
 use crate::archive::GuildArchive;
 use crate::protocol::{
     AuditEntry, BotInstall, Channel, Guild, GuildEmoji, GuildSound, Message, PRESENCES, Permission,
-    Profile, REPLY_EXCERPT_CHARS, Role, User, canonical_username, sanitize_line, sanitize_name,
-    sanitize_paragraph, valid_shortcode,
+    Profile, REPLY_EXCERPT_CHARS, Role, User, canonical_username, is_pubkey_hex, sanitize_line,
+    sanitize_name, sanitize_paragraph, valid_shortcode,
 };
 use crate::store::LoadedState;
 
@@ -150,14 +150,16 @@ pub fn profile(p: &mut Profile) -> bool {
 }
 
 pub fn bot_install(b: &mut BotInstall) -> bool {
-    b.bot_pubkey = pubkey(&b.bot_pubkey);
+    if !is_pubkey_hex(&b.bot_pubkey) {
+        return false;
+    }
     b.name = name_or("bot", &b.name, BOT_NAME, "Bot");
     b.permissions
         .retain(|p| Permission::BOT_INSTALLABLE.contains(p));
     b.look.avatar = picture(b.look.avatar.take());
     b.look.banner = picture(b.look.banner.take());
     b.look.bio = paragraph(b.look.bio.take(), BIO);
-    !b.bot_pubkey.is_empty()
+    true
 }
 
 pub fn message(m: &mut Message) -> bool {
