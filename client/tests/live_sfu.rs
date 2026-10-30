@@ -124,6 +124,7 @@ async fn alternate_endpoint_delivers_audio(
             identities: Default::default(),
             media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
             data_dir: data_dir.join("gateway"),
+            admission: Default::default(),
         };
         Some(
             discordia_server::spawn("127.0.0.1:0".parse().unwrap(), 0, config)

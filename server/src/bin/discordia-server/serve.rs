@@ -100,7 +100,15 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
         media_max_bytes: opts
             .media_max_bytes
             .unwrap_or(discordia_server::media::DEFAULT_MAX_BYTES),
+        admission: discordia_server::admission::Admission {
+            trusted_proxies: opts.trusted_proxies.clone().unwrap_or_default(),
+            ..Default::default()
+        },
     };
+    if !cfg.admission.trusted_proxies.is_empty() {
+        tracing::info!(proxies = ?cfg.admission.trusted_proxies, "trusting X-Forwarded-For from");
+    }
+    let admission = cfg.admission.clone();
 
     // The plaintext socket is for loopback and a TLS proxy; anything reaching
     // this box directly from elsewhere comes in over QUIC with the key below.
@@ -180,7 +188,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
         }
     });
 
-    let gateway = discordia_server::serve_router(listener, router);
+    let gateway = discordia_server::serve_router_with(listener, router, &admission);
     tracing::info!(%bound, "plaintext gateway listening (loopback and TLS proxies only)");
 
     discordia_rendezvous::run::shutdown_signal().await;

@@ -22,9 +22,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::registry::Registry;
 
-/// A register frame is a few hundred bytes; anything near this is someone
-/// filling the coordinator's buffers, not a host.
-const CONTROL_FRAME_BYTES: usize = 64 * 1024;
+use discordia_protocol::rendezvous::CONTROL_FRAME_BYTES;
 
 #[derive(Clone)]
 pub struct Config {

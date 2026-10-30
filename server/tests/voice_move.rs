@@ -28,6 +28,7 @@ async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission: Default::default(),
     };
     let preferred: SocketAddr = "127.0.0.1:19290".parse().unwrap();
     let handle = discordia_server::spawn(preferred, 100, cfg)
@@ -421,6 +422,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.clone(),
+        admission: Default::default(),
     };
     let handle = discordia_server::spawn("127.0.0.1:19291".parse().unwrap(), 100, cfg)
         .await

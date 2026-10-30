@@ -26,6 +26,7 @@ fn test_config(operators: std::collections::HashSet<String>) -> discordia_server
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission: Default::default(),
     }
 }
 

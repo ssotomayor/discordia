@@ -23,6 +23,12 @@ fn temp_data_dir() -> PathBuf {
 }
 
 async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
+    spawn_gateway_with(Default::default()).await
+}
+
+async fn spawn_gateway_with(
+    admission: discordia_server::admission::Admission,
+) -> (String, discordia_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let dir = temp_data_dir();
     let cfg = discordia_server::ServerConfig {
@@ -31,6 +37,7 @@ async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission,
     };
     let handle = discordia_server::spawn(preferred, 100, cfg)
         .await
@@ -48,6 +55,45 @@ fn bad_identify() -> String {
         client_version: String::new(),
     })
     .expect("serialize")
+}
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A raw socket past Identify and Ready, so what follows is held to the
+/// identified cap rather than the pre-Identify one.
+async fn identified(url: &str) -> Socket {
+    use discordia_server::protocol::ServerMessage;
+    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("connect");
+    let nonce = loop {
+        if let Some(Ok(WsMessage::Text(t))) = ws.next().await
+            && let Ok(ServerMessage::Hello { nonce }) = serde_json::from_str(&t)
+        {
+            break nonce;
+        }
+    };
+    let id = discordia_bot::BotIdentity::generate();
+    let origin = discordia_server::protocol::dial_origin(url).expect("origin");
+    let identify = ClientMessage::Identify {
+        username: "big".into(),
+        signature: id.sign_identify(&nonce, &origin, "big"),
+        pubkey: id.pubkey().to_string(),
+        origin,
+        bot: false,
+        client_version: String::new(),
+    };
+    ws.send(WsMessage::Text(serde_json::to_string(&identify).unwrap()))
+        .await
+        .unwrap();
+    loop {
+        if let Some(Ok(WsMessage::Text(t))) = ws.next().await
+            && t.contains("\"op\":\"ready\"")
+        {
+            return ws;
+        }
+    }
 }
 
 /// Reads until the socket goes away, and says whether it did. Anything the
@@ -144,9 +190,7 @@ async fn an_oversized_frame_ends_the_connection() {
 #[tokio::test]
 async fn a_frame_under_the_cap_is_still_read() {
     let (url, _h) = spawn_gateway().await;
-    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .expect("connect");
+    let mut ws = identified(&url).await;
 
     let big = "x".repeat(discordia_server::state::MAX_IMAGE_LEN);
     ws.send(WsMessage::Text(big))
@@ -175,9 +219,7 @@ async fn a_frame_under_the_cap_is_still_read() {
 #[tokio::test]
 async fn a_combined_profile_upload_reaches_the_handler() {
     let (url, _h) = spawn_gateway().await;
-    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .expect("connect");
+    let mut ws = identified(&url).await;
     let image = "x".repeat(discordia_server::state::MAX_IMAGE_LEN);
     let profile = ClientMessage::SetProfile {
         avatar: Some(image.clone()),
@@ -195,7 +237,7 @@ async fn a_combined_profile_upload_reaches_the_handler() {
     let answered = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(Ok(msg)) = ws.next().await {
             if let WsMessage::Text(text) = msg
-                && text.contains("identify first")
+                && text.contains("avatar")
             {
                 return true;
             }
@@ -339,7 +381,7 @@ async fn an_upgrade_carrying_an_origin_header_is_refused() {
 async fn a_ten_mb_image_message_reaches_the_handler() {
     use base64::Engine as _;
     let (url, _handle) = spawn_gateway().await;
-    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let mut ws = identified(&url).await;
     let image = format!(
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD
@@ -358,7 +400,7 @@ async fn a_ten_mb_image_message_reaches_the_handler() {
     let answered = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(Ok(message)) = ws.next().await {
             if let WsMessage::Text(text) = message
-                && text.contains("identify first")
+                && text.contains("\"op\":\"error\"")
             {
                 return true;
             }
@@ -371,4 +413,232 @@ async fn a_ten_mb_image_message_reaches_the_handler() {
         Ok(true),
         "the configured maximum must reach validation rather than disconnect at the transport limit"
     );
+}
+
+/// An Identify is small, and a frame parsed before one costs the server many
+/// times its size; past the pre-Identify cap the socket is closed unparsed.
+#[tokio::test]
+async fn a_large_frame_before_identify_ends_the_connection_unparsed() {
+    let (url, _h) = spawn_gateway().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    let content_first = format!(
+        "{{\"d\":[{}],\"op\":\"identify\"}}",
+        vec!["[]"; discordia_server::gateway::PRE_IDENTIFY_FRAME_BYTES / 2].join(",")
+    );
+    ws.send(WsMessage::Text(content_first)).await.unwrap();
+    assert!(
+        closed_within(&mut ws, Duration::from_secs(5)).await,
+        "an unidentified socket kept going after a frame no Identify needs"
+    );
+
+    let (mut small, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    small.send(WsMessage::Text(bad_identify())).await.unwrap();
+    assert!(
+        !closed_within(&mut small, Duration::from_millis(300)).await,
+        "an Identify-sized frame is still read"
+    );
+}
+
+/// The socket a full queue gave up on keeps its slot until its task has ended,
+/// and is told to end: a slot handed back while the task ran was uncounted.
+#[tokio::test]
+async fn a_socket_dropped_for_a_full_queue_is_closed_before_its_slot_returns() {
+    use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+    use discordia_server::protocol::ServerMessage;
+    use discordia_server::state::{AppState, MAX_CONNECTIONS_PER_IP};
+    use discordia_server::store::Store;
+
+    let dir = temp_data_dir();
+    let store = Store::open_in(&dir).await.expect("store");
+    let media = MediaStore::open(dir.join("media"), DEFAULT_MAX_BYTES).expect("media");
+    let state = AppState::load_or_seed(store, media, Default::default())
+        .await
+        .expect("state");
+    let ip: std::net::IpAddr = "203.0.113.8".parse().unwrap();
+    let origin = Some(discordia_server::admission::Origin::ip(ip));
+    let mut held = Vec::new();
+    for _ in 0..MAX_CONNECTIONS_PER_IP {
+        held.push(
+            state
+                .admit(Some(ip), origin.clone())
+                .expect("within the cap"),
+        );
+    }
+    let (dropped, _unread, close) = held.pop().unwrap();
+    for _ in 0..4096 {
+        state.broadcast(ServerMessage::Error {
+            message: "flood".into(),
+        });
+    }
+    assert!(state.is_closing(dropped));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), close.notified())
+            .await
+            .is_ok(),
+        "the socket's task was not told to end"
+    );
+    assert!(
+        state.admit(Some(ip), origin.clone()).is_err(),
+        "the slot came back while the socket's task still ran"
+    );
+    state.unregister_conn(dropped, None);
+    assert!(state.admit(Some(ip), origin).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn limited(
+    f: impl FnOnce(&mut discordia_server::admission::Limits),
+) -> discordia_server::admission::Admission {
+    let mut admission = discordia_server::admission::Admission::default();
+    f(&mut admission.limits);
+    admission
+}
+
+/// What the gateway says to a socket on `url` claiming to come from `client`.
+async fn first_word(url: &str, client: &str) -> String {
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url)
+            .unwrap();
+    request
+        .headers_mut()
+        .insert("x-forwarded-for", client.parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("connect");
+    let word = match ws.next().await {
+        Some(Ok(WsMessage::Text(t))) => t,
+        other => format!("{other:?}"),
+    };
+    // Held open so it keeps its slot; the server's end is what is counted.
+    tokio::spawn(async move { while ws.next().await.is_some() {} });
+    word
+}
+
+/// Behind a TLS proxy every client arrives from the proxy's address; only a
+/// proxy the operator names may say who is really there, and nobody else can.
+#[tokio::test]
+async fn a_trusted_proxy_names_the_client_and_nobody_else_can() {
+    let mut admission = limited(|l| l.sockets_per_origin = 2);
+    admission.trusted_proxies = vec!["127.0.0.1".parse().unwrap()];
+    let (url, _h) = spawn_gateway_with(admission).await;
+    for _ in 0..2 {
+        assert!(first_word(&url, "198.51.100.1").await.contains("hello"));
+    }
+    assert!(
+        first_word(&url, "198.51.100.1")
+            .await
+            .contains("too many connections"),
+        "one client behind the proxy is held to its own share"
+    );
+    assert!(
+        first_word(&url, "198.51.100.2").await.contains("hello"),
+        "and another client behind it is not charged for the first"
+    );
+
+    let (url, _h) = spawn_gateway_with(limited(|l| l.sockets_per_origin = 2)).await;
+    for client in ["198.51.100.1", "198.51.100.2"] {
+        assert!(first_word(&url, client).await.contains("hello"));
+    }
+    assert!(
+        first_word(&url, "198.51.100.3")
+            .await
+            .contains("too many connections"),
+        "an untrusted peer's header is ignored"
+    );
+}
+
+/// A connection that never finishes a request head is closed at the deadline,
+/// and one address can hold only a few of them meanwhile.
+#[tokio::test]
+async fn an_unfinished_request_is_cut_off_and_counted() {
+    use tokio::io::AsyncReadExt;
+    let admission = limited(|l| {
+        l.header_read = Duration::from_millis(300);
+        l.pending_per_origin = 2;
+    });
+    let (url, _h) = spawn_gateway_with(admission).await;
+    let addr = url
+        .trim_start_matches("ws://")
+        .trim_end_matches("/gateway")
+        .to_string();
+    let read_eof = |mut tcp: tokio::net::TcpStream, within: Duration| async move {
+        let mut buf = [0u8; 64];
+        matches!(
+            tokio::time::timeout(within, tcp.read(&mut buf)).await,
+            Ok(Ok(0)) | Ok(Err(_))
+        )
+    };
+
+    let held: Vec<_> = futures_util::future::join_all(
+        (0..2).map(|_| tokio::net::TcpStream::connect(addr.clone())),
+    )
+    .await
+    .into_iter()
+    .map(Result::unwrap)
+    .collect();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let third = tokio::net::TcpStream::connect(addr.clone()).await.unwrap();
+    assert!(
+        read_eof(third, Duration::from_millis(200)).await,
+        "a third unfinished request from one address was held"
+    );
+    for tcp in held {
+        assert!(
+            read_eof(tcp, Duration::from_secs(2)).await,
+            "a silent connection outlived the header deadline"
+        );
+    }
+    let (_ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("the slots came back");
+}
+
+/// Relayed QUIC has no address (trap 15), so it is charged to the relaying
+/// peer's key, and relayed peers together hold only a share of the server.
+#[tokio::test]
+async fn relayed_sockets_count_per_peer_and_in_all() {
+    use discordia_server::admission::{Limits, Origin};
+    use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+    use discordia_server::state::AppState;
+    use discordia_server::store::Store;
+
+    let dir = temp_data_dir();
+    let store = Store::open_in(&dir).await.expect("store");
+    let media = MediaStore::open(dir.join("media"), DEFAULT_MAX_BYTES).expect("media");
+    let state = AppState::load_or_seed(store, media, Default::default())
+        .await
+        .expect("state");
+    state.set_limits(Limits {
+        sockets_per_origin: 2,
+        relayed_sockets: 3,
+        ..Default::default()
+    });
+    let relayed = |n: &str| Some(Origin::Relayed(n.into()));
+    let a1 = state.admit(None, relayed("a")).unwrap();
+    state.admit(None, relayed("a")).unwrap();
+    assert!(
+        state.admit(None, relayed("a")).is_err(),
+        "per relaying peer"
+    );
+    state.admit(None, relayed("b")).unwrap();
+    assert!(
+        state.admit(None, relayed("c")).is_err(),
+        "relayed peers in all"
+    );
+    assert!(
+        state
+            .admit(
+                Some("192.0.2.9".parse().unwrap()),
+                Some(Origin::ip("192.0.2.9".parse().unwrap()))
+            )
+            .is_ok(),
+        "an addressed client is not charged for them"
+    );
+    state.unregister_conn(a1.0, None);
+    assert!(state.admit(None, relayed("c")).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
 }

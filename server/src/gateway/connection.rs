@@ -22,14 +22,18 @@ pub async fn handle_connection<S>(
         + futures_util::Sink<WsMessage, Error = axum::Error>
         + Unpin,
 {
-    handle_connection_with_route(socket, ctx, client_host, peer, None).await;
+    let origin = peer.map(crate::admission::Origin::ip);
+    handle_connection_with_route(socket, ctx, client_host, peer, origin, None).await;
 }
 
+/// `peer` is the transport's address, for choosing voice addresses; `origin`
+/// is who the socket is charged to (`admission::Origin`).
 pub(crate) async fn handle_connection_with_route<S>(
     socket: S,
     ctx: Arc<AppContext>,
     client_host: Option<String>,
     peer: Option<std::net::IpAddr>,
+    origin: Option<crate::admission::Origin>,
     route: Option<crate::connection_routes::RouteSource>,
 ) where
     S: futures_util::Stream<Item = Result<WsMessage, axum::Error>>
@@ -37,7 +41,7 @@ pub(crate) async fn handle_connection_with_route<S>(
         + Unpin,
 {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (conn_id, mut outbound_rx) = match ctx.state.register_conn(peer) {
+    let (conn_id, mut outbound_rx, dropped) = match ctx.state.admit(peer, origin) {
         Ok(registered) => registered,
         Err(reason) => {
             tracing::warn!(reason, "gateway admission refused");
@@ -115,13 +119,25 @@ pub(crate) async fn handle_connection_with_route<S>(
                     WsMessage::Text(t) => t,
                     WsMessage::Close(_) => { graceful = true; break; }
                     WsMessage::Ping(payload) => {
-                        if ws_tx.send(WsMessage::Pong(payload)).await.is_err() { break; }
+                        // Under the same deadline as every other send: a peer
+                        // that stops reading must not park this task here.
+                        let pong = tokio::time::timeout(
+                            crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
+                            ws_tx.send(WsMessage::Pong(payload)),
+                        ).await;
+                        if !matches!(pong, Ok(Ok(()))) { break; }
                         continue;
                     }
                     WsMessage::Pong(_) | WsMessage::Binary(_) => continue,
                 };
+                if user.is_none() && text.len() > PRE_IDENTIFY_FRAME_BYTES {
+                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                        message: "identify before sending anything that large".into(),
+                    }).await;
+                    break;
+                }
                 watch.begin(format!("recv {}", crate::watchdog::op_of(&text)));
-                let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
+                let parsed = parse_frame(&text);
                 let Ok(client_msg) = parsed else {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
                         message: "invalid frame".into(),
@@ -2576,6 +2592,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                 break;
             }
 
+            _ = dropped.notified() => {
+                tracing::warn!(conn_id, "ending a socket whose outbound queue overflowed");
+                break;
+            }
+
             outbound = outbound_rx.recv() => {
                 let Some(msg) = outbound else { break };
                 watch.begin("send");
@@ -2656,6 +2677,28 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
         );
     }
     tracing::info!(user = ?u.username, "client disconnected");
+}
+
+/// An Identify is a name, a key, a signature and an address; nothing larger is
+/// parsed from a socket that has not proven a key.
+pub const PRE_IDENTIFY_FRAME_BYTES: usize = 16 * 1024;
+
+/// Reads `op` before `d` whatever order they came in. With `d` first, serde
+/// buffered all of it as untyped content, 40-70 times its size, to find the op.
+fn parse_frame(text: &str) -> serde_json::Result<ClientMessage> {
+    #[derive(serde::Deserialize)]
+    struct Envelope<'a> {
+        #[serde(borrow)]
+        op: &'a serde_json::value::RawValue,
+        #[serde(borrow, default)]
+        d: Option<&'a serde_json::value::RawValue>,
+    }
+    let frame: Envelope = serde_json::from_str(text)?;
+    let ordered = match frame.d {
+        Some(d) => format!("{{\"op\":{},\"d\":{}}}", frame.op.get(), d.get()),
+        None => format!("{{\"op\":{}}}", frame.op.get()),
+    };
+    serde_json::from_str(&ordered)
 }
 
 async fn send<S>(tx: &mut S, msg: &ServerMessage) -> Result<(), axum::Error>

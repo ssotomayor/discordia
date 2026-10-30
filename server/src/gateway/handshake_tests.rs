@@ -49,6 +49,9 @@ async fn gateway() -> (
         livekit: crate::livekit::LiveKitConfig::from_env(&dir),
         identities: ["localhost:9000".into()].into_iter().collect(),
         shutdown: Arc::new(tokio::sync::watch::Sender::new(false)),
+        admission: Default::default(),
+        tunnels_by_key: crate::admission::Budget::new(8, 128),
+        tunnels_by_origin: crate::admission::Budget::new(16, 128),
     });
     let (incoming, rx) = unbounded_channel();
     let (tx, mut outgoing) = unbounded_channel();

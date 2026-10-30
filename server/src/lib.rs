@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod archive;
 pub mod auth;
 pub mod connection_routes;
@@ -34,6 +35,10 @@ pub struct AppContext {
     /// subscribes. Owned here rather than by the handle so that dropping the
     /// handle — which `build_router` does — closes nothing.
     pub shutdown: Arc<tokio::sync::watch::Sender<bool>>,
+    pub admission: admission::Admission,
+    /// `/sfu` tunnels by the key in their token, and by where they came from.
+    pub tunnels_by_key: Arc<admission::Budget<String>>,
+    pub tunnels_by_origin: Arc<admission::Budget<admission::Origin>>,
 }
 
 /// The switch that closes every open gateway socket at once.
@@ -65,6 +70,8 @@ pub struct ServerConfig {
     pub identities: HashSet<String>,
     /// Ceiling on the blob directory; `DISCORDIA_MEDIA_MAX_BYTES` sets it.
     pub media_max_bytes: u64,
+    /// Trusted proxies (`DISCORDIA_TRUSTED_PROXIES`) and the connection caps.
+    pub admission: admission::Admission,
 }
 
 /// The addresses this machine answers on for `port`: loopback by every name,
@@ -113,12 +120,20 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
     let state = state::AppState::load_or_seed(store, media, cfg.operators)
         .await
         .map_err(|e| std::io::Error::other(format!("state load: {e}")))?;
+    state.set_limits(cfg.admission.limits.clone());
     let shutdown = Arc::new(tokio::sync::watch::Sender::new(false));
+    let limits = &cfg.admission.limits;
     let ctx = Arc::new(AppContext {
         state: Arc::new(state),
         livekit: cfg.livekit,
         identities: cfg.identities,
         shutdown: shutdown.clone(),
+        tunnels_by_key: admission::Budget::new(limits.tunnels_per_key, sfu_proxy::MAX_TUNNELS),
+        tunnels_by_origin: admission::Budget::new(
+            limits.tunnels_per_origin,
+            sfu_proxy::MAX_TUNNELS,
+        ),
+        admission: cfg.admission,
     });
 
     // Its own tick: the retention sweep runs hourly and a voice minute is a
@@ -181,8 +196,9 @@ pub async fn spawn_on(
     if let Ok(addr) = listener.local_addr() {
         cfg.identities.extend(local_identities(addr.port()));
     }
+    let admission = cfg.admission.clone();
     let router = build_router(cfg).await?;
-    Ok(serve_router(listener, router))
+    Ok(serve_router_with(listener, router, &admission))
 }
 
 pub async fn build_router(cfg: ServerConfig) -> std::io::Result<axum::Router> {
@@ -199,15 +215,58 @@ pub async fn build_gateway(cfg: ServerConfig) -> std::io::Result<(axum::Router, 
 }
 
 pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> ServerHandle {
+    serve_router_with(listener, router, &admission::Admission::default())
+}
+
+/// Its own accept loop rather than `axum::serve`, which reads a request head
+/// with no deadline and counts nothing before one arrives: a peer could hold a
+/// connection by never finishing it. A slot is held until the request upgrades.
+pub fn serve_router_with(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    admission: &admission::Admission,
+) -> ServerHandle {
     let addr = listener
         .local_addr()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
     tracing::info!(%addr, "discordia-server listening");
+    let admission = admission.clone();
+    let limits = admission.limits.clone();
+    let pending = admission::Budget::new(limits.pending_per_origin, limits.pending);
 
     let task = tokio::spawn(async move {
-        let service = router.into_make_service_with_connect_info::<SocketAddr>();
-        if let Err(e) = axum::serve(listener, service).await {
-            tracing::error!(error = %e, "axum serve ended");
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(e) => {
+                    tracing::warn!(error = %e, "accept failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
+            // A trusted proxy carries everyone, so only the total counts it;
+            // its clients are counted by their own address after the head.
+            let origin = (!admission.trusts(peer.ip())).then(|| admission::Origin::ip(peer.ip()));
+            let Some(slot) = pending.take(origin) else {
+                tracing::debug!(%peer, "refusing a connection: too many unfinished requests");
+                continue;
+            };
+            let service = hyper_util::service::TowerToHyperService::new(
+                router
+                    .clone()
+                    .layer(axum::Extension(axum::extract::ConnectInfo(peer))),
+            );
+            let header_read = limits.header_read;
+            tokio::spawn(async move {
+                let _slot = slot;
+                let mut http = hyper::server::conn::http1::Builder::new();
+                http.timer(hyper_util::rt::TokioTimer::new())
+                    .header_read_timeout(header_read);
+                let io = hyper_util::rt::TokioIo::new(stream);
+                if let Err(e) = http.serve_connection(io, service).with_upgrades().await {
+                    tracing::debug!(error = %e, "http connection ended");
+                }
+            });
         }
     });
 

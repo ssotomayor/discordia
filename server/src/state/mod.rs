@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
@@ -63,6 +64,11 @@ pub enum ProfileWrite {
 
 struct Conn {
     tx: mpsc::Sender<ServerMessage>,
+    /// Set by `route` on a full queue. The slot stays held until the socket's
+    /// own task ends, which `close` tells it to do.
+    closing: bool,
+    close: Arc<tokio::sync::Notify>,
+    origin: Option<crate::admission::Origin>,
     ip: Option<std::net::IpAddr>,
     host: Option<String>,
     route: crate::connection_routes::RouteSource,
@@ -133,7 +139,9 @@ pub struct AppState {
     pub operators: std::collections::HashSet<String>,
     default_guild: std::sync::Mutex<Option<Id>>,
     conns: DashMap<u64, Conn>,
-    conns_by_ip: DashMap<std::net::IpAddr, u32>,
+    conns_by_origin: DashMap<crate::admission::Origin, usize>,
+    relayed_conns: std::sync::atomic::AtomicUsize,
+    limits: std::sync::OnceLock<crate::admission::Limits>,
     conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
     session_revisions: DashMap<String, u64>,
     next_conn_id: AtomicU64,
@@ -180,7 +188,9 @@ impl AppState {
             operators,
             default_guild: std::sync::Mutex::new(None),
             conns: DashMap::new(),
-            conns_by_ip: DashMap::new(),
+            conns_by_origin: DashMap::new(),
+            relayed_conns: Default::default(),
+            limits: Default::default(),
             conn_ids_by_pubkey: DashMap::new(),
             session_revisions: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
@@ -353,32 +363,71 @@ impl AppState {
         Ok(())
     }
 
+    /// Set once, before the first socket; a state nobody configured has production's.
+    pub fn set_limits(&self, limits: crate::admission::Limits) {
+        let _ = self.limits.set(limits);
+    }
+
+    fn limits(&self) -> &crate::admission::Limits {
+        self.limits.get_or_init(Default::default)
+    }
+
+    /// A socket charged to the address it came from.
     pub fn register_conn(
         &self,
         ip: Option<std::net::IpAddr>,
     ) -> Result<(u64, mpsc::Receiver<ServerMessage>), &'static str> {
+        self.admit(ip, ip.map(crate::admission::Origin::ip))
+            .map(|(id, rx, _)| (id, rx))
+    }
+
+    /// `ip` is the transport peer, for the voice address choice; `origin` is who
+    /// the slot is charged to. The `Notify` fires when `route` gives up on it.
+    #[allow(clippy::type_complexity)]
+    pub fn admit(
+        &self,
+        ip: Option<std::net::IpAddr>,
+        origin: Option<crate::admission::Origin>,
+    ) -> Result<(u64, mpsc::Receiver<ServerMessage>, Arc<tokio::sync::Notify>), &'static str> {
+        let limits = self.limits();
         if self.conns.len() >= MAX_CONNECTIONS {
             return Err("this server is full");
         }
-        if let Some(ip) = ip {
-            let mut count = self.conns_by_ip.entry(ip).or_default();
-            if *count >= MAX_CONNECTIONS_PER_IP {
+        if let Some(origin) = &origin {
+            let relayed = matches!(origin, crate::admission::Origin::Relayed(_));
+            if relayed && self.relayed_conns.load(Ordering::Relaxed) >= limits.relayed_sockets {
+                return Err("too many relayed connections");
+            }
+            let mut count = self.conns_by_origin.entry(origin.clone()).or_default();
+            if *count >= limits.sockets_per_origin {
                 return Err("too many connections from your address");
             }
             *count += 1;
+            if relayed {
+                self.relayed_conns.fetch_add(1, Ordering::Relaxed);
+            }
         }
         let id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(CONN_QUEUE_CAP);
+        let close = Arc::new(tokio::sync::Notify::new());
         self.conns.insert(
             id,
             Conn {
                 tx,
+                closing: false,
+                close: close.clone(),
+                origin,
                 ip,
                 host: None,
                 route: crate::connection_routes::RouteSource::Socket(ip),
             },
         );
-        Ok((id, rx))
+        Ok((id, rx, close))
+    }
+
+    /// Whether `route` has given up on this socket; its task is told to end.
+    pub fn is_closing(&self, conn_id: u64) -> bool {
+        self.conns.get(&conn_id).is_some_and(|c| c.closing)
     }
 
     pub(crate) fn set_connection_host(&self, conn_id: u64, host: Option<String>) {
@@ -456,13 +505,16 @@ impl AppState {
         result
     }
 
-    /// The only way out of `conns`, so the per-address count follows the
-    /// socket whether it left by closing or by `route` dropping it.
+    /// The only way out of `conns`, run by the socket's own task as it ends:
+    /// a slot handed back while the task still ran was a socket nobody counted.
     fn drop_conn(&self, conn_id: u64) {
         if let Some((_, conn)) = self.conns.remove(&conn_id)
-            && let Some(ip) = conn.ip
+            && let Some(origin) = conn.origin
         {
-            self.conns_by_ip.remove_if_mut(&ip, |_, count| {
+            if matches!(origin, crate::admission::Origin::Relayed(_)) {
+                self.relayed_conns.fetch_sub(1, Ordering::Relaxed);
+            }
+            self.conns_by_origin.remove_if_mut(&origin, |_, count| {
                 *count = count.saturating_sub(1);
                 *count == 0
             });
@@ -508,17 +560,20 @@ impl AppState {
     /// needs replayed and which a hostile guild could use to knock members offline.
     fn route(&self, conn_id: u64, msg: &ServerMessage) {
         let tx = match self.conns.get(&conn_id) {
-            Some(c) => c.tx.clone(),
-            None => return,
+            Some(c) if !c.closing => c.tx.clone(),
+            _ => return,
         };
         if tx.try_send(msg.clone()).is_err()
             && !matches!(
                 msg,
                 ServerMessage::TypingUpdate { .. } | ServerMessage::ActivityEvent { .. }
             )
+            && let Some(mut conn) = self.conns.get_mut(&conn_id)
+            && !conn.closing
         {
             tracing::warn!(conn_id, "outbound queue full — dropping the connection");
-            self.drop_conn(conn_id);
+            conn.closing = true;
+            conn.close.notify_one();
         }
     }
 

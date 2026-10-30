@@ -41,6 +41,7 @@ async fn spawn_with(operator: &BotIdentity) -> (String, discordia_server::Server
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission: Default::default(),
     };
     let handle = discordia_server::spawn(preferred, 100, cfg)
         .await

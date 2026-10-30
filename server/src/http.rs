@@ -46,13 +46,14 @@ async fn root() -> &'static str {
 /// header alone marks a web page reaching for a gateway on someone's machine
 /// or LAN — which CORS would not stop, since it does not cover WebSockets.
 ///
-/// `peer` is absent over QUIC, where the stream has no TCP address; the
-/// per-address cap then does not apply and the global one still does.
+/// `peer` is absent over relayed QUIC, which is charged to its relaying peer's
+/// key instead (`admission::origin_of`).
 async fn gateway_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
     headers: axum::http::HeaderMap,
     peer: Option<ConnectInfo<SocketAddr>>,
+    relay: Option<axum::Extension<crate::admission::RelayPeer>>,
     route: Option<axum::Extension<crate::connection_routes::RouteSource>>,
 ) -> Response {
     if headers.contains_key(header::ORIGIN) {
@@ -67,7 +68,13 @@ async fn gateway_upgrade(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let peer_ip = peer.map(|ConnectInfo(addr)| addr.ip());
-    tracing::info!(?client_host, ?peer_ip, "gateway upgrade requested");
+    let origin = crate::admission::origin_of(
+        &ctx.admission,
+        peer_ip,
+        forwarded_for(&headers),
+        relay.as_ref().map(|r| &r.0),
+    );
+    tracing::info!(?client_host, ?peer_ip, ?origin, "gateway upgrade requested");
     ws.max_message_size(gateway::MAX_FRAME_BYTES)
         .max_frame_size(gateway::MAX_FRAME_BYTES)
         .on_upgrade(move |socket| {
@@ -76,8 +83,13 @@ async fn gateway_upgrade(
                 ctx,
                 client_host,
                 peer_ip,
+                origin,
                 route.map(|route| route.0),
             )
         })
         .into_response()
+}
+
+pub(crate) fn forwarded_for(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
 }

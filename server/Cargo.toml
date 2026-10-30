@@ -61,7 +61,8 @@ anyhow = "1"
 
 discordia-protocol = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# raw_value: a frame's `op` is read before its `d` is parsed (gateway::parse_frame).
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }

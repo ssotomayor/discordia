@@ -33,6 +33,10 @@ pub struct ServerOptions {
     #[arg(long, env = "DISCORDIA_PUBLIC_HOSTS", value_delimiter = ',')]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_hosts: Option<Vec<String>>,
+    /// Peers whose X-Forwarded-For names the client, such as the TLS proxy's address; nobody's by default
+    #[arg(long, env = "DISCORDIA_TRUSTED_PROXIES", value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trusted_proxies: Option<Vec<std::net::IpAddr>>,
     /// An iroh relay (a rendezvous's /config names one) for friends behind NAT
     #[arg(long, env = "DISCORDIA_RELAY_URL")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +131,7 @@ impl ServerOptions {
             data_dir: self.data_dir.or(file.data_dir),
             public_address: self.public_address.or(file.public_address),
             public_hosts: self.public_hosts.or(file.public_hosts),
+            trusted_proxies: self.trusted_proxies.or(file.trusted_proxies),
             relay_url: self.relay_url.or(file.relay_url),
             operators: self.operators.or(file.operators),
             media_max_bytes: self.media_max_bytes.or(file.media_max_bytes),
