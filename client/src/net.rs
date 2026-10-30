@@ -1705,12 +1705,14 @@ fn apply(
         ServerMessage::ReactionUpdate {
             channel_id,
             message_id,
-            reactions,
+            emoji,
+            user_pubkey,
+            added,
         } => {
             if let Some(msgs) = s.messages.get_mut(&channel_id)
                 && let Some(msg) = msgs.iter_mut().find(|m| m.id == message_id)
             {
-                msg.reactions = reactions;
+                crate::protocol::apply_reaction(&mut msg.reactions, &emoji, &user_pubkey, added);
             }
         }
         ServerMessage::TypingUpdate {

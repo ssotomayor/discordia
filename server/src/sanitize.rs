@@ -73,7 +73,11 @@ pub fn guild(g: &mut Guild) {
     g.name = name_or("guild", &g.name, GUILD_NAME, "guild");
     g.icon = line(g.icon.take(), 4);
     g.owner_pubkey = pubkey(&g.owner_pubkey);
-    g.accent = g.accent.take().filter(|a| crate::state::is_hex_color(a));
+    g.accent = g
+        .accent
+        .take()
+        .as_deref()
+        .and_then(crate::state::canonical_hex_color);
     g.description = paragraph(g.description.take(), DESCRIPTION);
     g.rules = paragraph(g.rules.take(), RULES);
     g.icon_image = picture(g.icon_image.take());
@@ -114,7 +118,11 @@ pub fn access(a: crate::protocol::ChannelAccess) -> crate::protocol::ChannelAcce
 
 pub fn role(r: &mut Role) {
     r.name = name_or("role", &r.name, ROLE_NAME, "role");
-    r.color = r.color.take().filter(|c| crate::state::is_hex_color(c));
+    r.color = r
+        .color
+        .take()
+        .as_deref()
+        .and_then(crate::state::canonical_hex_color);
 }
 
 pub fn emoji_is_sound(e: &GuildEmoji) -> bool {
@@ -204,6 +212,7 @@ pub fn message(m: &mut Message) -> bool {
             .collect();
         !r.emoji.is_empty() && !r.users.is_empty()
     });
+    m.reactions.truncate(crate::state::MAX_MESSAGE_REACTIONS);
     if let Some(reply) = m.reply_to.as_mut() {
         reply.author_pubkey = pubkey(&reply.author_pubkey);
         reply.author_username = canonical_username(&reply.author_username);
@@ -223,8 +232,11 @@ pub fn audit(a: &mut AuditEntry) -> bool {
 pub fn archive(a: &mut GuildArchive) {
     guild(&mut a.guild);
     a.channels.iter_mut().for_each(channel);
+    a.channels.truncate(crate::state::MAX_CHANNELS_PER_GUILD);
     a.roles.iter_mut().for_each(role);
+    a.roles.truncate(crate::state::MAX_ROLES_PER_GUILD);
     a.emojis.retain(emoji_is_sound);
+    a.emojis.truncate(crate::protocol::MAX_EMOJIS_PER_GUILD);
     a.stickers.retain(emoji_is_sound);
     a.stickers.truncate(128);
     a.file_policy.max_bytes = a
@@ -233,6 +245,7 @@ pub fn archive(a: &mut GuildArchive) {
         .clamp(1, crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64);
     a.file_policy.retention_days = a.file_policy.retention_days.clamp(1, 365);
     a.sounds.retain_mut(sound);
+    a.sounds.truncate(crate::protocol::MAX_SOUNDS_PER_GUILD);
     a.members.retain_mut(|m| user(&mut m.user));
     a.bans = a
         .bans

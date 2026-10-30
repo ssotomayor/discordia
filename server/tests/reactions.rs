@@ -100,10 +100,17 @@ async fn post(session: &mut Bot, channel_id: Id, content: &str) -> Id {
     }
 }
 
-async fn next_reactions(session: &mut Bot) -> Vec<discordia_server::protocol::Reaction> {
+/// The toggle a `ReactionUpdate` carries: emoji, who, and whether it was added.
+async fn next_toggle(session: &mut Bot) -> (String, String, bool) {
     loop {
-        if let ServerMessage::ReactionUpdate { reactions, .. } = next_timeout(session).await {
-            return reactions;
+        if let ServerMessage::ReactionUpdate {
+            emoji,
+            user_pubkey,
+            added,
+            ..
+        } = next_timeout(session).await
+        {
+            return (emoji, user_pubkey, added);
         }
     }
 }
@@ -127,13 +134,11 @@ async fn a_guild_emoji_reacts_by_shortcode_and_an_unknown_one_is_refused() {
     let message_id = post(&mut owner, text, "react to me").await;
 
     owner.react(text, message_id, ":blobcat:").await.unwrap();
-    let reactions = next_reactions(&mut owner).await;
-    assert_eq!(reactions.len(), 1);
     assert_eq!(
-        reactions[0].emoji, ":blobcat:",
+        next_toggle(&mut owner).await,
+        (":blobcat:".into(), owner_id.pubkey().to_string(), true),
         "the shortcode is stored whole, not cut"
     );
-    assert_eq!(reactions[0].users, vec![owner_id.pubkey()]);
 
     owner.react(text, message_id, ":nope:").await.unwrap();
     assert!(next_error(&mut owner).await.contains("not in this guild"));
@@ -142,16 +147,53 @@ async fn a_guild_emoji_reacts_by_shortcode_and_an_unknown_one_is_refused() {
         .react(text, message_id, "👍👍👍👍👍👍👍👍👍👍")
         .await
         .unwrap();
-    let reactions = next_reactions(&mut owner).await;
-    let cut = reactions
-        .iter()
-        .find(|r| r.emoji != ":blobcat:")
-        .expect("the unicode one");
+    let (cut, ..) = next_toggle(&mut owner).await;
     assert_eq!(
-        cut.emoji.chars().count(),
+        cut.chars().count(),
         8,
         "plain strings are still cut, not refused"
     );
 
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_message_holds_a_bounded_number_of_reactions_and_each_toggle_is_one_entry() {
+    use discordia_server::state::MAX_MESSAGE_REACTIONS;
+    let (url, handle) = spawn_gateway().await;
+    let owner_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "Owner").await;
+    let (_, text) = create_guild(&mut owner, "Reactland").await;
+    let message_id = post(&mut owner, text, "pile on").await;
+
+    for n in 0..MAX_MESSAGE_REACTIONS {
+        owner
+            .react(text, message_id, &format!("r{n}"))
+            .await
+            .unwrap();
+        assert_eq!(next_toggle(&mut owner).await.0, format!("r{n}"));
+    }
+    owner.react(text, message_id, "one more").await.unwrap();
+    let err = next_error(&mut owner).await;
+    assert!(err.contains("at most"), "got: {err}");
+
+    owner.react(text, message_id, "r0").await.unwrap();
+    assert_eq!(
+        next_toggle(&mut owner).await,
+        ("r0".into(), owner_id.pubkey().to_string(), false),
+        "an existing reaction still toggles at the cap"
+    );
+    owner.fetch_messages(text, 10, None).await.unwrap();
+    let history = loop {
+        if let ServerMessage::MessageHistory { messages, .. } = next_timeout(&mut owner).await {
+            break messages;
+        }
+    };
+    let held = &history
+        .iter()
+        .find(|m| m.id == message_id)
+        .unwrap()
+        .reactions;
+    assert_eq!(held.len(), MAX_MESSAGE_REACTIONS - 1);
     handle.abort();
 }

@@ -474,6 +474,8 @@ pub enum XpAction {
 }
 
 pub const MAX_TIERS: usize = 20;
+/// Also the leveling allowlist's cap: it names this guild's channels.
+pub const MAX_CHANNELS_PER_GUILD: usize = 200;
 pub const MAX_TIER_NAME: usize = 24;
 /// Room for `:` + the longest shortcode + `:`, or a long ZWJ sequence.
 pub const MAX_TIER_EMOJI: usize = 40;
@@ -520,6 +522,7 @@ pub fn sanitize_leveling(mut raw: Leveling) -> Leveling {
     raw.cooldown_secs = raw.cooldown_secs.min(MAX_XP_COOLDOWN);
     raw.channels.sort_unstable();
     raw.channels.dedup();
+    raw.channels.truncate(MAX_CHANNELS_PER_GUILD);
 
     let mut tiers: Vec<LevelTier> = raw
         .tiers
@@ -529,7 +532,7 @@ pub fn sanitize_leveling(mut raw: Leveling) -> Leveling {
             (!name.is_empty()).then_some(LevelTier {
                 xp: t.xp,
                 name,
-                color: t.color.filter(|c| is_hex_color(c)),
+                color: t.color.as_deref().and_then(canonical_hex_color),
                 emoji: Some(sanitize_line(t.emoji.trim(), MAX_TIER_EMOJI))
                     .filter(|e| !e.is_empty())
                     .unwrap_or_else(default_tier_emoji),
@@ -548,11 +551,17 @@ pub fn sanitize_leveling(mut raw: Leveling) -> Leveling {
 /// `#rgb` or `#rrggbb`. The one definition: a role colour, a guild accent and a
 /// tier colour are all drawn by the same CSS and must all mean the same thing.
 pub fn is_hex_color(s: &str) -> bool {
-    let s = s.trim();
     let Some(hex) = s.strip_prefix('#') else {
         return false;
     };
     (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// What gets stored: validating a trimmed copy and keeping the original let
+/// megabytes of padding ride along on a valid colour.
+pub fn canonical_hex_color(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    is_hex_color(trimmed).then(|| trimmed.to_string())
 }
 
 /// What someone is doing right now. Never persisted and never written to the
@@ -1003,6 +1012,24 @@ mod camera_wire_tests {
 pub struct Reaction {
     pub emoji: String,
     pub users: Vec<String>,
+}
+
+/// One toggle, as the store applies it and as a client replays `ReactionUpdate`.
+pub fn apply_reaction(reactions: &mut Vec<Reaction>, emoji: &str, pubkey: &str, added: bool) {
+    match reactions.iter_mut().find(|r| r.emoji == emoji) {
+        Some(r) => {
+            r.users.retain(|u| u != pubkey);
+            if added {
+                r.users.push(pubkey.to_string());
+            }
+        }
+        None if added => reactions.push(Reaction {
+            emoji: emoji.to_string(),
+            users: vec![pubkey.to_string()],
+        }),
+        None => {}
+    }
+    reactions.retain(|r| !r.users.is_empty());
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1591,6 +1618,9 @@ pub const MAX_COMMAND_TEXT: u16 = 1000;
 pub const MAX_COMMAND_MEMBERS: u8 = 25;
 pub const MAX_COMMAND_REPLY: usize = 2000;
 pub const MAX_COMMAND_DATA: usize = 8 * 1024;
+/// A declaration as JSON. Every member's Ready carries the set of each app
+/// installed in their guilds, and the per-field caps alone allow about 1 MB.
+pub const MAX_COMMAND_SET_BYTES: usize = 32 * 1024;
 /// Keys in a call chain, the person who started it included.
 pub const MAX_CALL_DEPTH: usize = 3;
 
@@ -1953,6 +1983,12 @@ pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String
             options,
             callable_by_apps: cmd.callable_by_apps,
         });
+    }
+    let size = serde_json::to_vec(&out).map_or(usize::MAX, |j| j.len());
+    if size > MAX_COMMAND_SET_BYTES {
+        return Err(format!(
+            "a bot's commands may take at most {MAX_COMMAND_SET_BYTES} bytes; these take {size}"
+        ));
     }
     Ok(out)
 }
@@ -2382,8 +2418,8 @@ pub enum ClientMessage {
     UpdateUsername {
         username: String,
     },
-    /// Positions for the whole guild in one frame, never a delta: channels
-    /// default to 0, so a never-reordered guild renumbers entirely.
+    /// The channels whose position changed, each at most once. A never-reordered
+    /// guild has every channel at 0, so its first reorder names them all.
     ReorderChannels {
         guild_id: Id,
         positions: Vec<(Id, u32)>,
@@ -2747,10 +2783,14 @@ pub enum ServerMessage {
         #[serde(default)]
         edited_at: Option<DateTime<Utc>>,
     },
+    /// One person's toggle, not the list: the list grows with every member who
+    /// reacts, and each toggle sent it whole to the room.
     ReactionUpdate {
         channel_id: Id,
         message_id: Id,
-        reactions: Vec<Reaction>,
+        emoji: String,
+        user_pubkey: String,
+        added: bool,
     },
     TypingUpdate {
         channel_id: Id,

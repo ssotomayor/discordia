@@ -727,31 +727,38 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
-                        if let Some(reactions) =
-                            ctx.state.toggle_reaction(channel_id, message_id, &emoji, &u.pubkey).await
-                        {
-                            // A toggle removes as readily as it adds, and only
-                            // the add is worth anything (#187).
-                            let added = reactions
-                                .iter()
-                                .any(|r| r.emoji == emoji && r.users.iter().any(|p| p == &u.pubkey));
-                            ctx.state.deliver(
-                                audience,
-                                ServerMessage::ReactionUpdate { channel_id, message_id, reactions },
-                            );
-                            if !is_bot
-                                && added
-                                && let Some(gid) = ctx.state.channel_guild(channel_id)
-                                && let Some(member) = ctx.state.award_xp(
-                                    gid,
-                                    Some(channel_id),
-                                    &u.pubkey,
-                                    crate::protocol::XpAction::Reaction,
-                                ).await
-                            {
-                                let targets = ctx.state.guild_member_pubkeys(gid);
-                                ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                        let added = match ctx.state.toggle_reaction(channel_id, message_id, &emoji, &u.pubkey).await {
+                            Ok(Some(added)) => added,
+                            Ok(None) => continue,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                continue;
                             }
+                        };
+                        ctx.state.deliver(
+                            audience,
+                            ServerMessage::ReactionUpdate {
+                                channel_id,
+                                message_id,
+                                emoji,
+                                user_pubkey: u.pubkey.clone(),
+                                added,
+                            },
+                        );
+                        // A toggle removes as readily as it adds, and only
+                        // the add is worth anything (#187).
+                        if !is_bot
+                            && added
+                            && let Some(gid) = ctx.state.channel_guild(channel_id)
+                            && let Some(member) = ctx.state.award_xp(
+                                gid,
+                                Some(channel_id),
+                                &u.pubkey,
+                                crate::protocol::XpAction::Reaction,
+                            ).await
+                        {
+                            let targets = ctx.state.guild_member_pubkeys(gid);
+                            ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                         }
                     }
                     ClientMessage::Typing { channel_id } => {
@@ -1103,7 +1110,6 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
-                        let accent = accent.filter(|a| is_hex_color(a));
                         match ctx.state.set_guild_accent(guild_id, accent, &u.pubkey).await {
                             Ok(guild) => {
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -3244,8 +3250,6 @@ fn channel_audience(
         .channel_guild(channel_id)
         .map(|gid| state.guild_member_pubkeys(gid))
 }
-
-use crate::state::is_hex_color;
 
 fn sanitize_username(raw: &str) -> String {
     crate::protocol::canonical_username(raw)
