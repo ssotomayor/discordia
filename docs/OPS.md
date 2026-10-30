@@ -57,6 +57,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 |---|---|---|
 | `DISCORDIA_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | HTTP bind: `/control`, `/discover`, `/resolve`, `/config`, `/voice-token`, `/voice-evict` |
 | `DISCORDIA_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | name reservations, `reservations.db` (SQLite) |
+| `DISCORDIA_RENDEZVOUS_PUBLIC_HOSTS` | — | comma-separated host names (or URLs) hosts dial this rendezvous by; loopback and interface addresses always count. A host's ownership signature names the host it dialled, and one naming anything else is refused, so a rendezvous reached by DNS name refuses every named host until this lists it. Compose fills it from `PUBLIC_HOST` |
 | `DISCORDIA_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
 | `DISCORDIA_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
 | `DISCORDIA_RENDEZVOUS_TURN_URL` | — | enables the TURN relay: what clients dial, e.g. `turn:rendezvous.example:7702`. Hosts behind NAT keep their calls on their own SFU; friends who cannot reach it are relayed here, ciphertext only |

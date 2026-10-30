@@ -2,9 +2,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use discordia_protocol::rendezvous::{
-    HostToRendezvous, LIST_NAMES, MAX_NAME_CHARS, RendezvousToHost,
-};
+use discordia_protocol::rendezvous::{HostToRendezvous, MAX_NAME_CHARS, Proof, RendezvousToHost};
 use futures_util::{SinkExt, StreamExt};
 
 use crate::Config;
@@ -77,7 +75,9 @@ pub async fn handle_host_control(
                 transport_signature,
                 transport_addrs,
                 location,
+                audience,
             }) => (
+                audience,
                 name,
                 pubkey,
                 signature,
@@ -92,7 +92,12 @@ pub async fn handle_host_control(
                 name,
                 pubkey,
                 signature,
+                audience,
             }) => {
+                if let Err(e) = cfg.answers_to(&audience) {
+                    send_err(&mut tx, &e).await;
+                    return;
+                }
                 let slug = match validate_name(&name) {
                     Ok(s) => s,
                     Err(e) => {
@@ -100,7 +105,14 @@ pub async fn handle_host_control(
                         return;
                     }
                 };
-                if let Err(e) = verify::verify_ownership(&pubkey, &signature, &nonce, &name) {
+                if let Err(e) = verify::verify_ownership(
+                    Proof::Release,
+                    &audience,
+                    &nonce,
+                    &pubkey,
+                    &signature,
+                    &name,
+                ) {
                     send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                     return;
                 }
@@ -125,8 +137,23 @@ pub async fn handle_host_control(
                 }
                 return;
             }
-            Ok(HostToRendezvous::ListNames { pubkey, signature }) => {
-                if let Err(e) = verify::verify_ownership(&pubkey, &signature, &nonce, LIST_NAMES) {
+            Ok(HostToRendezvous::ListNames {
+                pubkey,
+                signature,
+                audience,
+            }) => {
+                if let Err(e) = cfg.answers_to(&audience) {
+                    send_err(&mut tx, &e).await;
+                    return;
+                }
+                if let Err(e) = verify::verify_ownership(
+                    Proof::ListNames,
+                    &audience,
+                    &nonce,
+                    &pubkey,
+                    &signature,
+                    "",
+                ) {
                     send_err(&mut tx, &format!("name listing rejected: {e}")).await;
                     return;
                 }
@@ -154,6 +181,7 @@ pub async fn handle_host_control(
         None => return,
     };
     let (
+        audience,
         name,
         pubkey,
         signature,
@@ -164,6 +192,12 @@ pub async fn handle_host_control(
         transport_addrs,
         location,
     ) = register;
+
+    let signed = pubkey.is_some() && (signature.is_some() || transport_signature.is_some());
+    if signed && let Err(e) = cfg.answers_to(&audience) {
+        send_err(&mut tx, &e).await;
+        return;
+    }
 
     // Only the name and the transport key are signed, so where the entry points
     // is checked against where the frame came from: else it aims friends at a stranger.
@@ -177,13 +211,15 @@ pub async fn handle_host_control(
     let location = location.and_then(|p| p.coarse());
 
     let transport = match (&transport_key, &pubkey, &transport_signature) {
-        (Some(key), Some(pk), Some(sig)) => match verify::verify_ownership(pk, sig, &nonce, key) {
-            Ok(()) => Some((key.clone(), transport_addrs)),
-            Err(e) => {
-                tracing::warn!(error = %e, "transport key not attested — publishing without it");
-                None
+        (Some(key), Some(pk), Some(sig)) => {
+            match verify::verify_ownership(Proof::Transport, &audience, &nonce, pk, sig, key) {
+                Ok(()) => Some((key.clone(), transport_addrs)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "transport key not attested — publishing without it");
+                    None
+                }
             }
-        },
+        }
         (Some(_), _, _) => {
             tracing::warn!("transport key offered without a pubkey and signature — ignoring");
             None
@@ -204,7 +240,9 @@ pub async fn handle_host_control(
                 send_err(&mut tx, "claiming a name requires a pubkey and signature").await;
                 return;
             };
-            if let Err(e) = verify::verify_ownership(pubkey, signature, &nonce, raw) {
+            if let Err(e) =
+                verify::verify_ownership(Proof::Name, &audience, &nonce, pubkey, signature, raw)
+            {
                 send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                 return;
             }

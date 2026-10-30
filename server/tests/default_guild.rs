@@ -334,3 +334,68 @@ async fn a_lockdown_defers_the_offer_until_it_lifts() {
         "the deferred offer is made once it lifts"
     );
 }
+
+#[tokio::test]
+async fn a_lobby_ban_outlasts_a_reconnect_whatever_spelling_it_was_given() {
+    let operator_id = BotIdentity::generate();
+    let (url, _h) = spawn_with(&operator_id).await;
+    let (mut operator, guilds, ..) = arrive(&url, &operator_id, "Op").await;
+    let lobby = guilds[0].id;
+    let rando_id = BotIdentity::generate();
+    let (rando, guilds, ..) = arrive(&url, &rando_id, "Rando").await;
+    assert_eq!(names(&guilds), ["Lobby"]);
+    drop(rando);
+
+    operator
+        .send(&ClientMessage::BanMember {
+            guild_id: lobby,
+            user_pubkey: rando_id.pubkey().to_ascii_uppercase(),
+        })
+        .await
+        .unwrap();
+    loop {
+        match next_timeout(&mut operator).await {
+            ServerMessage::GuildBans { users, .. } => {
+                assert!(users.iter().any(|u| u.pubkey == rando_id.pubkey()));
+                break;
+            }
+            ServerMessage::Error { message } => panic!("ban refused: {message}"),
+            _ => {}
+        }
+    }
+
+    let (_, guilds, ..) = arrive(&url, &rando_id, "Rando").await;
+    assert!(
+        guilds.is_empty(),
+        "the ban let them back in: {:?}",
+        names(&guilds)
+    );
+}
+
+#[tokio::test]
+async fn a_gated_lobby_waits_for_a_newcomer_and_keeps_its_members() {
+    let operator_id = BotIdentity::generate();
+    let (url, _h) = spawn_with(&operator_id).await;
+    let (mut operator, guilds, ..) = arrive(&url, &operator_id, "Op").await;
+    let lobby = guilds[0].id;
+    let regular_id = BotIdentity::generate();
+    drop(arrive(&url, &regular_id, "Regular").await);
+    operator
+        .send(&ClientMessage::SetJoinGate {
+            guild_id: lobby,
+            gate: JoinGate::Pow,
+            rules: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (_, guilds, ..) = arrive(&url, &BotIdentity::generate(), "New").await;
+    assert!(
+        guilds.is_empty(),
+        "walked past the gate: {:?}",
+        names(&guilds)
+    );
+    let (_, guilds, ..) = arrive(&url, &regular_id, "Regular").await;
+    assert_eq!(names(&guilds), ["Lobby"], "a member keeps their seat");
+}

@@ -440,6 +440,7 @@ pub fn config_for(a: &Answers, layout: Layout) -> ConfigFile {
         r.data_dir = Some(layout.rendezvous_data.into());
         r.relay_addr = Some("0.0.0.0:7701".parse().unwrap());
         r.relay_url = Some(relay_url.clone());
+        r.public_hosts = Some(host.clone());
         r.turn_url = a.turn.then(|| format!("turn:{host}:7702?transport=udp"));
         r.turn_addr = a.turn.then(|| "0.0.0.0:7702".parse().unwrap());
         r.turn_ports = a.turn.then(|| "7710-7809".into());

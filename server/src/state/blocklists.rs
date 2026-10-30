@@ -20,7 +20,7 @@ impl AppState {
         let (_, lists) = self.guild_blocklists(guild_id);
         lists
             .into_iter()
-            .find(|l| l.blocked.iter().any(|k| k == app))
+            .find(|l| l.blocked.iter().any(|k| k.eq_ignore_ascii_case(app)))
             .map(|l| l.curator)
     }
 

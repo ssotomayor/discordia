@@ -1228,7 +1228,7 @@ impl AppState {
                 .map(|g| g.id)
                 .collect();
             for gid in system_guilds {
-                self.add_member(gid, user).await?;
+                self.join_system_guild(gid, user).await?;
             }
         }
 
@@ -1811,6 +1811,24 @@ impl AppState {
     pub async fn add_member(&self, guild_id: Id, user: &User) -> Result<Member, String> {
         let _write = self.durable_writes.lock().await;
         self.save_member(guild_id, user, None).await
+    }
+
+    /// Every login re-runs this, so it holds a newcomer to what joining would:
+    /// a ban keeps them out, and a gate, lockdown or invite waits for them to ask.
+    async fn join_system_guild(&self, guild_id: Id, user: &User) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
+        if self.is_banned(guild_id, &user.pubkey) {
+            return Ok(());
+        }
+        let open = self.guilds.get(&guild_id).is_some_and(|g| {
+            g.visibility == GuildVisibility::Public
+                && g.join_gate == crate::protocol::JoinGate::Open
+                && !g.panic_mode
+        });
+        if !open && !self.is_guild_member(guild_id, &user.pubkey) {
+            return Ok(());
+        }
+        self.save_member(guild_id, user, None).await.map(|_| ())
     }
 
     async fn save_member(
