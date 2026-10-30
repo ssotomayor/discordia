@@ -6,6 +6,8 @@ use image::{ImageDecoder, ImageEncoder, ImageReader};
 
 pub const MAX_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
 pub const MAX_DM_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_THUMB_W: u32 = 640;
+pub const MAX_THUMB_H: u32 = 480;
 const MAX_PIXELS: u64 = 16_000_000;
 const TOO_LARGE: &str = "Image too large (max 2 MiB / 2,097,152 bytes).";
 
@@ -36,6 +38,42 @@ pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, Str
         .read_to_end(&mut bytes)
         .map_err(|_| "Couldn't read that file.")?;
     from_bytes_with_limit(&bytes, max_bytes)
+}
+
+pub fn thumbnail_data_url(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() > MAX_DM_BYTES {
+        return Err(size_error(MAX_DM_BYTES));
+    }
+    let format = image::guess_format(bytes).map_err(|_| "That's not a supported image.")?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(MAX_PIXELS * 8);
+    reader.limits(limits);
+    let decoder = reader
+        .into_decoder()
+        .map_err(|_| "Couldn't open that image.")?;
+    let (width, height) = decoder.dimensions();
+    check_dimensions(u64::from(width), u64::from(height))?;
+    if width <= MAX_THUMB_W && height <= MAX_THUMB_H {
+        return Ok(data_url(format.to_mime_type(), bytes));
+    }
+    let dynamic =
+        image::DynamicImage::from_decoder(decoder).map_err(|_| "Couldn't decode that image.")?;
+    let thumb = dynamic.thumbnail(MAX_THUMB_W, MAX_THUMB_H);
+    let mut buf = Cursor::new(Vec::new());
+    if thumb.color().has_alpha() {
+        thumb
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .map_err(|_| "Could not generate thumbnail.")?;
+        Ok(data_url("image/png", buf.get_ref()))
+    } else {
+        thumb
+            .write_to(&mut buf, image::ImageFormat::Jpeg)
+            .map_err(|_| "Could not generate thumbnail.")?;
+        Ok(data_url("image/jpeg", buf.get_ref()))
+    }
 }
 
 #[cfg(test)]
@@ -132,7 +170,7 @@ impl std::io::Write for BoundedBytes {
     }
 }
 
-fn data_url(mime: &str, bytes: &[u8]) -> String {
+pub(crate) fn data_url(mime: &str, bytes: &[u8]) -> String {
     format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -228,5 +266,31 @@ mod tests {
         assert_eq!(read_file(&path), Err(TOO_LARGE.into()));
         std::fs::remove_file(&path).unwrap();
         assert!(read_file(&path).is_err());
+    }
+
+    #[test]
+    fn thumbnail_data_url_resizes_large_and_preserves_small() {
+        let small_url = rgba_png(2, 1, &[255, 0, 0, 255, 0, 255, 0, 64]).unwrap();
+        let small_bytes = base64::engine::general_purpose::STANDARD
+            .decode(small_url.split_once(',').unwrap().1)
+            .unwrap();
+        let thumb_small = thumbnail_data_url(&small_bytes).unwrap();
+        assert_eq!(thumb_small, small_url);
+
+        let large_rgba = vec![128u8; 800 * 600 * 4];
+        let mut large_png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut large_png)
+            .write_image(&large_rgba, 800, 600, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let thumb_large = thumbnail_data_url(&large_png).unwrap();
+        assert!(thumb_large.starts_with("data:image/"));
+        let thumb_bytes = base64::engine::general_purpose::STANDARD
+            .decode(thumb_large.split_once(',').unwrap().1)
+            .unwrap();
+        let decoded = image::load_from_memory(&thumb_bytes).unwrap();
+        assert!(decoded.width() <= MAX_THUMB_W);
+        assert!(decoded.height() <= MAX_THUMB_H);
+        assert_eq!(decoded.width(), 640);
+        assert_eq!(decoded.height(), 480);
     }
 }
