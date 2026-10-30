@@ -1044,6 +1044,7 @@ pub fn IdentityCard(
             }
             RecoveryPhrase { phrase }
             BlobServerField {}
+            super::dm_images::FileServerField {}
             details { class: "text-[10px] text-[var(--text-dim)]",
                 summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
                     {crate::i18n::text("Identity file location", &[])}

@@ -92,6 +92,8 @@ pub struct ClientSettings {
     /// files saved that name as null, which would have hidden this default.
     #[serde(default = "default_emoji_blob_server")]
     pub emoji_blob_server: Option<String>,
+    #[serde(default = "default_dm_blob_server")]
+    pub dm_blob_server: Option<String>,
     /// Servers the person added beyond `blossom::PRESETS`.
     #[serde(default)]
     pub blob_servers: Vec<String>,
@@ -272,6 +274,10 @@ fn default_emoji_blob_server() -> Option<String> {
     Some(crate::nostr::blossom::PRESETS[0].to_string())
 }
 
+fn default_dm_blob_server() -> Option<String> {
+    Some("https://nostr.download".into())
+}
+
 /// A rendezvous serves plain `ws://` on 7700 (it must see real peer
 /// addresses, so no TLS proxy); `wss://` is the exception, on 443.
 pub const RENDEZVOUS_PORT: u16 = 7700;
@@ -385,6 +391,7 @@ impl Default for ClientSettings {
             dm_deleted_ids: Vec::new(),
             saved_emoji: Vec::new(),
             emoji_blob_server: default_emoji_blob_server(),
+            dm_blob_server: default_dm_blob_server(),
             blob_servers: Vec::new(),
             dm_read_at: Vec::new(),
             muted_channels: Vec::new(),
@@ -455,7 +462,12 @@ impl ClientSettings {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        for url in self.blob_servers.iter().chain(&self.emoji_blob_server) {
+        for url in self
+            .blob_servers
+            .iter()
+            .chain(&self.emoji_blob_server)
+            .chain(&self.dm_blob_server)
+        {
             if !out.contains(url) {
                 out.push(url.clone());
             }
@@ -477,6 +489,9 @@ impl ClientSettings {
         self.blob_servers.retain(|s| s != url);
         if self.emoji_blob_server.as_deref() == Some(url) {
             self.emoji_blob_server = default_emoji_blob_server();
+        }
+        if self.dm_blob_server.as_deref() == Some(url) {
+            self.dm_blob_server = default_dm_blob_server();
         }
     }
 

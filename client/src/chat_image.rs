@@ -5,6 +5,7 @@ use base64::Engine as _;
 use image::{ImageDecoder, ImageEncoder, ImageReader};
 
 pub const MAX_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
+pub const MAX_DM_BYTES: usize = 10 * 1024 * 1024;
 const MAX_PIXELS: u64 = 16_000_000;
 const TOO_LARGE: &str = "Image too large (max 2 MiB / 2,097,152 bytes).";
 
@@ -21,7 +22,7 @@ fn size_error(limit: usize) -> String {
 }
 
 pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
-    let max_bytes = max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+    let max_bytes = max_bytes.min(MAX_DM_BYTES);
     let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
     let metadata = file.metadata().map_err(|_| "Couldn't read that file.")?;
     if !metadata.is_file() {
@@ -42,8 +43,8 @@ fn from_bytes(bytes: &[u8]) -> Result<String, String> {
     from_bytes_with_limit(bytes, MAX_BYTES)
 }
 
-fn from_bytes_with_limit(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
-    if bytes.len() > max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES) {
+pub(crate) fn from_bytes_with_limit(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    if bytes.len() > max_bytes.min(MAX_DM_BYTES) {
         return Err(size_error(max_bytes));
     }
     let format = image::guess_format(bytes).map_err(|_| "That's not a supported image.")?;
@@ -103,10 +104,7 @@ fn rgba_png_with_limit(
     if width.checked_mul(height).and_then(|n| n.checked_mul(4)) != Some(pixels.len()) {
         return Err("Invalid clipboard image.".into());
     }
-    let mut bytes = BoundedBytes(
-        Vec::new(),
-        max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES),
-    );
+    let mut bytes = BoundedBytes(Vec::new(), max_bytes.min(MAX_DM_BYTES));
     image::codecs::png::PngEncoder::new(&mut bytes)
         .write_image(
             pixels,

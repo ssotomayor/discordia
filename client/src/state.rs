@@ -371,6 +371,7 @@ pub struct AppState {
     pub dm_edit_versions: HashMap<Id, (i64, String)>,
     pub pending_dm_deletions: HashSet<(String, String)>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
+    pub dm_images: HashMap<Id, crate::nostr::dm_image::Image>,
     pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
     pub pending_edits: HashSet<Id>,
@@ -595,6 +596,7 @@ impl AppState {
             dm_edit_versions: HashMap::new(),
             pending_dm_deletions: HashSet::new(),
             dm_delivery: HashMap::new(),
+            dm_images: HashMap::new(),
             dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
             dm_call: None,
@@ -1422,7 +1424,11 @@ impl AppState {
                 .retain(|_, entry| entry.record.caller != peer && entry.record.callee != peer);
         }
         self.dms.retain(|d| d.channel_id != cid);
-        self.messages.remove(&cid);
+        if let Some(messages) = self.messages.remove(&cid) {
+            for message in messages {
+                self.dm_images.remove(&message.id);
+            }
+        }
         self.dm_unread.remove(&cid);
         if self.selected_channel == Some(cid) {
             self.selected_channel = None;
@@ -1470,6 +1476,7 @@ impl AppState {
     }
 
     pub fn delete_message_locally(&mut self, channel_id: Id, message_id: Id) {
+        self.dm_images.remove(&message_id);
         self.dm_edit_versions.remove(&message_id);
         if let Some(msgs) = self.messages.get_mut(&channel_id) {
             msgs.retain(|m| m.id != message_id);

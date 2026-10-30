@@ -90,7 +90,7 @@ pub(crate) fn source(data: Arc<String>) -> ImageSource {
 
 pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
     match try_consume_context::<Assets>() {
-        Some(assets) => assets.source_with_limit(data, crate::protocol::MAX_GUILD_UPLOAD_BYTES),
+        Some(assets) => assets.source_with_limit(data, crate::chat_image::MAX_DM_BYTES),
         None => ImageSource {
             uri: data.clone(),
             _data: data,
@@ -112,11 +112,11 @@ pub(crate) fn use_image_assets() {
                 header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue},
             };
             let decoded = data.as_deref().and_then(|data| {
-                let (mime, _, encoded) = payload(data, crate::protocol::MAX_GUILD_UPLOAD_BYTES)?;
+                let (mime, _, encoded) = payload(data, crate::chat_image::MAX_DM_BYTES)?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .ok()?;
-                (bytes.len() <= crate::protocol::MAX_GUILD_UPLOAD_BYTES).then_some((mime, bytes))
+                (bytes.len() <= crate::chat_image::MAX_DM_BYTES).then_some((mime, bytes))
             });
             let mut response = match decoded {
                 Some((mime, bytes)) => {
@@ -124,10 +124,9 @@ pub(crate) fn use_image_assets() {
                     response
                         .headers_mut()
                         .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
-                    response.headers_mut().insert(
-                        CACHE_CONTROL,
-                        HeaderValue::from_static("private, max-age=3600"),
-                    );
+                    response
+                        .headers_mut()
+                        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
                     response
                 }
                 None => {
