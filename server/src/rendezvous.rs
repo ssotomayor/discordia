@@ -5,7 +5,8 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::protocol::rendezvous::{
-    HostToRendezvous, LIST_NAMES, RendezvousToHost, ReservedName, TurnCredentials,
+    HostToRendezvous, Proof, RendezvousToHost, ReservedName, TurnCredentials, ownership_payload,
+    rendezvous_audience,
 };
 
 /// The key a name on a rendezvous belongs to. The desktop host signs with the
@@ -275,17 +276,19 @@ pub async fn register(
     signer: &dyn Signer,
 ) -> Result<(PublishInfo, ControlStream), String> {
     let base = rendezvous_url.trim_end_matches('/').to_string();
+    let audience = audience_of(&base)?;
     let (mut ws, nonce) = open_control(&base).await?;
+    let sign = |proof, claimed: &str| sign_for(signer, proof, &audience, &nonce, claimed);
 
     let (pubkey, signature) = match options.publish_name.as_deref() {
-        Some(name) => (Some(signer.pubkey()), Some(sign_for(signer, &nonce, name))),
+        Some(name) => (Some(signer.pubkey()), Some(sign(Proof::Name, name)?)),
         None => (None, None),
     };
 
     let (transport_key, transport_signature, transport_addrs) = match transport {
         Some(t) => (
             Some(t.key.clone()),
-            Some(sign_for(signer, &nonce, &t.key)),
+            Some(sign(Proof::Transport, &t.key)?),
             t.addrs.clone(),
         ),
         None => (None, None, Vec::new()),
@@ -302,6 +305,7 @@ pub async fn register(
         transport_signature,
         transport_addrs,
         location: options.location,
+        audience,
     };
     let json = serde_json::to_string(&hello).map_err(|e| e.to_string())?;
     ws.send(WsMessage::Text(json))
@@ -379,25 +383,34 @@ async fn next_reply(ws: &mut ControlWs) -> Result<RendezvousToHost, String> {
     }
 }
 
-/// What the rendezvous's `verify_ownership` checks: the challenge, the key,
-/// then the thing claimed.
-fn sign_for(signer: &dyn Signer, nonce: &str, claimed: &str) -> String {
-    let mut msg = Vec::new();
-    msg.extend_from_slice(nonce.as_bytes());
-    msg.extend_from_slice(signer.pubkey().as_bytes());
-    msg.extend_from_slice(claimed.as_bytes());
-    signer.sign_hex(&msg)
+/// A rendezvous chooses the nonce and, for a release, the code too: only the
+/// framed payload keeps it from steering the bytes into a login or a Nostr event.
+fn sign_for(
+    signer: &dyn Signer,
+    proof: Proof,
+    audience: &str,
+    nonce: &str,
+    claimed: &str,
+) -> Result<String, String> {
+    let payload = ownership_payload(proof, audience, nonce, &signer.pubkey(), claimed)
+        .ok_or("the rendezvous asked for a malformed signature")?;
+    Ok(signer.sign_hex(&payload))
+}
+
+fn audience_of(base: &str) -> Result<String, String> {
+    rendezvous_audience(base).ok_or_else(|| format!("not a rendezvous URL: {base}"))
 }
 
 async fn one_request(
     rendezvous_url: &str,
-    frame: impl FnOnce(String) -> HostToRendezvous,
+    frame: impl FnOnce(String, String) -> Result<HostToRendezvous, String>,
 ) -> Result<RendezvousToHost, String> {
     let base = rendezvous_url.trim().trim_end_matches('/');
+    let audience = audience_of(base)?;
     let (mut ws, nonce) = tokio::time::timeout(REGISTER_TIMEOUT, open_control(base))
         .await
         .map_err(|_| "no answer from the rendezvous".to_string())??;
-    let json = serde_json::to_string(&frame(nonce)).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string(&frame(audience, nonce)?).map_err(|e| e.to_string())?;
     ws.send(WsMessage::Text(json))
         .await
         .map_err(|e| format!("rendezvous send: {e}"))?;
@@ -416,9 +429,12 @@ pub async fn list_names(
     rendezvous_url: &str,
     signer: &dyn Signer,
 ) -> Result<Vec<ReservedName>, String> {
-    let reply = one_request(rendezvous_url, |nonce| HostToRendezvous::ListNames {
-        pubkey: signer.pubkey(),
-        signature: sign_for(signer, &nonce, LIST_NAMES),
+    let reply = one_request(rendezvous_url, |audience, nonce| {
+        Ok(HostToRendezvous::ListNames {
+            pubkey: signer.pubkey(),
+            signature: sign_for(signer, Proof::ListNames, &audience, &nonce, "")?,
+            audience,
+        })
     })
     .await?;
     match reply {
@@ -433,10 +449,13 @@ pub async fn release_name(
     signer: &dyn Signer,
     code: &str,
 ) -> Result<(), String> {
-    let reply = one_request(rendezvous_url, |nonce| HostToRendezvous::ReleaseName {
-        name: code.to_string(),
-        pubkey: signer.pubkey(),
-        signature: sign_for(signer, &nonce, code),
+    let reply = one_request(rendezvous_url, |audience, nonce| {
+        Ok(HostToRendezvous::ReleaseName {
+            name: code.to_string(),
+            pubkey: signer.pubkey(),
+            signature: sign_for(signer, Proof::Release, &audience, &nonce, code)?,
+            audience,
+        })
     })
     .await?;
     match reply {
@@ -732,6 +751,24 @@ mod name_tests {
             publish_name: Some(name.into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_rendezvous_cannot_steer_a_release_into_a_login() {
+        let me = HostKey::derived_from(&iroh::SecretKey::from_bytes(&[5; 32]));
+        let crafted = format!("{}\nN\n127.0.0.1:9000\n", crate::protocol::IDENTIFY_DOMAIN);
+        let honest = "3".repeat(44);
+        let sign =
+            |nonce: &str, code: &str| sign_for(&me, Proof::Release, "r.example", nonce, code);
+        assert!(sign(&crafted, "x").is_err());
+        assert!(sign(&honest, "\nalice").is_err());
+        let payload = ownership_payload(Proof::Release, "r.example", &honest, &me.pubkey(), "acme");
+        assert!(
+            payload
+                .unwrap()
+                .starts_with(b"discordia-rendezvous-ownership-v1\n")
+        );
+        assert!(sign(&honest, "acme").is_ok());
     }
 
     #[tokio::test]

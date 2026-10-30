@@ -10,6 +10,8 @@ pub struct VoiceEvictRequest {
     pub pubkey: String,
 }
 
+/// Every signed frame names the rendezvous it is for (`rendezvous_audience` of
+/// the URL the host dialled), so one rendezvous cannot spend it at another.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum HostToRendezvous {
@@ -17,6 +19,8 @@ pub enum HostToRendezvous {
         name: String,
         pubkey: String,
         signature: String,
+        #[serde(default)]
+        audience: String,
     },
     Register {
         name: Option<String>,
@@ -36,16 +40,82 @@ pub enum HostToRendezvous {
         transport_addrs: Vec<String>,
         #[serde(default)]
         location: Option<GeoPoint>,
+        #[serde(default)]
+        audience: String,
     },
     /// Asked before the credentials in `Registered` expire; the stream stays up.
     RenewTurn {},
-    /// The signature covers `LIST_NAMES`: the answer names unlisted codes,
-    /// and a code is all it takes to connect.
-    ListNames { pubkey: String, signature: String },
+    /// The answer names unlisted codes, and a code is all it takes to connect.
+    ListNames {
+        pubkey: String,
+        signature: String,
+        #[serde(default)]
+        audience: String,
+    },
 }
 
-/// What a `ListNames` signature signs in place of a name.
-pub const LIST_NAMES: &str = "discordia:list-names";
+/// First in every ownership proof, so none can equal a login
+/// (`IDENTIFY_DOMAIN`) or a Nostr event id preimage, which begin otherwise.
+pub const OWNERSHIP_DOMAIN: &str = "discordia-rendezvous-ownership-v1";
+
+/// What an ownership signature authorises. Without it a `Register` replayed as
+/// a `ReleaseName` freed the name for anyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proof {
+    Name,
+    Transport,
+    ListNames,
+    Release,
+}
+
+impl Proof {
+    fn tag(self) -> &'static str {
+        match self {
+            Proof::Name => "name",
+            Proof::Transport => "transport",
+            Proof::ListNames => "list-names",
+            Proof::Release => "release",
+        }
+    }
+}
+
+/// What a rendezvous hands out: 32 random bytes in base58.
+pub fn is_challenge_nonce(nonce: &str) -> bool {
+    (32..=44).contains(&nonce.len())
+        && nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() && !matches!(b, b'0' | b'O' | b'I' | b'l'))
+}
+
+/// The host part of a rendezvous URL, lowercased. The port is left out so a
+/// TLS proxy in front does not change it.
+pub fn rendezvous_audience(url: &str) -> Option<String> {
+    let url = url::Url::parse(url.trim()).ok()?;
+    Some(url.host_str()?.to_ascii_lowercase())
+}
+
+/// The bytes a host signs and a rendezvous verifies. `None` when a field could
+/// blur the framing, and then neither side signs nor accepts.
+pub fn ownership_payload(
+    proof: Proof,
+    audience: &str,
+    nonce: &str,
+    pubkey: &str,
+    claimed: &str,
+) -> Option<Vec<u8>> {
+    let framed = |s: &str| !s.is_empty() && !s.chars().any(char::is_control);
+    (framed(audience)
+        && is_challenge_nonce(nonce)
+        && crate::is_pubkey_hex(pubkey)
+        && !claimed.chars().any(char::is_control))
+    .then(|| {
+        format!(
+            "{OWNERSHIP_DOMAIN}\n{}\n{audience}\n{nonce}\n{pubkey}\n{claimed}",
+            proof.tag()
+        )
+        .into_bytes()
+    })
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ReservedName {
@@ -202,6 +272,7 @@ mod tests {
             transport_signature: None,
             transport_addrs: Vec::new(),
             location: None,
+            audience: "rendezvous.example".into(),
         })
         .unwrap();
         assert_eq!(json["op"], "register");
@@ -209,6 +280,46 @@ mod tests {
         assert_eq!(d["name"], "casa");
         assert_eq!(d["publish_public"], true);
         assert!(d["description"].is_null());
+    }
+
+    #[test]
+    fn an_ownership_proof_is_framed_and_can_pass_for_nothing_else() {
+        let nonce = "3".repeat(44);
+        let key = "ab".repeat(32);
+        let payload = |proof, audience: &str, nonce: &str, claimed: &str| {
+            ownership_payload(proof, audience, nonce, &key, claimed)
+        };
+        let name = payload(Proof::Name, "rendezvous.example", &nonce, "acme").unwrap();
+        assert!(name.starts_with(OWNERSHIP_DOMAIN.as_bytes()));
+        assert_ne!(
+            name,
+            payload(Proof::Release, "rendezvous.example", &nonce, "acme").unwrap()
+        );
+        assert_ne!(
+            name,
+            payload(Proof::Name, "other.example", &nonce, "acme").unwrap()
+        );
+        let crafted = format!("{}\nN\nO\n", crate::IDENTIFY_DOMAIN);
+        assert!(payload(Proof::Release, "r", &crafted, "x").is_none());
+        assert!(payload(Proof::Release, "r", &nonce, "\nalice").is_none());
+        assert!(payload(Proof::Release, "a\nb", &nonce, "x").is_none());
+        assert!(payload(Proof::Release, "", &nonce, "x").is_none());
+    }
+
+    #[test]
+    fn the_audience_is_the_dialled_host_without_its_port() {
+        for (url, host) in [
+            (
+                "ws://Rendezvous.Discordia.World:7700",
+                "rendezvous.discordia.world",
+            ),
+            ("wss://rendezvous.example/", "rendezvous.example"),
+            ("ws://127.0.0.1:41234", "127.0.0.1"),
+            ("ws://[::1]:7700", "[::1]"),
+        ] {
+            assert_eq!(rendezvous_audience(url).as_deref(), Some(host));
+        }
+        assert!(rendezvous_audience("not a url").is_none());
     }
 
     #[test]

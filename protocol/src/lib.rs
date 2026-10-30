@@ -637,6 +637,12 @@ pub fn is_pubkey_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The one spelling a key may log in under. Bans, session caps and blocklists
+/// compare strings, so another spelling of one key was another person to them.
+pub fn is_canonical_pubkey(s: &str) -> bool {
+    is_pubkey_hex(s) && !s.bytes().any(|b| b.is_ascii_uppercase())
+}
+
 pub fn level_progress(xp: u64) -> (u32, u64, u64) {
     let mut level: u32 = 1;
     let mut remaining = xp;

@@ -21,6 +21,9 @@ pub fn verify_identify(
     origin: &str,
     username: &str,
 ) -> Result<(), String> {
+    if !crate::protocol::is_canonical_pubkey(pubkey_hex) {
+        return Err("a pubkey is 64 lowercase hex characters".into());
+    }
     let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
     let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
         .map_err(|e| format!("invalid nostr pubkey: {e}"))?;
@@ -180,6 +183,16 @@ mod tests {
         let sig = sign(&secret, "n", "evil.example:9000", &pubkey, "alice");
         assert!(verify_identify(&pubkey, &sig, "n", "chat.example:9000", "alice").is_err());
         assert!(verify_identify(&pubkey, &sig, "n", "evil.example:9000", "alice").is_ok());
+    }
+
+    #[test]
+    fn a_key_logs_in_under_one_spelling_only() {
+        let (secret, pubkey) = keypair();
+        let upper = pubkey.to_ascii_uppercase();
+        assert_ne!(upper, pubkey, "a key with no letters is vanishingly rare");
+        let sig = sign(&secret, "n", "h:1", &upper, "alice");
+        let err = verify_identify(&upper, &sig, "n", "h:1", "alice").unwrap_err();
+        assert!(err.contains("lowercase"), "{err}");
     }
 
     #[test]

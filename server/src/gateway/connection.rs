@@ -2040,6 +2040,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::BanMember { guild_id, user_pubkey } => {
+                        // Identify admits only lowercase, so a ban under another spelling bans nobody.
+                        let user_pubkey = user_pubkey.to_ascii_lowercase();
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -2074,6 +2076,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UnbanMember { guild_id, user_pubkey } => {
+                        let user_pubkey = user_pubkey.to_ascii_lowercase();
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),

@@ -48,6 +48,10 @@ pub struct Options {
     #[arg(long, env = "DISCORDIA_RENDEZVOUS_TURN_SECRET", hide_env_values = true)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_secret: Option<String>,
+    /// Comma-separated host names (or URLs) hosts dial this rendezvous by; loopback and interface addresses are always included
+    #[arg(long, env = "DISCORDIA_RENDEZVOUS_PUBLIC_HOSTS")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_hosts: Option<String>,
     /// Shared SFU for hosts nobody can reach and that have no relay
     #[arg(long, env = "LIVEKIT_URL")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,6 +77,7 @@ impl Options {
             turn_ports: self.turn_ports.or(file.turn_ports),
             turn_relay_ip: self.turn_relay_ip.or(file.turn_relay_ip),
             turn_secret: self.turn_secret.or(file.turn_secret),
+            public_hosts: self.public_hosts.or(file.public_hosts),
             livekit_url: self.livekit_url.or(file.livekit_url),
             livekit_api_key: self.livekit_api_key.or(file.livekit_api_key),
             livekit_api_secret: self.livekit_api_secret.or(file.livekit_api_secret),
@@ -140,8 +145,26 @@ pub async fn run(opts: Options) -> Result<(), String> {
         None => (None, None),
     };
 
+    let mut audiences = crate::local_audiences();
+    for host in set(opts.public_hosts).iter().flat_map(|l| l.split(',')) {
+        let host = host.trim();
+        let parsed = if host.contains("://") {
+            discordia_protocol::rendezvous::rendezvous_audience(host)
+        } else {
+            discordia_protocol::rendezvous::rendezvous_audience(&format!("ws://{host}"))
+        };
+        match parsed {
+            Some(a) => {
+                audiences.insert(a);
+            }
+            None if host.is_empty() => {}
+            None => return Err(format!("not a host name: {host}")),
+        }
+    }
+
     let config = Config {
         relay_url,
+        audiences,
         livekit_url: set(opts.livekit_url),
         livekit_api_key: set(opts.livekit_api_key),
         livekit_api_secret: set(opts.livekit_api_secret),
@@ -153,6 +176,7 @@ pub async fn run(opts: Options) -> Result<(), String> {
         ?config.livekit_url,
         shared_credentials = config.livekit_api_secret.is_some(),
         turn = config.turn.as_ref().map(|t| t.urls().to_vec()).unwrap_or_default().join(","),
+        audiences = ?config.audiences,
         "rendezvous configured"
     );
 

@@ -38,6 +38,39 @@ pub struct Config {
     /// Set when this rendezvous runs a TURN relay; every registration then
     /// carries credentials for it.
     pub turn: Option<turn_relay::Issuer>,
+    /// The host names hosts dial this rendezvous by. An ownership proof names
+    /// one, and a proof naming another rendezvous is refused.
+    pub audiences: std::collections::HashSet<String>,
+}
+
+impl Config {
+    pub fn answers_to(&self, audience: &str) -> Result<(), String> {
+        if self.audiences.contains(audience) {
+            Ok(())
+        } else {
+            Err(format!(
+                "this rendezvous does not answer to '{audience}' — set DISCORDIA_RENDEZVOUS_PUBLIC_HOSTS"
+            ))
+        }
+    }
+}
+
+/// Loopback by every name and each interface address: what a local or LAN
+/// host dials. A DNS name is the operator's to declare.
+pub fn local_audiences() -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> = ["127.0.0.1", "localhost", "[::1]"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
+        for (_, ip) in interfaces {
+            out.insert(match ip {
+                IpAddr::V4(v4) => v4.to_string(),
+                IpAddr::V6(v6) => format!("[{v6}]"),
+            });
+        }
+    }
+    out
 }
 
 impl Default for Config {
@@ -48,6 +81,10 @@ impl Default for Config {
             livekit_api_secret: None,
             relay_url: None,
             turn: None,
+            audiences: ["127.0.0.1", "localhost", "[::1]"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
             heartbeat_interval: std::time::Duration::from_secs(20),
             host_timeout: std::time::Duration::from_secs(60),
             register_timeout: std::time::Duration::from_secs(10),

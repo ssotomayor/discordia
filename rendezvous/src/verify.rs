@@ -1,3 +1,4 @@
+use discordia_protocol::rendezvous::{Proof, ownership_payload};
 use rand::RngCore;
 use secp256k1::schnorr::Signature;
 use secp256k1::{Message, Secp256k1, XOnlyPublicKey};
@@ -14,11 +15,15 @@ pub fn fresh_nonce() -> String {
 }
 
 pub fn verify_ownership(
+    proof: Proof,
+    audience: &str,
+    nonce: &str,
     pubkey_hex: &str,
     signature_hex: &str,
-    nonce: &str,
-    bound: &str,
+    claimed: &str,
 ) -> Result<(), String> {
+    let payload = ownership_payload(proof, audience, nonce, pubkey_hex, claimed)
+        .ok_or("the signed fields are malformed")?;
     let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
     let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
         .map_err(|e| format!("invalid nostr pubkey: {e}"))?;
@@ -27,11 +32,7 @@ pub fn verify_ownership(
     let sig =
         Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid schnorr signature: {e}"))?;
 
-    let mut message = Vec::with_capacity(nonce.len() + pubkey_hex.len() + bound.len());
-    message.extend_from_slice(nonce.as_bytes());
-    message.extend_from_slice(pubkey_hex.as_bytes());
-    message.extend_from_slice(bound.as_bytes());
-    let digest: [u8; 32] = Sha256::digest(&message).into();
+    let digest: [u8; 32] = Sha256::digest(&payload).into();
     let msg = Message::from_digest(digest);
 
     let secp = Secp256k1::verification_only();
@@ -44,14 +45,10 @@ mod tests {
     use super::*;
     use secp256k1::{Keypair, SecretKey};
 
-    fn sign(secret: &SecretKey, nonce: &str, pubkey_hex: &str, name: &str) -> String {
+    fn sign(secret: &SecretKey, payload: &[u8]) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, secret);
-        let mut message = Vec::new();
-        message.extend_from_slice(nonce.as_bytes());
-        message.extend_from_slice(pubkey_hex.as_bytes());
-        message.extend_from_slice(name.as_bytes());
-        let digest: [u8; 32] = Sha256::digest(&message).into();
+        let digest: [u8; 32] = Sha256::digest(payload).into();
         let msg = Message::from_digest(digest);
         hex::encode(secp.sign_schnorr_no_aux_rand(&msg, &keypair).serialize())
     }
@@ -62,12 +59,17 @@ mod tests {
         let secret = SecretKey::from_slice(&[7u8; 32]).unwrap();
         let keypair = Keypair::from_secret_key(&secp, &secret);
         let (xonly, _) = keypair.x_only_public_key();
-        let pubkey_hex = hex::encode(xonly.serialize());
+        let pk = hex::encode(xonly.serialize());
         let nonce = fresh_nonce();
+        let other = fresh_nonce();
+        let here = "rendezvous.example";
 
-        let sig = sign(&secret, &nonce, &pubkey_hex, "acme");
-        assert!(verify_ownership(&pubkey_hex, &sig, &nonce, "acme").is_ok());
-        assert!(verify_ownership(&pubkey_hex, &sig, &nonce, "evil").is_err());
-        assert!(verify_ownership(&pubkey_hex, &sig, "other-nonce", "acme").is_err());
+        let payload = ownership_payload(Proof::Name, here, &nonce, &pk, "acme").unwrap();
+        let sig = sign(&secret, &payload);
+        assert!(verify_ownership(Proof::Name, here, &nonce, &pk, &sig, "acme").is_ok());
+        assert!(verify_ownership(Proof::Name, here, &nonce, &pk, &sig, "evil").is_err());
+        assert!(verify_ownership(Proof::Name, here, &other, &pk, &sig, "acme").is_err());
+        assert!(verify_ownership(Proof::Release, here, &nonce, &pk, &sig, "acme").is_err());
+        assert!(verify_ownership(Proof::Name, "evil.example", &nonce, &pk, &sig, "acme").is_err());
     }
 }

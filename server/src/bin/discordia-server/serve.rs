@@ -74,7 +74,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
         .clone()
         .unwrap_or_default()
         .into_iter()
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
     if !operators.is_empty() {

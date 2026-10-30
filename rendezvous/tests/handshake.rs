@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use discordia_protocol::rendezvous::{DiscoverEntry, LIST_NAMES};
+use discordia_protocol::rendezvous::{DiscoverEntry, Proof, ownership_payload};
 use discordia_rendezvous::{AppCtx, Config, registry::Registry, router};
 use futures_util::{SinkExt, StreamExt};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
@@ -34,13 +34,24 @@ fn identity(seed: u8) -> (SecretKey, String) {
     (secret, hex::encode(xonly.serialize()))
 }
 
+/// What every test host dials: the listener is bound to it.
+const AUDIENCE: &str = "127.0.0.1";
+
 fn sign(secret: &SecretKey, nonce: &str, pubkey: &str, name: &str) -> String {
+    sign_as(Proof::Name, AUDIENCE, secret, nonce, pubkey, name)
+}
+
+fn sign_as(
+    proof: Proof,
+    audience: &str,
+    secret: &SecretKey,
+    nonce: &str,
+    pubkey: &str,
+    claimed: &str,
+) -> String {
     let secp = Secp256k1::new();
     let keypair = Keypair::from_secret_key(&secp, secret);
-    let mut msg = Vec::new();
-    msg.extend_from_slice(nonce.as_bytes());
-    msg.extend_from_slice(pubkey.as_bytes());
-    msg.extend_from_slice(name.as_bytes());
+    let msg = ownership_payload(proof, audience, nonce, pubkey, claimed).unwrap();
     let digest: [u8; 32] = Sha256::digest(&msg).into();
     let m = secp256k1::Message::from_digest(digest);
     hex::encode(secp.sign_schnorr_no_aux_rand(&m, &keypair).serialize())
@@ -76,7 +87,7 @@ async fn connect_control(base: &str) -> (Ws, String) {
 async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
     let frame = serde_json::json!({
         "op": "register",
-        "d": { "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
+        "d": { "audience": AUDIENCE, "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
 }
@@ -92,9 +103,16 @@ async fn control_challenges_reject_cross_connection_replay_and_bind_name_and_tra
     assert_eq!(bs58::decode(&second_nonce).into_vec().unwrap().len(), 32);
     let transport = "transport-one";
     let name_sig = sign(&secret, &first_nonce, &pubkey, "Replay");
-    let transport_sig = sign(&secret, &first_nonce, &pubkey, transport);
+    let transport_sig = sign_as(
+        Proof::Transport,
+        AUDIENCE,
+        &secret,
+        &first_nonce,
+        &pubkey,
+        transport,
+    );
     let registration = serde_json::json!({
-        "op": "register", "d": {
+        "op": "register", "d": { "audience": AUDIENCE,
             "name": "Replay", "pubkey": pubkey, "signature": name_sig,
             "publish_public": false, "transport_key": transport,
             "transport_signature": transport_sig, "transport_addrs": ["127.0.0.1:41234"]
@@ -133,12 +151,19 @@ async fn control_challenges_reject_cross_connection_replay_and_bind_name_and_tra
     ] {
         let (mut ws, nonce) = connect_control(&base).await;
         let signature = if signature.is_empty() {
-            sign(&secret, &nonce, &pubkey, transport)
+            sign_as(
+                Proof::Transport,
+                AUDIENCE,
+                &secret,
+                &nonce,
+                &pubkey,
+                transport,
+            )
         } else {
             signature
         };
         let frame = serde_json::json!({
-            "op": "register", "d": {
+            "op": "register", "d": { "audience": AUDIENCE,
                 "name": name, "pubkey": pubkey, "signature": sign(&secret, &nonce, &pubkey, name),
                 "publish_public": false, "transport_key": key,
                 "transport_signature": signature, "transport_addrs": ["127.0.0.1:41234"]
@@ -191,10 +216,17 @@ async fn a_transport_key_is_published_only_when_it_is_signed_for() {
 
     let (mut ws, nonce) = connect_control(&base).await;
     let name_sig = sign(&secret, &nonce, &pubkey, "Keyed");
-    let transport_sig = sign(&secret, &nonce, &pubkey, &transport_key);
+    let transport_sig = sign_as(
+        Proof::Transport,
+        AUDIENCE,
+        &secret,
+        &nonce,
+        &pubkey,
+        &transport_key,
+    );
     let frame = serde_json::json!({
         "op": "register",
-        "d": {
+        "d": { "audience": AUDIENCE,
             "name": "Keyed", "pubkey": pubkey, "signature": name_sig,
             "publish_public": false,
             "transport_key": transport_key,
@@ -219,7 +251,7 @@ async fn an_unattested_transport_key_is_dropped_but_the_host_still_registers() {
     let name_sig = sign(&secret, &nonce, &pubkey, "Unsigned");
     let frame = serde_json::json!({
         "op": "register",
-        "d": {
+        "d": { "audience": AUDIENCE,
             "name": "Unsigned", "pubkey": pubkey, "signature": name_sig,
             "publish_public": false,
             "transport_key": "k51qzi5uqu5dl",
@@ -369,10 +401,10 @@ async fn an_owner_lists_its_names_and_nobody_else_can() {
         let owner = owner.clone();
         async move {
             let (mut ws, nonce) = connect_control(&base).await;
-            let signature = sign(&secret, &nonce, &owner, LIST_NAMES);
+            let signature = sign_as(Proof::ListNames, AUDIENCE, &secret, &nonce, &owner, "");
             let frame = serde_json::json!({
                 "op": "list_names",
-                "d": { "pubkey": owner, "signature": signature }
+                "d": { "audience": AUDIENCE, "pubkey": owner, "signature": signature }
             });
             ws.send(Message::Text(frame.to_string())).await.unwrap();
             next_json(&mut ws).await
@@ -412,7 +444,14 @@ async fn hexadecimal_key_casing_does_not_change_name_ownership() {
     wait_until_unregistered(&registry, "same-key").await;
 
     let (mut release, nonce) = connect_control(&base).await;
-    let signature = sign(&secret, &nonce, &uppercase, "same-key");
+    let signature = sign_as(
+        Proof::Release,
+        AUDIENCE,
+        &secret,
+        &nonce,
+        &uppercase,
+        "same-key",
+    );
     assert_eq!(
         send_release(&mut release, "same-key", &uppercase, &signature).await["op"],
         "released"
@@ -452,7 +491,7 @@ async fn silent_host_is_dropped_from_the_listing() {
     let sig = sign(&secret, &nonce, &pubkey, "Ghost");
     let frame = serde_json::json!({
         "op": "register",
-        "d": { "name": "Ghost", "pubkey": pubkey, "signature": sig, "publish_public": true }
+        "d": { "audience": AUDIENCE, "name": "Ghost", "pubkey": pubkey, "signature": sig, "publish_public": true }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
     let reply = next_json(&mut ws).await;
@@ -486,7 +525,7 @@ async fn responsive_host_keeps_its_listing() {
     let sig = sign(&secret, &nonce, &pubkey, "Steady");
     let frame = serde_json::json!({
         "op": "register",
-        "d": { "name": "Steady", "pubkey": pubkey, "signature": sig, "publish_public": true }
+        "d": { "audience": AUDIENCE, "name": "Steady", "pubkey": pubkey, "signature": sig, "publish_public": true }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
     assert_eq!(next_json(&mut ws).await["op"], "registered");
@@ -506,7 +545,7 @@ async fn responsive_host_keeps_its_listing() {
 async fn send_release(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) -> serde_json::Value {
     let frame = serde_json::json!({
         "op": "release_name",
-        "d": { "name": name, "pubkey": pubkey, "signature": signature }
+        "d": { "audience": AUDIENCE, "name": name, "pubkey": pubkey, "signature": signature }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
     next_json(ws).await
@@ -544,7 +583,14 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
 
     {
         let (mut ws, nonce) = connect_control(&base).await;
-        let sig = sign(&owner_secret, &nonce, &owner, "Mudanza");
+        let sig = sign_as(
+            Proof::Release,
+            AUDIENCE,
+            &owner_secret,
+            &nonce,
+            &owner,
+            "Mudanza",
+        );
         let reply = send_release(&mut ws, "Mudanza", &owner, &sig).await;
         assert_eq!(reply["op"], "released", "got {reply}");
         assert_eq!(reply["d"]["name"], "mudanza", "the slug, lowercased");
@@ -574,12 +620,26 @@ async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
 
     let taken = {
         let (mut ws, nonce) = connect_control(&base).await;
-        let sig = sign(&thief_secret, &nonce, &thief, "Fortaleza");
+        let sig = sign_as(
+            Proof::Release,
+            AUDIENCE,
+            &thief_secret,
+            &nonce,
+            &thief,
+            "Fortaleza",
+        );
         send_release(&mut ws, "Fortaleza", &thief, &sig).await
     };
     let free = {
         let (mut ws, nonce) = connect_control(&base).await;
-        let sig = sign(&thief_secret, &nonce, &thief, "Vacante");
+        let sig = sign_as(
+            Proof::Release,
+            AUDIENCE,
+            &thief_secret,
+            &nonce,
+            &thief,
+            "Vacante",
+        );
         send_release(&mut ws, "Vacante", &thief, &sig).await
     };
 
@@ -619,7 +679,14 @@ async fn a_release_with_a_bad_signature_is_refused() {
     }
 
     let (mut ws, _nonce) = connect_control(&base).await;
-    let stale = sign(&owner_secret, "some-other-nonce", &owner, "Sellada");
+    let stale = sign_as(
+        Proof::Release,
+        AUDIENCE,
+        &owner_secret,
+        &"3".repeat(44),
+        &owner,
+        "Sellada",
+    );
     let reply = send_release(&mut ws, "Sellada", &owner, &stale).await;
 
     assert_eq!(reply["op"], "error");
@@ -728,5 +795,88 @@ async fn a_relay_hands_every_registration_turn_credentials_and_renews_them_on_re
     assert!(
         registered["d"].get("turn").is_none(),
         "no relay, no credentials"
+    );
+}
+
+async fn registered_then_gone(
+    base: &str,
+    registry: &Registry,
+    secret: &SecretKey,
+    owner: &str,
+    name: &str,
+) {
+    {
+        let (mut ws, nonce) = connect_control(base).await;
+        send_register(&mut ws, name, owner, &sign(secret, &nonce, owner, name)).await;
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+    }
+    let slug = name.to_ascii_lowercase();
+    for _ in 0..50 {
+        if registry.lookup(&slug).is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_register_signature_cannot_be_spent_as_a_release() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, owner) = identity(51);
+    registered_then_gone(&base, &registry, &secret, &owner, "Acme").await;
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let register_sig = sign(&secret, &nonce, &owner, "Acme");
+    let reply = send_release(&mut ws, "Acme", &owner, &register_sig).await;
+    assert_eq!(reply["op"], "error", "got {reply}");
+    assert_eq!(
+        registry.reservation_owner("acme").as_deref(),
+        Some(&owner[..])
+    );
+}
+
+#[tokio::test]
+async fn a_proof_made_out_to_another_rendezvous_is_refused() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, owner) = identity(52);
+    registered_then_gone(&base, &registry, &secret, &owner, "Elsewhere").await;
+
+    // What a hostile rendezvous would relay: our nonce, signed for its own name.
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign_as(
+        Proof::Release,
+        "evil.example",
+        &secret,
+        &nonce,
+        &owner,
+        "Elsewhere",
+    );
+    let reply = send_release(&mut ws, "Elsewhere", &owner, &sig).await;
+    assert!(
+        reply["d"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ownership rejected"),
+        "got {reply}"
+    );
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let frame = serde_json::json!({
+        "op": "release_name",
+        "d": { "audience": "evil.example", "name": "Elsewhere", "pubkey": owner,
+               "signature": sign_as(Proof::Release, "evil.example", &secret, &nonce, &owner, "Elsewhere") }
+    });
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    let reply = next_json(&mut ws).await;
+    assert!(
+        reply["d"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not answer to"),
+        "got {reply}"
+    );
+    assert_eq!(
+        registry.reservation_owner("elsewhere").as_deref(),
+        Some(&owner[..])
     );
 }
