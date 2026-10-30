@@ -124,6 +124,7 @@ async fn alternate_endpoint_delivers_audio(
             identities: Default::default(),
             media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
             data_dir: data_dir.join("gateway"),
+            admission: Default::default(),
         };
         Some(
             discordia_server::spawn("127.0.0.1:0".parse().unwrap(), 0, config)
@@ -133,7 +134,18 @@ async fn alternate_endpoint_delivers_audio(
     } else {
         None
     };
-    let room_name = format!("direct-{}", uuid::Uuid::new_v4());
+    // The gateway tunnels only for someone in the call the token names.
+    let (_caller, publisher, room_name) = match &gateway {
+        Some(gateway) => {
+            let (session, key, channel) = join_call(gateway.addr).await;
+            (Some(session), key, format!("voice-{channel}"))
+        }
+        None => (
+            None,
+            "publisher".to_string(),
+            format!("direct-{}", uuid::Uuid::new_v4()),
+        ),
+    };
     let mint = |identity: &str| {
         AccessToken::with_api_key(&creds.key, &creds.secret)
             .with_identity(identity)
@@ -152,7 +164,7 @@ async fn alternate_endpoint_delivers_audio(
         .unwrap();
     let unavailable = format!("ws://{}", closed.local_addr().unwrap());
     drop(closed);
-    let publisher_token = mint("publisher");
+    let publisher_token = mint(&publisher);
     let available = if let Some(gateway) = &gateway {
         format!("ws://{}/sfu", gateway.addr)
     } else if ipv6 {
@@ -330,6 +342,62 @@ async fn alternate_endpoint_delivers_audio(
     feeder.stop().await;
     listener.close().await.unwrap();
     publisher.close().await.unwrap();
+}
+
+async fn join_call(gateway: std::net::SocketAddr) -> (discordia_bot::Bot, String, uuid::Uuid) {
+    use discordia_server::protocol::{ChannelKind, ClientMessage, ServerMessage};
+    let id = discordia_bot::BotIdentity::generate();
+    let mut bot =
+        discordia_bot::Bot::connect_as_user(&format!("ws://{gateway}/gateway"), &id, "Caller")
+            .await
+            .unwrap();
+    let next = async |bot: &mut discordia_bot::Bot| {
+        tokio::time::timeout(Duration::from_secs(5), bot.next_event())
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    bot.send(&ClientMessage::CreateGuild {
+        name: "Call".into(),
+        template: None,
+    })
+    .await
+    .unwrap();
+    let guild_id = loop {
+        if let ServerMessage::GuildJoined { guild, .. } = next(&mut bot).await {
+            break guild.id;
+        }
+    };
+    bot.send(&ClientMessage::CreateChannel {
+        divider: Default::default(),
+        guild_id,
+        name: "Room".into(),
+        kind: ChannelKind::Voice,
+        topic: None,
+    })
+    .await
+    .unwrap();
+    let channel = loop {
+        if let ServerMessage::ChannelCreate(ch) = next(&mut bot).await
+            && ch.name == "Room"
+        {
+            break ch.id;
+        }
+    };
+    bot.send(&ClientMessage::JoinVoice {
+        channel_id: channel,
+        preferences: None,
+    })
+    .await
+    .unwrap();
+    loop {
+        if let ServerMessage::VoiceStateUpdate(vs) = next(&mut bot).await
+            && vs.channel_id == Some(channel)
+        {
+            break;
+        }
+    }
+    (bot, id.pubkey().to_string(), channel)
 }
 
 async fn selective_audio_event(

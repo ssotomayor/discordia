@@ -31,6 +31,7 @@ async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission: Default::default(),
     };
     let preferred: SocketAddr = "127.0.0.1:19400".parse().unwrap();
     let handle = discordia_server::spawn(preferred, 100, config)

@@ -34,6 +34,7 @@ async fn spawn_on(dir: &Path) -> (String, discordia_server::ServerHandle) {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.to_path_buf(),
+        admission: Default::default(),
     };
     let handle = discordia_server::spawn(preferred, 100, cfg)
         .await

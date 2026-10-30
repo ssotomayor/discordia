@@ -40,6 +40,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it |
 | `DISCORDIA_OPERATORS` | — | comma-separated hex pubkeys who own the system guilds, the seeded Lobby among them: every owner right but transfer and leave, and delete only while another guild is the server default. `setup` requires one for a server |
 | `DISCORDIA_PUBLIC_HOSTS` | — | comma-separated `host`, `host:port` or URLs clients dial (a DNS name, a reverse proxy). Loopback and every interface IP are always accepted; a login signed for any other address is refused |
+| `DISCORDIA_TRUSTED_PROXIES` | — (trust nobody) | comma-separated IPs whose `X-Forwarded-For` names the client — the TLS proxy's address as the gateway sees it, usually `127.0.0.1`. Without it every proxied client shares the proxy's per-address socket share (32), so one client can lock out the rest; a header from any other peer is ignored. The proxy must set it: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Under Docker the proxy arrives from the bridge's gateway (the `peer_ip` in the gateway's "upgrade requested" log), and trusting it is safe only when 9000 is published on `127.0.0.1` alone, or anyone reaching 9000 directly could name any client |
 | `LIVEKIT_URL` | derived per-connection | SFU URL handed to clients |
 | `LIVEKIT_API_KEY` / `_SECRET` | generated into `<data dir>/livekit-keys` on first run | set only for an external SFU (`LIVEKIT_URL`); must match it |
 | `LIVEKIT_PORT` | `7880` | port used when deriving the URL (the bundled SFU always binds 7880) |
@@ -308,7 +309,7 @@ toolchain and cannot build, so `out/` is produced elsewhere and synced in.
 | Name | Serves | How |
 |---|---|---|
 | `discordia.world`, `www` | the site, HTTPS | nginx vhost `discordia.world`, root `/var/www/discordia.world`, certbot cert, `error_page 404 /404.html`, `/_next/static/` immutable for a year |
-| `app.discordia.world` | `wss://` gateway proxy to 127.0.0.1:9000 | nginx vhost `app.discordia.world`, WebSocket upgrade, 1 h timeouts |
+| `app.discordia.world` | `wss://` gateway proxy to 127.0.0.1:9000 | nginx vhost `app.discordia.world`, WebSocket upgrade, 1 h timeouts, `X-Forwarded-For` set; the gateway runs with `DISCORDIA_TRUSTED_PROXIES=127.0.0.1` |
 | `rendezvous.discordia.world` | plain `ws://…:7700`, no proxy, no TLS | bare A record; the rendezvous must see real peer addresses |
 
 | Path | What happens |

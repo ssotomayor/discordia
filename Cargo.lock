@@ -2458,6 +2458,7 @@ dependencies = [
  "dioxus-desktop",
  "dioxus-grid-layout",
  "dirs 5.0.1",
+ "discordia-bot",
  "discordia-protocol",
  "discordia-rendezvous",
  "discordia-server",

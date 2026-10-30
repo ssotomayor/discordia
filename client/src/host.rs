@@ -576,6 +576,7 @@ pub async fn start_self_host(
         data_dir,
         identities,
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        admission: Default::default(),
     };
     let (router, shutdown) = discordia_server::build_gateway(cfg)
         .await

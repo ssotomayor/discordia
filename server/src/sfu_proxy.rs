@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::ws::{
     CloseFrame as AxumClose, Message as AxumMessage, WebSocket, WebSocketUpgrade,
 };
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
@@ -24,10 +24,12 @@ use crate::AppContext;
 
 /// Every room of a call is one tunnel, so a dozen callers with screens shared
 /// stay well inside this; beyond it the gateway refuses rather than queue.
-const MAX_TUNNELS: usize = 128;
+/// Each key and each origin has a smaller share (`admission::Limits`).
+pub const MAX_TUNNELS: usize = 128;
 
-static TUNNELS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_TUNNELS)));
+/// Signaling is protobuf of a room's participants and tracks; tungstenite's
+/// default of 64 MiB let one message hold that much per tunnel, for its life.
+pub const MAX_SIGNAL_MESSAGE: usize = 1024 * 1024;
 
 /// Enough for LiveKit's validate answer, which is a sentence.
 const MAX_PROXIED_BODY: usize = 64 * 1024;
@@ -38,6 +40,8 @@ pub async fn proxy(
     Path(rest): Path<String>,
     uri: Uri,
     headers: HeaderMap,
+    peer: Option<ConnectInfo<std::net::SocketAddr>>,
+    relay: Option<axum::Extension<crate::admission::RelayPeer>>,
 ) -> Response {
     let (cfg, _) = ctx.livekit.route();
     if cfg.explicit_url.is_some() {
@@ -54,7 +58,21 @@ pub async fn proxy(
     };
     match ws {
         Some(ws) => {
-            let Ok(permit) = TUNNELS.clone().try_acquire_owned() else {
+            let Some(caller) = caller_in_call(&ctx, &cfg, &uri, &headers) else {
+                tracing::info!("voice route: tunnel refused, no token for a call in progress");
+                return StatusCode::UNAUTHORIZED.into_response();
+            };
+            let origin = crate::admission::origin_of(
+                &ctx.admission,
+                peer.map(|ConnectInfo(addr)| addr.ip()),
+                crate::http::forwarded_for(&headers),
+                relay.as_ref().map(|r| &r.0),
+            );
+            let slots = ctx
+                .tunnels_by_key
+                .take(Some(caller))
+                .zip(ctx.tunnels_by_origin.take(origin));
+            let Some(slots) = slots else {
                 tracing::warn!("voice route: signaling tunnel refused, too many open");
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -72,32 +90,77 @@ pub async fn proxy(
                     .headers_mut()
                     .insert(header::AUTHORIZATION, auth.clone());
             }
-            let upstream = match tokio_tungstenite::connect_async(request).await {
-                Ok((stream, _)) => stream,
-                // The SFU refused the handshake, a bad token above all: hand
-                // the caller its verdict, not a gateway error.
-                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-                    let status = StatusCode::from_u16(response.status().as_u16())
-                        .unwrap_or(StatusCode::BAD_GATEWAY);
-                    tracing::info!(%status, "voice route: SFU refused a tunneled handshake");
-                    return status.into_response();
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "voice route: SFU unreachable for a tunnel");
-                    return (StatusCode::BAD_GATEWAY, "the voice server is not answering")
-                        .into_response();
-                }
+            let limit = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+                max_message_size: Some(MAX_SIGNAL_MESSAGE),
+                max_frame_size: Some(MAX_SIGNAL_MESSAGE),
+                ..Default::default()
             };
+            let upstream =
+                match tokio_tungstenite::connect_async_with_config(request, Some(limit), false)
+                    .await
+                {
+                    Ok((stream, _)) => stream,
+                    // The SFU refused the handshake, a bad token above all: hand
+                    // the caller its verdict, not a gateway error.
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                        let status = StatusCode::from_u16(response.status().as_u16())
+                            .unwrap_or(StatusCode::BAD_GATEWAY);
+                        tracing::info!(%status, "voice route: SFU refused a tunneled handshake");
+                        return status.into_response();
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "voice route: SFU unreachable for a tunnel");
+                        return (StatusCode::BAD_GATEWAY, "the voice server is not answering")
+                            .into_response();
+                    }
+                };
             tracing::info!(path = %rest, "voice route: signaling tunnel opened");
-            ws.on_upgrade(move |socket| async move {
-                let _permit = permit;
-                pipe(socket, upstream).await;
-                tracing::info!("voice route: signaling tunnel closed");
-            })
-            .into_response()
+            ws.max_message_size(MAX_SIGNAL_MESSAGE)
+                .max_frame_size(MAX_SIGNAL_MESSAGE)
+                .on_upgrade(move |socket| async move {
+                    let _slots = slots;
+                    pipe(socket, upstream).await;
+                    tracing::info!("voice route: signaling tunnel closed");
+                })
+                .into_response()
         }
         None => forward_get(&authority, &path_and_query, &headers).await,
     }
+}
+
+/// The caller's key, when its token is one this gateway's SFU keys signed and
+/// names a room of the call that key is in now. Only a caller in a call needs
+/// the tunnel, so nobody else can hold one; the SFU still checks it again.
+fn caller_in_call(
+    ctx: &AppContext,
+    cfg: &crate::livekit::LiveKitConfig,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Option<String> {
+    let from_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string);
+    let from_query = || {
+        uri.query()?
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("access_token="))
+            .map(str::to_string)
+    };
+    let token = from_header.or_else(from_query)?;
+    let claims =
+        livekit_api::access_token::TokenVerifier::with_api_key(&cfg.api_key, &cfg.api_secret)
+            .verify(&token)
+            .ok()?;
+    let key = claims.sub.split('#').next()?.to_string();
+    let room = &claims.video.room;
+    let channel = room
+        .strip_prefix("voice-")
+        .or_else(|| room.strip_prefix("screen-"))?
+        .parse()
+        .ok()?;
+    (ctx.state.voice_channel_of(&key) == Some(channel)).then_some(key)
 }
 
 async fn pipe(

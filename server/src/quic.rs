@@ -97,12 +97,21 @@ pub fn serve_on_with(
     tracing::info!(%endpoint_id, ?sockets, "gateway listening on QUIC");
 
     let accepting = endpoint.clone();
+    let limits = crate::admission::Limits::default();
+    let peers = crate::admission::Budget::new(
+        limits.quic_connections_per_origin,
+        crate::state::MAX_CONNECTIONS,
+    );
     let task = tokio::spawn(async move {
         while let Some(incoming) = accepting.accept().await {
             let router = router.clone();
             let coordination = coordination.clone();
+            let peers = peers.clone();
+            let header_read = limits.header_read;
             tokio::spawn(async move {
-                if let Err(e) = serve_connection(incoming, router, &coordination).await {
+                if let Err(e) =
+                    serve_connection(incoming, router, &coordination, &peers, header_read).await
+                {
                     tracing::debug!(error = %e, "quic connection ended");
                 }
             });
@@ -141,6 +150,8 @@ async fn serve_connection(
     incoming: iroh::endpoint::Incoming,
     router: Router,
     _coordination: &Coordination,
+    peers: &std::sync::Arc<crate::admission::Budget<crate::admission::Origin>>,
+    header_read: std::time::Duration,
 ) -> Result<(), String> {
     let arrived = incoming.remote_addr();
     let conn = incoming.await.map_err(|e| format!("handshake: {e}"))?;
@@ -153,6 +164,16 @@ async fn serve_connection(
         }
         _ => None,
     };
+    let origin = match peer {
+        Some(addr) => crate::admission::Origin::ip(addr.ip()),
+        None => crate::admission::Origin::Relayed(remote.to_string()),
+    };
+    // Each connection carries streams the gateway serves, so a peer opening
+    // fresh ones is held to a share too, before any stream is read.
+    let Some(_slot) = peers.take(Some(origin)) else {
+        conn.close(0u32.into(), b"too many connections");
+        return Err(format!("{remote} holds too many connections"));
+    };
     let router = router.layer(axum::Extension(
         crate::connection_routes::RouteSource::Quic(conn.clone()),
     ));
@@ -161,7 +182,9 @@ async fn serve_connection(
             tracing::info!(%remote, %addr, "quic peer connected");
             router.layer(axum::Extension(ConnectInfo(addr)))
         }
-        None => router,
+        None => router.layer(axum::Extension(crate::admission::RelayPeer(
+            remote.to_string(),
+        ))),
     };
 
     // One QUIC peer is one machine; each stream it opens is a whole HTTP
@@ -184,11 +207,10 @@ async fn serve_connection(
             let _permit = permit;
             let io = hyper_util::rt::TokioIo::new(tokio::io::join(recv, send));
             let service = hyper_util::service::TowerToHyperService::new(router);
-            if let Err(e) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, service)
-                .with_upgrades()
-                .await
-            {
+            let mut http = hyper::server::conn::http1::Builder::new();
+            http.timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(header_read);
+            if let Err(e) = http.serve_connection(io, service).with_upgrades().await {
                 tracing::debug!(error = %e, "quic http stream ended");
             }
         });
@@ -253,6 +275,7 @@ mod tests {
             identities: Default::default(),
             media_max_bytes: crate::media::DEFAULT_MAX_BYTES,
             data_dir: dir,
+            admission: Default::default(),
         })
         .await
         .expect("build context");
@@ -355,6 +378,49 @@ mod tests {
         assert_eq!(parsed["op"], "hello", "got {text}");
         assert!(parsed["d"]["nonce"].as_str().is_some_and(|n| !n.is_empty()));
 
+        handle.shutdown().await;
+    }
+
+    /// Each connection is streams the gateway serves; a peer opening fresh ones
+    /// is held to a share before any stream is read.
+    #[tokio::test]
+    async fn one_peer_holds_only_its_share_of_connections() {
+        let handle = serve_quic(gateway_router().await, None)
+            .await
+            .expect("serve quic");
+        let client = Endpoint::builder(presets::Minimal)
+            .bind()
+            .await
+            .expect("client endpoint");
+        let addr = EndpointAddr::new(handle.endpoint_id).with_addrs(
+            dialable_addrs(&handle.sockets)
+                .into_iter()
+                .map(TransportAddr::Ip),
+        );
+        let share = crate::admission::Limits::default().quic_connections_per_origin;
+        let mut answered = Vec::new();
+        let mut held = Vec::new();
+        for _ in 0..=share {
+            let conn = client
+                .connect(addr.clone(), GATEWAY_ALPN)
+                .await
+                .expect("connect");
+            let reply = async {
+                let (mut send, mut recv) = conn.open_bi().await.ok()?;
+                send.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+                    .await
+                    .ok()?;
+                let mut buf = [0u8; 12];
+                recv.read_exact(&mut buf).await.ok()?;
+                Some(buf.starts_with(b"HTTP/1.1 200"))
+            };
+            let reply = tokio::time::timeout(std::time::Duration::from_secs(5), reply).await;
+            answered.push(matches!(reply, Ok(Some(true))));
+            held.push(conn);
+        }
+        let mut expected = vec![true; share];
+        expected.push(false);
+        assert_eq!(answered, expected);
         handle.shutdown().await;
     }
 

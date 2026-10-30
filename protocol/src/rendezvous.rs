@@ -167,6 +167,11 @@ impl GeoPoint {
 /// The longest server name a host may claim, counted in characters.
 pub const MAX_NAME_CHARS: usize = 64;
 
+/// A control frame either way. Each side holds the other to it, since a
+/// register or a name list is a few hundred bytes and both ends parse what
+/// arrives before knowing what it is.
+pub const CONTROL_FRAME_BYTES: usize = 64 * 1024;
+
 /// ASCII only, so a lookalike letter from another script cannot squat a code:
 /// "Friday Game Night" answers to `friday-game-night`.
 pub fn join_code(name: &str) -> Option<String> {

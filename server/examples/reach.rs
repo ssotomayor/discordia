@@ -75,6 +75,7 @@ async fn listen(coordination: Coordination) {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission: Default::default(),
     })
     .await
     .expect("build router");

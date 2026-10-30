@@ -29,6 +29,9 @@ async fn fixture() -> (Arc<AppContext>, User, Id, Id, u64, u64) {
         livekit: crate::livekit::LiveKitConfig::from_env(&dir),
         identities: Default::default(),
         shutdown: Arc::new(tokio::sync::watch::Sender::new(false)),
+        admission: Default::default(),
+        tunnels_by_key: crate::admission::Budget::new(8, 128),
+        tunnels_by_origin: crate::admission::Budget::new(16, 128),
     });
     (ctx, user, guild.id, channel, owner, sibling)
 }

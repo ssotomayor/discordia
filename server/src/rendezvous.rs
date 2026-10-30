@@ -179,12 +179,12 @@ impl crate::livekit::VoiceTokenMinter for RendezvousMinter {
                 .map_err(|e| format!("rendezvous mint request: {e}"))?;
             if !res.status().is_success() {
                 let code = res.status();
-                let body = res.text().await.unwrap_or_default();
+                let body = capped_body(res).await.unwrap_or_default();
+                let body = String::from_utf8_lossy(&body);
                 return Err(format!("rendezvous mint rejected ({code}): {body}"));
             }
-            let token = res
-                .json::<Resp>()
-                .await
+            let body = capped_body(res).await?;
+            let token = serde_json::from_slice::<Resp>(&body)
                 .map_err(|e| format!("rendezvous mint response: {e}"))?
                 .token;
             grants_match(&token, req.can_publish)?;
@@ -240,7 +240,11 @@ pub async fn coordination_offered(rendezvous_url: &str) -> crate::quic::Coordina
         .ok()
         .and_then(|r| r.error_for_status().ok());
     let relay = match fetched {
-        Some(r) => r.json::<Offered>().await.ok().and_then(|o| o.relay_url),
+        Some(r) => capped_body(r)
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Offered>(&b).ok())
+            .and_then(|o| o.relay_url),
         None => None,
     };
     match relay {
@@ -357,10 +361,36 @@ pub async fn register(
 type ControlWs =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn open_control(base: &str) -> Result<(ControlWs, String), String> {
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/control"))
+/// A mint answer is a token, `/config` a few URLs: nothing a rendezvous says
+/// over HTTP needs more, and the body is buffered before it is parsed.
+const MAX_RENDEZVOUS_BODY: usize = 16 * 1024;
+
+async fn capped_body(mut res: reqwest::Response) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = res
+        .chunk()
         .await
-        .map_err(|e| format!("rendezvous control connect: {e}"))?;
+        .map_err(|e| format!("rendezvous response: {e}"))?
+    {
+        if body.len() + chunk.len() > MAX_RENDEZVOUS_BODY {
+            return Err("the rendezvous answered with more than a response needs".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn open_control(base: &str) -> Result<(ControlWs, String), String> {
+    // tungstenite's default takes 64 MiB, and every frame is parsed before its op is known.
+    let limit = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(crate::protocol::rendezvous::CONTROL_FRAME_BYTES),
+        max_frame_size: Some(crate::protocol::rendezvous::CONTROL_FRAME_BYTES),
+        ..Default::default()
+    };
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async_with_config(format!("{base}/control"), Some(limit), false)
+            .await
+            .map_err(|e| format!("rendezvous control connect: {e}"))?;
     loop {
         match next_reply(&mut ws).await? {
             RendezvousToHost::Challenge { nonce } => return Ok((ws, nonce)),
@@ -769,6 +799,48 @@ mod name_tests {
                 .starts_with(b"discordia-rendezvous-ownership-v1\n")
         );
         assert!(sign(&honest, "acme").is_ok());
+    }
+
+    /// A rendezvous answers in frames of a few hundred bytes and bodies the
+    /// size of a token; the host refuses more before parsing any of it.
+    #[tokio::test]
+    async fn a_rendezvous_cannot_hand_the_host_more_than_a_reply_needs() {
+        use crate::livekit::{MintRequest, VoiceTokenMinter};
+        use axum::extract::ws::{Message, WebSocketUpgrade};
+        let control = |ws: WebSocketUpgrade| async move {
+            ws.on_upgrade(|mut socket| async move {
+                let big = format!(
+                    "{{\"d\":{{\"nonce\":\"{}\"}},\"op\":\"challenge\"}}",
+                    "x".repeat(crate::protocol::rendezvous::CONTROL_FRAME_BYTES)
+                );
+                let _ = socket.send(Message::Text(big)).await;
+                let _ = socket.recv().await;
+            })
+        };
+        let token = || async { format!("{{\"token\":\"{}\"}}", "x".repeat(MAX_RENDEZVOUS_BODY)) };
+        let app = axum::Router::new()
+            .route("/control", axum::routing::get(control))
+            .route("/voice-token", axum::routing::post(token));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        assert!(
+            open_control(&url).await.is_err(),
+            "an oversized control frame was read"
+        );
+        let minted = RendezvousMinter::new(&url, "grant".into())
+            .mint(MintRequest {
+                room: "voice-x".into(),
+                identity: "me".into(),
+                name: "Me".into(),
+                can_publish: false,
+            })
+            .await;
+        assert!(
+            minted.is_err_and(|e| e.contains("more than a response needs")),
+            "an oversized mint body was buffered"
+        );
     }
 
     #[tokio::test]

@@ -24,6 +24,7 @@ fn test_config() -> discordia_server::ServerConfig {
         identities: Default::default(),
         media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
+        admission: Default::default(),
     }
 }
 

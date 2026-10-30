@@ -148,6 +148,8 @@ ignored = ["libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "liv
 [dev-dependencies]
 rubato-legacy = { package = "rubato", version = "=0.16.2" }
 axum = { workspace = true }
+# A caller in a gateway call, which a `/sfu` tunnel needs.
+discordia-bot = { path = "../bot-sdk" }
 discordia-rendezvous = { path = "../rendezvous" }
 livekit-api = { workspace = true }
 uuid = { workspace = true }
