@@ -1,7 +1,7 @@
 # Imágenes cifradas en DMs — plan
 
 Base: `master` / `530439a` (#421). Rama: `dm-encrypted-images`.
-Estado: propuesta; no implementado.
+Estado: plan; no implementado. Límite confirmado por el usuario: 10 MiB por imagen antes del cifrado.
 
 ## Alcance y tamaño
 
@@ -12,7 +12,7 @@ transporte y su política de archivos.
 | Concepto | Decisión propuesta |
 |---|---|
 | Límite actual del cliente | 2 MiB |
-| Límite inicial de la nueva función | 10 MiB de imagen antes del cifrado |
+| Límite confirmado de la nueva función | 10 MiB (10.485.760 bytes) de imagen antes del cifrado |
 | Máximo efectivo | El menor entre el límite del cliente y el del servidor, descontando el sobrecoste del cifrado |
 | Decodificación | Mantener límites de dimensiones, píxeles y memoria independientes de los bytes comprimidos |
 | Servidor | Preferencia `dm_blob_server`; reutilizar el selector existente y verificar soporte de binarios cifrados antes de elegir el predeterminado |
