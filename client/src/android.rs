@@ -15,6 +15,7 @@ const VAULT_ALIAS: &str = "com.discordia.identity-vault.hmac.v1";
 const VAULT_LABEL: &[u8] = b"discordia/identity-vault/passphrase/v1";
 const VAULT_MARKER: &str = "android-keystore-hmac-v1";
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 static VAULT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 static MEDIA_READY: AtomicBool = AtomicBool::new(false);
 static MEDIA_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -617,7 +618,7 @@ pub async fn document(
 }
 
 pub fn initialize() -> Result<(), String> {
-    let path = with_env(|env| {
+    let (config_path, cache_path) = with_env(|env| {
         // SAFETY: Tao holds this Context as a global reference; this wrapper never deletes it.
         let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
         let directory = env
@@ -630,18 +631,48 @@ pub fn initialize() -> Result<(), String> {
             .map_err(system_error)?;
         let path = JString::from(path);
         let value: String = env.get_string(&path).map_err(system_error)?.into();
-        Ok(PathBuf::from(value).join("discordia"))
+        let config_path = PathBuf::from(value).join("discordia");
+
+        let cache_directory = env
+            .call_method(&context, "getCacheDir", "()Ljava/io/File;", &[])
+            .and_then(|value| value.l())
+            .map_err(system_error)?;
+        let cache_path = env
+            .call_method(
+                &cache_directory,
+                "getAbsolutePath",
+                "()Ljava/lang/String;",
+                &[],
+            )
+            .and_then(|value| value.l())
+            .map_err(system_error)?;
+        let cache_path = JString::from(cache_path);
+        let cache_value: String = env.get_string(&cache_path).map_err(system_error)?.into();
+        let cache_path = PathBuf::from(cache_value).join("discordia");
+
+        Ok((config_path, cache_path))
     })?;
-    if !path.is_absolute() {
+    if !config_path.is_absolute() {
         return Err("Android returned a nonabsolute private storage path".into());
     }
-    std::fs::create_dir_all(&path).map_err(|error| format!("private storage: {error}"))?;
+    std::fs::create_dir_all(&config_path).map_err(|error| format!("private storage: {error}"))?;
     if let Some(previous) = CONFIG_DIR.get() {
-        if previous != &path {
+        if previous != &config_path {
             return Err("Android private storage changed during the session".into());
         }
-    } else if CONFIG_DIR.set(path).is_err() {
+    } else if CONFIG_DIR.set(config_path).is_err() {
         return Err("Android private storage initialized concurrently".into());
+    }
+
+    if cache_path.is_absolute() {
+        let _ = std::fs::create_dir_all(&cache_path);
+        if let Some(previous) = CACHE_DIR.get() {
+            if previous != &cache_path {
+                return Err("Android cache storage changed during the session".into());
+            }
+        } else if CACHE_DIR.set(cache_path).is_err() {
+            return Err("Android cache storage initialized concurrently".into());
+        }
     }
     Ok(())
 }
@@ -654,6 +685,13 @@ pub fn config_dir() -> PathBuf {
             eprintln!("Android private storage was accessed before initialization");
             std::process::exit(1);
         }
+    }
+}
+
+pub fn cache_dir() -> PathBuf {
+    match CACHE_DIR.get() {
+        Some(path) => path.clone(),
+        None => config_dir(),
     }
 }
 

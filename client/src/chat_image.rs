@@ -11,19 +11,13 @@ pub const MAX_THUMB_H: u32 = 480;
 const MAX_PIXELS: u64 = 16_000_000;
 const TOO_LARGE: &str = "Image too large (max 2 MiB / 2,097,152 bytes).";
 
+#[cfg(test)]
 pub fn read_file(path: &Path) -> Result<String, String> {
-    read_file_with_limit(path, MAX_BYTES)
+    read_file_strict(path, MAX_BYTES)
 }
 
-fn size_error(limit: usize) -> String {
-    if limit == MAX_BYTES {
-        TOO_LARGE.into()
-    } else {
-        format!("Image too large (max {limit} bytes).")
-    }
-}
-
-pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
+#[cfg(test)]
+fn read_file_strict(path: &Path, max_bytes: usize) -> Result<String, String> {
     let max_bytes = max_bytes.min(MAX_DM_BYTES);
     let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
     let metadata = file.metadata().map_err(|_| "Couldn't read that file.")?;
@@ -38,6 +32,105 @@ pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, Str
         .read_to_end(&mut bytes)
         .map_err(|_| "Couldn't read that file.")?;
     from_bytes_with_limit(&bytes, max_bytes)
+}
+
+fn size_error(limit: usize) -> String {
+    if limit == MAX_BYTES {
+        TOO_LARGE.into()
+    } else {
+        format!("Image too large (max {limit} bytes).")
+    }
+}
+
+const MAX_INPUT_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
+    let max_bytes = max_bytes.min(MAX_DM_BYTES);
+    let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
+    let metadata = file.metadata().map_err(|_| "Couldn't read that file.")?;
+    if !metadata.is_file() {
+        return Err("That's not an image file.".into());
+    }
+    if metadata.len() > MAX_INPUT_FILE_BYTES {
+        return Err(size_error(max_bytes));
+    }
+    if metadata.len() <= max_bytes as u64 {
+        let mut bytes = Vec::new();
+        file.take((max_bytes + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Couldn't read that file.")?;
+        return from_bytes_with_limit(&bytes, max_bytes);
+    }
+    compress_image_file(path, max_bytes)
+}
+
+fn compress_image_file(path: &Path, max_bytes: usize) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
+    let mut bytes = Vec::new();
+    file.take(MAX_INPUT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Couldn't read that file.")?;
+    if bytes.len() > MAX_INPUT_FILE_BYTES as usize {
+        return Err(size_error(max_bytes));
+    }
+    compress_image_bytes(&bytes, max_bytes)
+}
+
+pub fn compress_image_bytes(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    let format = image::guess_format(bytes).map_err(|_| "That's not a supported image.")?;
+    if format == image::ImageFormat::Gif {
+        return Err(size_error(max_bytes));
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(MAX_PIXELS * 8);
+    reader.limits(limits);
+    let decoder = reader
+        .into_decoder()
+        .map_err(|_| "Couldn't open that image.")?;
+    let dynamic =
+        image::DynamicImage::from_decoder(decoder).map_err(|_| "Couldn't decode that image.")?;
+
+    for max_dim in [2048, 1600, 1280] {
+        let resized = if dynamic.width() > max_dim || dynamic.height() > max_dim {
+            dynamic.thumbnail(max_dim, max_dim)
+        } else {
+            dynamic.clone()
+        };
+
+        if resized.color().has_alpha() {
+            let mut png_buf = Vec::new();
+            if resized
+                .write_to(&mut Cursor::new(&mut png_buf), image::ImageFormat::Png)
+                .is_ok()
+                && png_buf.len() <= max_bytes
+            {
+                return Ok(data_url("image/png", &png_buf));
+            }
+        }
+
+        let rgb = resized.to_rgb8();
+        for quality in [85, 75, 65] {
+            let mut jpeg_buf = Vec::new();
+            let mut encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, quality);
+            if encoder
+                .encode(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .is_ok()
+                && jpeg_buf.len() <= max_bytes
+            {
+                return Ok(data_url("image/jpeg", &jpeg_buf));
+            }
+        }
+    }
+    Err(size_error(max_bytes))
 }
 
 pub fn thumbnail_data_url(bytes: &[u8]) -> Result<String, String> {
@@ -269,6 +362,28 @@ mod tests {
     }
 
     #[test]
+    fn read_file_with_limit_allows_higher_configured_limit() {
+        let path =
+            std::env::temp_dir().join(format!("discordia-sticker-{}.png", uuid::Uuid::new_v4()));
+        let mut seed = 123456789u32;
+        let pixels: Vec<u8> = (0..800 * 800 * 4)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed >> 16) as u8
+            })
+            .collect();
+        let url = rgba_png_with_limit(800, 800, &pixels, 5_000_000).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        assert!(bytes.len() > MAX_BYTES);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_file(&path), Err(TOO_LARGE.into()));
+        assert!(read_file_with_limit(&path, 5_000_000).is_ok());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn thumbnail_data_url_resizes_large_and_preserves_small() {
         let small_url = rgba_png(2, 1, &[255, 0, 0, 255, 0, 255, 0, 64]).unwrap();
         let small_bytes = base64::engine::general_purpose::STANDARD
@@ -292,5 +407,23 @@ mod tests {
         assert!(decoded.height() <= MAX_THUMB_H);
         assert_eq!(decoded.width(), 640);
         assert_eq!(decoded.height(), 480);
+    }
+
+    #[test]
+    fn compress_image_bytes_downscales_oversized_photos() {
+        let large_rgba = vec![200u8; 3000 * 2000 * 4];
+        let mut large_png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut large_png)
+            .write_image(&large_rgba, 3000, 2000, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let compressed_url = compress_image_bytes(&large_png, 100 * 1024).unwrap();
+        assert!(compressed_url.starts_with("data:image/"));
+        let compressed_bytes = base64::engine::general_purpose::STANDARD
+            .decode(compressed_url.split_once(',').unwrap().1)
+            .unwrap();
+        assert!(compressed_bytes.len() <= 100 * 1024);
+        let decoded = image::load_from_memory(&compressed_bytes).unwrap();
+        assert!(decoded.width() <= 2048);
+        assert!(decoded.height() <= 2048);
     }
 }

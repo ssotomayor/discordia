@@ -259,6 +259,7 @@ pub(super) fn StickerPicker(
     let fetch = gateway.clone();
     use_effect(move || {
         fetch.send(ClientMessage::FetchGuildStickers { guild_id });
+        fetch.send(ClientMessage::FetchGuildFilePolicy { guild_id });
     });
     let stickers = state
         .read()
@@ -266,6 +267,12 @@ pub(super) fn StickerPicker(
         .get(&guild_id)
         .cloned()
         .unwrap_or_default();
+    let max_sticker_bytes = state
+        .read()
+        .guild_file_policies
+        .get(&guild_id)
+        .map(|p| p.max_sticker_bytes as usize)
+        .unwrap_or(crate::protocol::DEFAULT_GUILD_STICKER_BYTES as usize);
     rsx! {
         ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(),
             on_click: move |_| {
@@ -334,7 +341,7 @@ pub(super) fn StickerPicker(
                             button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
                                 match crate::file_dialog::pick_file(&[(crate::i18n::label("Image"), &["png", "gif", "webp", "jpg"])]).await {
                                 Ok(Some(path)) => {
-                                    match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
+                                    match tokio::task::spawn_blocking(move || crate::chat_image::read_file_with_limit(&path, max_sticker_bytes)).await {
                                         Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
                                         Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
                                     }

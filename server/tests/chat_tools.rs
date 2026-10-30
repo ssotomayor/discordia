@@ -641,4 +641,52 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
             .await
             .is_ok()
     );
+
+    let mut sticker_data = vec![0; 3_000_000];
+    sticker_data[..6].copy_from_slice(b"GIF89a");
+    let sticker_url = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&sticker_data)
+    );
+    assert!(
+        state
+            .handle_chat_tool(
+                &owner,
+                ClientMessage::CreateGuildSticker {
+                    guild_id,
+                    name: "big_sticker".into(),
+                    image: sticker_url.clone(),
+                }
+            )
+            .await
+            .is_err()
+    );
+    state
+        .handle_chat_tool(
+            &owner,
+            ClientMessage::SetGuildFilePolicy {
+                guild_id,
+                policy: FilePolicy {
+                    max_bytes: 10_000_000,
+                    retention_days: 7,
+                    max_avatar_bytes: 2_097_152,
+                    max_sticker_bytes: 5_000_000,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        state
+            .handle_chat_tool(
+                &owner,
+                ClientMessage::CreateGuildSticker {
+                    guild_id,
+                    name: "big_sticker".into(),
+                    image: sticker_url,
+                }
+            )
+            .await
+            .is_ok()
+    );
 }

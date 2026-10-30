@@ -14,7 +14,11 @@ pub const KIND: u16 = 15;
 pub const MAX_BYTES: usize = crate::chat_image::MAX_DM_BYTES;
 pub const MAX_CIPHER_BYTES: usize = MAX_BYTES + 16;
 pub const MAX_JOBS: usize = 8;
-const CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const CACHE_BYTES: u64 = if cfg!(target_os = "android") {
+    128 * 1024 * 1024
+} else {
+    256 * 1024 * 1024
+};
 const CACHE_TTL: Duration = Duration::from_secs(7 * 86400);
 
 pub fn prepare_permit() -> Result<tokio::sync::OwnedSemaphorePermit, String> {
@@ -463,6 +467,91 @@ fn root(owner: &str) -> Result<PathBuf, String> {
     Ok(crate::identity::config_dir().join("dm-images").join(owner))
 }
 
+fn cache_root(owner: &str) -> Result<PathBuf, String> {
+    if !valid_hash(owner) {
+        return Err("Invalid image account.".into());
+    }
+    let target = crate::identity::cache_dir().join("dm-images").join(owner);
+    migrate_legacy_cache(owner, &target);
+    Ok(target)
+}
+
+fn migrate_legacy_cache(owner: &str, new_root: &std::path::Path) {
+    let Ok(legacy_root) = root(owner) else {
+        return;
+    };
+    migrate_legacy_cache_at(&legacy_root, new_root);
+}
+
+fn migrate_legacy_cache_at(legacy_root: &std::path::Path, new_root: &std::path::Path) {
+    if legacy_root == new_root {
+        return;
+    }
+    let legacy_cache = legacy_root.join("cache");
+    if !legacy_cache.is_dir() {
+        return;
+    }
+    let new_cache = new_root.join("cache");
+    if !new_cache.exists() {
+        if let Some(parent) = new_cache.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::rename(&legacy_cache, &new_cache).is_ok() {
+            trim_cache(&new_cache);
+            let _ = std::fs::remove_dir(legacy_root);
+            return;
+        }
+    }
+    let _ = std::fs::create_dir_all(&new_cache);
+    if let Ok(entries) = std::fs::read_dir(&legacy_cache) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && let Some(name) = path.file_name()
+            {
+                let dest = new_cache.join(name);
+                let should_remove = if dest.exists() {
+                    true
+                } else {
+                    std::fs::rename(&path, &dest).is_ok() || std::fs::copy(&path, &dest).is_ok()
+                };
+                if should_remove {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&legacy_cache);
+    let _ = std::fs::remove_dir(legacy_root);
+    trim_cache(&new_cache);
+}
+
+pub fn sweep_legacy_caches() {
+    let legacy_base = crate::identity::config_dir().join("dm-images");
+    let cache_base = crate::identity::cache_dir().join("dm-images");
+    sweep_legacy_caches_at(&legacy_base, &cache_base);
+}
+
+fn sweep_legacy_caches_at(legacy_base: &std::path::Path, cache_base: &std::path::Path) {
+    if legacy_base == cache_base || !legacy_base.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(legacy_base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir()
+            && let Some(owner) = path.file_name().and_then(|n| n.to_str())
+            && valid_hash(owner)
+        {
+            let new_root = cache_base.join(owner);
+            migrate_legacy_cache_at(&path, &new_root);
+        }
+    }
+    let _ = std::fs::remove_dir(legacy_base);
+}
+
 async fn download_ciphertext(image: &Descriptor) -> Result<Vec<u8>, String> {
     let mut url = public_url(&image.url)?;
     let mut bytes = None;
@@ -512,7 +601,7 @@ pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> 
         .await
         .map_err(|_| "Image downloads unavailable.")?;
     image.validate()?;
-    let cache = root(owner)?.join("cache");
+    let cache = cache_root(owner)?.join("cache");
     let thumb_path = cache.join(format!("{}.thumb", image.hash));
     if tokio::fs::metadata(&thumb_path).await.is_ok_and(|m| {
         m.is_file()
@@ -579,7 +668,7 @@ pub async fn load_original(owner: &str, image: &Descriptor) -> Result<String, St
         .await
         .map_err(|_| "Image downloads unavailable.")?;
     image.validate()?;
-    let cache = root(owner)?.join("cache");
+    let cache = cache_root(owner)?.join("cache");
     let path = cache.join(format!("{}.bin", image.hash));
     let bytes = if tokio::fs::metadata(&path).await.is_ok_and(|m| {
         m.len() <= MAX_CIPHER_BYTES as u64
@@ -766,7 +855,7 @@ pub fn prepare(
         let _ = std::fs::remove_file(bin);
         return Err(error);
     }
-    if let Ok(cache) = root(&owner).map(|r| r.join("cache"))
+    if let Ok(cache) = cache_root(&owner).map(|r| r.join("cache"))
         && std::fs::create_dir_all(&cache).is_ok()
     {
         let cache_path = cache.join(format!("{}.bin", job.image.hash));
@@ -783,6 +872,7 @@ pub fn prepare(
 }
 
 pub fn load_jobs(secret: &secp256k1::SecretKey) -> Vec<Job> {
+    sweep_legacy_caches();
     let owner = event::xonly_hex(secret);
     let Ok(root) = root(&owner) else {
         return Vec::new();
@@ -1121,7 +1211,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let cache_file = root(&owner)
+        let cache_file = cache_root(&owner)
             .unwrap()
             .join("cache")
             .join(format!("{}.bin", job.image.hash));
@@ -1129,7 +1219,7 @@ mod tests {
         let cached_bytes = std::fs::read(&cache_file).unwrap();
         assert_eq!(job.image.decrypt(&cached_bytes).unwrap(), PNG);
 
-        let thumb_file = root(&owner)
+        let thumb_file = cache_root(&owner)
             .unwrap()
             .join("cache")
             .join(format!("{}.thumb", job.image.hash));
@@ -1372,5 +1462,102 @@ mod tests {
             !queue.tasks.contains_key("job2"),
             "second job to same peer must wait"
         );
+    }
+
+    #[test]
+    fn legacy_cache_migrates_to_cache_dir_and_cleans_up_orphaned_directory() {
+        let dir = std::env::temp_dir().join(format!("dm-image-migration-{}", uuid::Uuid::new_v4()));
+        let legacy_root = dir.join("config").join("dm-images").join("owner");
+        let new_root = dir.join("cache").join("dm-images").join("owner");
+
+        let legacy_cache = legacy_root.join("cache");
+        std::fs::create_dir_all(&legacy_cache).unwrap();
+        std::fs::write(legacy_cache.join("image.bin"), b"encrypted-image-data").unwrap();
+        std::fs::write(legacy_cache.join("image.thumb"), b"thumb-data").unwrap();
+
+        let legacy_pending = legacy_root.join("pending");
+        std::fs::create_dir_all(&legacy_pending).unwrap();
+        std::fs::write(legacy_pending.join("job.json"), b"{}").unwrap();
+
+        migrate_legacy_cache_at(&legacy_root, &new_root);
+
+        let new_cache = new_root.join("cache");
+        assert_eq!(
+            std::fs::read(new_cache.join("image.bin")).unwrap(),
+            b"encrypted-image-data"
+        );
+        assert_eq!(
+            std::fs::read(new_cache.join("image.thumb")).unwrap(),
+            b"thumb-data"
+        );
+        assert!(!legacy_cache.exists());
+        assert!(legacy_pending.join("job.json").exists());
+        assert!(legacy_root.exists());
+
+        std::fs::remove_dir_all(&legacy_pending).unwrap();
+        std::fs::create_dir_all(&legacy_cache).unwrap();
+        std::fs::write(legacy_cache.join("image2.bin"), b"second-image").unwrap();
+
+        migrate_legacy_cache_at(&legacy_root, &new_root);
+
+        assert_eq!(
+            std::fs::read(new_cache.join("image2.bin")).unwrap(),
+            b"second-image"
+        );
+        assert_eq!(
+            std::fs::read(new_cache.join("image.bin")).unwrap(),
+            b"encrypted-image-data"
+        );
+        assert!(!legacy_root.exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sweep_legacy_caches_migrates_all_valid_accounts() {
+        let dir = std::env::temp_dir().join(format!("dm-image-sweep-{}", uuid::Uuid::new_v4()));
+        let legacy_base = dir.join("config").join("dm-images");
+        let cache_base = dir.join("cache").join("dm-images");
+
+        let owner1 = "1".repeat(64);
+        let owner2 = "2".repeat(64);
+        let invalid = "not-a-valid-hash";
+
+        std::fs::create_dir_all(legacy_base.join(&owner1).join("cache")).unwrap();
+        std::fs::write(
+            legacy_base.join(&owner1).join("cache").join("1.bin"),
+            b"data1",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(legacy_base.join(&owner2).join("cache")).unwrap();
+        std::fs::write(
+            legacy_base.join(&owner2).join("cache").join("2.bin"),
+            b"data2",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(legacy_base.join(invalid).join("cache")).unwrap();
+        std::fs::write(
+            legacy_base.join(invalid).join("cache").join("3.bin"),
+            b"data3",
+        )
+        .unwrap();
+
+        sweep_legacy_caches_at(&legacy_base, &cache_base);
+
+        assert_eq!(
+            std::fs::read(cache_base.join(&owner1).join("cache").join("1.bin")).unwrap(),
+            b"data1"
+        );
+        assert_eq!(
+            std::fs::read(cache_base.join(&owner2).join("cache").join("2.bin")).unwrap(),
+            b"data2"
+        );
+        assert!(!legacy_base.join(&owner1).exists());
+        assert!(!legacy_base.join(&owner2).exists());
+        assert!(legacy_base.join(invalid).exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

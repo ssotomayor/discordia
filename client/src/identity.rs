@@ -617,6 +617,21 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+pub fn cache_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
+        return dir;
+    }
+    #[cfg(target_os = "android")]
+    {
+        crate::android::cache_dir()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        config_dir()
+    }
+}
+
 /// Before the rename the folder was `dioxusfun`; it holds the keys, so it moves
 /// rather than starting a new account. Runs before anything opens the folder.
 #[cfg(not(target_os = "android"))]
