@@ -988,6 +988,7 @@ fn SavedEmojiSection() -> Element {
             }
             div { class: "mt-2",
                 crate::features::connect::BlobServerField {}
+                super::dm_images::FileServerField {}
             }
         }
     }

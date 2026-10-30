@@ -151,8 +151,11 @@ pub fn open_chat(
 }
 
 pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String> {
-    if rumor.kind != KIND_CHAT {
+    if rumor.kind != KIND_CHAT && rumor.kind != super::dm_image::KIND {
         return Err(format!("not a chat message (kind {})", rumor.kind));
+    }
+    if rumor.kind == super::dm_image::KIND {
+        super::dm_image::Descriptor::parse(rumor)?;
     }
     let recipient = rumor
         .tag("p")
@@ -189,7 +192,11 @@ pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String
         id: rumor.id.clone(),
         author: rumor.pubkey.clone(),
         peer,
-        content: rumor.content.clone(),
+        content: if rumor.kind == super::dm_image::KIND {
+            "[Encrypted image]".into()
+        } else {
+            rumor.content.clone()
+        },
         created_at: rumor.created_at,
         reply_to,
         emoji: emoji_tags(rumor),

@@ -1,7 +1,7 @@
 # Imágenes cifradas en DMs — plan
 
 Base: `master` / `530439a` (#421). Rama: `dm-encrypted-images`.
-Estado: plan; no implementado. Límite confirmado por el usuario: 10 MiB por imagen antes del cifrado.
+Estado: implementado en la rama; compilación Android y prueba manual entre dispositivos pendientes. Límite confirmado: 10 MiB por imagen antes del cifrado.
 
 ## Alcance y tamaño
 
@@ -11,7 +11,7 @@ transporte y su política de archivos.
 
 | Concepto | Decisión propuesta |
 |---|---|
-| Límite actual del cliente | 2 MiB |
+| Límite anterior del cliente | 2 MiB |
 | Límite confirmado de la nueva función | 10 MiB (10.485.760 bytes) de imagen antes del cifrado |
 | Máximo efectivo | El menor entre el límite del cliente y el del servidor, descontando el sobrecoste del cifrado |
 | Decodificación | Mantener límites de dimensiones, píxeles y memoria independientes de los bytes comprimidos |
@@ -78,6 +78,15 @@ es una operación independiente.
 - Pruebas pertinentes de Rust, Clippy y compilación Android. Los clientes antiguos que sólo leen `kind 14` no recibirán representación de imágenes; nunca recurrir a subida en claro para compatibilidad.
 
 ## Fuentes
+
+Implementación: `nostr/dm_image.rs`, `features/dm_images.rs`, `nostr/service.rs`
+y `nostr/nip17.rs`. Clave y nonce se emiten en hexadecimal; la recepción admite
+también Base64. El cuerpo es AES-256-GCM con tag de 16 bytes, comprobado con un
+vector NIST. `nostr.download` pasó una subida/descarga real de un archivo de
+prueba cifrado, eliminado al terminar. La caché guarda ciphertext (64 MiB,
+256 archivos, vencimiento local a 30 días); los trabajos pendientes quedan
+cifrados para la cuenta y los marcadores de cancelación impiden recuperarlos.
+El visor mantiene como máximo dos imágenes privadas descifradas en memoria.
 
 - [NIP-17: mensajes privados y archivos](https://github.com/nostr-protocol/nips/blob/master/17.md).
 - [BUD-02: subida de blobs sin modificar bytes](https://github.com/hzrd149/blossom/blob/master/buds/02.md).

@@ -30,6 +30,7 @@ pub mod blossom;
 pub mod call_history;
 pub mod calls;
 pub mod delivery;
+pub mod dm_image;
 pub mod event;
 pub mod metadata;
 pub mod nip02;

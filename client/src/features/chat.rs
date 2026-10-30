@@ -129,7 +129,7 @@ struct PendingImage {
 
 fn upload_limit(state: &crate::state::AppState, channel_id: Id) -> usize {
     if state.dm_of(channel_id).is_some() {
-        return crate::protocol::MAX_IMAGE_BYTES;
+        return crate::chat_image::MAX_DM_BYTES;
     }
     state
         .channels
@@ -696,7 +696,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
     } else {
         message.content.clone()
     };
-    let has_text = !display_content.is_empty();
+    let has_text = !display_content.is_empty() && !state.read().dm_images.contains_key(&message.id);
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
     let message_id = message.id;
@@ -748,7 +748,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 .read()
                 .can(gid, crate::protocol::Permission::ManageMessages)
         });
-    let can_edit = is_author;
+    let can_edit = is_author && !state.read().dm_images.contains_key(&message_id);
     let bookmarks = try_consume_context::<crate::bookmarks::Bookmarks>();
     let bookmark_key = crate::bookmarks::Conversation::of(&state.read(), channel_id);
     let bookmarked = bookmarks
@@ -757,7 +757,9 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .is_some_and(|(store, key)| store.contains(key, message_id));
     let bookmark_message = message.clone();
     let mut editing = use_signal(|| None::<String>);
-    let has_media = message.image.is_some() || message.attachment.is_some();
+    let has_media = message.image.is_some()
+        || message.attachment.is_some()
+        || state.read().dm_images.contains_key(&message_id);
     let edit_pending = state.read().pending_edits.contains(&message_id);
     let edited = message.edited_at.map(|t| {
         t.with_timezone(&chrono::Local)
@@ -974,6 +976,9 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
                 if let Some(address) = message.image.as_ref() {
                     ChatImage { address: address.clone() }
+                }
+                if state.read().dm_images.contains_key(&message_id) {
+                    super::dm_images::EncryptedImage { channel_id, message_id }
                 }
                 if let Some(metadata) = message.image_metadata.as_ref() {
                     div {
@@ -2363,8 +2368,11 @@ fn Composer(
     }
     let mut submit = move || -> bool {
         let content = draft().trim().to_string();
-        let image_name = pending_image().and_then(|image| image.name);
-        let image = pending_image().map(|image| image.url);
+        let image_name = pending_image
+            .peek()
+            .as_ref()
+            .and_then(|image| image.name.clone());
+        let image = pending_image.peek().as_ref().map(|image| image.url.clone());
         let file = pending_file();
         if content.is_empty() && image.is_none() && file.is_none() {
             return false;
@@ -2390,9 +2398,63 @@ fn Composer(
                 state.write().error_toast = Some("Too many messages await delivery. Your draft has been kept; retry a failed message first.".into());
                 return false;
             }
-            if image.is_some() {
-                state.write().error_toast =
-                    Some("Images in DMs are not supported yet — the text was not sent.".into());
+            if let Some(data_url) = image {
+                let Some(server) = settings.peek().dm_blob_server.clone() else {
+                    attach_err.set(Some(
+                        "Choose a file server in your account settings to send encrypted images."
+                            .into(),
+                    ));
+                    return false;
+                };
+                let request = uuid::Uuid::new_v4();
+                let permit = match crate::nostr::dm_image::prepare_permit() {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        attach_err.set(Some(error));
+                        return false;
+                    }
+                };
+                let current_generation = *generation.peek();
+                let sent_text = content.clone();
+                let (queued, completion) = tokio::sync::oneshot::channel();
+                let reply_to =
+                    reply_to.and_then(|id| state.peek().nostr_event_ids.get(&id).cloned());
+                if !nostr_submit.try_send(crate::nostr::service::NostrCmd::Image {
+                    peer,
+                    server,
+                    data_url,
+                    text: content,
+                    reply_to,
+                    queued,
+                    permit,
+                }) {
+                    attach_err.set(Some(
+                        "The message service is unavailable. Your draft has been kept.".into(),
+                    ));
+                    return false;
+                }
+                file_request.set(Some(request));
+                let mut finish_image = finish.clone();
+                spawn(async move {
+                    let result = completion.await.unwrap_or_else(|_| {
+                        Err("Could not queue the image. Your draft was kept.".into())
+                    });
+                    if *file_request.peek() != Some(request) {
+                        return;
+                    }
+                    file_request.set(None);
+                    match result {
+                        Ok(()) if *generation.peek() == current_generation => {
+                            if *draft.peek() == sent_text {
+                                finish_image();
+                            } else {
+                                pending_image.set(None);
+                            }
+                        }
+                        Ok(()) => {}
+                        Err(error) => attach_err.set(Some(error)),
+                    }
+                });
                 return false;
             }
             let reply_event =

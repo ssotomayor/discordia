@@ -36,6 +36,7 @@ bip39 = "2"
 hmac = "0.12"
 sha2 = "0.10"
 chacha20poly1305 = "0.10"
+aes-gcm = { version = "0.10.3", features = ["zeroize"] }
 chacha20 = "0.9"
 hkdf = "0.12"
 dirs = "5"

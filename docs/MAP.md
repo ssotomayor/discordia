@@ -24,10 +24,10 @@ name instead.
 | `client/src/features/channels.rs` | 2662 |
 | `client/src/features/screenshare.rs` | 3777 |
 | `protocol/src/lib.rs` | 3616 |
-| `client/src/state.rs` | 2942 |
+| `client/src/state.rs` | 3105 |
 | `client/src/update.rs` | 1052 |
 | `client/src/net.rs` | 2778 |
-| `client/src/features/chat.rs` | 2736 |
+| `client/src/features/chat.rs` | 3053 |
 | `server/src/store.rs` | 1505 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1239 |
@@ -42,6 +42,7 @@ that direction says a file is safe to open when it is not.
 
 | To find | Open | At |
 |---|---|---|
+| Encrypted DM images | `client/src/nostr/dm_image.rs`, `features/dm_images.rs`, `nostr/service.rs`, `nostr/nip17.rs` | 10 MiB image limit, AES-256-GCM before Blossom upload, NIP-17 kind 15 inside existing gift wraps; captions are related kind-14 replies. Durable account-encrypted jobs recover uploads; cancellation markers prevent resurrection. Binary HTTPS requests pin public DNS addresses and bound redirects/downloads. Only accepted conversations load images. Ciphertext cache is bounded/expiring; decoded bytes use shared memory and local no-store assets. The file-server selector is independent of emoji uploads |
 | DM edits and deletions | `client/src/nostr/service.rs`, `nostr/nip17.rs`, `state.rs`, `settings.rs` | Encrypted change rumors stay off the gateway. Consecutive local edits advance the prior edit timestamp; replay keeps the newest version. `apply_dm_change` validates recipients and authors, with bounded pre-original candidates keyed by target and author. Tombstones persist; encrypted pending operations recover and retry. Empty emoji tags clear previous mappings |
 | Android guild media/history reception | `client/src/net/background_socket.rs`, `server/src/gateway/connection.rs` | The native transport accepts the server's full frame size; its byte queue holds two maximum frames and retains the frame-count cap. Regressions cover media batches above 8 MiB, subsequent chat updates, oversized frames and queue exhaustion. Diagnostic APK: `scripts/build-android.py --gateway-diagnostics` enables payload-free USB traces for admission, native transport and session send/receive (`DISCORDIA_GATEWAY_DIAGNOSTICS=1` at compile time). |
 | Stream controls on video | `client/assets/stream-controls.js`, `stream-viewer.css`, `features/screenshare.rs`, `features/stream_viewer.rs`, `scripts/test-stream-controls.cjs` | Tile headers/footers overlay the full video in app, popouts and full screen. Local per-tile timers hide after 2.5 s or pointer leave; keyboard focus and active volume drags retain controls. Touch reveals controls without triggering video actions; explicit focus/mosaic buttons preserve touch navigation. Mutation cleanup cancels timers/listeners, and window blur releases drags |

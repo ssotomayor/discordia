@@ -41,6 +41,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2440,6 +2441,7 @@ dependencies = [
 name = "discordia"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "arboard",
  "axum 0.7.9",
  "base64 0.22.1",

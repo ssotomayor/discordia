@@ -26,13 +26,25 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{metadata, nip02, nip17, nip51, nip59, profile, xp};
+use super::{event, metadata, nip02, nip17, nip51, nip59, profile, xp};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
 
 /// What the UI asks the service to do.
 pub enum NostrCmd {
+    Image {
+        peer: String,
+        server: String,
+        data_url: String,
+        text: String,
+        reply_to: Option<String>,
+        queued: tokio::sync::oneshot::Sender<Result<(), String>>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    },
+    CancelImage {
+        message_id: Id,
+    },
     Call(crate::features::dm_call::Action),
     Retry {
         message_id: Id,
@@ -136,7 +148,7 @@ pub fn conversation_id(peer_pubkey: &str) -> Id {
 }
 
 /// A stable `Uuid` for a Nostr event id, so a message has a key the UI can use.
-fn message_id(event_id: &str) -> Id {
+pub(crate) fn message_id(event_id: &str) -> Id {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(b"dxf/nostr-dm/message/v1");
@@ -279,6 +291,9 @@ pub fn spawn_nostr(
                     );
                 }
                 let id = message_id(&rumor.id);
+                if let Ok(message) = nip17::open_rumor(&our_pubkey, &rumor) {
+                    note_image(&rumor, &message, &mut state);
+                }
                 if system {
                     system_deliveries.insert(id, 0);
                 }
@@ -299,6 +314,16 @@ pub fn spawn_nostr(
             }
         }
         let (delivery_tx, mut delivery_rx) = unbounded_channel();
+        let (image_tx, mut image_rx) =
+            unbounded_channel::<(String, Result<super::dm_image::Job, String>)>();
+        let mut images = super::dm_image::Queue::default();
+        for job in tokio::task::spawn_blocking(move || super::dm_image::load_jobs(&secret))
+            .await
+            .unwrap_or_default()
+        {
+            show_image_job(&job, &our_pubkey, &mut state);
+            images.jobs.insert(job.id.clone(), job);
+        }
         let mut delivery_tick = tokio::time::interval(std::time::Duration::from_millis(100));
         delivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -309,8 +334,51 @@ pub fn spawn_nostr(
         let mut replayed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         loop {
+            images.pump(secret, &image_tx);
             tokio::select! {
+                Some((key, result)) = image_rx.recv() => {
+                    if !images.jobs.contains_key(&key) { continue; }
+                    images.complete(&key);
+                    let result = match result {
+                        Ok(job) => {
+                            images.jobs.insert(key.clone(), job.clone());
+                            queue_image_message(&job, &secret, &our_pubkey, &routes, &mut outbox, &mut state).await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match result {
+                        Ok(()) => {
+                            if let Some(job) = images.remove(&key, &our_pubkey) {
+                                withdraw_held(&mut state, &job.peer, &job.id);
+                            }
+                        }
+                        Err(error) => {
+                            images.failed.insert(key.clone());
+                            if let Some(image) = state.write().dm_images.get_mut(&message_id(&key)) { image.status = super::dm_image::Status::Failed(error); }
+                            state.write().dm_delivery.insert(message_id(&key), super::delivery::Delivery::Failed);
+                        }
+                    }
+                }
                 cmd = rx.recv() => match cmd {
+                    Some(NostrCmd::Image { peer, server, data_url, text, reply_to, queued, permit }) => {
+                        let _permit = permit;
+                        if images.jobs.len() >= super::dm_image::MAX_JOBS || outbox.len() + (images.jobs.len() + 1) * 2 > 128 || state.peek().mutes.contains(&peer) {
+                            let _ = queued.send(Err("Image queue is full or this contact is blocked. Your draft was kept.".into()));
+                            continue;
+                        }
+                        let prepared = tokio::task::spawn_blocking(move || super::dm_image::prepare(&secret, peer, server, &data_url, text, reply_to)).await;
+                        match prepared {
+                            Ok(Ok(job)) => {
+                                show_image_job(&job, &our_pubkey, &mut state);
+                                images.jobs.insert(job.id.clone(), job);
+                                let _ = queued.send(Ok(()));
+                            }
+                            other => { let error = other.ok().and_then(Result::err).unwrap_or_else(|| "Could not prepare encrypted image.".into()); let _ = queued.send(Err(error)); }
+                        }
+                    }
+                    Some(NostrCmd::CancelImage { message_id: id }) => {
+                        if let Some(key) = images.key(id) && let Some(job) = images.remove(&key, &our_pubkey) { withdraw_held(&mut state, &job.peer, &job.id); }
+                    }
                     Some(NostrCmd::Call(action)) => {
                         if calls.send(crate::features::dm_call::Command::Action(action)).is_err() {
                             state.write().error_toast = Some("Voice call service is unavailable.".into());
@@ -373,13 +441,21 @@ pub fn spawn_nostr(
                         }
                     }
                     Some(NostrCmd::Delete { channel_id, message_id: mid }) => {
+                        if let Some(key) = images.key(mid) {
+                            if let Some(job) = images.remove(&key, &our_pubkey) { withdraw_held(&mut state, &job.peer, &job.id); }
+                            continue;
+                        }
                         let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
                         let original_rumor_id = state.peek().nostr_event_ids.get(&mid).cloned();
                         if let (Some(peer), Some(orig_id)) = (peer, original_rumor_id) {
                             if !state.peek().messages.get(&channel_id).is_some_and(|messages| messages.iter().any(|m| m.id == mid && m.author.pubkey == our_pubkey)) { continue; }
                             if outbox.len() >= 128 { state.write().error_toast = Some("Too many pending messages to delete.".into()); continue; }
                             let ts = now();
-                            let rumor = nip17::chat_deletion_rumor(&our_pubkey, &peer, &orig_id, ts);
+                            let mut rumor = nip17::chat_deletion_rumor(&our_pubkey, &peer, &orig_id, ts);
+                            if state.peek().dm_images.contains_key(&mid) {
+                                for tag in &mut rumor.tags { if tag.first().is_some_and(|t| t == "k") { tag[1] = super::dm_image::KIND.to_string(); } }
+                                rumor = event::rumor(&our_pubkey, ts, nip17::KIND_DELETION, rumor.tags, rumor.content);
+                            }
                             match nip17::wrap_both(&secret, &peer, &rumor, ts) {
                                 Ok((theirs, ours)) => {
                                     outbox.remove(&mid);
@@ -416,7 +492,7 @@ pub fn spawn_nostr(
                         if let Some(key) = replaces {
                             withdraw_held(&mut state, &peer, &key);
                         }
-                        if outbox.len() >= 128 {
+                        if outbox.len() + images.jobs.len() * 2 >= 128 {
                             state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
                             continue;
                         }
@@ -437,6 +513,12 @@ pub fn spawn_nostr(
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     Some(NostrCmd::Retry { message_id }) => {
+                        if let Some(key) = images.key(message_id) {
+                            images.failed.remove(&key);
+                            if let Some(image) = state.write().dm_images.get_mut(&message_id) { image.status = super::dm_image::Status::Uploading; }
+                            state.write().dm_delivery.insert(message_id, super::delivery::Delivery::Pending);
+                            continue;
+                        }
                         if state.peek().dm_delivery.get(&message_id) == Some(&super::delivery::Delivery::Failed)
                             && let Some(pending) = outbox.get_mut(&message_id)
                         {
@@ -582,7 +664,7 @@ pub fn spawn_nostr(
                     let mut slots = 8usize.saturating_sub(active);
                     for (id, pending) in &mut outbox {
                         if slots == 0 { break; }
-                        if pending.started || pending.due > std::time::Instant::now() { continue; }
+                        if pending.started || pending.due > std::time::Instant::now() || (!state.peek().dm_images.contains_key(id) && images.jobs.values().any(|job| job.peer == pending.peer)) { continue; }
                         pending.started = true;
                         state.write().dm_delivery.insert(*id, super::delivery::Delivery::Pending);
                         slots -= 1;
@@ -763,6 +845,7 @@ pub fn spawn_nostr(
                                     Source::Relay,
                                     live,
                                 );
+                                note_image(&rumor, &msg, &mut state);
                             }
                             request_names(&pool, &state, &our_pubkey, &mut named);
                         }
@@ -1164,6 +1247,117 @@ fn withdraw_held(state: &mut Signal<AppState>, peer: &str, key: &str) {
     s.dm_delivery.remove(&mid);
     s.nostr_event_ids.remove(&mid);
     s.dm_emoji.remove(&mid);
+    s.dm_images.remove(&mid);
+}
+
+fn show_image_job(job: &super::dm_image::Job, owner: &str, state: &mut Signal<AppState>) {
+    let message = nip17::ChatMessage {
+        id: job.id.clone(),
+        author: owner.into(),
+        peer: job.peer.clone(),
+        content: "[Encrypted image]".into(),
+        created_at: job.created_at,
+        reply_to: job.reply_to.clone(),
+        emoji: Vec::new(),
+    };
+    insert_message(&message, owner, state, Source::Ours, false);
+    let id = message_id(&job.id);
+    state.write().dm_images.insert(
+        id,
+        super::dm_image::Image {
+            descriptor: job.image.clone(),
+            status: super::dm_image::Status::Uploading,
+            upload: true,
+            viewers: Default::default(),
+            data: None,
+        },
+    );
+    state
+        .write()
+        .dm_delivery
+        .insert(id, super::delivery::Delivery::Pending);
+}
+
+fn note_image(rumor: &event::Rumor, message: &nip17::ChatMessage, state: &mut Signal<AppState>) {
+    let id = message_id(&rumor.id);
+    let channel = conversation_id(&message.peer);
+    let mut s = state.write();
+    if !s
+        .messages
+        .get(&channel)
+        .is_some_and(|messages| messages.iter().any(|msg| msg.id == id))
+        || s.dm_deleted_ids.contains(&rumor.id)
+    {
+        return;
+    }
+    if let Ok(descriptor) = super::dm_image::Descriptor::parse(rumor) {
+        s.dm_images.entry(id).or_insert(super::dm_image::Image {
+            descriptor,
+            status: super::dm_image::Status::Waiting,
+            upload: false,
+            viewers: Default::default(),
+            data: None,
+        });
+    }
+}
+
+async fn queue_image_message(
+    job: &super::dm_image::Job,
+    secret: &secp256k1::SecretKey,
+    owner: &str,
+    routes: &super::delivery::Routes,
+    outbox: &mut super::delivery::Outbox,
+    state: &mut Signal<AppState>,
+) -> Result<(), String> {
+    let rumor = job
+        .image
+        .rumor(owner, &job.peer, job.reply_to.as_deref(), job.created_at);
+    let mut rumors = vec![rumor];
+    if !job.text.is_empty() {
+        rumors.push(nip17::chat_rumor(
+            owner,
+            &job.peer,
+            &job.text,
+            Some(&rumors[0].id),
+            &[],
+            job.created_at,
+        ));
+    }
+    if outbox.len() + rumors.len() > 128 {
+        return Err("Too many messages await delivery.".into());
+    }
+    let mut inserted = Vec::new();
+    for rumor in &rumors {
+        let (theirs, ours) = nip17::wrap_both(secret, &job.peer, rumor, now())?;
+        let id = message_id(&rumor.id);
+        // Recovery may see both the durable upload and its already-persisted wraps.
+        if let std::collections::hash_map::Entry::Vacant(entry) = outbox.entry(id) {
+            entry.insert(super::delivery::Pending {
+                peer: job.peer.clone(),
+                theirs,
+                ours,
+                due: routes.ready_at(&job.peer, std::time::Instant::now()),
+                started: false,
+            });
+            inserted.push(id);
+        }
+    }
+    if let Err(error) = super::delivery::persist(owner, outbox).await {
+        for id in inserted {
+            outbox.remove(&id);
+        }
+        return Err(error);
+    }
+    for rumor in rumors {
+        let message = nip17::open_rumor(owner, &rumor)?;
+        insert_message(&message, owner, state, Source::Ours, false);
+        note_image(&rumor, &message, state);
+        state
+            .write()
+            .dm_delivery
+            .insert(message_id(&rumor.id), super::delivery::Delivery::Pending);
+    }
+    Ok(())
 }
 
 fn insert_call_record(
@@ -1572,6 +1766,68 @@ mod tests {
         let mut dom = VirtualDom::new(|| rsx! {});
         dom.rebuild_in_place();
         dom.in_scope(ScopeId::ROOT, f);
+    }
+
+    #[test]
+    fn encrypted_image_replay_preserves_loaded_data_and_server_navigation_keeps_metadata() {
+        in_scope(|| {
+            let sender = secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
+            let recipient = secp256k1::SecretKey::from_slice(&[4; 32]).unwrap();
+            let (peer, owner) = (event::xonly_hex(&sender), event::xonly_hex(&recipient));
+            let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            let (mut image, _) = super::super::dm_image::encrypt(png).unwrap();
+            image.url = format!("https://example.com/{}.bin", image.hash);
+            let rumor = image.rumor(&peer, &owner, None, 100);
+            let message = nip17::open_rumor(&owner, &rumor).unwrap();
+            let mut state = Signal::new(AppState::empty());
+            insert_message(&message, &owner, &mut state, Source::Relay, false);
+            note_image(&rumor, &message, &mut state);
+            let id = message_id(&rumor.id);
+            let bytes = std::sync::Arc::new(png.to_string());
+            {
+                let mut s = state.write();
+                let image = s.dm_images.get_mut(&id).unwrap();
+                image.status = super::super::dm_image::Status::Ready;
+                image.data = Some(bytes.clone());
+            }
+            insert_message(&message, &owner, &mut state, Source::Relay, false);
+            note_image(&rumor, &message, &mut state);
+            assert!(std::sync::Arc::ptr_eq(
+                state.peek().dm_images[&id].data.as_ref().unwrap(),
+                &bytes
+            ));
+            state.write().clear_server_session();
+            assert!(state.peek().dm_images.contains_key(&id));
+            state
+                .write()
+                .delete_message_locally(conversation_id(&peer), id);
+            assert!(!state.peek().dm_images.contains_key(&id));
+        });
+    }
+
+    #[test]
+    fn deletion_before_an_encrypted_image_cannot_recreate_its_download() {
+        in_scope(|| {
+            let (peer, owner) = (key('a'), key('b'));
+            let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            let (mut image, _) = super::super::dm_image::encrypt(png).unwrap();
+            image.url = format!("https://example.com/{}.bin", image.hash);
+            let rumor = image.rumor(&peer, &owner, None, 100);
+            let mut state = Signal::new(AppState::empty());
+            let mut settings = Signal::new(crate::settings::ClientSettings::default());
+            let deletion = nip17::chat_deletion_rumor(&peer, &owner, &rumor.id, 101);
+            assert!(apply_dm_change(
+                &deletion,
+                &owner,
+                &mut state,
+                &mut settings
+            ));
+            let message = nip17::open_rumor(&owner, &rumor).unwrap();
+            insert_message(&message, &owner, &mut state, Source::Relay, false);
+            note_image(&rumor, &message, &mut state);
+            assert!(state.peek().dm_images.is_empty());
+            assert!(state.peek().dm_deleted_ids.contains(&rumor.id));
+        });
     }
 
     /// Our self-copies replay too, so a conversation we started stays accepted

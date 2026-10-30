@@ -66,7 +66,15 @@ impl SavedMessage {
             image: message
                 .image
                 .as_ref()
-                .map(|image| state.media_src(image).unwrap_or(image).to_owned()),
+                .map(|image| state.media_src(image).unwrap_or(image).to_owned())
+                .or_else(|| {
+                    state
+                        .dm_images
+                        .get(&message.id)?
+                        .data
+                        .as_ref()
+                        .map(|data| data.as_ref().clone())
+                }),
             attachment: message.attachment.clone(),
         })
     }
