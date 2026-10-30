@@ -1400,24 +1400,34 @@ fn ChatImage(address: String) -> Element {
                 .media_src(&address)
                 .map(|data| std::sync::Arc::new(data.to_owned())),
         }?;
-        Some(crate::image_assets::chat_source(data))
+        let thumb = if let Some((_mime, raw)) = crate::nostr::blossom::split_data_url(&data) {
+            crate::chat_image::thumbnail_data_url(&raw)
+                .map(std::sync::Arc::new)
+                .unwrap_or_else(|_| data.clone())
+        } else {
+            data.clone()
+        };
+        Some(crate::image_assets::chat_source(thumb))
     }));
     rsx! {
         if let Some(src) = resolved() {
             img {
-                class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
-                style: "cursor: zoom-in;",
+                class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
+                style: "max-width: 320px; max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
                 src: "{src}",
                 alt: crate::i18n::text("attachment", &[]),
                 title: crate::i18n::text("Click to view full size", &[]),
                 onclick: move |_| {
                     let full = state.peek().media_src(&address).map(str::to_string);
-                    if let Some(full) = full { state.write().image_viewer = Some(full); }
+                    if let Some(full) = full {
+                        state.write().image_viewer = Some(full);
+                    }
                 },
             }
         } else {
             div {
-                class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] w-48 h-24 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                style: "max-width: 320px; width: 280px; height: 120px;",
                 {crate::i18n::text("Loading image…", &[])}
             }
         }
