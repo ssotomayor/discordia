@@ -119,6 +119,16 @@ impl MediaCache {
             .map(|entry| Arc::clone(&entry.data))
     }
 
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        let mut work = self.updates.work.lock();
+        work.loaded.clear();
+        work.loaded_bytes = 0;
+        work.queued.clear();
+        work.demanded.clear();
+    }
+
     pub fn insert(&mut self, address: String, data: String) {
         self.insert_shared(address, Arc::new(data));
     }
@@ -395,5 +405,20 @@ mod tests {
         assert_eq!(work.loaded.len(), ENTRY_BUDGET);
         assert_eq!(work.queued.len(), 1);
         assert!(work.loaded[0].1.is_empty());
+    }
+
+    #[test]
+    fn clear_purges_all_entries_and_pending_work() {
+        let mut cache = MediaCache::with_budget(64);
+        cache.insert("a".into(), "1234".into());
+        let updates = cache.updates();
+        updates.queue_loaded("b".into(), "5678".into());
+        assert_eq!(cache.bytes, 4);
+        assert!(cache.has_work());
+
+        cache.clear();
+        assert_eq!(cache.bytes, 0);
+        assert!(!cache.contains_key("a"));
+        assert!(!cache.has_work());
     }
 }

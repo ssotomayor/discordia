@@ -362,6 +362,7 @@ pub struct AppState {
     /// Seeded from `ClientSettings::dm_read_at`. Read on every insert, so the
     /// history the relays replay at launch does not raise an alert twice.
     pub dm_read_at: HashMap<String, i64>,
+    pub read_marks_revision: u64,
     /// Author pubkey → seconds that author's clock runs ahead of ours, as
     /// measured on a live message. A DM carries the time its *sender* wrote on
     /// it, so without this a peer whose clock is a minute out has every reply
@@ -597,6 +598,7 @@ impl AppState {
             dm_cleared_at: HashMap::new(),
             dm_clock_offset: HashMap::new(),
             dm_read_at: HashMap::new(),
+            read_marks_revision: 0,
             muted_channels: HashSet::new(),
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
@@ -915,6 +917,33 @@ impl AppState {
         self.audit_logs.clear();
         self.is_operator = false;
         self.default_guild = None;
+        self.emoji_images.clear();
+        self.evict_inactive_dm_images(self.selected_channel);
+    }
+
+    pub fn evict_inactive_dm_images(&mut self, active_channel: Option<Id>) {
+        for image in self.dm_images.values_mut() {
+            if Some(image.channel_id) != active_channel {
+                image.viewers.clear();
+                if !matches!(image.status, crate::nostr::dm_image::Status::Uploading)
+                    && image.data.is_some()
+                {
+                    image.data = None;
+                    image.status = crate::nostr::dm_image::Status::Waiting;
+                }
+            }
+        }
+        for (cid, msgs) in self.messages.iter_mut() {
+            if Some(*cid) != active_channel && msgs.len() > 50 {
+                let drain_count = msgs.len() - 50;
+                msgs.drain(0..drain_count);
+                self.history_loaded.remove(cid);
+            }
+        }
+        if active_channel.is_none() {
+            self.image_viewer = None;
+            self.emoji_images.clear();
+        }
     }
 
     pub fn is_owner(&self, guild_id: Id) -> bool {
@@ -1286,6 +1315,16 @@ impl AppState {
         }
     }
 
+    pub fn media_src_shared(&self, raw: &str) -> Option<std::sync::Arc<String>> {
+        match raw.strip_prefix("media:") {
+            None => Some(std::sync::Arc::new(raw.to_string())),
+            Some(address) => self
+                .emoji_images
+                .get_shared(address)
+                .filter(|u| !u.is_empty()),
+        }
+    }
+
     pub fn default_channel_of(&self, guild_id: Id) -> Option<Id> {
         if let Some(channel) = crate::channel_selection::recalled(self, guild_id) {
             return Some(channel);
@@ -1576,7 +1615,10 @@ impl AppState {
             .or_default()
             .entry(channel_id)
             .or_insert(at);
-        *mark = (*mark).max(at);
+        if at > *mark {
+            *mark = at;
+            self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
+        }
     }
 
     /// Compares what arrived while we were away with our read marks. A channel
@@ -1586,16 +1628,23 @@ impl AppState {
             return;
         };
         let marks = self.channel_read_at.entry(server).or_default();
+        let mut changed = false;
         for (channel_id, at) in latest {
             let viewing = !self.dm_mode && self.selected_channel == Some(channel_id);
             if !viewing && marks.get(&channel_id).is_some_and(|mark| at > *mark) {
                 self.channel_unread.insert(channel_id);
             } else {
                 let mark = marks.entry(channel_id).or_insert(at);
-                *mark = (*mark).max(at);
+                if at > *mark {
+                    *mark = at;
+                    changed = true;
+                }
             }
             let held = self.channel_latest.entry(channel_id).or_insert(at);
             *held = (*held).max(at);
+        }
+        if changed {
+            self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
         }
     }
 
@@ -1615,6 +1664,7 @@ impl AppState {
     /// Another device's marks. They only ever move ours forward, so copies
     /// adopted in any order agree.
     pub fn adopt_read_marks(&mut self, marks: &crate::nostr::read_marks::ReadMarks) {
+        let mut changed = false;
         for (peer, theirs) in &marks.dms {
             let at = theirs - self.clock_offset(peer);
             if self.dm_read_at.get(peer).is_some_and(|mine| *mine >= at) {
@@ -1622,13 +1672,17 @@ impl AppState {
             }
             self.dm_read_at.insert(peer.clone(), at);
             self.recount_dm_unread(peer, at);
+            changed = true;
         }
         for (server, channels) in &marks.channels {
             let current = self.server_origin.as_deref() == Some(server.as_str());
             let mine = self.channel_read_at.entry(server.clone()).or_default();
             for (channel_id, at) in channels {
                 let mark = mine.entry(*channel_id).or_insert(*at);
-                *mark = (*mark).max(*at);
+                if *at > *mark {
+                    *mark = *at;
+                    changed = true;
+                }
                 if current
                     && self
                         .channel_latest
@@ -1638,6 +1692,9 @@ impl AppState {
                     self.channel_unread.remove(channel_id);
                 }
             }
+        }
+        if changed {
+            self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
         }
     }
 
@@ -1679,7 +1736,11 @@ impl AppState {
             return;
         };
         if let Some(marks) = self.channel_read_at.get_mut(server) {
+            let before = marks.len();
             marks.retain(|id, _| self.channels.iter().any(|c| c.id == *id));
+            if marks.len() != before {
+                self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
+            }
         }
     }
 
@@ -1855,7 +1916,10 @@ impl AppState {
             .max();
         if let Some(at) = newest {
             let mark = self.dm_read_at.entry(peer).or_insert(at);
-            *mark = (*mark).max(at);
+            if at > *mark {
+                *mark = at;
+                self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
+            }
         }
     }
 
@@ -2027,18 +2091,15 @@ pub fn set_dm_muted(
 // Read marks change on several surfaces; one account-level writer prevents drift.
 pub fn use_dm_read_persistence(state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let marks = use_memo(move || {
-        let mut v: Vec<(String, i64)> = state
-            .read()
+    let rev = use_memo(move || state.read().read_marks_revision);
+    use_effect(move || {
+        let _ = rev();
+        let marks: Vec<(String, i64)> = state
+            .peek()
             .dm_read_at
             .iter()
             .map(|(peer, at)| (peer.clone(), *at))
             .collect();
-        v.sort();
-        v
-    });
-    use_effect(move || {
-        let marks = marks();
         if marks.is_empty() {
             return;
         }
@@ -2050,23 +2111,24 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
             .fold(false, |acc, (peer, at)| next.mark_dm_read(&peer, at) || acc);
         if changed {
             settings.set(next.clone());
-            crate::settings::save(&next);
+            crate::settings::save_async(&next);
         }
     });
 }
 
 pub fn use_channel_read_persistence(state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let marks = use_memo(move || state.read().channel_read_at.clone());
+    let rev = use_memo(move || state.read().read_marks_revision);
     use_effect(move || {
-        let marks = marks();
+        let _ = rev();
+        let marks = state.peek().channel_read_at.clone();
         // `peek`, not `read`: writing back what this effect subscribes to is a
         // loop.
         if settings.peek().channel_read_at != marks {
             let mut next = settings.peek().clone();
             next.channel_read_at = marks;
             settings.set(next.clone());
-            crate::settings::save(&next);
+            crate::settings::save_async(&next);
         }
     });
 }
@@ -3414,5 +3476,63 @@ mod tests {
 
         assert!(s.members.is_empty());
         assert_eq!(s.display_name(&me), format!("u-{me}"));
+    }
+
+    #[test]
+    fn evict_inactive_dm_images_unloads_other_channels() {
+        let mut s = AppState::empty();
+        let ch_a = Id::new_v4();
+        let ch_b = Id::new_v4();
+        let msg_a = Id::new_v4();
+        let msg_b = Id::new_v4();
+        let (descriptor, _) = crate::nostr::dm_image::encrypt(
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        ).unwrap();
+
+        s.dm_images.insert(
+            msg_a,
+            crate::nostr::dm_image::Image {
+                channel_id: ch_a,
+                descriptor: descriptor.clone(),
+                status: crate::nostr::dm_image::Status::Ready,
+                upload: false,
+                data: Some(std::sync::Arc::new("data_a".into())),
+                viewers: std::collections::HashSet::from([Id::new_v4()]),
+            },
+        );
+        s.dm_images.insert(
+            msg_b,
+            crate::nostr::dm_image::Image {
+                channel_id: ch_b,
+                descriptor,
+                status: crate::nostr::dm_image::Status::Ready,
+                upload: false,
+                data: Some(std::sync::Arc::new("data_b".into())),
+                viewers: std::collections::HashSet::from([Id::new_v4()]),
+            },
+        );
+
+        s.evict_inactive_dm_images(Some(ch_a));
+        assert!(s.dm_images[&msg_a].data.is_some());
+        assert_eq!(
+            s.dm_images[&msg_a].status,
+            crate::nostr::dm_image::Status::Ready
+        );
+        assert!(!s.dm_images[&msg_a].viewers.is_empty());
+
+        assert!(s.dm_images[&msg_b].data.is_none());
+        assert_eq!(
+            s.dm_images[&msg_b].status,
+            crate::nostr::dm_image::Status::Waiting
+        );
+        assert!(s.dm_images[&msg_b].viewers.is_empty());
+
+        s.evict_inactive_dm_images(None);
+        assert!(s.dm_images[&msg_a].data.is_none());
+        assert_eq!(
+            s.dm_images[&msg_a].status,
+            crate::nostr::dm_image::Status::Waiting
+        );
+        assert!(s.dm_images[&msg_a].viewers.is_empty());
     }
 }

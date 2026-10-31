@@ -292,6 +292,15 @@ pub fn ChatView() -> Element {
         }
     });
 
+    let mut prev_channel = use_signal(|| None::<Id>);
+    use_effect(move || {
+        let channel = state.read().selected_channel;
+        if *prev_channel.peek() != channel {
+            prev_channel.set(channel);
+            state.write().evict_inactive_dm_images(channel);
+        }
+    });
+
     let (is_dm, header_name, composer_label) = match &dm {
         Some(_) => (true, dm_name.clone(), format!("@{dm_name}")),
         None => {
@@ -348,8 +357,11 @@ pub fn ChatView() -> Element {
         }
         virtual_enabled.set(false);
     });
-    use_drop(|| {
+    use_drop(move || {
         let _ = document::eval("window.__dxfChatScrollOff && window.__dxfChatScrollOff();");
+        if let Ok(mut s) = state.try_write() {
+            s.evict_inactive_dm_images(None);
+        }
     });
     let mut prev_key = use_signal(|| (None::<Id>, None::<Id>));
     use_effect(move || {
@@ -1391,15 +1403,7 @@ fn ChatImage(address: String) -> Element {
     let mut state = use_app_state();
     let resolved = use_memo(use_reactive((&address,), move |(address,)| {
         let s = state.read();
-        let data = match address.strip_prefix("media:") {
-            Some(blob) => s
-                .emoji_images
-                .get_shared(blob)
-                .filter(|data| !data.is_empty()),
-            None => s
-                .media_src(&address)
-                .map(|data| std::sync::Arc::new(data.to_owned())),
-        }?;
+        let data = s.media_src_shared(&address)?;
         Some(crate::image_assets::chat_source(data))
     }));
     rsx! {

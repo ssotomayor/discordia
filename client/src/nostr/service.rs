@@ -1298,9 +1298,11 @@ fn show_image_job(job: &super::dm_image::Job, owner: &str, state: &mut Signal<Ap
     };
     insert_message(&message, owner, state, Source::Ours, false);
     let id = message_id(&job.id);
+    let channel_id = conversation_id(&job.peer);
     state.write().dm_images.insert(
         id,
         super::dm_image::Image {
+            channel_id,
             descriptor: job.image.clone(),
             status: super::dm_image::Status::Uploading,
             upload: true,
@@ -1328,6 +1330,7 @@ fn note_image(rumor: &event::Rumor, message: &nip17::ChatMessage, state: &mut Si
     }
     if let Ok(descriptor) = super::dm_image::Descriptor::parse(rumor) {
         s.dm_images.entry(id).or_insert(super::dm_image::Image {
+            channel_id: channel,
             descriptor,
             status: super::dm_image::Status::Waiting,
             upload: false,
