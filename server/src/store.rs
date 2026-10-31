@@ -1445,6 +1445,31 @@ impl Store {
         Ok(out)
     }
 
+    /// One indexed `MAX` per channel; a `GROUP BY` would walk every row of them.
+    pub async fn latest_message_times(
+        &self,
+        channel_ids: &[Id],
+    ) -> Result<std::collections::HashMap<Id, i64>> {
+        let ids =
+            serde_json::Value::from(channel_ids.iter().map(Id::to_string).collect::<Vec<_>>())
+                .to_string();
+        let rows = sqlx::query(
+            "SELECT ids.value,
+                    (SELECT MAX(created_at) FROM messages WHERE channel_id = ids.value)
+             FROM json_each(?) AS ids",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let at = r.get::<Option<i64>, _>(1)?;
+                Some((parse_id(&r.get::<String, _>(0)), at))
+            })
+            .collect())
+    }
+
     pub async fn toggle_reaction(
         &self,
         channel_id: Id,

@@ -508,6 +508,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             emojis: Vec::new(),
                             sounds: Vec::new(),
                             voice_states: Vec::new(),
+                            latest_messages: Default::default(),
                         }).await.is_err() {
                             break;
                         }
@@ -3630,6 +3631,7 @@ where
         .into_iter()
         .filter_map(|v| state.voice_state_seen_by(&joiner.pubkey, v))
         .collect();
+    let latest_messages = state.latest_messages(&channels).await;
     if send(
         ws_tx,
         &ServerMessage::GuildJoined {
@@ -3640,6 +3642,7 @@ where
             emojis,
             sounds,
             voice_states,
+            latest_messages,
         },
     )
     .await

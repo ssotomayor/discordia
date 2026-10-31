@@ -22,6 +22,7 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.last_text_channels = saved.last_text_channels.clone();
     s.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();
+    s.channel_read_at = saved.channel_read_at.clone();
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
     s.dm_accepted = saved.dm_accepted.iter().cloned().collect();
     s.dm_ignored = saved.dm_ignored.iter().cloned().collect();
@@ -193,6 +194,7 @@ pub fn AccountView(
         }
     });
     crate::state::use_dm_read_persistence(state);
+    crate::state::use_channel_read_persistence(state);
     crate::channel_selection::use_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_dm_standing_persistence(state);

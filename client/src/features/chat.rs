@@ -2177,11 +2177,14 @@ fn send_dm(
     true
 }
 
-fn dm_focus_key(state: &crate::state::AppState, channel_id: Id) -> (bool, Option<(Id, u64)>) {
+fn composer_focus_key(state: &crate::state::AppState, channel_id: Id) -> (bool, Option<(Id, u64)>) {
+    let open = if state.dm_mode {
+        state.dm_of(channel_id).is_some()
+    } else {
+        state.channels.iter().any(|c| c.id == channel_id)
+    };
     (
-        state.dm_mode
-            && state.selected_channel == Some(channel_id)
-            && state.dm_of(channel_id).is_some(),
+        open && state.selected_channel == Some(channel_id),
         state
             .composer_focus_request
             .filter(|(id, _)| *id == channel_id),
@@ -2220,15 +2223,19 @@ fn Composer(
     let identity = use_context::<crate::identity::Identity>();
     let composer_id = format!("dxf-composer-{channel_id}");
     let mut mounted_editor = use_signal(|| None::<std::rc::Rc<MountedData>>);
-    let focus_request = use_memo(move || dm_focus_key(&state.read(), channel_id));
+    let focus_request = use_memo(move || composer_focus_key(&state.read(), channel_id));
     let focus_id = composer_id.clone();
     use_effect(move || {
         let (active, _revision) = focus_request();
-        if active && let Some(editor) = mounted_editor() {
+        // Focus raises Android's soft keyboard over the messages just opened.
+        if active
+            && !cfg!(target_os = "android")
+            && let Some(editor) = mounted_editor()
+        {
             let id = focus_id.clone();
             spawn(async move {
                 if let Err(error) = editor.set_focus(true).await {
-                    tracing::debug!(%error, "Could not focus the DM composer");
+                    tracing::debug!(%error, "Could not focus the composer");
                 }
                 composer_call(&id, "focus", &[]);
             });
@@ -2992,15 +2999,39 @@ mod composer_tests {
         state.dm_mode = true;
         state.selected_channel = Some(channel);
         state.request_composer_focus(channel);
-        let first = dm_focus_key(&state, channel);
+        let first = composer_focus_key(&state, channel);
         assert!(first.0);
         state.notify_tick += 1;
         state.dm_notify_tick += 1;
-        assert_eq!(dm_focus_key(&state, channel), first);
+        assert_eq!(composer_focus_key(&state, channel), first);
         state.request_composer_focus(channel);
-        assert_ne!(dm_focus_key(&state, channel), first);
+        assert_ne!(composer_focus_key(&state, channel), first);
         state.selected_channel = Some(Id::new_v4());
-        assert!(!dm_focus_key(&state, channel).0);
+        assert!(!composer_focus_key(&state, channel).0);
+    }
+
+    #[test]
+    fn opening_a_text_channel_requests_focus_only_outside_dm_mode() {
+        let mut state = crate::state::AppState::empty();
+        let channel = Id::new_v4();
+        state.channels.push(crate::protocol::Channel {
+            divider: Default::default(),
+            id: channel,
+            guild_id: Id::new_v4(),
+            name: "general".into(),
+            kind: crate::protocol::ChannelKind::Text,
+            topic: None,
+            read_only: false,
+            slowmode_secs: 0,
+            markdown: false,
+            position: 0,
+            access: None,
+        });
+        state.selected_channel = Some(channel);
+        state.request_composer_focus(channel);
+        assert!(composer_focus_key(&state, channel).0);
+        state.dm_mode = true;
+        assert!(!composer_focus_key(&state, channel).0);
     }
 
     fn custom(code: &str) -> GuildEmoji {

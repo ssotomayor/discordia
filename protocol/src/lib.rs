@@ -2679,6 +2679,10 @@ pub enum ServerMessage {
         /// The guild a connection opens when it has none of its own to return to.
         #[serde(default)]
         default_guild: Option<Id>,
+        /// Newest message time (ms) per text channel with any. Read marks are
+        /// the client's alone; this is what it compares them against.
+        #[serde(default)]
+        latest_messages: std::collections::HashMap<Id, i64>,
     },
     GuildEmojis {
         guild_id: Id,
@@ -2713,6 +2717,8 @@ pub enum ServerMessage {
         sounds: Vec<GuildSound>,
         #[serde(default)]
         voice_states: Vec<VoiceState>,
+        #[serde(default)]
+        latest_messages: std::collections::HashMap<Id, i64>,
     },
     GuildDelete {
         guild_id: Id,

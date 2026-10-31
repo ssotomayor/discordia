@@ -1371,6 +1371,7 @@ fn apply(
             bot_commands,
             operator,
             default_guild,
+            latest_messages,
         } => {
             s.pending_edits.clear();
             let recovering = s.status == ConnectionStatus::Reconnecting;
@@ -1500,6 +1501,8 @@ fn apply(
                     });
                 }
             }
+            s.prune_read_marks();
+            s.note_latest_messages(latest_messages);
             if let Some(join_msg) = s.resume_voice_invite(None) {
                 let _ = tx.send(join_msg);
             }
@@ -1589,6 +1592,7 @@ fn apply(
             emojis,
             sounds,
             voice_states,
+            latest_messages,
         } => {
             let gid = guild.id;
             let revision = s
@@ -1633,6 +1637,7 @@ fn apply(
                     before_ms: None,
                 });
             }
+            s.note_latest_messages(latest_messages);
             if let Some(join_msg) = s.resume_voice_invite(Some(gid)) {
                 let _ = tx.send(join_msg);
             }
@@ -2590,6 +2595,7 @@ mod tests {
                             emojis: vec![],
                             sounds: vec![],
                             voice_states: vec![],
+                            latest_messages: Default::default(),
                         },
                         &tx,
                         &voice_tx,
@@ -2666,6 +2672,7 @@ mod tests {
                         bot_commands: vec![],
                         operator: false,
                         default_guild: None,
+                        latest_messages: Default::default(),
                     },
                     &tx,
                     &voice_tx,
