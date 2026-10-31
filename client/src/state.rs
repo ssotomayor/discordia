@@ -933,8 +933,10 @@ impl AppState {
                 }
             }
         }
+        let dm_channels: std::collections::HashSet<_> =
+            self.dms.iter().map(|dm| dm.channel_id).collect();
         for (cid, msgs) in self.messages.iter_mut() {
-            if Some(*cid) != active_channel && msgs.len() > 50 {
+            if Some(*cid) != active_channel && !dm_channels.contains(cid) && msgs.len() > 50 {
                 let drain_count = msgs.len() - 50;
                 msgs.drain(0..drain_count);
                 self.history_loaded.remove(cid);
@@ -3600,5 +3602,49 @@ mod tests {
             crate::nostr::dm_image::Status::Waiting
         );
         assert!(s.dm_images[&msg_a].viewers.is_empty());
+    }
+
+    #[test]
+    fn evict_inactive_dm_images_preserves_dm_history() {
+        let mut s = AppState::empty();
+        let dm_channel = Id::new_v4();
+        let guild_channel = Id::new_v4();
+
+        s.dms.push(DmInfo {
+            channel_id: dm_channel,
+            other_pubkey: "peer1".into(),
+        });
+
+        let dummy_msg = |cid| Message {
+            id: Id::new_v4(),
+            channel_id: cid,
+            author: user("a"),
+            content: "test".into(),
+            created_at: chrono::Utc::now(),
+            edited_at: None,
+            reply_to: None,
+            image: None,
+            image_metadata: None,
+            attachment: None,
+            reactions: Vec::new(),
+            author_bot: false,
+            pinned: false,
+        };
+
+        s.messages
+            .insert(dm_channel, (0..60).map(|_| dummy_msg(dm_channel)).collect());
+        s.messages.insert(
+            guild_channel,
+            (0..60).map(|_| dummy_msg(guild_channel)).collect(),
+        );
+        s.history_loaded.insert(guild_channel);
+
+        s.evict_inactive_dm_images(Some(dm_channel));
+        assert_eq!(s.messages[&dm_channel].len(), 60);
+        assert_eq!(s.messages[&guild_channel].len(), 50);
+        assert!(!s.history_loaded.contains(&guild_channel));
+
+        s.evict_inactive_dm_images(None);
+        assert_eq!(s.messages[&dm_channel].len(), 60);
     }
 }
