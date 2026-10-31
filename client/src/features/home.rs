@@ -341,8 +341,13 @@ pub(super) fn SocialPanel(
     let mut tab = use_signal(|| Tab::Direct);
     // Deleting is not undoable, so the ✕ only arms; the second click acts.
     let mut confirming = use_signal(|| None::<crate::protocol::Id>);
+    let mut cleared_for_none = use_signal(|| false);
     use_effect(move || {
-        if state.read().selected_channel.is_none() {
+        let channel = state.read().selected_channel;
+        if channel.is_some() {
+            cleared_for_none.set(false);
+        } else if !*cleared_for_none.peek() {
+            cleared_for_none.set(true);
             state.write().evict_inactive_dm_images(None);
         }
     });
@@ -621,8 +626,13 @@ pub(super) fn SocialPanel(
 #[component]
 pub(super) fn TalkPane() -> Element {
     let mut state = use_app_state();
+    let mut cleared_for_none = use_signal(|| false);
     use_effect(move || {
-        if state.read().selected_channel.is_none() {
+        let channel = state.read().selected_channel;
+        if channel.is_some() {
+            cleared_for_none.set(false);
+        } else if !*cleared_for_none.peek() {
+            cleared_for_none.set(true);
             state.write().evict_inactive_dm_images(None);
         }
     });
