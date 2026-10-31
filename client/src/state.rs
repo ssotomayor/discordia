@@ -2172,7 +2172,7 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
             .fold(false, |acc, (peer, at)| next.mark_dm_read(&peer, at) || acc);
         if changed {
             settings.set(next.clone());
-            crate::settings::save_async(&next);
+            crate::settings::save(&next);
         }
     });
 }
@@ -2189,7 +2189,7 @@ pub fn use_channel_read_persistence(state: Signal<AppState>) {
             let mut next = settings.peek().clone();
             next.channel_read_at = marks;
             settings.set(next.clone());
-            crate::settings::save_async(&next);
+            crate::settings::save(&next);
         }
     });
 }
