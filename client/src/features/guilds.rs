@@ -4,8 +4,8 @@ use dioxus_grid_layout::NoDrag;
 use crate::protocol::{ClientMessage, Id, Permission};
 use crate::state::{use_app_state, use_gateway};
 
-const SEPARATOR: &str = "w-6 h-px shrink-0 bg-[var(--border)] my-1";
-const SECTION: &str = "w-full flex flex-col items-center gap-2.5";
+const SEPARATOR: &str = "dxf-rail-sep w-6 h-px shrink-0 bg-[var(--border)] my-1";
+const SECTION: &str = "dxf-rail-section w-full flex flex-col items-center gap-2.5";
 
 const HEADER: &str =
     "h-7 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";

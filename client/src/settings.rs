@@ -4,6 +4,10 @@ use crate::identity::config_dir;
 
 const FILE_VERSION: u32 = 1;
 
+fn default_rail_size() -> u16 {
+    crate::features::workspace_layout::RAIL_DEFAULT
+}
+
 fn default_ui_size() -> u16 {
     100
 }
@@ -37,6 +41,9 @@ pub struct ClientSettings {
     pub guild_order: Vec<crate::protocol::Id>,
     #[serde(default)]
     pub last_text_channels: Vec<crate::channel_selection::RememberedTextChannel>,
+    /// The guild rail's thickness in pixels, set by resizing it by hand.
+    #[serde(default = "default_rail_size")]
+    pub rail_size: u16,
     #[serde(default)]
     pub accent: Option<String>,
     #[serde(default = "default_pattern")]
@@ -383,6 +390,7 @@ impl Default for ClientSettings {
             reaction_size_percent: default_ui_size(),
             guild_order: Vec::new(),
             last_text_channels: Vec::new(),
+            rail_size: default_rail_size(),
             channel_read_at: Default::default(),
             accent: None,
             pattern: default_pattern(),

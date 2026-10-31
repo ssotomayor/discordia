@@ -465,6 +465,28 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-ellipsis > span:nth-child(2) { animation-delay: 0.15s; }
 .dxf-ellipsis > span:nth-child(3) { animation-delay: 0.3s; }
 
+/* The rail reads its own shape: wider than tall, it is a row. Doubled
+   selectors outrank the column utilities written on the same elements. */
+.dxf-guilds-frame { container-type: size; }
+/* Over the rail while rearranging; only its buttons take the pointer. */
+.dxf-rail-dock { pointer-events: none; }
+.dxf-rail-dock-buttons { pointer-events: auto; }
+@container (orientation: landscape) {
+  .dxf-guilds-panel.dxf-guilds-panel { flex-direction: row; }
+  .dxf-guilds-panel .dxf-guilds-grip {
+    height: auto; width: 1.75rem; border-bottom-width: 0;
+    border-right: 1px solid var(--border);
+  }
+  .dxf-guilds-panel .dxf-guilds-list {
+    flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 0 12px;
+  }
+  .dxf-guilds-panel .dxf-guilds-list > * { flex-shrink: 0; }
+  .dxf-guilds-panel .dxf-rail-section { width: auto; flex-direction: row; }
+  .dxf-guilds-panel .dxf-rail-sep { width: 1px; height: 1.5rem; margin: 0 4px; }
+  .dxf-guilds-panel .dxf-server-header { width: 6rem; }
+  .dxf-rail-dock .dxf-rail-dock-buttons { flex-direction: row; }
+}
+
 /* Fixed, and placed from the pointer: the guild rail scrolls, and an absolute
    tip beside a tile is clipped by the column that scrolls it. */
 .dxf-tip {

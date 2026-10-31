@@ -446,12 +446,12 @@ pub fn WorkspaceView(
         }
     });
     let mut edit_mode = use_signal(|| false);
-    let mut workspace_width = use_signal(|| None::<f64>);
+    let mut workspace_size = use_signal(|| None::<super::workspace_layout::Size>);
     super::workspace_layout::use_arrangement(
         layout,
         settings,
         streams_visible,
-        workspace_width,
+        workspace_size,
         edit_mode,
         GRID_GAP,
     );
@@ -716,15 +716,15 @@ pub fn WorkspaceView(
                         let data = event.data();
                         spawn(async move {
                             if let Ok(rect) = data.get_client_rect().await
-                                && workspace_width.peek().is_none()
+                                && workspace_size.peek().is_none()
                             {
-                                workspace_width.set(Some(rect.size.width));
+                                workspace_size.set(Some((rect.size.width, rect.size.height)));
                             }
                         });
                     },
                     onresize: move |event| {
                         if let Ok(size) = event.get_content_box_size() {
-                            workspace_width.set(Some(size.width));
+                            workspace_size.set(Some((size.width, size.height)));
                         }
                     },
                         GridLayout {
@@ -733,7 +733,16 @@ pub fn WorkspaceView(
                             mode: LayoutMode::Free,
                             on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
                             GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
-                                GuildsSidebar {}
+                                min_w_px: f64::from(super::workspace_layout::RAIL_MIN),
+                                min_h_px: f64::from(super::workspace_layout::RAIL_MIN),
+                                // A size container, so the rail lays itself out as a row
+                                // whenever it is wider than tall.
+                                div { class: "dxf-guilds-frame relative w-full h-full",
+                                    GuildsSidebar {}
+                                    if edit_mode() {
+                                        RailDock { layout, settings, size: workspace_size }
+                                    }
+                                }
                             }
                             GridItem { id: "channels", x: 1, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
                                 ChannelsColumn {}
@@ -765,6 +774,57 @@ pub fn WorkspaceView(
         }
     }
 }
+
+/// While rearranging: put the rail along an edge, the other panels keeping
+/// their arrangement in what is left. Dragging it anywhere else still works.
+#[component]
+fn RailDock(
+    layout: dioxus_grid_layout::LayoutStore,
+    settings: Signal<crate::settings::ClientSettings>,
+    size: Signal<Option<super::workspace_layout::Size>>,
+) -> Element {
+    use super::workspace_layout::{Dock, dock_rail, rail_px};
+    let dock = move |side: Dock| {
+        let Some(size) = size() else { return };
+        let base = super::stream_layout::Arrangement {
+            cells: layout.snapshot(),
+            free: layout.free_snapshot(),
+        };
+        let thickness = rail_px(&settings.peek());
+        let Some(rects) = dock_rail(&base, side, size, GRID_GAP, thickness) else {
+            return;
+        };
+        let mut store = layout;
+        for (id, rect) in rects {
+            store.set_free(id, rect);
+        }
+        persist_layout(settings, layout);
+    };
+    rsx! {
+        div { class: "dxf-rail-dock absolute inset-0 z-10 flex items-center justify-center",
+            div { class: "dxf-rail-dock-buttons flex flex-col gap-1 p-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel-solid)] shadow-lg",
+                for (side, label, icon) in [
+                    (Dock::Left, "Dock to the left", DOCK_LEFT_SVG),
+                    (Dock::Top, "Dock to the top", DOCK_TOP_SVG),
+                    (Dock::Bottom, "Dock to the bottom", DOCK_BOTTOM_SVG),
+                ] {
+                    button {
+                        r#type: "button",
+                        class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-white/[0.06] transition-colors",
+                        title: crate::i18n::text(label, &[]),
+                        aria_label: crate::i18n::text(label, &[]),
+                        onclick: move |_| dock(side),
+                        span { class: "block w-4 h-4", dangerous_inner_html: icon }
+                    }
+                }
+            }
+        }
+    }
+}
+
+const DOCK_LEFT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="3.5" height="11" rx="1" fill="currentColor"/></svg>"##;
+const DOCK_TOP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="13" height="3.5" rx="1" fill="currentColor"/></svg>"##;
+const DOCK_BOTTOM_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="10" width="13" height="3.5" rx="1" fill="currentColor"/></svg>"##;
 
 #[component]
 pub(crate) fn ErrorToast() -> Element {
@@ -1466,8 +1526,10 @@ mod rail_layout_tests {
     use super::*;
     use crate::features::{stream_layout, workspace_layout};
 
+    const RAIL: f64 = workspace_layout::RAIL_DEFAULT as f64;
+
     #[test]
-    fn rail_keeps_96_pixels_across_templates_and_window_resize_cycles() {
+    fn rail_keeps_its_pixels_across_templates_and_window_resize_cycles() {
         for (name, template, _) in LAYOUT_TEMPLATES {
             let mut base = stream_layout::Arrangement {
                 cells: template(),
@@ -1478,9 +1540,10 @@ mod rail_layout_tests {
                 },
             };
             for width in [900.0, 1920.0, 3840.0, 1280.0, 2560.0] {
-                let next = workspace_layout::compact_rail(&base, width, GRID_GAP).unwrap();
+                let next =
+                    workspace_layout::compact_rail(&base, (width, 1080.0), GRID_GAP, RAIL).unwrap();
                 let rail = next.iter().find(|(id, _)| id == "guilds").unwrap().1;
-                assert!((rail.w * width - GRID_GAP - 96.0).abs() < 1e-6, "{name}");
+                assert!((rail.w * width - GRID_GAP - RAIL).abs() < 1e-6, "{name}");
                 let channels = next.iter().find(|(id, _)| id == "channels").unwrap().1;
                 assert!((channels.x - rail.w).abs() < 1e-6, "{name}");
                 let right = next.iter().map(|(_, r)| r.x + r.w).fold(0.0, f64::max);
@@ -1492,7 +1555,10 @@ mod rail_layout_tests {
                     assert!(rect.x >= 0.0 && rect.w > 0.0 && rect.x + rect.w <= 1.0 + 1e-6);
                 }
                 base.free = next;
-                assert!(workspace_layout::compact_rail(&base, width, GRID_GAP).is_none());
+                assert!(
+                    workspace_layout::compact_rail(&base, (width, 1080.0), GRID_GAP, RAIL)
+                        .is_none()
+                );
             }
         }
     }
@@ -1507,7 +1573,7 @@ mod rail_layout_tests {
             12,
             GRID_ROWS,
         );
-        let next = workspace_layout::compact_rail(&base, 2560.0, GRID_GAP).unwrap();
+        let next = workspace_layout::compact_rail(&base, (2560.0, 1440.0), GRID_GAP, RAIL).unwrap();
         let streams = next.iter().find(|(id, _)| id == "streams").unwrap().1;
         let chat = next.iter().find(|(id, _)| id == "chat").unwrap().1;
         assert_eq!((streams.x, streams.w), (chat.x, chat.w));
@@ -1522,11 +1588,89 @@ mod rail_layout_tests {
             free: vec![],
         };
         for width in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(workspace_layout::compact_rail(&base, width, GRID_GAP).is_none());
+            assert!(
+                workspace_layout::compact_rail(&base, (width, 1080.0), GRID_GAP, RAIL).is_none()
+            );
         }
         base.free
             .push(("guilds".into(), FloatRect::new(0.4, 0.1, 0.2, 0.8)));
-        assert!(workspace_layout::compact_rail(&base, 2560.0, GRID_GAP).is_none());
+        assert!(workspace_layout::compact_rail(&base, (2560.0, 1440.0), GRID_GAP, RAIL).is_none());
+    }
+
+    fn of(rects: &[(String, FloatRect)], id: &str) -> FloatRect {
+        rects.iter().find(|(key, _)| key == id).unwrap().1
+    }
+
+    #[test]
+    fn docking_top_or_bottom_keeps_the_others_side_by_side_in_what_is_left() {
+        let base = stream_layout::Arrangement {
+            cells: default_layout(),
+            free: default_free_layout(),
+        };
+        let size = (1920.0, 1080.0);
+        for dock in [workspace_layout::Dock::Top, workspace_layout::Dock::Bottom] {
+            let docked = workspace_layout::dock_rail(&base, dock, size, GRID_GAP, RAIL).unwrap();
+            let rail = of(&docked, "guilds");
+            assert_eq!(workspace_layout::dock_of(rail), Some(dock));
+            assert!((rail.h * size.1 - GRID_GAP - RAIL).abs() < 1e-6);
+            let (channels, chat, members) = (
+                of(&docked, "channels"),
+                of(&docked, "chat"),
+                of(&docked, "members"),
+            );
+            assert!(channels.x.abs() < 1e-6 && (members.x + members.w - 1.0).abs() < 1e-6);
+            assert!((channels.x + channels.w - chat.x).abs() < 1e-6);
+            for panel in [channels, chat, members] {
+                assert!((panel.h - (1.0 - rail.h)).abs() < 1e-6);
+                let overlaps =
+                    panel.y < rail.y + rail.h - 1e-6 && rail.y < panel.y + panel.h - 1e-6;
+                assert!(!overlaps, "{dock:?}");
+            }
+
+            let taller = stream_layout::Arrangement {
+                cells: default_layout(),
+                free: docked,
+            };
+            let held =
+                workspace_layout::compact_rail(&taller, (1920.0, 1440.0), GRID_GAP, RAIL).unwrap();
+            assert!((of(&held, "guilds").h * 1440.0 - GRID_GAP - RAIL).abs() < 1e-6);
+            assert_eq!(workspace_layout::dock_of(of(&held, "guilds")), Some(dock));
+            let chat = of(&held, "chat");
+            assert!(chat.y >= 0.0 && chat.y + chat.h <= 1.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn docking_back_to_the_left_restores_the_columns() {
+        let base = stream_layout::Arrangement {
+            cells: default_layout(),
+            free: default_free_layout(),
+        };
+        let size = (1920.0, 1080.0);
+        let top =
+            workspace_layout::dock_rail(&base, workspace_layout::Dock::Top, size, GRID_GAP, RAIL)
+                .unwrap();
+        let back = workspace_layout::dock_rail(
+            &stream_layout::Arrangement {
+                cells: default_layout(),
+                free: top,
+            },
+            workspace_layout::Dock::Left,
+            size,
+            GRID_GAP,
+            RAIL,
+        )
+        .unwrap();
+        let rail = of(&back, "guilds");
+        assert_eq!(
+            workspace_layout::dock_of(rail),
+            Some(workspace_layout::Dock::Left)
+        );
+        assert!((of(&back, "channels").x - rail.w).abs() < 1e-6);
+        for id in ["channels", "chat", "members"] {
+            let panel = of(&back, id);
+            assert!(panel.y.abs() < 1e-6 && (panel.h - 1.0).abs() < 1e-6, "{id}");
+        }
     }
 }
 

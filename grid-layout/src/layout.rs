@@ -30,9 +30,13 @@ impl FloatRect {
     }
 
     /// Must not disturb a rect already comfortably inside.
-    pub fn clamp_inside(mut self) -> Self {
-        self.w = self.w.clamp(MIN_FRAC, 1.0);
-        self.h = self.h.clamp(MIN_FRAC, 1.0);
+    pub fn clamp_inside(self) -> Self {
+        self.clamp_inside_min(MIN_FRAC, MIN_FRAC)
+    }
+
+    pub fn clamp_inside_min(mut self, min_w: f64, min_h: f64) -> Self {
+        self.w = self.w.clamp(min_w.min(1.0), 1.0);
+        self.h = self.h.clamp(min_h.min(1.0), 1.0);
         self.x = self.x.clamp(0.0, (1.0 - self.w).max(0.0));
         self.y = self.y.clamp(0.0, (1.0 - self.h).max(0.0));
         self
@@ -79,7 +83,7 @@ impl FloatRect {
     }
 }
 
-const MIN_FRAC: f64 = 0.05;
+pub(crate) const MIN_FRAC: f64 = 0.05;
 
 fn best_delta(moving: &[f64], targets: &[f64], tol: f64) -> Option<f64> {
     let mut best: Option<f64> = None;
@@ -130,6 +134,12 @@ mod tests {
     fn clamp_enforces_a_minimum_size() {
         let r = FloatRect::new(0.5, 0.5, 0.0, -1.0).clamp_inside();
         assert!(r.w >= MIN_FRAC && r.h >= MIN_FRAC, "{r:?}");
+    }
+
+    #[test]
+    fn an_item_may_set_a_smaller_minimum_of_its_own() {
+        let r = FloatRect::new(0.0, 0.0, 0.02, 1.0).clamp_inside_min(0.025, MIN_FRAC);
+        assert!((r.w - 0.025).abs() < 1e-12, "{r:?}");
     }
 
     #[test]
