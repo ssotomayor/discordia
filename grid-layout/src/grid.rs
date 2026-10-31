@@ -180,7 +180,8 @@ fn DragOverlay() -> Element {
                             InteractionKind::Drag => rect.snap_edges(&others, tol),
                             InteractionKind::Resize => rect.snap_size(&others, tol),
                         };
-                        s.set_free(item_id, rect.clamp_inside());
+                        let (min_w, min_h) = state.min_frac;
+                        s.set_free(item_id, rect.clamp_inside_min(min_w, min_h));
                     }
                     return;
                 }

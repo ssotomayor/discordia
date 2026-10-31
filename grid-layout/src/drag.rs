@@ -24,6 +24,8 @@ pub(crate) struct Interaction {
     pub cols: u32,
     pub min_w: u32,
     pub min_h: u32,
+    /// Free mode's smallest size, as fractions of the container.
+    pub min_frac: (f64, f64),
 }
 
 impl Interaction {
@@ -105,6 +107,7 @@ mod tests {
             cols: 12,
             min_w: 1,
             min_h: 1,
+            min_frac: (crate::layout::MIN_FRAC, crate::layout::MIN_FRAC),
         }
     }
 

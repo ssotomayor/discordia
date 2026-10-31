@@ -14,6 +14,10 @@ pub fn GridItem(
     h: u32,
     #[props(default = 1)] min_w: u32,
     #[props(default = 1)] min_h: u32,
+    /// Free mode's smallest size in pixels; 0 keeps the default fraction.
+    #[props(default)]
+    min_w_px: f64,
+    #[props(default)] min_h_px: f64,
     #[props(default = false)] pinned: bool,
     #[props(default = false)] overlay: bool,
     #[props(default = String::new())] class: String,
@@ -128,6 +132,7 @@ pub fn GridItem(
             cols: ctx.cols,
             min_w,
             min_h,
+            min_frac: min_frac(ctx, min_w_px, min_h_px),
         };
         let mut drag = ctx.drag;
         drag.set(Some(state));
@@ -172,6 +177,7 @@ pub fn GridItem(
             cols: ctx.cols,
             min_w,
             min_h,
+            min_frac: min_frac(ctx, min_w_px, min_h_px),
         };
         let mut drag = ctx.drag;
         drag.set(Some(state));
@@ -243,6 +249,18 @@ fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
         rect.w * 100.0,
         rect.h * 100.0,
     )
+}
+
+fn min_frac(ctx: GridContext, min_w_px: f64, min_h_px: f64) -> (f64, f64) {
+    let (w, h) = ctx.container_rect().unwrap_or((0.0, 0.0));
+    let frac = |px: f64, size: f64| {
+        if px > 0.0 && size > 0.0 {
+            px / size
+        } else {
+            crate::layout::MIN_FRAC
+        }
+    };
+    (frac(min_w_px + ctx.gap, w), frac(min_h_px + ctx.gap, h))
 }
 
 pub(crate) fn cell_to_frac(ctx: GridContext, cell: GridPosition) -> FloatRect {

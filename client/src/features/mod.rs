@@ -61,4 +61,4 @@ mod voice_invite;
 pub(crate) use voice_invite::is_expired_message;
 pub mod voice_menu;
 pub mod workspace;
-mod workspace_layout;
+pub(crate) mod workspace_layout;
