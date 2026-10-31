@@ -49,7 +49,7 @@ pub(crate) fn StreamQualityNotice(
 
 /// `screen-…` is a misnomer since the camera moved onto this same room and
 /// connection. The name is load-bearing on the wire, so it stays.
-pub(crate) const SCREEN_JS: &str = r#"
+pub const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
   let connectionRequest = null;

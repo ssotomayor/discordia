@@ -1113,7 +1113,7 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
 }
 
 /// Lazily builds the idempotent initialization script for LiveKit and its E2EE worker.
-pub(crate) fn livekit_bundle_js() -> &'static str {
+pub fn livekit_bundle_js() -> &'static str {
     static BUNDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BUNDLE.get_or_init(|| {
         let worker_json = serde_json::to_string(&format!("{LIVEKIT_E2EE_WORKER_JS}\n{E2EE_WORKER_SHIM_JS}"))
