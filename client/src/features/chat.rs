@@ -1055,13 +1055,15 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             let pubkey = message.author.pubkey.clone();
                             let body = content_for_reply.clone();
                             move |_| {
-                                state.write().replying_to = Some(crate::state::ReplyDraft {
+                                let mut s = state.write();
+                                s.replying_to = Some(crate::state::ReplyDraft {
                                     message_id,
                                     channel_id,
                                     author_pubkey: pubkey.clone(),
                                     author_username: author.clone(),
                                     excerpt: body.clone(),
                                 });
+                                s.request_composer_focus(channel_id);
                             }
                         },
                         "↩"
