@@ -210,6 +210,8 @@ pub enum GuildDialog {
     Settings(Id),
     Integrations(Id),
     Roles(Id),
+    /// Guild settings opened on its Soundboard tab.
+    Sounds(Id),
     Invite(Id),
     VoiceInvite(Id),
     AddGuild,

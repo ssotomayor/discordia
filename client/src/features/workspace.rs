@@ -1515,6 +1515,13 @@ fn GuildDialogHost() -> Element {
                 on_close: close,
             }
         },
+        Some(crate::state::GuildDialog::Sounds(gid)) => rsx! {
+            crate::features::guild_settings::GuildSettingsDialog {
+                guild_id: gid,
+                open_on: crate::features::guild_settings::GuildTab::Soundboard,
+                on_close: close,
+            }
+        },
         Some(crate::state::GuildDialog::AddGuild) => rsx! {
             crate::features::guild_hub::AddGuildDialog { on_close: close }
         },
