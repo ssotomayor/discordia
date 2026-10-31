@@ -421,4 +421,132 @@ mod tests {
         assert!(!cache.contains_key("a"));
         assert!(!cache.has_work());
     }
+
+    #[test]
+    fn benchmark_mediacache_lru_cost() {
+        eprintln!(
+            "\n=========================================================================================="
+        );
+        eprintln!(" MEDIACACHE LRU COST BENCHMARK");
+        eprintln!(
+            "=========================================================================================="
+        );
+
+        // 1. Inserciones sin expulsión vs Inserciones con 1 expulsión a diferentes capacidades
+        eprintln!("\n--- TEST 1: Inserción sin expulsión vs Inserción con 1 expulsión ---");
+        eprintln!(
+            "Capacidad | Insert s/expulsión (µs/op) | Insert c/1 expulsión (µs/op) | Coste LRU scan (µs)"
+        );
+        eprintln!(
+            "----------+----------------------------+------------------------------+--------------------"
+        );
+        for &cap in &[128, 512, 1024, 2048] {
+            let mut cache = MediaCache {
+                entries: HashMap::with_capacity(cap + 100),
+                bytes: 0,
+                byte_budget: 100 * 1024 * 1024,
+                clock: Arc::new(AtomicU64::new(0)),
+                updates: Arc::new(Updates {
+                    ready: Notify::new(),
+                    work: Mutex::default(),
+                    byte_budget: 100 * 1024 * 1024,
+                }),
+            };
+
+            let t0 = std::time::Instant::now();
+            for i in 0..cap {
+                cache.insert(
+                    format!("initial_{i}"),
+                    "small_payload_data_32_bytes___".to_string(),
+                );
+            }
+            let fill_dur = t0.elapsed();
+            let fill_us_per_op = fill_dur.as_secs_f64() * 1_000_000.0 / cap as f64;
+
+            cache.byte_budget = cache.bytes;
+            let n_evict_ops = 100;
+            let t1 = std::time::Instant::now();
+            for i in 0..n_evict_ops {
+                cache.insert(
+                    format!("evict_{i}"),
+                    "small_payload_data_32_bytes___".to_string(),
+                );
+            }
+            let evict_dur = t1.elapsed();
+            let evict_us_per_op = evict_dur.as_secs_f64() * 1_000_000.0 / n_evict_ops as f64;
+
+            eprintln!(
+                "{:<9} | {:<26.2} | {:<28.2} | {:<18.2}",
+                cap,
+                fill_us_per_op,
+                evict_us_per_op,
+                evict_us_per_op - fill_us_per_op
+            );
+        }
+
+        // 2. Inserciones que expulsan múltiples entradas (1, 5, 20, 50)
+        eprintln!(
+            "\n--- TEST 2: Inserciones que expulsan múltiples entradas (Caché: 2048 entradas) ---"
+        );
+        eprintln!(
+            "Entradas desalojadas | Tiempo total insert (µs) | Coste por entrada desalojada (µs/entrada)"
+        );
+        eprintln!(
+            "--------------------+--------------------------+-------------------------------------------"
+        );
+        for &k_evict in &[1, 5, 20, 50] {
+            let item_size = 1000;
+            let mut cache = MediaCache {
+                entries: HashMap::with_capacity(2500),
+                bytes: 0,
+                byte_budget: 2048 * item_size,
+                clock: Arc::new(AtomicU64::new(0)),
+                updates: Arc::new(Updates {
+                    ready: Notify::new(),
+                    work: Mutex::default(),
+                    byte_budget: 2048 * item_size,
+                }),
+            };
+            for i in 0..2048 {
+                cache.insert(format!("item_{i}"), "X".repeat(item_size));
+            }
+            assert_eq!(cache.entries.len(), 2048);
+
+            let big_size = k_evict * item_size;
+            let big_payload = "Y".repeat(big_size);
+            let t0 = std::time::Instant::now();
+            cache.insert("big_item".to_string(), big_payload);
+            let dur = t0.elapsed();
+            let dur_us = dur.as_secs_f64() * 1_000_000.0;
+
+            eprintln!(
+                "{:<19} | {:<24.2} | {:<41.2}",
+                k_evict,
+                dur_us,
+                dur_us / k_evict as f64
+            );
+        }
+
+        // 3. Operaciones de lectura y actualización LRU (2048 entradas)
+        eprintln!("\n--- TEST 3: Operaciones de lectura y actualización LRU (2048 entradas) ---");
+        let mut cache = MediaCache::with_budget(128 * 1024 * 1024);
+        for i in 0..2048 {
+            cache.insert(format!("key_{i}"), "cached_content".to_string());
+        }
+        let n_reads = 10_000;
+        let t_read = std::time::Instant::now();
+        for i in 0..n_reads {
+            let key = format!("key_{}", i % 2048);
+            let _ = cache.get(&key);
+        }
+        let read_dur = t_read.elapsed();
+        eprintln!(
+            "10.000 lecturas get() con touch atómico: {:?} ({:.2} ns/op)",
+            read_dur,
+            read_dur.as_nanos() as f64 / n_reads as f64
+        );
+        eprintln!(
+            "==========================================================================================\n"
+        );
+    }
 }

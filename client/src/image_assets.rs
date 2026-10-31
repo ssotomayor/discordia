@@ -301,88 +301,292 @@ mod tests {
         assert!(assets.0.lock().entries.is_empty());
     }
 
-    #[test]
-    fn benchmark_image_assets_dedup_throughput_and_lock_duration() {
-        // Construct 50 distinct realistic images of 64 KB Base64 data each
-        let payload_base = "A".repeat(64 * 1024);
-        let distinct_images: Vec<Arc<String>> = (0..50)
-            .map(|i| Arc::new(format!("data:image/png;base64,{i:04}{payload_base}")))
-            .collect();
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct ScenarioConfig {
+        n_distinct: usize,
+        payload_kb: usize,
+        hit_ratio_pct: usize, // e.g. 100, 90, 50
+        n_threads: usize,
+        total_ops: usize,
+    }
 
-        // 1. Legacy linear search simulation (exact logic from commit 6a064ed)
-        let legacy_entries = parking_lot::Mutex::new(HashMap::<String, Weak<String>>::new());
-        let legacy_lock_duration = std::sync::atomic::AtomicU64::new(0);
-        let legacy_start = std::time::Instant::now();
-        let mut legacy_sources = Vec::with_capacity(1000);
-        for i in 0..1000 {
-            let img = distinct_images[i % distinct_images.len()].clone();
-            let t_lock_start = std::time::Instant::now();
-            let mut entries = legacy_entries.lock();
-            entries.retain(|_, owner| owner.strong_count() > 0);
-            let found = entries.iter().find_map(|(k, owner)| {
-                let shared = owner.upgrade()?;
-                (shared.as_ref() == img.as_ref()).then_some((k.clone(), shared))
-            });
-            let (key, _shared) = match found {
-                Some((k, s)) => (k, s),
-                None => {
-                    let k = format!("{}.png", uuid::Uuid::new_v4());
-                    entries.insert(k.clone(), Arc::downgrade(&img));
-                    (k, img.clone())
+    #[allow(dead_code)]
+    struct ScenarioResult {
+        total_time_ms: f64,
+        lock_us_per_op: f64,
+        throughput_ops_sec: f64,
+    }
+
+    fn run_legacy_bench(cfg: ScenarioConfig, images: &[Arc<String>]) -> ScenarioResult {
+        let legacy_entries = Arc::new(parking_lot::Mutex::new(
+            HashMap::<String, Weak<String>>::new(),
+        ));
+        let lock_nanos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let start = std::time::Instant::now();
+        let ops_per_thread = cfg.total_ops / cfg.n_threads;
+
+        let mut handles = Vec::new();
+        for t in 0..cfg.n_threads {
+            let entries = legacy_entries.clone();
+            let lock_dur = lock_nanos.clone();
+            let images = images.to_vec();
+            handles.push(std::thread::spawn(move || {
+                let mut kept = Vec::with_capacity(ops_per_thread);
+                for i in 0..ops_per_thread {
+                    let is_hit = (i % 100) < cfg.hit_ratio_pct;
+                    let img = if is_hit && !images.is_empty() {
+                        images[(t * ops_per_thread + i) % images.len()].clone()
+                    } else {
+                        Arc::new(format!(
+                            "data:image/png;base64,{t}_{i}_unique_{}",
+                            "X".repeat(cfg.payload_kb * 1024)
+                        ))
+                    };
+                    let t0 = std::time::Instant::now();
+                    let mut map = entries.lock();
+                    map.retain(|_, owner| owner.strong_count() > 0);
+                    let found = map.iter().find_map(|(k, owner)| {
+                        let shared = owner.upgrade()?;
+                        (shared.as_ref() == img.as_ref()).then_some((k.clone(), shared))
+                    });
+                    let (key, _shared) = match found {
+                        Some((k, s)) => (k, s),
+                        None => {
+                            let k = format!("{}.png", uuid::Uuid::new_v4());
+                            map.insert(k.clone(), Arc::downgrade(&img));
+                            (k, img.clone())
+                        }
+                    };
+                    lock_dur.fetch_add(
+                        t0.elapsed().as_nanos() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    drop(map);
+                    kept.push(key);
                 }
-            };
-            legacy_lock_duration.fetch_add(
-                t_lock_start.elapsed().as_nanos() as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            drop(entries);
-            legacy_sources.push(key);
+                kept
+            }));
         }
-        let legacy_total = legacy_start.elapsed();
+        let all_keys: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        let total = start.elapsed();
+        let total_lock_ns = lock_nanos.load(std::sync::atomic::Ordering::Relaxed);
+        ScenarioResult {
+            total_time_ms: total.as_secs_f64() * 1000.0,
+            lock_us_per_op: (total_lock_ns as f64 / 1000.0) / all_keys.len() as f64,
+            throughput_ops_sec: all_keys.len() as f64 / total.as_secs_f64(),
+        }
+    }
 
-        // 2. New hash-indexed deduplication
+    fn run_new_bench(cfg: ScenarioConfig, images: &[Arc<String>]) -> ScenarioResult {
         let assets = Assets::default();
-        let new_lock_duration = std::sync::atomic::AtomicU64::new(0);
-        let new_start = std::time::Instant::now();
-        let mut new_sources = Vec::with_capacity(1000);
-        for i in 0..1000 {
-            let img = distinct_images[i % distinct_images.len()].clone();
-            let hash = hash_content(&img);
-            let t_lock_start = std::time::Instant::now();
-            let src = assets.source_with_hash(img, crate::protocol::MAX_IMAGE_BYTES, hash);
-            new_lock_duration.fetch_add(
-                t_lock_start.elapsed().as_nanos() as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            new_sources.push(src);
+        let lock_nanos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let start = std::time::Instant::now();
+        let ops_per_thread = cfg.total_ops / cfg.n_threads;
+
+        let mut handles = Vec::new();
+        for t in 0..cfg.n_threads {
+            let assets = assets.clone();
+            let lock_dur = lock_nanos.clone();
+            let images = images.to_vec();
+            handles.push(std::thread::spawn(move || {
+                let mut kept = Vec::with_capacity(ops_per_thread);
+                for i in 0..ops_per_thread {
+                    let is_hit = (i % 100) < cfg.hit_ratio_pct;
+                    let img = if is_hit && !images.is_empty() {
+                        images[(t * ops_per_thread + i) % images.len()].clone()
+                    } else {
+                        Arc::new(format!(
+                            "data:image/png;base64,{t}_{i}_unique_{}",
+                            "X".repeat(cfg.payload_kb * 1024)
+                        ))
+                    };
+                    let hash = hash_content(&img);
+                    let t0 = std::time::Instant::now();
+                    let src = assets.source_with_hash(img, crate::protocol::MAX_IMAGE_BYTES, hash);
+                    lock_dur.fetch_add(
+                        t0.elapsed().as_nanos() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    kept.push(src);
+                }
+                kept
+            }));
         }
-        let new_total = new_start.elapsed();
+        let all_keys: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        let total = start.elapsed();
+        let total_lock_ns = lock_nanos.load(std::sync::atomic::Ordering::Relaxed);
+        ScenarioResult {
+            total_time_ms: total.as_secs_f64() * 1000.0,
+            lock_us_per_op: (total_lock_ns as f64 / 1000.0) / all_keys.len() as f64,
+            throughput_ops_sec: all_keys.len() as f64 / total.as_secs_f64(),
+        }
+    }
 
-        let legacy_lock_us =
-            legacy_lock_duration.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0;
-        let new_lock_us =
-            new_lock_duration.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0;
-
+    #[test]
+    fn benchmark_image_assets_comprehensive_matrix() {
         eprintln!(
-            "\n=== BENCHMARK COMPARISON (1000 ops, 50 distinct 64KB images) ===\n\
-             Legacy Linear Scan: Total {:?} ({:.2} µs/op), Lock Time: {:.2} µs/op\n\
-             New Hash Indexed:   Total {:?} ({:.2} µs/op), Lock Time: {:.2} µs/op\n\
-             Throughput Speedup: {:.1}x total, Lock Contention Reduction: {:.1}x\n\
-             Memory Overhead per entry: ~64 bytes in Rust heap",
-            legacy_total,
-            legacy_total.as_micros() as f64 / 1000.0,
-            legacy_lock_us / 1000.0,
-            new_total,
-            new_total.as_micros() as f64 / 1000.0,
-            new_lock_us / 1000.0,
-            legacy_total.as_secs_f64() / new_total.as_secs_f64(),
-            legacy_lock_us / new_lock_us
+            "\n=========================================================================================="
+        );
+        eprintln!(
+            " IMAGEASSETS DETAILED BENCHMARK MATRIX (Legacy Linear Scan vs New Hash Indexed)"
+        );
+        eprintln!(
+            "=========================================================================================="
         );
 
-        assert_eq!(legacy_sources.len(), 1000);
-        assert_eq!(new_sources.len(), 1000);
-        assert_eq!(assets.0.lock().entries.len(), 50);
-        assert_eq!(assets.0.lock().by_hash.len(), 50);
+        // 1. Varying N distinct images (1, 20, 100, 500, 2000) at 64 KB, 90% hits, 1 thread, 1000 ops
+        eprintln!(
+            "\n--- DIMENSION 1: Varying N Entries (Payload: 64 KB, Hits: 90%, Sequential, 1000 ops) ---"
+        );
+        eprintln!(
+            "N_Entries | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &n in &[1, 20, 100, 500, 2000] {
+            let payload_base = "A".repeat(64 * 1024);
+            let images: Vec<Arc<String>> = (0..n)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:06}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: n,
+                payload_kb: 64,
+                hit_ratio_pct: 90,
+                n_threads: 1,
+                total_ops: 1000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                n,
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+
+        // 2. Varying Payload size (1 KB, 64 KB, 500 KB) at N=100, 90% hits, 1 thread, 1000 ops
+        eprintln!(
+            "\n--- DIMENSION 2: Varying Payload Size (N=100, Hits: 90%, Sequential, 1000 ops) ---"
+        );
+        eprintln!(
+            "Payload   | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &kb in &[1, 64, 500] {
+            let payload_base = "B".repeat(kb * 1024);
+            let images: Vec<Arc<String>> = (0..100)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:04}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: 100,
+                payload_kb: kb,
+                hit_ratio_pct: 90,
+                n_threads: 1,
+                total_ops: 1000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                format!("{kb} KB"),
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+
+        // 3. Varying Hit Ratio (100%, 90%, 50%) at N=100, 64 KB, 1 thread, 1000 ops
+        eprintln!(
+            "\n--- DIMENSION 3: Varying Hit Ratio (N=100, Payload: 64 KB, Sequential, 1000 ops) ---"
+        );
+        eprintln!(
+            "Hit Ratio | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &hits in &[100, 90, 50] {
+            let payload_base = "C".repeat(64 * 1024);
+            let images: Vec<Arc<String>> = (0..100)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:04}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: 100,
+                payload_kb: 64,
+                hit_ratio_pct: hits,
+                n_threads: 1,
+                total_ops: 1000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                format!("{hits}%"),
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+
+        // 4. Concurrency: 1 Thread vs 4 Threads (N=100, 64 KB, 90% hits, 2000 total ops)
+        eprintln!(
+            "\n--- DIMENSION 4: Concurrency (N=100, Payload: 64 KB, Hits: 90%, 2000 ops) ---"
+        );
+        eprintln!(
+            "Threads   | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &threads in &[1, 4] {
+            let payload_base = "D".repeat(64 * 1024);
+            let images: Vec<Arc<String>> = (0..100)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:04}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: 100,
+                payload_kb: 64,
+                hit_ratio_pct: 90,
+                n_threads: threads,
+                total_ops: 2000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                format!("{threads} thr"),
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+        eprintln!(
+            "==========================================================================================\n"
+        );
     }
 
     #[test]
