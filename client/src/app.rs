@@ -275,6 +275,27 @@ button:disabled { cursor: not-allowed; }
 .dxf-message-bookmark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input::placeholder { color: var(--text-dim); }
 
+/* The tick is a background image: WebKit draws ::before on an input, Firefox
+   does not. Its ink is .dxf-cta's, so a checked box reads as that button. */
+input[type='checkbox'] {
+  appearance: none; -webkit-appearance: none; flex-shrink: 0;
+  width: 16px; height: 16px; margin: 0; border-radius: 5px; cursor: pointer;
+  border: 1.5px solid var(--border-strong); background-color: var(--panel2);
+  background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
+  vertical-align: middle;
+}
+input[type='checkbox']:hover:not(:disabled) { border-color: var(--accent); }
+input[type='checkbox']:checked {
+  border-color: var(--accent);
+  background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='%231a1206' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\"),
+                    linear-gradient(135deg, var(--accent-strong), var(--accent));
+  animation: dxf-check-pop 0.16s var(--ease);
+}
+input[type='checkbox']:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type='checkbox']:disabled { opacity: 0.45; cursor: not-allowed; }
+@keyframes dxf-check-pop { from { transform: scale(0.82); } }
+@media (prefers-reduced-motion: reduce) { input[type='checkbox']:checked { animation: none; } }
+
 .dxf-cta {
   background-image: linear-gradient(100deg, var(--accent-strong), var(--accent));
   color: #1a1206; font-weight: 700; border: 1px solid transparent;
