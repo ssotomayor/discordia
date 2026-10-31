@@ -1609,14 +1609,23 @@ impl AppState {
         let Some(server) = self.server_origin.clone() else {
             return;
         };
-        let mark = self
-            .channel_read_at
-            .entry(server)
-            .or_default()
-            .entry(channel_id)
-            .or_insert(at);
-        if at > *mark {
-            *mark = at;
+        use std::collections::btree_map::Entry;
+        let marks = self.channel_read_at.entry(server).or_default();
+        let changed = match marks.entry(channel_id) {
+            Entry::Vacant(e) => {
+                e.insert(at);
+                true
+            }
+            Entry::Occupied(mut e) => {
+                if at > *e.get() {
+                    e.insert(at);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if changed {
             self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
         }
     }
@@ -1627,6 +1636,7 @@ impl AppState {
         let Some(server) = self.server_origin.clone() else {
             return;
         };
+        use std::collections::btree_map::Entry;
         let marks = self.channel_read_at.entry(server).or_default();
         let mut changed = false;
         for (channel_id, at) in latest {
@@ -1634,10 +1644,17 @@ impl AppState {
             if !viewing && marks.get(&channel_id).is_some_and(|mark| at > *mark) {
                 self.channel_unread.insert(channel_id);
             } else {
-                let mark = marks.entry(channel_id).or_insert(at);
-                if at > *mark {
-                    *mark = at;
-                    changed = true;
+                match marks.entry(channel_id) {
+                    Entry::Vacant(e) => {
+                        e.insert(at);
+                        changed = true;
+                    }
+                    Entry::Occupied(mut e) => {
+                        if at > *e.get() {
+                            e.insert(at);
+                            changed = true;
+                        }
+                    }
                 }
             }
             let held = self.channel_latest.entry(channel_id).or_insert(at);
@@ -1678,16 +1695,29 @@ impl AppState {
             let current = self.server_origin.as_deref() == Some(server.as_str());
             let mine = self.channel_read_at.entry(server.clone()).or_default();
             for (channel_id, at) in channels {
-                let mark = mine.entry(*channel_id).or_insert(*at);
-                if *at > *mark {
-                    *mark = *at;
+                use std::collections::btree_map::Entry;
+                let (mark_val, mark_changed) = match mine.entry(*channel_id) {
+                    Entry::Vacant(e) => {
+                        e.insert(*at);
+                        (*at, true)
+                    }
+                    Entry::Occupied(mut e) => {
+                        if *at > *e.get() {
+                            e.insert(*at);
+                            (*at, true)
+                        } else {
+                            (*e.get(), false)
+                        }
+                    }
+                };
+                if mark_changed {
                     changed = true;
                 }
                 if current
                     && self
                         .channel_latest
                         .get(channel_id)
-                        .is_some_and(|latest| latest <= mark)
+                        .is_some_and(|latest| *latest <= mark_val)
                 {
                     self.channel_unread.remove(channel_id);
                 }
@@ -1873,8 +1903,24 @@ impl AppState {
             && self.selected_channel == Some(channel_id)
             && self.dm_mode;
         if viewing {
-            let mark = self.dm_read_at.entry(peer.to_string()).or_insert(at);
-            *mark = (*mark).max(at);
+            use std::collections::hash_map::Entry;
+            let changed = match self.dm_read_at.entry(peer.to_string()) {
+                Entry::Vacant(e) => {
+                    e.insert(at);
+                    true
+                }
+                Entry::Occupied(mut e) => {
+                    if at > *e.get() {
+                        e.insert(at);
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+            if changed {
+                self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
+            }
         } else if self.dm_standing(peer) == DmStanding::Inbox
             && self.dm_read_at.get(peer).is_none_or(|mark| at > *mark)
         {
@@ -1915,9 +1961,22 @@ impl AppState {
             )
             .max();
         if let Some(at) = newest {
-            let mark = self.dm_read_at.entry(peer).or_insert(at);
-            if at > *mark {
-                *mark = at;
+            use std::collections::hash_map::Entry;
+            let changed = match self.dm_read_at.entry(peer) {
+                Entry::Vacant(e) => {
+                    e.insert(at);
+                    true
+                }
+                Entry::Occupied(mut e) => {
+                    if at > *e.get() {
+                        e.insert(at);
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+            if changed {
                 self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
             }
         }
@@ -3122,10 +3181,17 @@ mod tests {
         s.dm_mode = true;
         s.selected_channel = Some(cid);
 
+        let rev_before = s.read_marks_revision;
         s.note_dm_arrival(cid, peer, 300);
 
         assert!(s.dm_unread.is_empty());
         assert_eq!(s.dm_read_at.get(peer), Some(&300));
+        assert_eq!(s.read_marks_revision, rev_before.wrapping_add(1));
+
+        // An older message arriving while watching does not bump or regress mark
+        s.note_dm_arrival(cid, peer, 200);
+        assert_eq!(s.dm_read_at.get(peer), Some(&300));
+        assert_eq!(s.read_marks_revision, rev_before.wrapping_add(1));
     }
 
     /// Selected is not the same as on screen: the home drawer closes over the
