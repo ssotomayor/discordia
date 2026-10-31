@@ -165,9 +165,10 @@ pub(crate) fn use_image_assets() {
                     response
                         .headers_mut()
                         .insert(CONTENT_TYPE, HeaderValue::from_static(payload.0));
-                    response
-                        .headers_mut()
-                        .insert(CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+                    response.headers_mut().insert(
+                        CACHE_CONTROL,
+                        HeaderValue::from_static("private, max-age=300"),
+                    );
                     response
                 }
                 None => {

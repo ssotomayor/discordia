@@ -84,7 +84,10 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                         })
                         .map(|(id, _)| *id)
                         .collect();
-                    for id in active_ready.into_iter().skip(MAX_READY_IMAGES.saturating_sub(1)) {
+                    for id in active_ready
+                        .into_iter()
+                        .skip(MAX_READY_IMAGES.saturating_sub(1))
+                    {
                         if let Some(image) = s.dm_images.get_mut(&id) {
                             image.status = Status::Evicted;
                             image.data = None;
