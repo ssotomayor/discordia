@@ -652,16 +652,6 @@ pub fn save(settings: &ClientSettings) {
     }
 }
 
-pub fn save_async(settings: &ClientSettings) {
-    let settings = settings.clone();
-    #[cfg(not(target_arch = "wasm32"))]
-    tokio::task::spawn_blocking(move || {
-        save(&settings);
-    });
-    #[cfg(target_arch = "wasm32")]
-    save(&settings);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
