@@ -22,6 +22,8 @@
 //!   labelled as such wherever it is drawn.
 //! - `profile` — NIP-78 app data again: the profile, encrypted to ourselves,
 //!   so a second device does not push a stale one to every server.
+//! - `read_marks` — NIP-78 app data a third time: read marks, encrypted to
+//!   ourselves, so a second device does not show read messages as new.
 //! - `relay` — the relay client and pool.
 //! - `service` — the task that owns the pool and feeds `AppState`, shaped like
 //!   `net::spawn_gateway` deliberately.
@@ -39,6 +41,7 @@ pub mod nip44;
 pub mod nip51;
 pub mod nip59;
 pub mod profile;
+pub mod read_marks;
 pub mod relay;
 pub mod service;
 pub mod xp;

@@ -26,7 +26,7 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{event, metadata, nip02, nip17, nip51, nip59, profile, xp};
+use super::{event, metadata, nip02, nip17, nip51, nip59, profile, read_marks, xp};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
@@ -206,8 +206,12 @@ pub fn spawn_nostr(
                 Filter {
                     kinds: Some(vec![xp::KIND_APP_DATA]),
                     authors: Some(vec![our_pubkey.clone()]),
-                    d: Some(vec![xp::D_TAG.to_string(), profile::D_TAG.to_string()]),
-                    limit: Some(2),
+                    d: Some(vec![
+                        xp::D_TAG.to_string(),
+                        profile::D_TAG.to_string(),
+                        read_marks::D_TAG.to_string(),
+                    ]),
+                    limit: Some(3),
                     ..Default::default()
                 },
             ],
@@ -240,7 +244,14 @@ pub fn spawn_nostr(
         let mut named: Vec<String> = Vec::new();
         request_names(&pool, &state, &our_pubkey, &mut named);
 
-        let mut xp_publisher = xp::Publisher::default();
+        let mut xp_publisher = xp::Publisher::new(xp::PUBLISH_COOLDOWN);
+        // Nothing goes out before every relay has replayed: a fresh device
+        // would otherwise replace the account's marks with its own few.
+        let mut marks_checked = false;
+        let mut marks_publisher = xp::Publisher::new(read_marks::PUBLISH_COOLDOWN);
+        let mut marks_held_at = i64::MIN;
+        let mut marks_tick = tokio::time::interval(std::time::Duration::from_secs(15));
+        marks_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // The newest profile the relays hold or we sent them: what a relay's
         // copy must beat to be adopted, and whose pictures need no re-upload.
         let mut synced: Option<profile::SyncedProfile> = None;
@@ -711,6 +722,15 @@ pub fn spawn_nostr(
                         }
                     }
                 }
+                _ = marks_tick.tick(), if marks_checked => {
+                    let marks = state.peek().read_marks();
+                    if let Some(marks) = marks_publisher.offer(marks, std::time::Instant::now()) {
+                        match read_marks::marks_event(&secret, &our_pubkey, &marks, now()) {
+                            Ok(event) => pool.publish(event),
+                            Err(e) => tracing::warn!(error = %e, "could not sign the read marks"),
+                        }
+                    }
+                }
                 _ = tokio::time::sleep_until(
                     tokio::time::Instant::from_std(xp_publisher.due_at().unwrap_or_else(std::time::Instant::now))
                 ), if xp_publisher.due_at().is_some() => {
@@ -793,6 +813,21 @@ pub fn spawn_nostr(
                             }
                             synced = Some(theirs.clone());
                             adopt_profile(theirs, our_pubkey.clone(), state);
+                        }
+                        read_marks::KIND_APP_DATA if event.tag("d") == Some(read_marks::D_TAG) => {
+                            if event.created_at > now() + 600 {
+                                continue;
+                            }
+                            let Some(theirs) = read_marks::parse_marks(&secret, &our_pubkey, &event) else {
+                                continue;
+                            };
+                            state.write().adopt_read_marks(&theirs);
+                            // A stale relay's copy is not what the newest holds,
+                            // so it must not stop the union going back out.
+                            if event.created_at >= marks_held_at {
+                                marks_held_at = event.created_at;
+                                marks_publisher.note_held(theirs);
+                            }
                         }
                         xp::KIND_APP_DATA => {
                             // Self-asserted: stored beside the key that signed
@@ -893,6 +928,7 @@ pub fn spawn_nostr(
                         if subscription != SUB_DM { continue; }
                         eprintln!("[nostr] {relay}: finished replaying stored events");
                         replayed.insert(relay);
+                        marks_checked = marks_checked || every_relay_replayed(&state, &replayed);
                         // Saved here while no relay answered, or before profiles synced.
                         if !profile_checked && every_relay_replayed(&state, &replayed) {
                             profile_checked = true;
