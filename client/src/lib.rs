@@ -263,8 +263,14 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     {
-        let arguments = "--unsafely-treat-insecure-origin-as-secure=\
+        let base_args = "--unsafely-treat-insecure-origin-as-secure=\
              http://dioxus.index.html,http://dioxus.index.html/";
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        let arguments = if existing.is_empty() {
+            base_args.to_owned()
+        } else {
+            format!("{base_args} {existing}")
+        };
         #[cfg(debug_assertions)]
         let arguments = match std::env::var("DISCORDIA_WEBVIEW_DEBUG_PORT")
             .ok()
@@ -273,7 +279,7 @@ pub fn run() {
             Some(port) => format!(
                 "{arguments} --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"
             ),
-            None => arguments.to_owned(),
+            None => arguments,
         };
         // SAFETY: WebView2 reads this before launch; no WebView threads exist yet.
         unsafe {
