@@ -633,11 +633,46 @@ fn day_label(day: chrono::NaiveDate) -> String {
 /// A bare `@word` is already painted for everyone; this is the narrower
 /// question of whether the word names *you*.
 fn mentions_user(content: &str, username: &str) -> bool {
-    content.split_whitespace().any(|w| {
-        w.strip_prefix('@')
-            .map(|rest| rest.trim_end_matches(|c: char| c.is_ascii_punctuation()))
-            .is_some_and(|name| name.eq_ignore_ascii_case(username))
+    content.match_indices('@').any(|(i, _)| {
+        content[..i]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace)
+            && super::markup::mention_len(&content[i + 1..], username).is_some()
     })
+}
+
+/// Names a mention in `content` could spell with a space, which only knowing
+/// the people here can tell apart from a mention followed by a word.
+fn spaced_mentions(s: &crate::state::AppState, content: &str, channel_id: Id) -> Vec<String> {
+    let lower = content.to_lowercase();
+    if !lower.contains('@') {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = match s.channels.iter().find(|c| c.id == channel_id) {
+        Some(ch) => s
+            .members
+            .iter()
+            .filter(|m| m.guild_id == ch.guild_id)
+            .map(|m| m.user.username.clone())
+            .collect(),
+        None => s
+            .members
+            .iter()
+            .map(|m| m.user.username.clone())
+            .chain(
+                s.dm_of(channel_id)
+                    .map(|dm| s.display_name(&dm.other_pubkey)),
+            )
+            .collect(),
+    };
+    names.extend(s.self_user.as_ref().map(|u| u.username.clone()));
+    names.retain(|n| {
+        n.contains(char::is_whitespace) && lower.contains(&format!("@{}", n.to_lowercase()))
+    });
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn typing_label(typers: &[String]) -> Option<String> {
@@ -1690,8 +1725,9 @@ fn MessageContent(content: String, channel_id: Id, message_id: Id) -> Element {
         .get(&message_id)
         .cloned()
         .unwrap_or_default();
+    let mentions = spaced_mentions(&state.read(), &content, channel_id);
     rsx! {
-        super::markup::Markup { content, markdown, guild_id, extra }
+        super::markup::Markup { content, markdown, guild_id, extra, mentions }
     }
 }
 
@@ -3080,6 +3116,16 @@ mod composer_tests {
         assert!(matches!(got[1].pick, ComposerPick::Unicode("🔥")));
         assert!(emoji_suggestions("zzzz", &guild, &urls).is_empty());
         assert_eq!(emoji_suggestions("_", &guild, &urls).len(), MAX_SUGGESTIONS);
+    }
+
+    #[test]
+    fn a_mention_of_a_spaced_name_names_its_owner() {
+        assert!(mentions_user("hey @john doe, look", "John Doe"));
+        assert!(mentions_user("@John Doe", "John Doe"));
+        assert!(!mentions_user("@John Doer", "John Doe"));
+        assert!(!mentions_user("mail@John Doe", "John Doe"));
+        assert!(mentions_user("hi @alex.", "alex"));
+        assert!(!mentions_user("hi @alex.b", "alex"));
     }
 
     #[test]
