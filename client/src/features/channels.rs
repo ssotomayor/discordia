@@ -129,7 +129,12 @@ pub fn ChannelsColumn() -> Element {
     let dms: Vec<DmInfo> = snapshot.dms_by_recency(crate::state::DmStanding::Inbox);
     let requests = snapshot.dm_request_count();
     let dm_unread = snapshot.dm_unread.clone();
-    let channel_unread = snapshot.channel_unread.clone();
+    let channel_unread: std::collections::HashSet<Id> = snapshot
+        .channels
+        .iter()
+        .filter(|c| snapshot.channel_shows_unread(c.id))
+        .map(|c| c.id)
+        .collect();
     // The effective state, not the channel's own flag: a guild muted as a whole
     // is silent, and a row that did not say so would be lying about what the
     // person will hear.
@@ -502,8 +507,11 @@ pub fn ChannelsColumn() -> Element {
                                 }
                             } else {
                                 let active = selected_channel == Some(cid);
+                                let unread = channel_unread.contains(&cid);
                                 let cls = if active {
                                     "text-[var(--text)] font-medium bg-[var(--panel2)]"
+                                } else if unread {
+                                    "text-[var(--text)] font-medium hover:bg-white/[0.03]"
                                 } else {
                                     "text-[var(--text-dim)] hover:text-[var(--text-muted)] hover:bg-white/[0.03]"
                                 };
@@ -551,14 +559,15 @@ pub fn ChannelsColumn() -> Element {
                                             }
                                         }
                                         span { class: "font-mono text-[13px] opacity-70", draggable: false, "#" }
-                                        span { class: "truncate flex-1", draggable: false, "{ch.name}" }
-                                        if channel_unread.contains(&cid) {
+                                        span { class: "truncate", draggable: false, "{ch.name}" }
+                                        if unread {
                                             span {
                                                 title: crate::i18n::text("Unread messages", &[]),
                                                 aria_label: crate::i18n::text("Unread messages", &[]),
                                                 style: "width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0;",
                                             }
                                         }
+                                        span { class: "flex-1" }
                                         if muted_channels.contains(&ch.id) {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: crate::i18n::text("Muted", &[]), "🔕" }
                                         }
@@ -2189,6 +2198,7 @@ pub(crate) fn select_text_channel(
         s.selected_channel = Some(channel_id);
         s.dm_mode = false;
         crate::channel_selection::remember_current(&mut s);
+        s.request_composer_focus(channel_id);
         s.mark_channel_read(channel_id);
         !s.history_loaded.contains(&channel_id)
     };

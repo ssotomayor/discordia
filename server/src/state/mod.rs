@@ -1359,6 +1359,7 @@ impl AppState {
         let profiles = self.profiles_of(&known);
         let activities = self.activities_of(&seen);
         let bot_commands = self.commands_for_guilds(&my_guild_ids);
+        let latest_messages = self.latest_messages(&channels).await;
 
         Ok(ServerMessage::Ready {
             chat_tools: true,
@@ -1376,6 +1377,7 @@ impl AppState {
             bot_commands,
             operator: self.operators.contains(&user.pubkey),
             default_guild: self.default_guild(),
+            latest_messages,
         })
     }
 
@@ -3040,6 +3042,29 @@ impl AppState {
         Ok(ended)
     }
 
+    /// Only text channels the caller was already shown. A failed query costs
+    /// unread dots, not the session.
+    pub async fn latest_messages(
+        &self,
+        channels: &[Channel],
+    ) -> std::collections::HashMap<Id, i64> {
+        let ids: Vec<Id> = channels
+            .iter()
+            .filter(|c| c.kind == crate::protocol::ChannelKind::Text)
+            .map(|c| c.id)
+            .collect();
+        if ids.is_empty() {
+            return Default::default();
+        }
+        self.store
+            .latest_message_times(&ids)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "latest message query failed");
+                Default::default()
+            })
+    }
+
     /// Rows come back as stored: a `media:` address, never the bytes. A page of
     /// 200 inlined images was 600 MB of JSON for one cheap request.
     pub async fn history(
@@ -3833,6 +3858,7 @@ impl AppState {
             bot_commands: Vec::new(),
             operator: false,
             default_guild: None,
+            latest_messages: Default::default(),
         }
     }
 }

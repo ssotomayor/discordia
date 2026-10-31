@@ -64,6 +64,13 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_read_at: Vec<(String, i64)>,
 
+    /// Server origin → channel → ms of the newest message read there. Kept
+    /// here and never on the server; Ready's `latest_messages` is compared
+    /// against it.
+    #[serde(default)]
+    pub channel_read_at:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<crate::protocol::Id, i64>>,
+
     /// Author pubkey → seconds that author's clock runs ahead of ours.
     /// Persisted because the estimate is only measurable on a live message and
     /// the correction has to apply to the history the relays replay first.
@@ -376,6 +383,7 @@ impl Default for ClientSettings {
             reaction_size_percent: default_ui_size(),
             guild_order: Vec::new(),
             last_text_channels: Vec::new(),
+            channel_read_at: Default::default(),
             accent: None,
             pattern: default_pattern(),
             background: None,

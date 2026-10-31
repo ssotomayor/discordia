@@ -349,6 +349,11 @@ pub struct AppState {
     pub saved_emoji: Vec<crate::settings::SavedEmoji>,
     pub dm_unread: HashMap<Id, u32>,
     pub channel_unread: HashSet<Id>,
+    /// Seeded from `ClientSettings::channel_read_at`; see there.
+    pub channel_read_at: BTreeMap<String, BTreeMap<Id, i64>>,
+    /// Newest message time (ms) per channel on this server, so opening one can
+    /// move its read mark before its history arrives.
+    pub channel_latest: HashMap<Id, i64>,
     /// Seeded from `ClientSettings::dm_cleared_at`; see it for why a delete is
     /// a watermark. Read on every insert, so replayed history stays hidden.
     pub dm_cleared_at: HashMap<String, i64>,
@@ -585,6 +590,8 @@ impl AppState {
             saved_emoji: Vec::new(),
             dm_unread: HashMap::new(),
             channel_unread: HashSet::new(),
+            channel_read_at: BTreeMap::new(),
+            channel_latest: HashMap::new(),
             dm_cleared_at: HashMap::new(),
             dm_clock_offset: HashMap::new(),
             dm_read_at: HashMap::new(),
@@ -833,6 +840,7 @@ impl AppState {
         self.voice_invite_on_ready = None;
         crate::channel_selection::remember_current(self);
         self.channel_unread.clear();
+        self.channel_latest.clear();
         self.voice_route_revision = 0;
         self.status = ConnectionStatus::Disconnected;
         self.self_user = None;
@@ -1518,8 +1526,15 @@ impl AppState {
             .as_ref()
             .is_some_and(|u| u.pubkey == message.author.pubkey);
         let viewing = !self.dm_mode && self.selected_channel == Some(channel_id);
-        if !own && !viewing && self.channels.iter().any(|channel| channel.id == channel_id) {
-            self.channel_unread.insert(channel_id);
+        if self.channels.iter().any(|channel| channel.id == channel_id) {
+            let at = message.created_at.timestamp_millis();
+            let latest = self.channel_latest.entry(channel_id).or_insert(at);
+            *latest = (*latest).max(at);
+            if own || viewing {
+                self.advance_read_mark(channel_id, at);
+            } else {
+                self.channel_unread.insert(channel_id);
+            }
         }
         let held = self.messages.entry(channel_id).or_default();
         let index = held.partition_point(|m| m.created_at <= message.created_at);
@@ -1527,14 +1542,70 @@ impl AppState {
         true
     }
 
+    /// Unread is kept for a muted channel and only hidden, so unmuting one
+    /// shows what arrived meanwhile.
+    pub fn channel_shows_unread(&self, channel_id: Id) -> bool {
+        self.channel_unread.contains(&channel_id) && !self.is_muted(channel_id)
+    }
+
     pub fn guild_has_unread(&self, guild_id: Id) -> bool {
-        self.channels.iter().any(|channel| {
-            channel.guild_id == guild_id && self.channel_unread.contains(&channel.id)
-        })
+        !self.muted_guilds.contains(&guild_id)
+            && self.channels.iter().any(|channel| {
+                channel.guild_id == guild_id
+                    && self.channel_unread.contains(&channel.id)
+                    && !self.muted_channels.contains(&channel.id)
+            })
     }
 
     pub fn mark_channel_read(&mut self, channel_id: Id) {
         self.channel_unread.remove(&channel_id);
+        if let Some(at) = self.channel_latest.get(&channel_id).copied() {
+            self.advance_read_mark(channel_id, at);
+        }
+    }
+
+    fn advance_read_mark(&mut self, channel_id: Id, at: i64) {
+        let Some(server) = self.server_origin.clone() else {
+            return;
+        };
+        let mark = self
+            .channel_read_at
+            .entry(server)
+            .or_default()
+            .entry(channel_id)
+            .or_insert(at);
+        *mark = (*mark).max(at);
+    }
+
+    /// Compares what arrived while we were away with our read marks. A channel
+    /// with no mark is taken as read, or joining a busy guild lights it all up.
+    pub fn note_latest_messages(&mut self, latest: HashMap<Id, i64>) {
+        let Some(server) = self.server_origin.clone() else {
+            return;
+        };
+        let marks = self.channel_read_at.entry(server).or_default();
+        for (channel_id, at) in latest {
+            let viewing = !self.dm_mode && self.selected_channel == Some(channel_id);
+            if !viewing && marks.get(&channel_id).is_some_and(|mark| at > *mark) {
+                self.channel_unread.insert(channel_id);
+            } else {
+                let mark = marks.entry(channel_id).or_insert(at);
+                *mark = (*mark).max(at);
+            }
+            let held = self.channel_latest.entry(channel_id).or_insert(at);
+            *held = (*held).max(at);
+        }
+    }
+
+    /// Ready lists every channel this server still shows us, so a mark for any
+    /// other is for a channel deleted or hidden since.
+    pub fn prune_read_marks(&mut self) {
+        let Some(server) = self.server_origin.as_deref() else {
+            return;
+        };
+        if let Some(marks) = self.channel_read_at.get_mut(server) {
+            marks.retain(|id, _| self.channels.iter().any(|c| c.id == *id));
+        }
     }
 
     /// What to subtract from `author`'s timestamps to put them on our clock.
@@ -1903,6 +1974,22 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
             .into_iter()
             .fold(false, |acc, (peer, at)| next.mark_dm_read(&peer, at) || acc);
         if changed {
+            settings.set(next.clone());
+            crate::settings::save(&next);
+        }
+    });
+}
+
+pub fn use_channel_read_persistence(state: Signal<AppState>) {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let marks = use_memo(move || state.read().channel_read_at.clone());
+    use_effect(move || {
+        let marks = marks();
+        // `peek`, not `read`: writing back what this effect subscribes to is a
+        // loop.
+        if settings.peek().channel_read_at != marks {
+            let mut next = settings.peek().clone();
+            next.channel_read_at = marks;
             settings.set(next.clone());
             crate::settings::save(&next);
         }
@@ -2600,6 +2687,81 @@ mod tests {
         assert!(s.channel_unread.contains(&first));
         s.clear_server_session();
         assert!(s.channel_unread.is_empty());
+    }
+
+    /// What arrived while the app was closed shows as unread on the next
+    /// Ready, measured against marks only this machine holds.
+    #[test]
+    fn read_marks_outlive_the_session_and_meet_readys_newest_times() {
+        let guild = Id::new_v4();
+        let mut s = AppState::empty();
+        s.server_origin = Some("server-a".into());
+        s.self_user = Some(user("self"));
+        let seen = text_channel(&mut s, guild);
+        let opened = text_channel(&mut s, guild);
+        s.note_latest_messages(HashMap::from([(seen, 100), (opened, 100)]));
+        assert!(
+            s.channel_unread.is_empty(),
+            "no mark yet is read, not unread"
+        );
+        s.insert_message(opened, at(Id::new_v4(), opened, 1));
+        s.mark_channel_read(opened);
+
+        let mut next = AppState::empty();
+        next.server_origin = Some("server-a".into());
+        next.channel_read_at = s.channel_read_at.clone();
+        next.channels = s.channels.clone();
+        next.channel_read_at
+            .entry("server-b".into())
+            .or_default()
+            .insert(Id::new_v4(), 5);
+        let gone = Id::new_v4();
+        next.channel_read_at
+            .get_mut("server-a")
+            .unwrap()
+            .insert(gone, 5);
+        next.prune_read_marks();
+        assert!(!next.channel_read_at["server-a"].contains_key(&gone));
+        assert_eq!(
+            next.channel_read_at["server-b"].len(),
+            1,
+            "another server's marks stay"
+        );
+
+        next.note_latest_messages(HashMap::from([(seen, 200), (opened, 1_000)]));
+        assert!(next.channel_unread.contains(&seen));
+        assert!(
+            !next.channel_unread.contains(&opened),
+            "read up to its newest"
+        );
+        next.mark_channel_read(seen);
+        assert_eq!(next.channel_read_at["server-a"][&seen], 200);
+
+        next.selected_channel = Some(seen);
+        next.note_latest_messages(HashMap::from([(seen, 300)]));
+        assert!(
+            !next.channel_unread.contains(&seen),
+            "what is on screen is read"
+        );
+        assert_eq!(next.channel_read_at["server-a"][&seen], 300);
+    }
+
+    #[test]
+    fn a_muted_channel_or_guild_hides_its_unread_dot_until_unmuted() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        let guild = Id::new_v4();
+        let quiet = text_channel(&mut s, guild);
+        s.set_channel_muted(quiet, true);
+        s.insert_message(quiet, at(Id::new_v4(), quiet, 1));
+        assert!(!s.channel_shows_unread(quiet));
+        assert!(!s.guild_has_unread(guild));
+        s.set_channel_muted(quiet, false);
+        assert!(s.channel_shows_unread(quiet));
+        assert!(s.guild_has_unread(guild));
+        s.muted_guilds.insert(guild);
+        assert!(!s.channel_shows_unread(quiet));
+        assert!(!s.guild_has_unread(guild));
     }
 
     /// The whole complaint: an ordinary message used to ring only if it named
