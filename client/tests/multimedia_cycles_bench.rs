@@ -616,11 +616,19 @@ async fn streaming_isolation_scenarios_and_cycles() {
     room_local.close().await.unwrap();
     room_remote.close().await.unwrap();
 
-    println!("\n=======================================================");
-    println!("=== 10 CICLOS COMPLETOS DE TRANSMISION BIDIRECCIONAL ===");
-    println!("=======================================================");
+    println!("\n==========================================================================");
+    println!("=== 10 CICLOS BIDIRECCIONALES CON MEDICION DE ESTABILIZACION POR CICLO ===");
+    println!("==========================================================================");
 
-    let mut cycle_samples: Vec<(f64, f64, f64, f64)> = Vec::new();
+    #[allow(dead_code)]
+    struct CycleRecord {
+        during: (f64, f64),
+        t0: (f64, f64),
+        t2: (f64, f64),
+        t5: (f64, f64),
+    }
+
+    let mut cycle_records: Vec<CycleRecord> = Vec::new();
 
     for c in 1..=10 {
         let cycle_room = format!("bidi-cycle-room-{c}");
@@ -714,7 +722,7 @@ async fn streaming_isolation_scenarios_and_cycles() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        let (during_priv, during_ws) = process_memory();
+        let during = process_memory();
 
         let _ = loc_rm
             .local_participant()
@@ -729,27 +737,37 @@ async fn streaming_isolation_scenarios_and_cycles() {
         drn_loc.abort();
         drn_rem.abort();
 
-        let (after_priv, after_ws) = process_memory();
-        cycle_samples.push((during_priv, during_ws, after_priv, after_ws));
+        let t0 = process_memory();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let t2 = process_memory();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let t5 = process_memory();
 
         println!(
-            "Bidi Ciclo {c:2}: Durante=({during_priv:.2} MB priv, {during_ws:.2} MB ws) | Despues=({after_priv:.2} MB priv, {after_ws:.2} MB ws)"
+            "Ciclo {c:2}: Durante=({:.2} MB priv, {:.2} MB ws) | T+0s=({:.2} MB priv) | T+2s=({:.2} MB priv) | T+5s=({:.2} MB priv, {:.2} MB ws)",
+            during.0, during.1, t0.0, t2.0, t5.0, t5.1
         );
+
+        cycle_records.push(CycleRecord { during, t0, t2, t5 });
     }
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let (final_priv, final_ws) = process_memory();
-    println!("Final Estabilizado (T+2s): Private={final_priv:.2} MB, WS={final_ws:.2} MB");
-
-    let drift_priv = cycle_samples[9].2 - cycle_samples[2].2;
-    let drift_ws = cycle_samples[9].3 - cycle_samples[2].3;
+    let drift_t2 = cycle_records[9].t2.0 - cycle_records[0].t2.0;
+    let drift_t5 = cycle_records[9].t5.0 - cycle_records[0].t5.0;
+    println!("\n=== RESUMEN DE ESTABILIZACION Y DERIVA ===");
     println!(
-        "Deriva Residual (Ciclo 10 vs Ciclo 3): Private: {drift_priv:+.2} MB, WS: {drift_ws:+.2} MB"
+        "Ciclo  1 estabilizado (T+5s): {:.2} MB priv, {:.2} MB ws",
+        cycle_records[0].t5.0, cycle_records[0].t5.1
     );
+    println!(
+        "Ciclo 10 estabilizado (T+5s): {:.2} MB priv, {:.2} MB ws",
+        cycle_records[9].t5.0, cycle_records[9].t5.1
+    );
+    println!("Deriva neta T+2s (Ciclo 10 vs Ciclo 1): {drift_t2:+.2} MB");
+    println!("Deriva neta T+5s (Ciclo 10 vs Ciclo 1): {drift_t5:+.2} MB");
 
     assert!(
-        drift_priv < 35.0,
-        "La transmision bidireccional no debe presentar fuga acumulativa: deriva={drift_priv} MB"
+        drift_t5.abs() < 25.0,
+        "La memoria estabilizada debe formar una meseta sin crecimiento acumulativo: deriva={drift_t5} MB"
     );
 
     drop(sfu);
