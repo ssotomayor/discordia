@@ -1701,12 +1701,15 @@ fn capture_settings_for_session(
 #[component]
 pub fn ScreenShareBridge() -> Element {
     let visibility_window = crate::platform::use_window();
+    let state = use_app_state();
     use_future(move || {
         let window = visibility_window.clone();
         async move {
             // The eval crosses into the WebView; visibility rarely changes, so
             // send only on a change and let the JS keep its state otherwise.
             let mut sent: Option<bool> = None;
+            #[cfg(target_os = "windows")]
+            let mut memory_level_low: Option<bool> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let visible = window_shown(&window);
@@ -1716,10 +1719,24 @@ pub fn ScreenShareBridge() -> Element {
                         "window.dxScreen?.setViewerVisibility({visible});"
                     ));
                 }
+                #[cfg(target_os = "windows")]
+                {
+                    use crate::platform::wry::{MemoryUsageLevel, WebViewExtWindows as _};
+                    let video_active = screen_connection_target(&state.read()).is_some();
+                    let should_be_low = !visible && !video_active;
+                    if memory_level_low != Some(should_be_low) {
+                        memory_level_low = Some(should_be_low);
+                        let level = if should_be_low {
+                            MemoryUsageLevel::Low
+                        } else {
+                            MemoryUsageLevel::Normal
+                        };
+                        let _ = window.webview.set_memory_usage_level(level);
+                    }
+                }
             }
         }
     });
-    let state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let watching = use_memo(move || state.read().screen_viewing.clone());
@@ -3777,5 +3794,23 @@ mod js_escaping_tests {
             screen_stats_js(true).ends_with("window.dxScreen?.setStatsEnabled(true);"),
             "diagnostics can enable sender stats polling"
         );
+    }
+
+    #[test]
+    fn adaptive_webview_memory_policy_evaluation() {
+        fn evaluate_policy(visible: bool, video_active: bool) -> &'static str {
+            let should_be_low = !visible && !video_active;
+            if should_be_low { "Low" } else { "Normal" }
+        }
+
+        // Visible window: always Normal
+        assert_eq!(evaluate_policy(true, false), "Normal");
+        assert_eq!(evaluate_policy(true, true), "Normal");
+
+        // Inactive window (minimized or tray) without active video: Low
+        assert_eq!(evaluate_policy(false, false), "Low");
+
+        // Inactive window (minimized or tray) WITH active video streaming: Normal
+        assert_eq!(evaluate_policy(false, true), "Normal");
     }
 }
