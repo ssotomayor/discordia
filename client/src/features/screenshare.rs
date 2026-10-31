@@ -1176,9 +1176,23 @@ window.dxScreen = window.dxScreen || (function () {
     }
     try { at.stop(); } catch (e) {}
   }
-  async function stopShare() {
+  async function stopLocalShareVideo() {
     healthReports.delete('local');
-    await stopLocalShareAudio();
+    const vt = localShareVideoTrack;
+    const ct = screenCaptureTrack;
+    localShareVideoTrack = null;
+    screenCaptureTrack = null;
+    post('screen-stats', { active: false });
+    if (ct) { try { ct.stop(); } catch (e) {} }
+    if (vt) {
+      if (room) { try { await room.localParticipant.unpublishTrack(vt, true); } catch (e) {} }
+      try { vt.stop(); } catch (e) {}
+    }
+  }
+  async function stopShare() {
+    const videoStopped = stopLocalShareVideo();
+    const audioStopped = stopLocalShareAudio();
+    await Promise.all([videoStopped, audioStopped]);
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
@@ -1395,15 +1409,18 @@ window.dxScreen = window.dxScreen || (function () {
 
   async function disconnect() {
     stopCameraPreview();
+    if (screenStatsTimer) { clearInterval(screenStatsTimer); screenStatsTimer = null; }
+    keyArrived();
     const request = {};
     connectionRequest = request;
     const previous = room;
     const audioStopped = stopLocalShareAudio();
     const cameraStopped = stopCamera();
+    const shareStopped = stopLocalShareVideo();
     room = null;
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
-    await Promise.all([audioStopped, cameraStopped]);
+    await Promise.all([audioStopped, cameraStopped, shareStopped]);
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
     if (connectionRequest !== request) return;
     connectionRequest = null;
@@ -3793,6 +3810,25 @@ mod js_escaping_tests {
         assert!(
             screen_stats_js(true).ends_with("window.dxScreen?.setStatsEnabled(true);"),
             "diagnostics can enable sender stats polling"
+        );
+    }
+
+    #[test]
+    fn teardown_cleans_screen_tracks_and_stats_timer() {
+        let js = super::SCREEN_JS;
+        assert!(
+            js.contains("async function stopLocalShareVideo()")
+                && js.contains("localShareVideoTrack = null;")
+                && js.contains("screenCaptureTrack = null;"),
+            "stopping local share unpublishes, stops and nulls video and capture tracks"
+        );
+        assert!(
+            js.contains("if (screenStatsTimer) { clearInterval(screenStatsTimer); screenStatsTimer = null; }"),
+            "disconnect halts the screen statistics polling timer"
+        );
+        assert!(
+            js.contains("const shareStopped = stopLocalShareVideo();"),
+            "disconnect stops and cleans active screen video tracks"
         );
     }
 
