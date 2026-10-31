@@ -42,54 +42,72 @@ pub struct GlobalXp {
 /// burst of points needs only its last total out, not one event per point (#198).
 pub const PUBLISH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Paces the ledger's publishes: the first goes at once, later ones wait for
-/// the cooldown and only the latest waiting total is sent when it ends.
-#[derive(Debug, Default)]
-pub struct Publisher {
-    published: Option<GlobalXp>,
+/// Paces a replaceable event's publishes: the first goes at once, later ones
+/// wait for the cooldown and only the latest waiting value is sent when it ends.
+#[derive(Debug)]
+pub struct Publisher<T> {
+    cooldown: std::time::Duration,
+    published: Option<T>,
     last_at: Option<std::time::Instant>,
-    pending: Option<GlobalXp>,
+    pending: Option<T>,
 }
 
-impl Publisher {
-    /// `Some` is a total to sign and send now.
-    pub fn offer(&mut self, total: GlobalXp, now: std::time::Instant) -> Option<GlobalXp> {
-        if self.published == Some(total) {
+impl<T: Clone + PartialEq> Publisher<T> {
+    pub fn new(cooldown: std::time::Duration) -> Self {
+        Self {
+            cooldown,
+            published: None,
+            last_at: None,
+            pending: None,
+        }
+    }
+
+    /// `Some` is a value to sign and send now.
+    pub fn offer(&mut self, value: T, now: std::time::Instant) -> Option<T> {
+        if self.published.as_ref() == Some(&value) {
             self.pending = None;
             return None;
         }
         if !self.cooled(now) {
-            self.pending = Some(total);
+            self.pending = Some(value);
             return None;
         }
-        self.mark_sent(total, now);
-        Some(total)
+        self.mark_sent(value.clone(), now);
+        Some(value)
     }
 
-    /// When the waiting total may go, if one is waiting.
+    /// What the relays already hold, so offering it again sends nothing.
+    pub fn note_held(&mut self, value: T) {
+        if self.pending.as_ref() == Some(&value) {
+            self.pending = None;
+        }
+        self.published = Some(value);
+    }
+
+    /// When the waiting value may go, if one is waiting.
     pub fn due_at(&self) -> Option<std::time::Instant> {
-        self.pending?;
-        Some(self.last_at? + PUBLISH_COOLDOWN)
+        self.pending.as_ref()?;
+        Some(self.last_at? + self.cooldown)
     }
 
-    /// The waiting total, once its time has come.
-    pub fn take_due(&mut self, now: std::time::Instant) -> Option<GlobalXp> {
+    /// The waiting value, once its time has come.
+    pub fn take_due(&mut self, now: std::time::Instant) -> Option<T> {
         let due = self.due_at()?;
         if now < due {
             return None;
         }
-        let total = self.pending.take()?;
-        self.mark_sent(total, now);
-        Some(total)
+        let value = self.pending.take()?;
+        self.mark_sent(value.clone(), now);
+        Some(value)
     }
 
     fn cooled(&self, now: std::time::Instant) -> bool {
         self.last_at
-            .is_none_or(|t| now.duration_since(t) >= PUBLISH_COOLDOWN)
+            .is_none_or(|t| now.duration_since(t) >= self.cooldown)
     }
 
-    fn mark_sent(&mut self, total: GlobalXp, now: std::time::Instant) {
-        self.published = Some(total);
+    fn mark_sent(&mut self, value: T, now: std::time::Instant) {
+        self.published = Some(value);
         self.last_at = Some(now);
         self.pending = None;
     }
@@ -203,7 +221,7 @@ mod publisher_tests {
     #[test]
     fn a_burst_sends_the_first_total_now_and_the_last_one_later() {
         let t0 = Instant::now();
-        let mut p = Publisher::default();
+        let mut p = Publisher::new(PUBLISH_COOLDOWN);
         assert_eq!(p.offer(xp(10), t0), Some(xp(10)));
         assert_eq!(p.offer(xp(11), t0 + Duration::from_secs(1)), None);
         assert_eq!(p.offer(xp(12), t0 + Duration::from_secs(2)), None);
@@ -216,7 +234,7 @@ mod publisher_tests {
     #[test]
     fn an_unchanged_total_is_never_resent() {
         let t0 = Instant::now();
-        let mut p = Publisher::default();
+        let mut p = Publisher::new(PUBLISH_COOLDOWN);
         assert_eq!(p.offer(xp(10), t0), Some(xp(10)));
         assert_eq!(p.offer(xp(11), t0 + Duration::from_secs(1)), None);
         assert_eq!(p.offer(xp(10), t0 + Duration::from_secs(2)), None);
@@ -229,9 +247,22 @@ mod publisher_tests {
     }
 
     #[test]
+    fn what_the_relays_already_hold_is_not_sent_again() {
+        let t0 = Instant::now();
+        let mut p = Publisher::new(PUBLISH_COOLDOWN);
+        p.note_held(xp(10));
+        assert_eq!(p.offer(xp(10), t0), None);
+        assert_eq!(
+            p.offer(xp(11), t0),
+            Some(xp(11)),
+            "the first change still goes at once"
+        );
+    }
+
+    #[test]
     fn after_the_cooldown_a_new_total_goes_at_once() {
         let t0 = Instant::now();
-        let mut p = Publisher::default();
+        let mut p = Publisher::new(PUBLISH_COOLDOWN);
         assert_eq!(p.offer(xp(10), t0), Some(xp(10)));
         let later = t0 + PUBLISH_COOLDOWN + Duration::from_secs(1);
         assert_eq!(p.offer(xp(20), later), Some(xp(20)));

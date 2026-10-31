@@ -1597,6 +1597,79 @@ impl AppState {
         }
     }
 
+    /// What this device has read, in the form another device can use: DM
+    /// marks go back onto the peer's clock (trap 18).
+    pub fn read_marks(&self) -> crate::nostr::read_marks::ReadMarks {
+        crate::nostr::read_marks::ReadMarks {
+            dms: self
+                .dm_read_at
+                .iter()
+                .map(|(peer, at)| (peer.clone(), at + self.clock_offset(peer)))
+                .collect(),
+            channels: self.channel_read_at.clone(),
+        }
+    }
+
+    /// Another device's marks. They only ever move ours forward, so copies
+    /// adopted in any order agree.
+    pub fn adopt_read_marks(&mut self, marks: &crate::nostr::read_marks::ReadMarks) {
+        for (peer, theirs) in &marks.dms {
+            let at = theirs - self.clock_offset(peer);
+            if self.dm_read_at.get(peer).is_some_and(|mine| *mine >= at) {
+                continue;
+            }
+            self.dm_read_at.insert(peer.clone(), at);
+            self.recount_dm_unread(peer, at);
+        }
+        for (server, channels) in &marks.channels {
+            let current = self.server_origin.as_deref() == Some(server.as_str());
+            let mine = self.channel_read_at.entry(server.clone()).or_default();
+            for (channel_id, at) in channels {
+                let mark = mine.entry(*channel_id).or_insert(*at);
+                *mark = (*mark).max(*at);
+                if current
+                    && self
+                        .channel_latest
+                        .get(channel_id)
+                        .is_some_and(|latest| latest <= mark)
+                {
+                    self.channel_unread.remove(channel_id);
+                }
+            }
+        }
+    }
+
+    /// The relays replay a conversation before the marks event may arrive, so
+    /// its counter can already hold messages another device has read.
+    fn recount_dm_unread(&mut self, peer: &str, read: i64) {
+        let cid = crate::nostr::service::conversation_id(peer);
+        let Some(&counted) = self.dm_unread.get(&cid) else {
+            return;
+        };
+        let messages = self
+            .messages
+            .get(&cid)
+            .into_iter()
+            .flatten()
+            .filter(|m| m.author.pubkey == peer && m.created_at.timestamp() > read)
+            .count();
+        let calls = self
+            .dm_call_history
+            .values()
+            .filter(|entry| {
+                entry.confirmed && (entry.record.caller == peer || entry.record.callee == peer)
+            })
+            .filter_map(|entry| entry.missed_at)
+            .filter(|missed| *missed > read)
+            .count();
+        let left = counted.min(u32::try_from(messages + calls).unwrap_or(u32::MAX));
+        if left == 0 {
+            self.dm_unread.remove(&cid);
+        } else {
+            self.dm_unread.insert(cid, left);
+        }
+    }
+
     /// Ready lists every channel this server still shows us, so a mark for any
     /// other is for a channel deleted or hidden since.
     pub fn prune_read_marks(&mut self) {
@@ -2744,6 +2817,82 @@ mod tests {
             "what is on screen is read"
         );
         assert_eq!(next.channel_read_at["server-a"][&seen], 300);
+    }
+
+    /// The relays replay a conversation before another device's marks may
+    /// arrive; adopting them takes back what that device already read.
+    #[test]
+    fn another_devices_dm_marks_recount_the_replayed_unread() {
+        let peer = "b".repeat(64);
+        let mut s = AppState::empty();
+        dm_at(&mut s, &peer, &peer, 100);
+        dm_at(&mut s, &peer, &peer, 200);
+        let cid = crate::nostr::service::conversation_id(&peer);
+        s.dm_unread.insert(cid, 2);
+        let marks = |at| crate::nostr::read_marks::ReadMarks {
+            dms: [(peer.clone(), at)].into(),
+            ..Default::default()
+        };
+
+        s.adopt_read_marks(&marks(150));
+        assert_eq!(s.dm_unread[&cid], 1);
+        s.adopt_read_marks(&marks(200));
+        assert!(!s.dm_unread.contains_key(&cid));
+        s.adopt_read_marks(&marks(50));
+        assert_eq!(
+            s.dm_read_at[&peer], 200,
+            "a stale copy never moves a mark back"
+        );
+    }
+
+    /// Devices measure a skewed peer's clock a little differently, so a mark
+    /// travels on the peer's clock and lands on each device's own.
+    #[test]
+    fn a_dm_mark_crosses_devices_on_the_peers_clock() {
+        let peer = "b".repeat(64);
+        let mut a = AppState::empty();
+        a.dm_clock_offset.insert(peer.clone(), 900);
+        a.dm_read_at.insert(peer.clone(), 1_000);
+        let sent = a.read_marks();
+        assert_eq!(sent.dms[&peer], 1_900);
+
+        let mut b = AppState::empty();
+        b.dm_clock_offset.insert(peer.clone(), 897);
+        b.adopt_read_marks(&sent);
+        assert_eq!(b.dm_read_at[&peer], 1_003);
+    }
+
+    #[test]
+    fn another_devices_channel_marks_clear_what_it_read_here() {
+        let guild = Id::new_v4();
+        let mut s = AppState::empty();
+        s.server_origin = Some("server-a".into());
+        s.self_user = Some(user("self"));
+        let read = text_channel(&mut s, guild);
+        let newer = text_channel(&mut s, guild);
+        s.note_latest_messages(HashMap::from([(read, 100), (newer, 100)]));
+        s.insert_message(read, at(Id::new_v4(), read, 1));
+        s.insert_message(newer, at(Id::new_v4(), newer, 2));
+        let other = Id::new_v4();
+        let marks = crate::nostr::read_marks::ReadMarks {
+            channels: [
+                (
+                    "server-a".to_string(),
+                    [(read, 1_000), (newer, 1_500)].into(),
+                ),
+                ("server-b".to_string(), [(other, 7)].into()),
+            ]
+            .into(),
+            ..Default::default()
+        };
+
+        s.adopt_read_marks(&marks);
+        assert!(!s.channel_unread.contains(&read));
+        assert!(
+            s.channel_unread.contains(&newer),
+            "it arrived after that device read"
+        );
+        assert_eq!(s.channel_read_at["server-b"][&other], 7);
     }
 
     #[test]
