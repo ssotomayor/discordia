@@ -1856,7 +1856,7 @@ pub fn ScreenShareBridge() -> Element {
                             let key = crate::e2ee::current_key().map(|k| js_str(&k)).unwrap_or_else(|| "null".into());
                             let encrypt = crate::e2ee::enabled();
                             let ice = ice_servers_js(&target.ice_servers);
-                            format!("window.dxScreen.connect({url},{token},{key},{encrypt},{generation},{ice});")
+                            format!("{}window.dxScreen.connect({url},{token},{key},{encrypt},{generation},{ice});", crate::app::livekit_bundle_js())
                         }
                         super::video_lifecycle::Action::Disconnect => "window.dxScreen.disconnect();".into(),
                     };

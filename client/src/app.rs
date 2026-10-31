@@ -1112,6 +1112,22 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
     format!("{mode}|{}|{}", p.identity.display_name, p.identity.pubkey)
 }
 
+/// Lazily builds the idempotent initialization script for LiveKit and its E2EE worker.
+pub(crate) fn livekit_bundle_js() -> &'static str {
+    static BUNDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        let worker_json = serde_json::to_string(&format!("{LIVEKIT_E2EE_WORKER_JS}\n{E2EE_WORKER_SHIM_JS}"))
+            .unwrap_or_else(|_| "null".into());
+        let mut out = String::with_capacity(LIVEKIT_JS.len() + worker_json.len() + 256);
+        out.push_str("if (!window.LivekitClient && !window.LiveKitClient) {\n  const _lk_t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());\n  try {\n");
+        out.push_str(LIVEKIT_JS);
+        out.push_str("\n  } catch (e) {\n    console.error('[dxScreen] livekit bundle load error:', e);\n  }\n  window.__dxfLivekitLoadMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - _lk_t0;\n}\nif (!window.__dxfE2eeWorkerSrc) {\n  window.__dxfE2eeWorkerSrc = ");
+        out.push_str(&worker_json);
+        out.push_str(";\n}\n");
+        out
+    })
+}
+
 #[component]
 /// Prop-less so Dioxus memoizes it — re-evaluating it warns "Changing the
 /// props of Style/Script is not supported".
@@ -1127,17 +1143,9 @@ pub(crate) fn AppHead() -> Element {
         document::Style { {include_str!("../assets/voice-invite.css")} }
         crate::text_menu::TextMenu {}
         crate::i18n::LanguageDocument {}
-        document::Script { {LIVEKIT_JS} }
         document::Script { {include_str!("../assets/gif-playback.js")} }
         document::Script { {include_str!("../assets/activity-clock.js")} }
         document::Script { {include_str!("../assets/stream-controls.js")} }
-        document::Script {
-            {format!(
-                "window.__dxfE2eeWorkerSrc = {};",
-                serde_json::to_string(&format!("{LIVEKIT_E2EE_WORKER_JS}\n{E2EE_WORKER_SHIM_JS}"))
-                    .unwrap_or_else(|_| "null".into())
-            )}
-        }
         document::Script { {crate::features::screenshare::SCREEN_JS} }
     }
 }
@@ -1145,6 +1153,31 @@ pub(crate) fn AppHead() -> Element {
 #[cfg(test)]
 mod tests {
     use super::openable;
+
+    #[test]
+    fn livekit_bundle_generation_latency() {
+        let t0 = std::time::Instant::now();
+        let b1 = super::livekit_bundle_js();
+        let first_call = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let _ = super::livekit_bundle_js();
+        let cached_call = t1.elapsed();
+        assert!(!b1.is_empty());
+        println!(
+            "LiveKit bundle generation: first_call={:?}, cached_call={:?}",
+            first_call, cached_call
+        );
+    }
+
+    #[test]
+    fn livekit_bundle_is_lazy_idempotent_and_contains_worker() {
+        let bundle1 = super::livekit_bundle_js();
+        let bundle2 = super::livekit_bundle_js();
+        assert!(std::ptr::eq(bundle1, bundle2));
+        assert!(bundle1.contains("if (!window.LivekitClient && !window.LiveKitClient)"));
+        assert!(bundle1.contains("window.__dxfE2eeWorkerSrc ="));
+        assert!(bundle1.contains("LivekitClient"));
+    }
 
     #[test]
     fn startup_document_uses_the_selected_language_before_mounting() {
