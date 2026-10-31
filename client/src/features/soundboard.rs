@@ -52,6 +52,9 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     let voice = use_voice_tx();
     let mut last_play = use_signal(|| None::<Instant>);
     let mut filter = use_signal(String::new);
+    // Held while a search narrows the list: the popover opens upward from its
+    // bottom edge, so shrinking would move every button under the pointer.
+    let mut natural_height = use_signal(|| None::<f64>);
     {
         let gw = gateway.clone();
         use_effect(move || crate::net::resolve_media(&mut state.write(), &gw.0));
@@ -86,8 +89,12 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     } else {
         format!("top:{:.0}px;", y + 44.0)
     };
+    let held = natural_height()
+        .filter(|_| !adjusting && !filter.read().trim().is_empty())
+        .map(|h| format!(" height:{h:.0}px;"))
+        .unwrap_or_default();
     let style = format!(
-        "left:clamp(8px, {left:.0}px, calc(100vw - {:.0}px)); width:{POPOVER_W:.0}px; {place}",
+        "left:clamp(8px, {left:.0}px, calc(100vw - {:.0}px)); width:{POPOVER_W:.0}px; {place}{held}",
         POPOVER_W + 8.0
     );
 
@@ -101,9 +108,33 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                 e.prevent_default();
                 state.write().soundboard_adjusting = true;
             },
+            onresize: move |e| {
+                let searching = !filter.peek().trim().is_empty();
+                if searching || state.peek().soundboard_adjusting {
+                    return;
+                }
+                if let Ok(size) = e.get_border_box_size()
+                    && *natural_height.peek() != Some(size.height)
+                {
+                    natural_height.set(Some(size.height));
+                }
+            },
             div { class: "h-8 pl-3 pr-1 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "text-xs font-semibold text-[var(--text)] flex-1 truncate",
                     if adjusting { {crate::i18n::text("Soundboard volume", &[])} } else { {crate::i18n::text("Soundboard", &[])} }
+                }
+                if can_manage && !adjusting {
+                    button {
+                        class: "[&>svg]:pointer-events-none [&>svg]:w-3.5 [&>svg]:h-3.5 w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors",
+                        title: crate::i18n::text("Add sounds", &[]),
+                        aria_label: crate::i18n::text("Add sounds", &[]),
+                        onclick: move |_| {
+                            let mut s = state.write();
+                            s.soundboard_open = false;
+                            s.guild_dialog = Some(crate::state::GuildDialog::Sounds(guild_id));
+                        },
+                        dangerous_inner_html: crate::features::icons::PLUS,
+                    }
                 }
                 button {
                     class: "[&>svg]:pointer-events-none w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
@@ -125,8 +156,11 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                         class: "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
                         aria_label: crate::i18n::text("Search sounds…", &[]),
                         placeholder: crate::i18n::text("Search sounds…", &[]),
-                        autofocus: true,
                         value: "{filter}",
+                        // `autofocus` is not honoured for an element added after load.
+                        onmounted: move |e| async move {
+                            let _ = e.set_focus(true).await;
+                        },
                         oninput: move |e| filter.set(e.value()),
                     }
                 }
