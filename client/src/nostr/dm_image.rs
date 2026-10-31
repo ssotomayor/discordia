@@ -973,6 +973,7 @@ pub enum Status {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Image {
+    pub channel_id: crate::protocol::Id,
     pub descriptor: Descriptor,
     pub status: Status,
     pub upload: bool,

@@ -341,6 +341,11 @@ pub(super) fn SocialPanel(
     let mut tab = use_signal(|| Tab::Direct);
     // Deleting is not undoable, so the ✕ only arms; the second click acts.
     let mut confirming = use_signal(|| None::<crate::protocol::Id>);
+    use_effect(move || {
+        if state.read().selected_channel.is_none() {
+            state.write().evict_inactive_dm_images(None);
+        }
+    });
 
     let snapshot = state.read();
     let selected = snapshot.selected_channel;
@@ -615,7 +620,12 @@ pub(super) fn SocialPanel(
 
 #[component]
 pub(super) fn TalkPane() -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
+    use_effect(move || {
+        if state.read().selected_channel.is_none() {
+            state.write().evict_inactive_dm_images(None);
+        }
+    });
     let snapshot = state.read();
     let selected = snapshot.selected_channel;
     let any_dms = !snapshot.dms.is_empty();

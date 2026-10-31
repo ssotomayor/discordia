@@ -229,6 +229,7 @@ fn fresh_dir() -> std::io::Result<std::path::PathBuf> {
         .map(char::from)
         .collect();
     let dir = std::env::temp_dir().join(format!("discordia-reach-{name}"));
+    #[allow(unused_mut)]
     let mut create = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut create, 0o700);

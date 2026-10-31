@@ -110,7 +110,7 @@ impl Default for Limits {
             quic_connections_per_origin: per_address,
             // One person's call: the voice room and up to four screen-room
             // identities (trap 10), with room for a reconnect in flight.
-            tunnels_per_key: 8,
+            tunnels_per_key: 16,
             tunnels_per_origin: per_address,
         }
     }

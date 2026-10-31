@@ -56,6 +56,40 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             }
             match result {
                 Ok(data) => {
+                    const MAX_READY_IMAGES: usize = 8;
+                    let ready: Vec<_> = s
+                        .dm_images
+                        .iter()
+                        .filter(|(id, image)| {
+                            **id != message_id
+                                && image.channel_id == channel_id
+                                && image.status == Status::Ready
+                                && image.viewers.is_empty()
+                        })
+                        .map(|(id, _)| *id)
+                        .collect();
+                    for id in ready {
+                        if let Some(image) = s.dm_images.get_mut(&id) {
+                            image.status = Status::Waiting;
+                            image.data = None;
+                        }
+                    }
+                    let active_ready: Vec<_> = s
+                        .dm_images
+                        .iter()
+                        .filter(|(id, image)| {
+                            **id != message_id
+                                && image.channel_id == channel_id
+                                && image.status == Status::Ready
+                        })
+                        .map(|(id, _)| *id)
+                        .collect();
+                    for id in active_ready.into_iter().skip(MAX_READY_IMAGES.saturating_sub(1)) {
+                        if let Some(image) = s.dm_images.get_mut(&id) {
+                            image.status = Status::Evicted;
+                            image.data = None;
+                        }
+                    }
                     if let Some(image) = s.dm_images.get_mut(&message_id) {
                         image.status = Status::Ready;
                         image.data = Some(std::sync::Arc::new(data));

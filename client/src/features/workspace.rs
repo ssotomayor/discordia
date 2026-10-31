@@ -724,7 +724,13 @@ pub fn WorkspaceView(
                     },
                     onresize: move |event| {
                         if let Ok(size) = event.get_content_box_size() {
-                            workspace_size.set(Some((size.width, size.height)));
+                            let next = (size.width, size.height);
+                            if workspace_size
+                                .peek()
+                                .is_none_or(|(w, h)| (w - next.0).abs() > 0.5 || (h - next.1).abs() > 0.5)
+                            {
+                                workspace_size.set(Some(next));
+                            }
                         }
                     },
                         GridLayout {

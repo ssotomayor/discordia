@@ -1,15 +1,20 @@
 use base64::Engine;
 use dioxus::prelude::*;
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fmt,
-    rc::Rc,
     sync::{Arc, Weak},
 };
 
+type DecodedBytes = Arc<(&'static str, Vec<u8>)>;
+
+struct AssetEntry {
+    owner: Weak<String>,
+    decoded: Option<DecodedBytes>,
+}
+
 #[derive(Clone, Default)]
-struct Assets(Rc<RefCell<HashMap<String, Weak<String>>>>);
+struct Assets(Arc<parking_lot::Mutex<HashMap<String, AssetEntry>>>);
 
 #[derive(Clone)]
 pub(crate) struct ImageSource {
@@ -54,11 +59,11 @@ impl Assets {
                 _data: data,
             };
         };
-        let mut entries = self.0.borrow_mut();
-        entries.retain(|_, owner| owner.strong_count() > 0);
-        if let Some((key, shared)) = entries.iter().find_map(|(key, owner)| {
-            let shared = owner.upgrade()?;
-            (shared.as_ref() == data.as_ref()).then_some((key, shared))
+        let mut entries = self.0.lock();
+        entries.retain(|_, entry| entry.owner.strong_count() > 0);
+        if let Some((key, shared)) = entries.iter().find_map(|(key, entry)| {
+            let shared = entry.owner.upgrade()?;
+            (shared.as_ref() == data.as_ref()).then_some((key.clone(), shared))
         }) {
             return ImageSource {
                 uri: Arc::new(format!("/image-data/{key}")),
@@ -66,15 +71,36 @@ impl Assets {
             };
         }
         let key = format!("{}.{ext}", uuid::Uuid::new_v4());
-        entries.insert(key.clone(), Arc::downgrade(&data));
+        entries.insert(
+            key.clone(),
+            AssetEntry {
+                owner: Arc::downgrade(&data),
+                decoded: None,
+            },
+        );
         ImageSource {
             uri: Arc::new(format!("/image-data/{key}")),
             _data: data,
         }
     }
 
+    #[cfg(test)]
     fn resolve(&self, key: &str) -> Option<Arc<String>> {
-        self.0.borrow().get(key)?.upgrade()
+        self.0.lock().get(key)?.owner.upgrade()
+    }
+
+    fn resolve_entry(&self, key: &str) -> Option<(Arc<String>, Option<DecodedBytes>)> {
+        let entries = self.0.lock();
+        let entry = entries.get(key)?;
+        let owner = entry.owner.upgrade()?;
+        Some((owner, entry.decoded.clone()))
+    }
+
+    fn store_decoded(&self, key: &str, decoded: DecodedBytes) {
+        let mut entries = self.0.lock();
+        if let Some(entry) = entries.get_mut(key) {
+            entry.decoded = Some(decoded);
+        }
     }
 }
 
@@ -100,33 +126,48 @@ pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
 
 pub(crate) fn use_image_assets() {
     let assets = use_hook(|| dioxus::core::provide_root_context(Assets::default()));
+    let assets_handler = assets.clone();
     crate::platform::use_asset_handler("image-data", move |request, responder| {
-        let data = request
+        let path = request
             .uri()
             .path()
             .strip_prefix("/image-data/")
-            .and_then(|key| assets.resolve(key));
+            .unwrap_or("")
+            .to_string();
+        let resolved = assets_handler.resolve_entry(&path);
+        let assets_task = assets_handler.clone();
         tokio::task::spawn_blocking(move || {
             use crate::platform::wry::http::{
                 Response, StatusCode,
                 header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue},
             };
-            let decoded = data.as_deref().and_then(|data| {
-                let (mime, _, encoded) = payload(data, crate::chat_image::MAX_DM_BYTES)?;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(encoded)
-                    .ok()?;
-                (bytes.len() <= crate::chat_image::MAX_DM_BYTES).then_some((mime, bytes))
-            });
+            let decoded: Option<DecodedBytes> = match resolved {
+                Some((_, Some(cached))) => Some(cached),
+                Some((data, None)) => {
+                    let decoded = (|| {
+                        let (mime, _, encoded) = payload(&data, crate::chat_image::MAX_DM_BYTES)?;
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .ok()?;
+                        (bytes.len() <= crate::chat_image::MAX_DM_BYTES)
+                            .then_some(Arc::new((mime, bytes)))
+                    })();
+                    if let Some(ref d) = decoded {
+                        assets_task.store_decoded(&path, Arc::clone(d));
+                    }
+                    decoded
+                }
+                None => None,
+            };
             let mut response = match decoded {
-                Some((mime, bytes)) => {
-                    let mut response = Response::new(bytes);
+                Some(payload) => {
+                    let mut response = Response::new(payload.1.clone());
                     response
                         .headers_mut()
-                        .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+                        .insert(CONTENT_TYPE, HeaderValue::from_static(payload.0));
                     response
                         .headers_mut()
-                        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                        .insert(CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
                     response
                 }
                 None => {
@@ -204,6 +245,6 @@ mod tests {
             let image = assets.source(Arc::new(data.clone()));
             assert_eq!(image.to_string(), data);
         }
-        assert!(assets.0.borrow().is_empty());
+        assert!(assets.0.lock().is_empty());
     }
 }

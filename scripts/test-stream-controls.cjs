@@ -31,9 +31,10 @@ const fixture = (popout = false, mobile = false, expanded = false) => `<style>${
     await page.clock.fastForward(2600);
     assert.equal(await visible(), 'false');
     assert.equal(await page.locator('#tile').evaluate(node => getComputedStyle(node, '::after').opacity), '0', 'the contrast frame hides with the controls');
+    assert.equal(await page.locator('.dxf-stream-toolbar').evaluate(node => getComputedStyle(node).visibility), 'hidden');
     await pointer('pointermove'); assert.equal(await visible(), 'true');
     assert.equal(await page.locator('#tile').evaluate(node => getComputedStyle(node, '::after').opacity), '1');
-    assert.match(await page.locator('.dxf-stream-toolbar').evaluate(node => getComputedStyle(node, '::before').backdropFilter), /blur/);
+    assert.match(await page.locator('.dxf-stream-toolbar').evaluate(node => getComputedStyle(node).backgroundImage), /gradient/);
     await page.clock.fastForward(2000); assert.equal(await visible(), 'true');
     await pointer('pointermove'); await page.clock.fastForward(1000); assert.equal(await visible(), 'true');
     await pointer('pointerleave'); assert.equal(await visible(), 'false');

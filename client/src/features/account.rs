@@ -76,6 +76,23 @@ pub fn AccountView(
     crate::profile::use_avatar_recovery(state, identity.pubkey.clone());
     crate::bookmarks::use_bookmarks(&identity, state);
     crate::voice_handoff::use_bridge();
+    let quit_window = crate::platform::use_window();
+    let window_id = quit_window.window.id();
+    crate::platform::use_wry_event_handler(move |event, _| {
+        use crate::platform::tao::event::{Event, WindowEvent};
+        if let Event::WindowEvent {
+            window_id: id,
+            event: WindowEvent::CloseRequested,
+            ..
+        } = event
+            && *id == window_id
+        {
+            let mut s = state.write();
+            s.image_viewer = None;
+            s.emoji_images.clear();
+            s.evict_inactive_dm_images(None);
+        }
+    });
     let nostr = use_hook(|| {
         let saved = settings.peek();
         let relays = if saved.dm_relays.is_empty() {
