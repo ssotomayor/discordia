@@ -10,8 +10,8 @@ use zeroize::Zeroizing;
 
 use crate::agents::service::RunKey;
 use crate::agents::{AgentEntry, Agents, Preset, RunState, Secrets, ServerRef, store};
-use crate::protocol::{AppManifest, Id};
-use crate::state::{SessionMode, use_app_state};
+use crate::protocol::{AppManifest, ClientMessage, Id, Permission, ServerAgentView};
+use crate::state::{ConnectionStatus, SessionMode, use_app_state, use_gateway};
 
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors";
 const LABEL: &str =
@@ -80,27 +80,49 @@ fn describe(run: Option<&RunState>) -> String {
     }
 }
 
-/// Mounted once at the account root, so it opens over Home or a server.
+#[derive(Clone, PartialEq)]
+enum Pick {
+    /// A personal agent by key; empty for a new one.
+    Device(String),
+    /// A server agent by key; empty for a new one.
+    Server(String),
+}
+
+/// Mounted at Home's root and a server's: the server half speaks to that server's gateway.
 #[component]
 pub fn AgentsDialog() -> Element {
     let mut state = use_app_state();
     let agents = use_context::<Agents>();
-    let mut selected = use_signal(|| None::<String>);
-    if !state.read().agents_open {
+    let gateway = use_gateway();
+    let mut selected = use_signal(|| None::<Pick>);
+    let open = use_memo(move || state.read().agents_open);
+    let operator = use_memo(move || {
+        let s = state.read();
+        s.is_operator && s.status == ConnectionStatus::Ready
+    });
+    use_effect(move || {
+        if open() && operator() {
+            gateway.send(ClientMessage::FetchServerAgents);
+        }
+    });
+    if !open() {
         return rsx! {};
     }
     let list = agents.list.read().clone();
     let runs = agents.runs.read().clone();
-    let chosen: Option<(AgentEntry, bool)> = match selected() {
-        Some(k) if k.is_empty() => Some((AgentEntry::draft(), true)),
-        Some(k) => list
-            .iter()
-            .find(|e| e.pubkey == k)
-            .cloned()
-            .map(|e| (e, false)),
-        None => None,
+    let on_server = if operator() {
+        state.read().server_agents.clone()
+    } else {
+        Vec::new()
     };
     let close = move |_| state.write().agents_open = false;
+    let item_class = move |pick: Pick| {
+        if selected().as_ref() == Some(&pick) {
+            "w-full text-left rounded px-2 py-1.5 bg-[var(--accent-soft)]"
+        } else {
+            "w-full text-left rounded px-2 py-1.5 hover:bg-[var(--hover)]"
+        }
+    };
     rsx! {
         div {
             class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/50",
@@ -120,17 +142,16 @@ pub fn AgentsDialog() -> Element {
                 div { class: "flex-1 min-h-0 flex",
                     div { class: "w-52 shrink-0 border-r border-[var(--border)] flex flex-col",
                         div { class: "flex-1 overflow-y-auto p-2 space-y-1",
+                            if operator() {
+                                div { class: "{LABEL} px-2 pt-1", {crate::i18n::text("On this device", &[])} }
+                            }
                             for e in list.iter() {
                                 button {
-                                    key: "{e.pubkey}",
-                                    class: if selected().as_deref() == Some(e.pubkey.as_str()) {
-                                        "w-full text-left rounded px-2 py-1.5 bg-[var(--accent-soft)]"
-                                    } else {
-                                        "w-full text-left rounded px-2 py-1.5 hover:bg-[var(--hover)]"
-                                    },
+                                    key: "d-{e.pubkey}",
+                                    class: item_class(Pick::Device(e.pubkey.clone())),
                                     onclick: {
                                         let k = e.pubkey.clone();
-                                        move |_| selected.set(Some(k.clone()))
+                                        move |_| selected.set(Some(Pick::Device(k.clone())))
                                     },
                                     div { class: "flex items-center gap-2",
                                         span { class: "w-2 h-2 rounded-full shrink-0", style: dot(light_of(&runs, &e.pubkey)) }
@@ -139,31 +160,85 @@ pub fn AgentsDialog() -> Element {
                                     div { class: "text-[10px] text-[var(--text-dim)] truncate pl-4", "{e.model}" }
                                 }
                             }
+                            if operator() {
+                                div { class: "{LABEL} px-2 pt-3", {crate::i18n::text("On this server", &[])} }
+                                for v in on_server.iter() {
+                                    button {
+                                        key: "s-{v.pubkey}",
+                                        class: item_class(Pick::Server(v.pubkey.clone())),
+                                        onclick: {
+                                            let k = v.pubkey.clone();
+                                            move |_| selected.set(Some(Pick::Server(k.clone())))
+                                        },
+                                        div { class: "flex items-center gap-2",
+                                            span {
+                                                class: "w-2 h-2 rounded-full shrink-0",
+                                                style: dot(if v.online { Light::On } else { Light::Busy }),
+                                            }
+                                            span { class: "text-xs text-[var(--text)] truncate", "{v.spec.name}" }
+                                        }
+                                        div { class: "text-[10px] text-[var(--text-dim)] truncate pl-4", "{v.spec.model}" }
+                                    }
+                                }
+                            }
                         }
-                        div { class: "p-2 border-t border-[var(--border)]",
+                        div { class: "p-2 border-t border-[var(--border)] space-y-1.5",
                             button {
                                 class: "{BUTTON} w-full",
-                                onclick: move |_| selected.set(Some(String::new())),
+                                onclick: move |_| selected.set(Some(Pick::Device(String::new()))),
                                 {crate::i18n::text("New agent", &[])}
+                            }
+                            if operator() {
+                                button {
+                                    class: "{BUTTON} w-full",
+                                    onclick: move |_| selected.set(Some(Pick::Server(String::new()))),
+                                    {crate::i18n::text("New server agent", &[])}
+                                }
                             }
                         }
                     }
                     div { class: "flex-1 min-w-0 overflow-y-auto p-4",
-                        if let Some((entry, is_new)) = chosen {
-                            for (entry, is_new) in std::iter::once((entry, is_new)) {
-                                AgentEditor {
-                                    key: "{entry.pubkey}-{is_new}",
-                                    entry,
-                                    is_new,
-                                    on_saved: move |k: String| selected.set(Some(k)),
-                                    on_deleted: move |_| selected.set(None),
+                        match selected() {
+                            Some(Pick::Device(k)) => {
+                                let chosen = if k.is_empty() {
+                                    Some((AgentEntry::draft(), true))
+                                } else {
+                                    list.iter().find(|e| e.pubkey == k).cloned().map(|e| (e, false))
+                                };
+                                rsx! {
+                                    for (entry, is_new) in chosen.into_iter() {
+                                        AgentEditor {
+                                            key: "{entry.pubkey}-{is_new}",
+                                            entry,
+                                            is_new,
+                                            on_saved: move |k: String| selected.set(Some(Pick::Device(k))),
+                                            on_deleted: move |_| selected.set(None),
+                                        }
+                                    }
                                 }
                             }
-                        } else {
-                            div { class: "text-xs text-[var(--text-dim)] space-y-2",
-                                p { {crate::i18n::text("An agent is an app whose replies come from an AI model you choose. It answers when someone mentions it, replies to it, or uses /ask.", &[])} }
-                                p { {crate::i18n::text("It runs on this device while Discordia is open, with your API key, which never leaves this device. A guild admin adds it from that guild's Integrations.", &[])} }
+                            Some(Pick::Server(k)) => {
+                                let view = on_server.iter().find(|v| v.pubkey == k).cloned();
+                                let known = k.is_empty() || view.is_some();
+                                rsx! {
+                                    for view in known.then_some(view).into_iter() {
+                                        ServerAgentEditor {
+                                            key: "server-{k}",
+                                            view,
+                                            on_done: move |_| selected.set(None),
+                                        }
+                                    }
+                                }
                             }
+                            None => rsx! {
+                                div { class: "text-xs text-[var(--text-dim)] space-y-2",
+                                    p { {crate::i18n::text("An agent is an app whose replies come from an AI model you choose. It answers when someone mentions it, replies to it, or uses /ask.", &[])} }
+                                    p { {crate::i18n::text("It runs on this device while Discordia is open, with your API key, which never leaves this device. A guild admin adds it from that guild's Integrations.", &[])} }
+                                    if operator() {
+                                        p { {crate::i18n::text("As this server's operator you can also run agents inside the server, so they stay online when your app is closed.", &[])} }
+                                    }
+                                }
+                            },
                         }
                     }
                 }
@@ -172,15 +247,265 @@ pub fn AgentsDialog() -> Element {
     }
 }
 
-/// The typed key, or else the one already sealed for this agent.
-async fn api_key_for(owner: String, agent: String, typed: String) -> Result<String, String> {
-    if !typed.trim().is_empty() || agent.is_empty() {
-        return Ok(typed.trim().to_string());
+/// The typed key, or else the one sealed on this device for this agent.
+/// `owner` is `None` for a server agent, whose key this device never sees.
+async fn api_key_for(
+    owner: Option<String>,
+    agent: String,
+    typed: String,
+    needs_key: bool,
+) -> Result<String, String> {
+    let typed = typed.trim().to_string();
+    match owner {
+        Some(owner) if typed.is_empty() && !agent.is_empty() => {
+            tokio::task::spawn_blocking(move || store::unseal(&owner, &agent))
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|s| s.api_key.to_string())
+        }
+        None if typed.is_empty() && needs_key => Err(crate::i18n::text(
+            "Type the API key here to do this from this device.",
+            &[],
+        )),
+        _ => Ok(typed),
     }
-    tokio::task::spawn_blocking(move || store::unseal(&owner, &agent))
-        .await
-        .map_err(|e| e.to_string())?
-        .map(|s| s.api_key.to_string())
+}
+
+/// What both kinds of agent are made of; the caller owns saving.
+#[component]
+fn AgentFields(
+    form: Signal<AgentEntry>,
+    api_key: Signal<String>,
+    busy: Signal<bool>,
+    error: Signal<Option<String>>,
+    key_placeholder: String,
+    owner: Option<String>,
+) -> Element {
+    let mut form = form;
+    let mut api_key = api_key;
+    let mut busy = busy;
+    let mut error = error;
+    let mut models = use_signal(Vec::<String>::new);
+    let f = form.read().clone();
+    let load_models = move |_| {
+        let owner = owner.clone();
+        spawn(async move {
+            busy.set(true);
+            error.set(None);
+            let draft = form.peek().clone();
+            let key = api_key_for(
+                owner,
+                draft.pubkey.clone(),
+                api_key.peek().clone(),
+                draft.preset.needs_key(),
+            )
+            .await;
+            let result = match key {
+                Ok(key) => Http::new(draft.model_config(ApiKey::new(key)))
+                    .models()
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(list) if list.is_empty() => error.set(Some(crate::i18n::text(
+                    "The provider listed no models.",
+                    &[],
+                ))),
+                Ok(list) => models.set(list),
+                Err(e) => error.set(Some(e)),
+            }
+            busy.set(false);
+        });
+    };
+    let disclosed = f.preset.disclosed(&f.base_url);
+    rsx! {
+        div {
+            div { class: LABEL, {crate::i18n::text("Name", &[])} }
+            input {
+                class: INPUT,
+                maxlength: "32",
+                value: "{f.name}",
+                oninput: move |e| form.write().name = e.value(),
+            }
+        }
+        div {
+            div { class: LABEL, {crate::i18n::text("Instructions", &[])} }
+            textarea {
+                class: "{INPUT} h-24 resize-y",
+                placeholder: crate::i18n::text("Who it is and how it should answer.", &[]),
+                value: "{f.prompt}",
+                oninput: move |e| form.write().prompt = e.value(),
+            }
+        }
+        div { class: "grid grid-cols-2 gap-3",
+            div {
+                div { class: LABEL, {crate::i18n::text("Provider", &[])} }
+                select {
+                    class: INPUT,
+                    onchange: move |e| {
+                        if let Some(p) = Preset::from_id(&e.value()) {
+                            let mut w = form.write();
+                            if w.preset != p {
+                                w.preset = p;
+                                w.base_url = p.base_url().into();
+                                w.model = p.default_model().into();
+                                models.set(Vec::new());
+                            }
+                        }
+                    },
+                    for p in Preset::ALL {
+                        option { key: "{p.id()}", value: p.id(), selected: p == f.preset, {preset_label(p)} }
+                    }
+                }
+            }
+            div {
+                div { class: LABEL, {crate::i18n::text("Model", &[])} }
+                div { class: "flex gap-1.5",
+                    input {
+                        class: "{INPUT} font-mono",
+                        list: "dxf-agent-models",
+                        value: "{f.model}",
+                        oninput: move |e| form.write().model = e.value(),
+                    }
+                    button { class: BUTTON, disabled: busy(), onclick: load_models, {crate::i18n::text("List", &[])} }
+                }
+                datalist { id: "dxf-agent-models",
+                    for m in models.read().iter() {
+                        option { key: "{m}", value: "{m}" }
+                    }
+                }
+            }
+        }
+        if f.preset.editable_address() {
+            div {
+                div { class: LABEL, {crate::i18n::text("Address", &[])} }
+                input {
+                    class: "{INPUT} font-mono",
+                    placeholder: "http://127.0.0.1:11434/v1",
+                    value: "{f.base_url}",
+                    oninput: move |e| form.write().base_url = e.value(),
+                }
+            }
+        }
+        div {
+            div { class: LABEL, {crate::i18n::text("API key", &[])} }
+            input {
+                class: "{INPUT} font-mono",
+                r#type: "password",
+                autocomplete: "off",
+                placeholder: "{key_placeholder}",
+                value: "{api_key}",
+                oninput: move |e| api_key.set(e.value()),
+            }
+        }
+        div { class: "grid grid-cols-2 gap-3",
+            div {
+                div { class: LABEL, {crate::i18n::text("Questions per person per hour", &[])} }
+                input {
+                    class: INPUT,
+                    r#type: "number",
+                    min: "1",
+                    value: "{f.per_member_per_hour}",
+                    oninput: move |e| if let Ok(n) = e.value().parse::<u32>() { form.write().per_member_per_hour = n.max(1) },
+                }
+            }
+            div {
+                div { class: LABEL, {crate::i18n::text("Tokens per day", &[])} }
+                input {
+                    class: INPUT,
+                    r#type: "number",
+                    min: "1000",
+                    step: "1000",
+                    value: "{f.daily_tokens}",
+                    oninput: move |e| if let Ok(n) = e.value().parse::<u64>() { form.write().daily_tokens = n.max(1000) },
+                }
+            }
+        }
+        div { class: "text-[10px] text-[var(--warn)]",
+            {crate::i18n::text("Members are told that what it reads is sent to {0}.", &[disclosed])}
+        }
+        if let Some(e) = error() {
+            div { class: "text-[11px] text-[var(--danger)] break-words", "{e}" }
+        }
+    }
+}
+
+/// Asks the model straight from this device, with the form as it stands.
+#[component]
+fn TryIt(
+    form: Signal<AgentEntry>,
+    api_key: Signal<String>,
+    busy: Signal<bool>,
+    error: Signal<Option<String>>,
+    owner: Option<String>,
+) -> Element {
+    let mut busy = busy;
+    let mut error = error;
+    let identity = use_context::<crate::identity::Identity>();
+    let mut input = use_signal(String::new);
+    let mut reply = use_signal(|| None::<String>);
+    let run = move |_| {
+        let (owner, me) = (owner.clone(), identity.display_name.clone());
+        let question = input.peek().trim().to_string();
+        if question.is_empty() {
+            return;
+        }
+        spawn(async move {
+            busy.set(true);
+            error.set(None);
+            reply.set(None);
+            let draft = form.peek().clone();
+            let key = api_key_for(
+                owner,
+                draft.pubkey.clone(),
+                api_key.peek().clone(),
+                draft.preset.needs_key(),
+            )
+            .await;
+            let result = match key {
+                Ok(key) => {
+                    let config = draft.config(ApiKey::new(key));
+                    let prompt = Prompt {
+                        system: discordia_agent::system_prompt(&config),
+                        turns: vec![Turn {
+                            role: Role::User,
+                            text: format!("{me}: {question}"),
+                        }],
+                    };
+                    Http::new(config.model.clone())
+                        .reply(prompt)
+                        .await
+                        .map(|r| r.text)
+                        .map_err(|e| e.to_string())
+                }
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(text) => reply.set(Some(text)),
+                Err(e) => error.set(Some(e)),
+            }
+            busy.set(false);
+        });
+    };
+    rsx! {
+        div { class: "pt-2 border-t border-[var(--border)]",
+            div { class: LABEL, {crate::i18n::text("Try it", &[])} }
+            div { class: "flex gap-1.5",
+                input {
+                    class: INPUT,
+                    placeholder: crate::i18n::text("Ask something, as if you mentioned it", &[]),
+                    value: "{input}",
+                    oninput: move |e| input.set(e.value()),
+                    onkeydown: { let run = run.clone(); move |e: KeyboardEvent| if e.key() == Key::Enter { run(()) } },
+                }
+                button { class: BUTTON, disabled: busy(), onclick: { let run = run.clone(); move |_| run(()) }, {crate::i18n::text("Send", &[])} }
+            }
+            if let Some(text) = reply() {
+                div { class: "mt-2 rounded border border-[var(--border)] p-2 text-xs text-[var(--text)] whitespace-pre-wrap", "{text}" }
+            }
+        }
+    }
 }
 
 #[component]
@@ -191,14 +516,10 @@ fn AgentEditor(
     on_deleted: EventHandler<()>,
 ) -> Element {
     let agents = use_context::<Agents>();
-    let identity = use_context::<crate::identity::Identity>();
     let mut form = use_signal(|| entry.clone());
     let mut api_key = use_signal(String::new);
-    let mut models = use_signal(Vec::<String>::new);
     let mut busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    let mut test_input = use_signal(String::new);
-    let mut test_reply = use_signal(|| None::<String>);
     let mut confirm_delete = use_signal(|| false);
 
     let f = form.read().clone();
@@ -209,77 +530,6 @@ fn AgentEditor(
         .iter()
         .find(|e| e.pubkey == f.pubkey)
         .cloned();
-
-    let load_models = {
-        let owner = agents.owner.clone();
-        move |_| {
-            let owner = owner.clone();
-            spawn(async move {
-                busy.set(true);
-                error.set(None);
-                let draft = form.peek().clone();
-                let result =
-                    match api_key_for(owner, draft.pubkey.clone(), api_key.peek().clone()).await {
-                        Ok(key) => Http::new(draft.model_config(ApiKey::new(key)))
-                            .models()
-                            .await
-                            .map_err(|e| e.to_string()),
-                        Err(e) => Err(e),
-                    };
-                match result {
-                    Ok(list) if list.is_empty() => error.set(Some(crate::i18n::text(
-                        "The provider listed no models.",
-                        &[],
-                    ))),
-                    Ok(list) => models.set(list),
-                    Err(e) => error.set(Some(e)),
-                }
-                busy.set(false);
-            });
-        }
-    };
-
-    let run_test = {
-        let owner = agents.owner.clone();
-        let me = identity.display_name.clone();
-        move |_| {
-            let (owner, me) = (owner.clone(), me.clone());
-            let question = test_input.peek().trim().to_string();
-            if question.is_empty() {
-                return;
-            }
-            spawn(async move {
-                busy.set(true);
-                error.set(None);
-                test_reply.set(None);
-                let draft = form.peek().clone();
-                let result =
-                    match api_key_for(owner, draft.pubkey.clone(), api_key.peek().clone()).await {
-                        Ok(key) => {
-                            let config = draft.config(ApiKey::new(key));
-                            let prompt = Prompt {
-                                system: discordia_agent::system_prompt(&config),
-                                turns: vec![Turn {
-                                    role: Role::User,
-                                    text: format!("{me}: {question}"),
-                                }],
-                            };
-                            Http::new(config.model.clone())
-                                .reply(prompt)
-                                .await
-                                .map(|r| r.text)
-                                .map_err(|e| e.to_string())
-                        }
-                        Err(e) => Err(e),
-                    };
-                match result {
-                    Ok(text) => test_reply.set(Some(text)),
-                    Err(e) => error.set(Some(e)),
-                }
-                busy.set(false);
-            });
-        }
-    };
 
     let save = {
         let agents = agents.clone();
@@ -295,6 +545,7 @@ fn AgentEditor(
                 busy.set(true);
                 error.set(None);
                 let owner = agents.owner.clone();
+                let rekeyed = !is_new && !typed.is_empty();
                 let sealed = if is_new {
                     let id = BotIdentity::generate();
                     next.pubkey = id.pubkey().to_string();
@@ -304,7 +555,7 @@ fn AgentEditor(
                     };
                     let (owner, agent) = (owner.clone(), next.pubkey.clone());
                     tokio::task::spawn_blocking(move || store::seal(&owner, &agent, &secrets)).await
-                } else if !typed.is_empty() {
+                } else if rekeyed {
                     let (owner, agent) = (owner.clone(), next.pubkey.clone());
                     tokio::task::spawn_blocking(move || {
                         let old = store::unseal(&owner, &agent)?;
@@ -341,7 +592,7 @@ fn AgentEditor(
                 if let Err(e) = agents.save(list) {
                     error.set(Some(e));
                 } else {
-                    if !is_new && !api_key.peek().is_empty() {
+                    if rekeyed {
                         agents.rekeyed(&next.pubkey);
                     }
                     api_key.set(String::new());
@@ -406,118 +657,10 @@ fn AgentEditor(
     } else {
         crate::i18n::text("Saved on this device. Type to replace it.", &[])
     };
-    let disclosed = f.preset.disclosed(&f.base_url);
 
     rsx! {
         div { class: "space-y-3",
-            div {
-                div { class: LABEL, {crate::i18n::text("Name", &[])} }
-                input {
-                    class: INPUT,
-                    maxlength: "32",
-                    value: "{f.name}",
-                    oninput: move |e| form.write().name = e.value(),
-                }
-            }
-            div {
-                div { class: LABEL, {crate::i18n::text("Instructions", &[])} }
-                textarea {
-                    class: "{INPUT} h-24 resize-y",
-                    placeholder: crate::i18n::text("Who it is and how it should answer.", &[]),
-                    value: "{f.prompt}",
-                    oninput: move |e| form.write().prompt = e.value(),
-                }
-            }
-            div { class: "grid grid-cols-2 gap-3",
-                div {
-                    div { class: LABEL, {crate::i18n::text("Provider", &[])} }
-                    select {
-                        class: INPUT,
-                        onchange: move |e| {
-                            if let Some(p) = Preset::from_id(&e.value()) {
-                                let mut w = form.write();
-                                if w.preset != p {
-                                    w.preset = p;
-                                    w.base_url = p.base_url().into();
-                                    w.model = p.default_model().into();
-                                    models.set(Vec::new());
-                                }
-                            }
-                        },
-                        for p in Preset::ALL {
-                            option { key: "{p.id()}", value: p.id(), selected: p == f.preset, {preset_label(p)} }
-                        }
-                    }
-                }
-                div {
-                    div { class: LABEL, {crate::i18n::text("Model", &[])} }
-                    div { class: "flex gap-1.5",
-                        input {
-                            class: "{INPUT} font-mono",
-                            list: "dxf-agent-models",
-                            value: "{f.model}",
-                            oninput: move |e| form.write().model = e.value(),
-                        }
-                        button { class: BUTTON, disabled: busy(), onclick: load_models, {crate::i18n::text("List", &[])} }
-                    }
-                    datalist { id: "dxf-agent-models",
-                        for m in models.read().iter() {
-                            option { key: "{m}", value: "{m}" }
-                        }
-                    }
-                }
-            }
-            if f.preset.editable_address() {
-                div {
-                    div { class: LABEL, {crate::i18n::text("Address", &[])} }
-                    input {
-                        class: "{INPUT} font-mono",
-                        placeholder: "http://127.0.0.1:11434/v1",
-                        value: "{f.base_url}",
-                        oninput: move |e| form.write().base_url = e.value(),
-                    }
-                }
-            }
-            div {
-                div { class: LABEL, {crate::i18n::text("API key", &[])} }
-                input {
-                    class: "{INPUT} font-mono",
-                    r#type: "password",
-                    autocomplete: "off",
-                    placeholder: "{key_placeholder}",
-                    value: "{api_key}",
-                    oninput: move |e| api_key.set(e.value()),
-                }
-            }
-            div { class: "grid grid-cols-2 gap-3",
-                div {
-                    div { class: LABEL, {crate::i18n::text("Questions per person per hour", &[])} }
-                    input {
-                        class: INPUT,
-                        r#type: "number",
-                        min: "1",
-                        value: "{f.per_member_per_hour}",
-                        oninput: move |e| if let Ok(n) = e.value().parse::<u32>() { form.write().per_member_per_hour = n.max(1) },
-                    }
-                }
-                div {
-                    div { class: LABEL, {crate::i18n::text("Tokens per day", &[])} }
-                    input {
-                        class: INPUT,
-                        r#type: "number",
-                        min: "1000",
-                        step: "1000",
-                        value: "{f.daily_tokens}",
-                        oninput: move |e| if let Ok(n) = e.value().parse::<u64>() { form.write().daily_tokens = n.max(1000) },
-                    }
-                }
-            }
-            div { class: "text-[10px] text-[var(--warn)]",
-                {crate::i18n::text("Members are told that what it reads is sent to {0}.", &[disclosed])}
-            }
-            if let Some(e) = error() {
-                div { class: "text-[11px] text-[var(--danger)] break-words", "{e}" }
-            }
+            AgentFields { form, api_key, busy, error, key_placeholder, owner: Some(agents.owner.clone()) }
             div { class: "flex items-center gap-2",
                 button { class: BUTTON, disabled: busy(), onclick: save,
                     if is_new { {crate::i18n::text("Create", &[])} } else { {crate::i18n::text("Save", &[])} }
@@ -541,24 +684,7 @@ fn AgentEditor(
                     {crate::i18n::text("Its keys are erased from this device. Guilds that installed it keep it until an admin uninstalls it.", &[])}
                 }
             }
-
-            div { class: "pt-2 border-t border-[var(--border)]",
-                div { class: LABEL, {crate::i18n::text("Try it", &[])} }
-                div { class: "flex gap-1.5",
-                    input {
-                        class: INPUT,
-                        placeholder: crate::i18n::text("Ask something, as if you mentioned it", &[]),
-                        value: "{test_input}",
-                        oninput: move |e| test_input.set(e.value()),
-                        onkeydown: { let run = run_test.clone(); move |e: KeyboardEvent| if e.key() == Key::Enter { run(()) } },
-                    }
-                    button { class: BUTTON, disabled: busy(), onclick: { let run = run_test.clone(); move |_| run(()) }, {crate::i18n::text("Send", &[])} }
-                }
-                if let Some(reply) = test_reply() {
-                    div { class: "mt-2 rounded border border-[var(--border)] p-2 text-xs text-[var(--text)] whitespace-pre-wrap", "{reply}" }
-                }
-            }
-
+            TryIt { form, api_key, busy, error, owner: Some(agents.owner.clone()) }
             if !is_new {
                 div { class: "pt-2 border-t border-[var(--border)]",
                     div { class: LABEL, {crate::i18n::text("Where it runs", &[])} }
@@ -593,6 +719,137 @@ fn AgentEditor(
                     }
                 }
             }
+        }
+    }
+}
+
+/// An agent the operator runs in the server (#454). Its key goes up once
+/// and never comes back; the server answers with `ServerAgents`.
+#[component]
+fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let is_new = view.is_none();
+    let form = use_signal(|| {
+        view.as_ref()
+            .map(AgentEntry::from_server)
+            .unwrap_or_else(AgentEntry::draft)
+    });
+    let mut guilds = use_signal(|| {
+        view.as_ref()
+            .map(|v| v.spec.guilds.clone())
+            .unwrap_or_default()
+    });
+    let mut api_key = use_signal(String::new);
+    let busy = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let mut confirm_delete = use_signal(|| false);
+
+    let manageable: Vec<(Id, String)> = {
+        let s = state.read();
+        s.guilds
+            .iter()
+            .filter(|g| s.can(g.id, Permission::ManageGuild))
+            .map(|g| (g.id, g.name.clone()))
+            .collect()
+    };
+    let pubkey = view.as_ref().map(|v| v.pubkey.clone());
+    let save = {
+        let (gateway, pubkey) = (gateway.clone(), pubkey.clone());
+        move |_| {
+            let entry = form.peek().clone();
+            let typed = api_key.peek().trim().to_string();
+            if let Some(problem) = entry.problem(!typed.is_empty() || !is_new) {
+                error.set(Some(problem));
+                return;
+            }
+            error.set(None);
+            gateway.send(ClientMessage::SaveServerAgent {
+                pubkey: pubkey.clone(),
+                spec: entry.server_spec(guilds.peek().clone()),
+                api_key: (!typed.is_empty()).then_some(typed),
+            });
+            api_key.set(String::new());
+            if is_new {
+                on_done.call(());
+            }
+        }
+    };
+    let delete = {
+        let (gateway, pubkey) = (gateway.clone(), pubkey.clone());
+        move |_| {
+            if let Some(pubkey) = pubkey.clone() {
+                gateway.send(ClientMessage::DeleteServerAgent { pubkey });
+            }
+            on_done.call(());
+        }
+    };
+    let key_placeholder = match view.as_ref().map(|v| v.key_hint.as_str()) {
+        Some(hint) if !hint.is_empty() => crate::i18n::text(
+            "Saved on the server, ending in {0}. Type to replace it.",
+            &[hint.to_string()],
+        ),
+        _ => crate::i18n::text("API key", &[]),
+    };
+    let status = view.as_ref().map(|v| {
+        if v.online {
+            crate::i18n::text("Online", &[])
+        } else {
+            v.status.clone()
+        }
+    });
+
+    rsx! {
+        div { class: "space-y-3",
+            div { class: "text-[11px] text-[var(--text-dim)]",
+                {crate::i18n::text("Runs inside this server, so it stays online when your app is closed. The server keeps its key and never sends it back.", &[])}
+            }
+            if let Some(status) = status {
+                div { class: "flex items-center gap-2 text-[11px] text-[var(--text)]",
+                    span {
+                        class: "w-2 h-2 rounded-full shrink-0",
+                        style: dot(if view.as_ref().is_some_and(|v| v.online) { Light::On } else { Light::Busy }),
+                    }
+                    "{status}"
+                }
+            }
+            AgentFields { form, api_key, busy, error, key_placeholder, owner: None }
+            div {
+                div { class: LABEL, {crate::i18n::text("Guilds", &[])} }
+                if manageable.is_empty() {
+                    div { class: "text-[11px] text-[var(--text-dim)]", {crate::i18n::text("Only guilds you manage are listed.", &[])} }
+                }
+                for (id, name) in manageable.iter().cloned() {
+                    label { key: "{id}", class: "flex items-center gap-2 py-0.5 text-xs text-[var(--text)]",
+                        input {
+                            r#type: "checkbox",
+                            checked: guilds.read().contains(&id),
+                            onchange: move |e| {
+                                let mut g = guilds.write();
+                                g.retain(|x| *x != id);
+                                if e.checked() {
+                                    g.push(id);
+                                }
+                            },
+                        }
+                        "{name}"
+                    }
+                }
+            }
+            div { class: "flex items-center gap-2",
+                button { class: BUTTON, disabled: busy(), onclick: save,
+                    if is_new { {crate::i18n::text("Create", &[])} } else { {crate::i18n::text("Save", &[])} }
+                }
+                if !is_new {
+                    div { class: "flex-1" }
+                    if confirm_delete() {
+                        button { class: "{BUTTON} text-[var(--danger)]", onclick: delete, {crate::i18n::text("Delete for good", &[])} }
+                    } else {
+                        button { class: BUTTON, onclick: move |_| confirm_delete.set(true), {crate::i18n::text("Delete", &[])} }
+                    }
+                }
+            }
+            TryIt { form, api_key, busy, error, owner: None }
         }
     }
 }

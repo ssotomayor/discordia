@@ -117,6 +117,9 @@ pub struct AppState {
     pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
     /// The newest manifest event each bot has handed this host, by version.
     pub app_manifests: DashMap<String, (u64, String)>,
+    /// Agents the operator runs in this process, by key (#454).
+    pub server_agents: DashMap<String, crate::agents::ServerAgent>,
+    pub agent_host: std::sync::Arc<crate::agents::AgentHost>,
     activity_instances: instances::Instances,
     /// The curators each guild follows, and the newest list each curator signed.
     followed_blocklists: DashMap<Id, Vec<String>>,
@@ -168,6 +171,8 @@ impl AppState {
             bot_installs: DashMap::new(),
             bot_commands: DashMap::new(),
             app_manifests: DashMap::new(),
+            server_agents: DashMap::new(),
+            agent_host: Default::default(),
             activity_instances: Default::default(),
             followed_blocklists: DashMap::new(),
             app_blocklists: DashMap::new(),
@@ -290,6 +295,24 @@ impl AppState {
         }
         for (bot, version, event) in state.store.app_manifests().await? {
             state.app_manifests.insert(bot, (version, event));
+        }
+        for (pubkey, spec, secret, api_key, version) in state.store.server_agents().await? {
+            match serde_json::from_str(&spec) {
+                Ok(spec) => {
+                    state.server_agents.insert(
+                        pubkey,
+                        crate::agents::ServerAgent {
+                            spec,
+                            secret,
+                            api_key,
+                            version,
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(agent = %pubkey, error = %e, "server agent row unreadable")
+                }
+            }
         }
         for (guild_id, curator) in state.store.guild_blocklists().await? {
             state

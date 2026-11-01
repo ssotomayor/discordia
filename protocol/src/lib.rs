@@ -1554,6 +1554,91 @@ pub struct AgentInfo {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProvider {
+    Anthropic,
+    OpenAiCompatible,
+}
+
+/// An agent the operator runs in the server process (#454). The API key is
+/// never part of it: it travels once, write-only, beside it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerAgentSpec {
+    pub name: String,
+    #[serde(default)]
+    pub prompt: String,
+    pub provider: AgentProvider,
+    /// What members are told their messages go to.
+    pub provider_label: String,
+    pub base_url: String,
+    pub model: String,
+    pub per_member_per_hour: u32,
+    pub daily_tokens: u64,
+    /// Guilds it is installed in; only ones the operator manages.
+    #[serde(default)]
+    pub guilds: Vec<Id>,
+}
+
+/// What an operator is shown of a server agent: never its keys.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerAgentView {
+    pub pubkey: String,
+    pub spec: ServerAgentSpec,
+    /// The API key's last four characters, so the operator can tell which one is saved.
+    #[serde(default)]
+    pub key_hint: String,
+    #[serde(default)]
+    pub online: bool,
+    #[serde(default)]
+    pub status: String,
+}
+
+pub const MAX_SERVER_AGENTS: usize = 16;
+pub const MAX_AGENT_PROMPT: usize = 8_000;
+pub const MAX_AGENT_URL: usize = 512;
+
+/// Refused whole: the operator is editing it, so an error beats a silent trim.
+pub fn validate_server_agent(raw: ServerAgentSpec) -> Result<ServerAgentSpec, String> {
+    let name = sanitize_line(raw.name.trim(), MAX_APP_NAME);
+    if name.is_empty() {
+        return Err("an agent needs a name".into());
+    }
+    if raw.prompt.chars().count() > MAX_AGENT_PROMPT {
+        return Err(format!(
+            "instructions are over {MAX_AGENT_PROMPT} characters"
+        ));
+    }
+    let provider_label = sanitize_line(raw.provider_label.trim(), MAX_AGENT_LABEL);
+    let model = sanitize_line(raw.model.trim(), MAX_AGENT_LABEL);
+    if provider_label.is_empty() || model.is_empty() {
+        return Err("an agent names its provider and model".into());
+    }
+    let base_url = raw.base_url.trim().to_string();
+    if base_url.len() > MAX_AGENT_URL
+        || !(base_url.starts_with("https://") || base_url.starts_with("http://"))
+    {
+        return Err("the provider address must be an http or https URL".into());
+    }
+    if raw.per_member_per_hour == 0 || raw.daily_tokens == 0 {
+        return Err("an agent's limits must be above zero".into());
+    }
+    let mut guilds = raw.guilds;
+    guilds.sort_unstable();
+    guilds.dedup();
+    Ok(ServerAgentSpec {
+        name,
+        prompt: raw.prompt,
+        provider: raw.provider,
+        provider_label,
+        base_url,
+        model,
+        per_member_per_hour: raw.per_member_per_hour,
+        daily_tokens: raw.daily_tokens,
+        guilds,
+    })
+}
+
 impl AppManifest {
     /// Only a page to play in: nothing to say in chat, nothing to read there.
     pub fn activity_only(&self) -> bool {
@@ -2322,6 +2407,21 @@ pub enum ClientMessage {
         #[serde(default)]
         accent: Option<String>,
     },
+    /// Operator only. Answered by `ServerAgents`.
+    FetchServerAgents,
+    /// Operator only. Without `pubkey` it creates one. `api_key` is written
+    /// and never read back; `None` keeps the saved one.
+    SaveServerAgent {
+        #[serde(default)]
+        pubkey: Option<String>,
+        spec: ServerAgentSpec,
+        #[serde(default)]
+        api_key: Option<String>,
+    },
+    /// Operator only. Uninstalls it everywhere and forgets its keys.
+    DeleteServerAgent {
+        pubkey: String,
+    },
     InstallBot {
         guild_id: Id,
         bot_pubkey: String,
@@ -2888,6 +2988,10 @@ pub enum ServerMessage {
     DefaultGuild {
         #[serde(default)]
         guild_id: Option<Id>,
+    },
+    /// Only ever sent to operators.
+    ServerAgents {
+        agents: Vec<ServerAgentView>,
     },
     GuildIntegrations {
         guild_id: Id,

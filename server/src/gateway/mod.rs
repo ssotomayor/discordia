@@ -1,4 +1,4 @@
-mod connection;
+pub(crate) mod connection;
 pub(crate) use connection::handle_connection_with_route;
 
 pub use connection::{

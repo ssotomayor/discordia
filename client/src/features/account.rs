@@ -273,7 +273,6 @@ pub fn AccountView(
                 on_sign_out,
             }
         }
-        super::agents::AgentsDialog {}
     }
 }
 

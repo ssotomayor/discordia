@@ -206,6 +206,7 @@ impl Store {
         let ddl = [
             "CREATE TABLE IF NOT EXISTS guild_file_policies (guild_id TEXT PRIMARY KEY, policy TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS server_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS server_agents (pubkey TEXT PRIMARY KEY, spec TEXT NOT NULL, secret TEXT NOT NULL, api_key TEXT NOT NULL, version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS default_guild_offers (guild_id TEXT NOT NULL, pubkey TEXT NOT NULL, PRIMARY KEY (guild_id, pubkey))",
             "CREATE TABLE IF NOT EXISTS guild_stickers (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL, image TEXT NOT NULL, added_by TEXT NOT NULL, created_ms INTEGER NOT NULL, UNIQUE(guild_id, shortcode))",
             "CREATE TABLE IF NOT EXISTS users (
@@ -1175,6 +1176,56 @@ impl Store {
         .bind(serde_json::to_string(&list.blocked).unwrap_or_else(|_| "[]".into()))
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Rows of `(pubkey, spec json, secret, api key, manifest version)`.
+    pub async fn server_agents(&self) -> Result<Vec<(String, String, String, String, u64)>> {
+        let rows = sqlx::query("SELECT pubkey, spec, secret, api_key, version FROM server_agents")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get(0),
+                    r.get(1),
+                    r.get(2),
+                    r.get(3),
+                    r.get::<i64, _>(4) as u64,
+                )
+            })
+            .collect())
+    }
+
+    pub async fn save_server_agent(
+        &self,
+        pubkey: &str,
+        spec: &str,
+        secret: &str,
+        api_key: &str,
+        version: u64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO server_agents(pubkey, spec, secret, api_key, version) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(pubkey) DO UPDATE SET spec = excluded.spec, secret = excluded.secret,
+             api_key = excluded.api_key, version = excluded.version",
+        )
+        .bind(pubkey)
+        .bind(spec)
+        .bind(secret)
+        .bind(api_key)
+        .bind(version as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_server_agent(&self, pubkey: &str) -> Result<()> {
+        sqlx::query("DELETE FROM server_agents WHERE pubkey = ?")
+            .bind(pubkey)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

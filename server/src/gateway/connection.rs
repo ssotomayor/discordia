@@ -1173,20 +1173,49 @@ pub(crate) async fn handle_connection_with_route<S>(
                         ).await {
                             Ok((install, seat)) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot installed");
-                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
-                                let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                if let Some(set) = ctx.state.commands_of(&bot_pubkey) {
-                                    ctx.state.deliver(targets, ServerMessage::BotCommands(set));
-                                }
-                                let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
-                                    guild_id,
-                                    bots: ctx.state.guild_installs(guild_id),
-                                }).await;
-                                ask_for_bundles(&ctx.state, &bot_pubkey);
+                                announce_install(&ctx, guild_id, &bot_pubkey, seat);
                                 tracing::debug!(perms = ?install.permissions, intents = ?install.intents, "install grants");
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchServerAgents => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !ctx.state.operators.contains(&u.pubkey) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "only this server's operator sees its agents".into(),
+                            }).await;
+                            continue;
+                        }
+                        let _ = send(&mut ws_tx, &ServerMessage::ServerAgents {
+                            agents: crate::agents::views(&ctx.state),
+                        }).await;
+                    }
+                    ClientMessage::SaveServerAgent { pubkey, spec, api_key } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match crate::agents::save(&ctx, &u.pubkey, pubkey, spec, api_key).await {
+                            Ok(agent) => tracing::info!(%agent, by = ?u.username, "server agent saved"),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::DeleteServerAgent { pubkey } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match crate::agents::delete(&ctx, &u.pubkey, &pubkey).await {
+                            Ok(()) => tracing::info!(agent = %pubkey, by = ?u.username, "server agent deleted"),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             }
                         }
                     }
@@ -1200,17 +1229,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
                             Ok(seat) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot uninstalled");
-                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
-                                let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                ctx.state.deliver(targets, ServerMessage::GuildActivities {
-                                    guild_id,
-                                    activities: ctx.state.guild_activities(guild_id),
-                                });
-                                share_instances(&ctx.state, ctx.state.prune_instances());
-                                let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
-                                    guild_id,
-                                    bots: ctx.state.guild_installs(guild_id),
-                                }).await;
+                                announce_uninstall(&ctx, guild_id, &bot_pubkey, seat);
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -3545,7 +3564,7 @@ fn ask_for_bundles(state: &crate::state::AppState, bot_pubkey: &str) {
 }
 
 /// Managers see the installs, everyone sees the activities they can open.
-fn announce_seat(
+pub(crate) fn announce_seat(
     ctx: &Arc<AppContext>,
     guild_id: crate::protocol::Id,
     bot_pubkey: &str,
@@ -3582,7 +3601,41 @@ fn announce_seat(
     }
 }
 
-fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
+pub(crate) fn announce_install(
+    ctx: &Arc<AppContext>,
+    guild_id: crate::protocol::Id,
+    bot_pubkey: &str,
+    seat: crate::store::Seat,
+) {
+    announce_seat(ctx, guild_id, bot_pubkey, seat);
+    if let Some(set) = ctx.state.commands_of(bot_pubkey) {
+        let targets = ctx.state.guild_member_pubkeys(guild_id);
+        ctx.state.deliver(targets, ServerMessage::BotCommands(set));
+    }
+    share_guild_apps(&ctx.state, guild_id);
+    ask_for_bundles(&ctx.state, bot_pubkey);
+}
+
+pub(crate) fn announce_uninstall(
+    ctx: &Arc<AppContext>,
+    guild_id: crate::protocol::Id,
+    bot_pubkey: &str,
+    seat: crate::store::Seat,
+) {
+    announce_seat(ctx, guild_id, bot_pubkey, seat);
+    let targets = ctx.state.guild_member_pubkeys(guild_id);
+    ctx.state.deliver(
+        targets,
+        ServerMessage::GuildActivities {
+            guild_id,
+            activities: ctx.state.guild_activities(guild_id),
+        },
+    );
+    share_instances(&ctx.state, ctx.state.prune_instances());
+    share_guild_apps(&ctx.state, guild_id);
+}
+
+pub(crate) fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
     let (curators, lists) = state.guild_blocklists(guild_id);
     state.deliver(
         state.guild_managers(guild_id),

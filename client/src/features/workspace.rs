@@ -642,6 +642,7 @@ pub fn WorkspaceView(
                 }
             }
             crate::features::settings_dialog::SettingsDialog {}
+            crate::features::agents::AgentsDialog {}
             crate::features::soundboard::SoundboardPanel {}
             crate::features::voice_menu::VoiceMenuHost {}
             crate::features::channel_access::ChannelAccessHost {}

@@ -2062,5 +2062,14 @@
   "Too many agents running at once on this device.": ["Demasiados agentes ejecutándose a la vez en este dispositivo.", "Agentes demais rodando ao mesmo tempo neste dispositivo.", "本设备上同时运行的智能体太多。", "この端末で同時に動いているエージェントが多すぎます。"],
   "An AI agent: what it reads is sent to {0} ({1}) by whoever runs it.": ["Un agente de IA: quien lo ejecuta envía lo que lee a {0} ({1}).", "Um agente de IA: quem o executa envia o que ele lê para {0} ({1}).", "AI 智能体：运行者会把它读取的内容发送给 {0}（{1}）。", "AI エージェント：読んだ内容は、動かしている人によって {0}（{1}）に送られます。"],
   "AI agent: what it reads is sent to {0} ({1})": ["Agente de IA: lo que lee se envía a {0} ({1})", "Agente de IA: o que ele lê é enviado para {0} ({1})", "AI 智能体：它读取的内容会发送给 {0}（{1}）", "AI エージェント：読んだ内容は {0}（{1}）に送られます"],
-  "AI": ["IA", "IA", "AI", "AI"]
+  "AI": ["IA", "IA", "AI", "AI"],
+  "On this device": ["En este dispositivo", "Neste dispositivo", "在本设备上", "この端末"],
+  "On this server": ["En este servidor", "Neste servidor", "在此服务器上", "このサーバー"],
+  "New server agent": ["Nuevo agente del servidor", "Novo agente do servidor", "新建服务器智能体", "新しいサーバーエージェント"],
+  "As this server's operator you can also run agents inside the server, so they stay online when your app is closed.": ["Como operador de este servidor, también podés ejecutar agentes dentro del servidor, así siguen en línea cuando cerrás la app.", "Como operador deste servidor, você também pode rodar agentes dentro do servidor, para que fiquem online quando o app estiver fechado.", "作为此服务器的运营者，你也可以在服务器内运行智能体，这样关闭应用后它们仍然在线。", "このサーバーの運営者として、サーバー内でエージェントを動かすこともできます。アプリを閉じてもオンラインのままです。"],
+  "Type the API key here to do this from this device.": ["Escribí la clave de API acá para hacerlo desde este dispositivo.", "Digite a chave de API aqui para fazer isso deste dispositivo.", "在这里输入 API 密钥，才能在本设备上执行此操作。", "この端末から行うには、ここに API キーを入力してください。"],
+  "Saved on the server, ending in {0}. Type to replace it.": ["Guardada en el servidor, termina en {0}. Escribí para reemplazarla.", "Salva no servidor, terminando em {0}. Digite para substituí-la.", "已保存在服务器上，结尾为 {0}。输入可替换。", "サーバーに保存済み（末尾 {0}）。入力すると置き換えます。"],
+  "Runs inside this server, so it stays online when your app is closed. The server keeps its key and never sends it back.": ["Se ejecuta dentro de este servidor, así sigue en línea cuando cerrás la app. El servidor guarda su clave y nunca la devuelve.", "Roda dentro deste servidor, então fica online quando o app está fechado. O servidor guarda a chave e nunca a envia de volta.", "在此服务器内运行，所以关闭应用后仍然在线。服务器保存它的密钥，且从不回传。", "このサーバー内で動くので、アプリを閉じてもオンラインのままです。キーはサーバーが保管し、返送されることはありません。"],
+  "Guilds": ["Guilds", "Guilds", "公会", "ギルド"],
+  "Only guilds you manage are listed.": ["Solo aparecen las guilds que administrás.", "Só aparecem as guilds que você gerencia.", "只列出你管理的公会。", "管理しているギルドだけが表示されます。"]
 }

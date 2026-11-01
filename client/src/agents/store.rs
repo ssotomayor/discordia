@@ -191,6 +191,57 @@ impl AgentEntry {
         }
     }
 
+    /// A server agent in the same form a device agent is edited in.
+    pub fn from_server(view: &discordia_protocol::ServerAgentView) -> Self {
+        let s = &view.spec;
+        let anthropic = s.provider == discordia_protocol::AgentProvider::Anthropic;
+        let preset = Preset::ALL
+            .into_iter()
+            .find(|p| {
+                *p != Preset::Custom
+                    && p.base_url() == s.base_url
+                    && (p.provider() == Provider::Anthropic) == anthropic
+            })
+            .unwrap_or(if anthropic {
+                Preset::Anthropic
+            } else {
+                Preset::Custom
+            });
+        Self {
+            pubkey: view.pubkey.clone(),
+            name: s.name.clone(),
+            prompt: s.prompt.clone(),
+            preset,
+            base_url: s.base_url.clone(),
+            model: s.model.clone(),
+            per_member_per_hour: s.per_member_per_hour,
+            daily_tokens: s.daily_tokens,
+            manifest_version: 1,
+            servers: Vec::new(),
+            enabled: true,
+        }
+    }
+
+    pub fn server_spec(
+        &self,
+        guilds: Vec<discordia_protocol::Id>,
+    ) -> discordia_protocol::ServerAgentSpec {
+        discordia_protocol::ServerAgentSpec {
+            name: self.name.trim().to_string(),
+            prompt: self.prompt.clone(),
+            provider: match self.preset.provider() {
+                Provider::Anthropic => discordia_protocol::AgentProvider::Anthropic,
+                Provider::OpenAiCompatible => discordia_protocol::AgentProvider::OpenAiCompatible,
+            },
+            provider_label: self.preset.disclosed(&self.base_url),
+            base_url: self.base_url.trim().to_string(),
+            model: self.model.trim().to_string(),
+            per_member_per_hour: self.per_member_per_hour,
+            daily_tokens: self.daily_tokens,
+            guilds,
+        }
+    }
+
     /// Why this cannot be saved yet, or `None`.
     pub fn problem(&self, has_key: bool) -> Option<String> {
         if self.name.trim().is_empty() {
@@ -420,6 +471,32 @@ mod tests {
         );
         assert_eq!(Preset::Custom.disclosed("not a url"), "a custom server");
         assert_eq!(Preset::Anthropic.disclosed(""), "Anthropic");
+    }
+
+    #[test]
+    fn a_server_agent_edits_in_the_same_form_and_comes_back_unchanged() {
+        for preset in Preset::ALL {
+            let mut e = AgentEntry::draft();
+            e.name = "Helper".into();
+            e.preset = preset;
+            e.base_url = if preset == Preset::Custom {
+                "https://llm.example/v1".into()
+            } else {
+                preset.base_url().into()
+            };
+            e.model = "m".into();
+            let guild = discordia_protocol::Id::new_v4();
+            let view = discordia_protocol::ServerAgentView {
+                pubkey: "k".into(),
+                spec: e.server_spec(vec![guild]),
+                key_hint: String::new(),
+                online: false,
+                status: String::new(),
+            };
+            let back = AgentEntry::from_server(&view);
+            assert_eq!(back.preset, preset, "{preset:?}");
+            assert_eq!(back.server_spec(vec![guild]), view.spec);
+        }
     }
 
     #[test]

@@ -54,6 +54,7 @@ pub fn HomeView(
             if !social() { crate::features::dm_call::CallPanel {} }
             crate::features::workspace::ErrorToast {}
             crate::features::settings_dialog::SettingsDialog {}
+            crate::features::agents::AgentsDialog {}
             if !social() || cfg!(target_os = "android") { crate::features::profiles::ProfileCard {} }
             TopBar { identity: identity.clone(), social, open_social, on_rename, on_sign_out }
             if cfg!(target_os = "android") && social() {

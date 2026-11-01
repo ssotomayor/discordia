@@ -152,7 +152,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
             ));
     }
 
-    let router = discordia_server::build_router(cfg)
+    let (router, gateway_control) = discordia_server::build_gateway(cfg)
         .await
         .map_err(|e| format!("server failed to start: {e}"))?;
 
@@ -190,10 +190,12 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
     });
 
     let gateway = discordia_server::serve_router_with(listener, router, &admission);
+    gateway_control.start_agents(gateway.addr);
     tracing::info!(%bound, "plaintext gateway listening (loopback and TLS proxies only)");
 
     discordia_rendezvous::run::shutdown_signal().await;
     tracing::info!("shutting down");
+    gateway_control.close_all();
     gateway.abort();
     Ok(())
 }

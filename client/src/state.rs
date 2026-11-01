@@ -575,6 +575,8 @@ pub struct AppState {
     pub voice_invite_on_ready: Option<PendingVoiceInvite>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
+    /// The connected server's own agents; only ever sent to an operator.
+    pub server_agents: Vec<crate::protocol::ServerAgentView>,
     /// The connected server's, from Ready and `DefaultGuild`.
     pub default_guild: Option<Id>,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
@@ -756,6 +758,7 @@ impl AppState {
             voice_invite_on_ready: None,
             gateway_failure: None,
             is_operator: false,
+            server_agents: Vec::new(),
             default_guild: None,
             audit_logs: HashMap::new(),
         }
@@ -939,6 +942,7 @@ impl AppState {
         self.invites.clear();
         self.audit_logs.clear();
         self.is_operator = false;
+        self.server_agents.clear();
         self.default_guild = None;
         self.emoji_images.clear();
         self.evict_inactive_dm_images(self.selected_channel);
