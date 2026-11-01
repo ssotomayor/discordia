@@ -1,0 +1,6638 @@
+{
+  "sourceCommit": "d9a688c0c7cc0d1a871ab813c6624c600311f31b",
+  "scope": "Real Dioxus/ImageAssets/WebView2 component fixture; not full Discordia or network transfer; GPU process private commit is not VRAM",
+  "fixtures": [
+    {
+      "name": "high0.jpg",
+      "bytes": 867602,
+      "sha256": "5e6bfe643409ca57a1542269c97ac3b09f68129bea10779de7e54c6c51379b42"
+    },
+    {
+      "name": "high1.jpg",
+      "bytes": 867368,
+      "sha256": "7c5f9bb315eae57aa6a99e6a1c29f8ec4cb58d4ba45fd90fad5226d05bcb8f36"
+    },
+    {
+      "name": "high2.jpg",
+      "bytes": 867625,
+      "sha256": "ddd7c098fd0f365848dfaa1c148c3ea12dee3d7471c17a9b9bd6348e421886e9"
+    },
+    {
+      "name": "high3.jpg",
+      "bytes": 868539,
+      "sha256": "2fab31c1314aace98ebb5de23bd49c765c6f5efd5228689ef792f77f599c6bf1"
+    },
+    {
+      "name": "high4.jpg",
+      "bytes": 872945,
+      "sha256": "ca82542dc0f715b9026389e833704554a28212b5d490b11f2ed3d996c872c17a"
+    },
+    {
+      "name": "high5.jpg",
+      "bytes": 868034,
+      "sha256": "a1c2b72cc09a422e1e399fd3450d3da1135d92361959341ec3e0f8e55cad7931"
+    },
+    {
+      "name": "high6.jpg",
+      "bytes": 880669,
+      "sha256": "db4832186eadaf98fe70a8d4c8438f1436659ff85c3c176d824d008105affa91"
+    },
+    {
+      "name": "high7.jpg",
+      "bytes": 872794,
+      "sha256": "117db7859bb8aae571aad942cb2488877085be7b08cc841db3c090e5bd6861ba"
+    }
+  ],
+  "binaries": {
+    "jpeg-medium-community-before": {
+      "sha256": "0b7617781d0c95d9972c483c59ca978d0ddbab3821c15dce7b058f5eb035cc0f",
+      "bytes": 6068224,
+      "fixtures": [
+        {
+          "name": "high0.jpg",
+          "bytes": 867602,
+          "sha256": "5e6bfe643409ca57a1542269c97ac3b09f68129bea10779de7e54c6c51379b42"
+        },
+        {
+          "name": "high1.jpg",
+          "bytes": 867368,
+          "sha256": "7c5f9bb315eae57aa6a99e6a1c29f8ec4cb58d4ba45fd90fad5226d05bcb8f36"
+        },
+        {
+          "name": "high2.jpg",
+          "bytes": 867625,
+          "sha256": "ddd7c098fd0f365848dfaa1c148c3ea12dee3d7471c17a9b9bd6348e421886e9"
+        },
+        {
+          "name": "high3.jpg",
+          "bytes": 868539,
+          "sha256": "2fab31c1314aace98ebb5de23bd49c765c6f5efd5228689ef792f77f599c6bf1"
+        },
+        {
+          "name": "high4.jpg",
+          "bytes": 872945,
+          "sha256": "ca82542dc0f715b9026389e833704554a28212b5d490b11f2ed3d996c872c17a"
+        },
+        {
+          "name": "high5.jpg",
+          "bytes": 868034,
+          "sha256": "a1c2b72cc09a422e1e399fd3450d3da1135d92361959341ec3e0f8e55cad7931"
+        },
+        {
+          "name": "high6.jpg",
+          "bytes": 880669,
+          "sha256": "db4832186eadaf98fe70a8d4c8438f1436659ff85c3c176d824d008105affa91"
+        },
+        {
+          "name": "high7.jpg",
+          "bytes": 872794,
+          "sha256": "117db7859bb8aae571aad942cb2488877085be7b08cc841db3c090e5bd6861ba"
+        }
+      ]
+    },
+    "jpeg-medium-dm-before": {
+      "sha256": "0b7617781d0c95d9972c483c59ca978d0ddbab3821c15dce7b058f5eb035cc0f",
+      "bytes": 6068224,
+      "fixtures": [
+        {
+          "name": "high0.jpg",
+          "bytes": 31972,
+          "sha256": "15da70f1402452f578ad4e739327133c99ec726a1e82f63ad9a5b2734697c4de"
+        },
+        {
+          "name": "high1.jpg",
+          "bytes": 32013,
+          "sha256": "9561bdec05fc87abeb889ac39b82f7c7f842d31e721428bac268e35991f8a70a"
+        },
+        {
+          "name": "high2.jpg",
+          "bytes": 31990,
+          "sha256": "f545ede1bbe87623435dfac1e1c40785970f3a9882e1c88c87c5545219510b89"
+        },
+        {
+          "name": "high3.jpg",
+          "bytes": 31994,
+          "sha256": "048f69b9af475675fb052184500273a75070b48a21129e4075d059ac6e017472"
+        },
+        {
+          "name": "high4.jpg",
+          "bytes": 33173,
+          "sha256": "ee0878e4fd0c89e2db6b6556bdcaa96a555511ca5749313d233abedb8a46c1f6"
+        },
+        {
+          "name": "high5.jpg",
+          "bytes": 32852,
+          "sha256": "118b11cc6f2bc4280c4c1e443d51f2ddbc28c1be0f3b8f6885aba8a6af42cbf8"
+        },
+        {
+          "name": "high6.jpg",
+          "bytes": 35126,
+          "sha256": "7ad68a245e7071fd3fe2e1e87d3f5aae5a3235103e96bccba9e4b4f70f656de9"
+        },
+        {
+          "name": "high7.jpg",
+          "bytes": 34664,
+          "sha256": "c00663d9d98ecd4091c5cfad9f6b36b9742a5fb3a37a6248f59050b4bab65edf"
+        }
+      ]
+    },
+    "jpeg-medium-unified": {
+      "sha256": "646029234ffa2d742b0edcf8ede5725582fc85c06921064aca62bb9dad3e10ef",
+      "bytes": 6514176,
+      "fixtures": [
+        {
+          "name": "high0.jpg",
+          "bytes": 73639,
+          "sha256": "5ee9471d6d69a69cae68632482ae2cbc187fc5cb615bf756cf6b6859d6bd0a38"
+        },
+        {
+          "name": "high1.jpg",
+          "bytes": 73831,
+          "sha256": "4497f9f40d241a256e0c84551e7b95bd2009bbb9a848cdc399d64ef7a546956a"
+        },
+        {
+          "name": "high2.jpg",
+          "bytes": 73757,
+          "sha256": "0061bf01f3d0441de9818db45911b4c6215519ef84d5c1496b27be9881f2ebc2"
+        },
+        {
+          "name": "high3.jpg",
+          "bytes": 73869,
+          "sha256": "f501ff8d2b8ee22362b700102c1a559efeaf9e457d4115869ab4da5e115f9ccb"
+        },
+        {
+          "name": "high4.jpg",
+          "bytes": 75221,
+          "sha256": "34ab52db7ab9bbb9c60df97ec1e5e40b22457d989a625399d3f6686b139e4fe2"
+        },
+        {
+          "name": "high5.jpg",
+          "bytes": 74633,
+          "sha256": "f961f96d49c5477f02a0f2d89c29792795eb544add1cb3796fee896d32624dbd"
+        },
+        {
+          "name": "high6.jpg",
+          "bytes": 77719,
+          "sha256": "cb2ed7cca37b3848e4181ab448c3a7332c93c83aa7cdb5715bcf418e7a8965f9"
+        },
+        {
+          "name": "high7.jpg",
+          "bytes": 77308,
+          "sha256": "44108c8bcf5d60cf6d5fed4a8f72180eeedb8287a7c83586fd9b094472dccfd2"
+        }
+      ]
+    },
+    "jpeg-large-community-before": {
+      "sha256": "0b7617781d0c95d9972c483c59ca978d0ddbab3821c15dce7b058f5eb035cc0f",
+      "bytes": 6068224,
+      "fixtures": [
+        {
+          "name": "high0.jpg",
+          "bytes": 4191348,
+          "sha256": "b98abac4d055512e65f2357224a9dfda54562c2ad89ee73ab3629528e6a51518"
+        },
+        {
+          "name": "high1.jpg",
+          "bytes": 4192262,
+          "sha256": "43d2788362559a722dd3af9aaaf1e2fc6e2c3ededd2b71a2f5888840c24fd15c"
+        },
+        {
+          "name": "high2.jpg",
+          "bytes": 4192338,
+          "sha256": "5dcfafd62fc6c1f94250471ba155d0e72b9aa50c140c3ceb6eacd690c92818c9"
+        },
+        {
+          "name": "high3.jpg",
+          "bytes": 4194077,
+          "sha256": "5075a17b81eb4a90b44703e38b4e36840bbbaaf64298fd8fa29e7c5553ad05c3"
+        },
+        {
+          "name": "high4.jpg",
+          "bytes": 4194317,
+          "sha256": "eb0f74dfa3cf6715437db7739a580e7e87eafd081a18a889ba2713cd855d1987"
+        },
+        {
+          "name": "high5.jpg",
+          "bytes": 4204455,
+          "sha256": "df32231bf565ad9b6139800da61dbbb1a045b1ccf6f627c4554ecf05bce0470c"
+        },
+        {
+          "name": "high6.jpg",
+          "bytes": 4221013,
+          "sha256": "2115c571c5dd7a96c43b2c7080e2f8f621139359c2781164ddad7a26bac622e7"
+        },
+        {
+          "name": "high7.jpg",
+          "bytes": 4221921,
+          "sha256": "9ae0724622450702712a2a4d28a1ee519ef50e03e3636f5e64a4526f0cf61db7"
+        }
+      ]
+    },
+    "jpeg-large-dm-before": {
+      "sha256": "0b7617781d0c95d9972c483c59ca978d0ddbab3821c15dce7b058f5eb035cc0f",
+      "bytes": 6068224,
+      "fixtures": [
+        {
+          "name": "high0.jpg",
+          "bytes": 56993,
+          "sha256": "5d705d25a006035489593d16df423fcd72f3c2d9bc97a58208bf8e8d1dcdfada"
+        },
+        {
+          "name": "high1.jpg",
+          "bytes": 56999,
+          "sha256": "1149a92edd06bcc0c6c22a1ee5e3074d4beff66fe27927326afe237d9169b45b"
+        },
+        {
+          "name": "high2.jpg",
+          "bytes": 57046,
+          "sha256": "6530a094770779df05397579ac07ccbc41f62ea71f2bdbdf277998f9db508efd"
+        },
+        {
+          "name": "high3.jpg",
+          "bytes": 57018,
+          "sha256": "b841367c113b32dee81278d6130ad2eefcc9031e2632ce32767c37ea09fc3caa"
+        },
+        {
+          "name": "high4.jpg",
+          "bytes": 58054,
+          "sha256": "da3e552417c206c47778de2291e6431a2bbe22ee56de7a8e4122317752848d3c"
+        },
+        {
+          "name": "high5.jpg",
+          "bytes": 58088,
+          "sha256": "93bff0ca44aea40c417be1553c24d4316734b1059cceecdf6bc56bb470012a52"
+        },
+        {
+          "name": "high6.jpg",
+          "bytes": 59258,
+          "sha256": "91e0d4786be1bdd23042ea29dd27deaec5d0a268091a1993c470fad19f0db62b"
+        },
+        {
+          "name": "high7.jpg",
+          "bytes": 57958,
+          "sha256": "832681dcb332e56df629a162bd92db5ccd632b4159165b0afcf18e91dcdf4abf"
+        }
+      ]
+    },
+    "jpeg-large-unified": {
+      "sha256": "646029234ffa2d742b0edcf8ede5725582fc85c06921064aca62bb9dad3e10ef",
+      "bytes": 6514176,
+      "fixtures": [
+        {
+          "name": "high0.jpg",
+          "bytes": 111114,
+          "sha256": "6d105558a1ecfc5722cf6a1ea9c5a28ef58073352f6e1eb2d54f57ffffe4e4ee"
+        },
+        {
+          "name": "high1.jpg",
+          "bytes": 111186,
+          "sha256": "0fc793d9133d96e5e7fd62ff2ef5443754525ba397f9e02d72f20a5441d2245a"
+        },
+        {
+          "name": "high2.jpg",
+          "bytes": 111183,
+          "sha256": "a87667e20dc3fe9629a9666efce63ba1e66431ba7d3795ad2be70d427c62ed9b"
+        },
+        {
+          "name": "high3.jpg",
+          "bytes": 111330,
+          "sha256": "c95bb6af6b0e3a00763f9543dae8b43838d67af5cda654bd9aca9dd3e706838a"
+        },
+        {
+          "name": "high4.jpg",
+          "bytes": 112660,
+          "sha256": "af2d8f0015776012b073786aa6dcde217369c406476be32d4884e59d48987e69"
+        },
+        {
+          "name": "high5.jpg",
+          "bytes": 112700,
+          "sha256": "41986463159a690fc8129d4fa85b5de21e1e639b6e092b339c28415a10f7e06f"
+        },
+        {
+          "name": "high6.jpg",
+          "bytes": 114458,
+          "sha256": "ad15c8ad449b2ce97eeac7481fb234f2ae0b9948bc1e193346c52f95cf398eef"
+        },
+        {
+          "name": "high7.jpg",
+          "bytes": 112594,
+          "sha256": "4fcf2608ae3952717e0b560a858aeb645a0af2c60aa105d83d573741f1b2d266"
+        }
+      ]
+    },
+    "png-alpha-community-before": {
+      "sha256": "0b7617781d0c95d9972c483c59ca978d0ddbab3821c15dce7b058f5eb035cc0f",
+      "bytes": 6068224,
+      "fixtures": [
+        {
+          "name": "high0.png",
+          "bytes": 97103,
+          "sha256": "7acb233524ed58e3f2526f6d1ce2f26f627d4f2425b2ffbb9effc71acb5944bc"
+        },
+        {
+          "name": "high1.png",
+          "bytes": 97120,
+          "sha256": "49288bc651017f5a620b22d9e3bfe0aa7ac466626193ba08ddcc5e632acf9733"
+        },
+        {
+          "name": "high2.png",
+          "bytes": 97126,
+          "sha256": "3e8e771f3cae230014d5ec17eb024e99978aa4379923e33645965f0c3b1f24a6"
+        },
+        {
+          "name": "high3.png",
+          "bytes": 97129,
+          "sha256": "37f13adb5d0c77e3b9228ad274dd8452feb7e804347b65b1dd8648e85e65280f"
+        },
+        {
+          "name": "high4.png",
+          "bytes": 97131,
+          "sha256": "8c1c5869399199d5a6dd276ce485be2b66ef964ebd919cb0ce0228a0cf4abc1a"
+        },
+        {
+          "name": "high5.png",
+          "bytes": 97131,
+          "sha256": "fe2b087a383ec6698fcf1ad442e8ecebd8f2ac5202a59b12a17366d0ac48c749"
+        },
+        {
+          "name": "high6.png",
+          "bytes": 97131,
+          "sha256": "1fe1fa016c2c4f75be7ce707a32802207d5ec3e8adb5757d2bf71333604b01c7"
+        },
+        {
+          "name": "high7.png",
+          "bytes": 97131,
+          "sha256": "730e0645812aff7f0fd11fcb9f38453e0f186bcdaff115e6fd33c8a034ea207e"
+        }
+      ]
+    },
+    "png-alpha-dm-before": {
+      "sha256": "0b7617781d0c95d9972c483c59ca978d0ddbab3821c15dce7b058f5eb035cc0f",
+      "bytes": 6068224,
+      "fixtures": [
+        {
+          "name": "high0.png",
+          "bytes": 24217,
+          "sha256": "963787caa9baffff8a3db85ed451ca2662f58a6f7ec1d78c8247b8c15abcda25"
+        },
+        {
+          "name": "high1.png",
+          "bytes": 24234,
+          "sha256": "014f7dc4ec2f9ae59eba447ccb80cb057b7bf185ee24cdcb1e59efcde98c3d5e"
+        },
+        {
+          "name": "high2.png",
+          "bytes": 24240,
+          "sha256": "50394a14e7f43a906f429e3b3cafbfde2c4b6124c82d34467ba83daea562cbd2"
+        },
+        {
+          "name": "high3.png",
+          "bytes": 24243,
+          "sha256": "eed0cc6e8cf5c99d3b836566d0cf47b39eec068235b93ce4ac5e6691e8c7c7a4"
+        },
+        {
+          "name": "high4.png",
+          "bytes": 24246,
+          "sha256": "f1c1d9fbab10989e4dfb78ae3522b01cb7d1a0846ff6b689869fb139b1cc346b"
+        },
+        {
+          "name": "high5.png",
+          "bytes": 24246,
+          "sha256": "d71fc7ac9c374df41a72bc0116e48e17023c3e62cc24f23214eace793e029cff"
+        },
+        {
+          "name": "high6.png",
+          "bytes": 24246,
+          "sha256": "ca4fb4e8025cb5f2f2307a5315b6b5d8880998c8a326110de25dbab3c1240b9d"
+        },
+        {
+          "name": "high7.png",
+          "bytes": 24246,
+          "sha256": "ea82ab8a4d400afe8cc52c730ccb1afaf4bf2d5dc7004e20ed5b338a823d584e"
+        }
+      ]
+    },
+    "png-alpha-unified": {
+      "sha256": "646029234ffa2d742b0edcf8ede5725582fc85c06921064aca62bb9dad3e10ef",
+      "bytes": 6514176,
+      "fixtures": [
+        {
+          "name": "high0.png",
+          "bytes": 24217,
+          "sha256": "963787caa9baffff8a3db85ed451ca2662f58a6f7ec1d78c8247b8c15abcda25"
+        },
+        {
+          "name": "high1.png",
+          "bytes": 24234,
+          "sha256": "014f7dc4ec2f9ae59eba447ccb80cb057b7bf185ee24cdcb1e59efcde98c3d5e"
+        },
+        {
+          "name": "high2.png",
+          "bytes": 24240,
+          "sha256": "50394a14e7f43a906f429e3b3cafbfde2c4b6124c82d34467ba83daea562cbd2"
+        },
+        {
+          "name": "high3.png",
+          "bytes": 24243,
+          "sha256": "eed0cc6e8cf5c99d3b836566d0cf47b39eec068235b93ce4ac5e6691e8c7c7a4"
+        },
+        {
+          "name": "high4.png",
+          "bytes": 24246,
+          "sha256": "f1c1d9fbab10989e4dfb78ae3522b01cb7d1a0846ff6b689869fb139b1cc346b"
+        },
+        {
+          "name": "high5.png",
+          "bytes": 24246,
+          "sha256": "d71fc7ac9c374df41a72bc0116e48e17023c3e62cc24f23214eace793e029cff"
+        },
+        {
+          "name": "high6.png",
+          "bytes": 24246,
+          "sha256": "ca4fb4e8025cb5f2f2307a5315b6b5d8880998c8a326110de25dbab3c1240b9d"
+        },
+        {
+          "name": "high7.png",
+          "bytes": 24246,
+          "sha256": "ea82ab8a4d400afe8cc52c730ccb1afaf4bf2d5dc7004e20ed5b338a823d584e"
+        }
+      ]
+    }
+  },
+  "samples": [
+    {
+      "variant": "jpeg-medium-community-before",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 41.950500000000375,
+      "loadingCpu": {
+        "rust": 0.015625,
+        "renderer": 0.125,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.171875,
+        "observationMs": 391,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        }
+      ],
+      "cache": {
+        "corpusBytes": 9287632,
+        "encodedBuffers": 8,
+        "encodedBytes": 6965576,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 205.6,
+        "TotalResidentWorkingSetMb": 369.36,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 21.13,
+      "rendererPrivateMiB": 26.42,
+      "gpuPrivateMiB": 99.77,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 21.13,
+          "WorkingSetMB": 44.79,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 99.77,
+          "WorkingSetMB": 79.57,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.46,
+          "WorkingSetMB": 112.42,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.42,
+          "WorkingSetMB": 64.64,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.89,
+          "WorkingSetMB": 38.68,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-dm-before",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.131399999999985,
+      "loadingCpu": {
+        "rust": 0.015625,
+        "renderer": 0,
+        "gpu": 0.03125,
+        "other": 0.015625,
+        "total": 0.0625,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 351908,
+        "encodedBuffers": 8,
+        "encodedBytes": 263784,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 182.2,
+        "TotalResidentWorkingSetMb": 345.24,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.03,
+      "rendererPrivateMiB": 26.21,
+      "gpuPrivateMiB": 91.34,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.03,
+          "WorkingSetMB": 26.74,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.34,
+          "WorkingSetMB": 76.09,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.83,
+          "WorkingSetMB": 112.86,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.21,
+          "WorkingSetMB": 61.6,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.85,
+          "WorkingSetMB": 38.69,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-unified",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 28.87760000000003,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.03125,
+        "gpu": 0.0625,
+        "other": 0.046875,
+        "total": 0.140625,
+        "observationMs": 348,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 800168,
+        "encodedBuffers": 8,
+        "encodedBytes": 599977,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 184.72,
+        "TotalResidentWorkingSetMb": 348.27,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.13,
+      "rendererPrivateMiB": 27.34,
+      "gpuPrivateMiB": 91.21,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.13,
+          "WorkingSetMB": 27.73,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.21,
+          "WorkingSetMB": 76.13,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.12,
+          "WorkingSetMB": 113.14,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 27.34,
+          "WorkingSetMB": 61.79,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12,
+          "WorkingSetMB": 40.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-community-before",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 174.77049999999986,
+      "loadingCpu": {
+        "rust": 0.09375,
+        "renderer": 0.4375,
+        "gpu": 0.015625,
+        "other": 0.109375,
+        "total": 0.65625,
+        "observationMs": 530,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 44815832,
+        "encodedBuffers": 8,
+        "encodedBytes": 33611731,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 267.82,
+        "TotalResidentWorkingSetMb": 434.66,
+        "TotalCpuPercent": 0.05
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 82,
+      "rendererPrivateMiB": 23.12,
+      "gpuPrivateMiB": 103.48,
+      "rustCpuPercent": 0.05,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 82,
+          "WorkingSetMB": 102.57,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 103.48,
+          "WorkingSetMB": 78.61,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.88,
+          "WorkingSetMB": 112.96,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.12,
+          "WorkingSetMB": 70.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.99,
+          "WorkingSetMB": 40.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.87,
+          "WorkingSetMB": 19.55,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.48,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-dm-before",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.008100000000013,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.0625,
+        "gpu": 0,
+        "other": 0.046875,
+        "total": 0.109375,
+        "observationMs": 351,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 615416,
+        "encodedBuffers": 8,
+        "encodedBytes": 461414,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 183.16,
+        "TotalResidentWorkingSetMb": 347.86,
+        "TotalCpuPercent": 0.1
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.5,
+      "rendererPrivateMiB": 26.63,
+      "gpuPrivateMiB": 91.84,
+      "rustCpuPercent": 0.05,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0.05,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.5,
+          "WorkingSetMB": 27.25,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.84,
+          "WorkingSetMB": 76.1,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.2,
+          "WorkingSetMB": 112.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.63,
+          "WorkingSetMB": 62.66,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.1,
+          "WorkingSetMB": 40.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.44,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-unified",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.035100000000057,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.03125,
+        "observationMs": 339,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1196492,
+        "encodedBuffers": 8,
+        "encodedBytes": 897225,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 180.59,
+        "TotalResidentWorkingSetMb": 346.14,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.41,
+      "rendererPrivateMiB": 23.44,
+      "gpuPrivateMiB": 91.57,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.41,
+          "WorkingSetMB": 28.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.57,
+          "WorkingSetMB": 76.16,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.29,
+          "WorkingSetMB": 112.57,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.44,
+          "WorkingSetMB": 59.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.95,
+          "WorkingSetMB": 40.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.19,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-community-before",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 28.442299999999932,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.015625,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.03125,
+        "observationMs": 348,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1036188,
+        "encodedBuffers": 8,
+        "encodedBytes": 777002,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 179.33,
+        "TotalResidentWorkingSetMb": 364.82,
+        "TotalCpuPercent": 0.1
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.12,
+      "rendererPrivateMiB": 24.93,
+      "gpuPrivateMiB": 88.36,
+      "rustCpuPercent": 0.05,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.12,
+          "WorkingSetMB": 27.83,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 88.36,
+          "WorkingSetMB": 74.49,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.6,
+          "WorkingSetMB": 112.79,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.93,
+          "WorkingSetMB": 79.06,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.02,
+          "WorkingSetMB": 40.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.84,
+          "WorkingSetMB": 20.33,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-dm-before",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.703399999999874,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.0625,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.0625,
+        "observationMs": 331,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 179.28,
+        "TotalResidentWorkingSetMb": 346.38,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.25,
+      "rendererPrivateMiB": 23.82,
+      "gpuPrivateMiB": 89.34,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.25,
+          "WorkingSetMB": 26.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 89.34,
+          "WorkingSetMB": 74.49,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.78,
+          "WorkingSetMB": 114.83,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.82,
+          "WorkingSetMB": 60.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.14,
+          "WorkingSetMB": 40.34,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.47,
+          "WorkingSetMB": 19.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-unified",
+      "run": 1,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 18.66289999999981,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0,
+        "other": 0,
+        "total": 0,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 181.7,
+        "TotalResidentWorkingSetMb": 348.53,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.16,
+      "rendererPrivateMiB": 29.3,
+      "gpuPrivateMiB": 86.92,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.16,
+          "WorkingSetMB": 26.95,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 86.92,
+          "WorkingSetMB": 74.54,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.29,
+          "WorkingSetMB": 113.37,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 29.3,
+          "WorkingSetMB": 64.12,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.11,
+          "WorkingSetMB": 40.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.19,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-unified",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.109500000000025,
+      "loadingCpu": {
+        "rust": 0.03125,
+        "renderer": 0.015625,
+        "gpu": 0.03125,
+        "other": 0.078125,
+        "total": 0.15625,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 800168,
+        "encodedBuffers": 8,
+        "encodedBytes": 599977,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 171.5,
+        "TotalResidentWorkingSetMb": 342.88,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.9,
+      "rendererPrivateMiB": 26.32,
+      "gpuPrivateMiB": 79.14,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.9,
+          "WorkingSetMB": 27.74,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 79.14,
+          "WorkingSetMB": 70.71,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.28,
+          "WorkingSetMB": 113.04,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.32,
+          "WorkingSetMB": 61.92,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.95,
+          "WorkingSetMB": 40.17,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.04,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-dm-before",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.358799999999974,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.015625,
+        "observationMs": 335,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 351908,
+        "encodedBuffers": 8,
+        "encodedBytes": 263784,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 173.61,
+        "TotalResidentWorkingSetMb": 344.32,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.64,
+      "rendererPrivateMiB": 29.05,
+      "gpuPrivateMiB": 79.12,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.64,
+          "WorkingSetMB": 26.98,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 79.12,
+          "WorkingSetMB": 70.67,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.89,
+          "WorkingSetMB": 112.66,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 29.05,
+          "WorkingSetMB": 64.54,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.98,
+          "WorkingSetMB": 40.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-community-before",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 41.4239,
+      "loadingCpu": {
+        "rust": 0.03125,
+        "renderer": 0.078125,
+        "gpu": 0.03125,
+        "other": 0.03125,
+        "total": 0.171875,
+        "observationMs": 358,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        }
+      ],
+      "cache": {
+        "corpusBytes": 9287632,
+        "encodedBuffers": 8,
+        "encodedBytes": 6965576,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 193.47,
+        "TotalResidentWorkingSetMb": 360.46,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 21.11,
+      "rendererPrivateMiB": 23.75,
+      "gpuPrivateMiB": 89.55,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 21.11,
+          "WorkingSetMB": 41.77,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 89.55,
+          "WorkingSetMB": 74.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.11,
+          "WorkingSetMB": 112.72,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.75,
+          "WorkingSetMB": 62.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.02,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-unified",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 28.251199999999926,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.0625,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.0625,
+        "observationMs": 338,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1196492,
+        "encodedBuffers": 8,
+        "encodedBytes": 897225,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 174.27,
+        "TotalResidentWorkingSetMb": 345.07,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 8.48,
+      "rendererPrivateMiB": 26.77,
+      "gpuPrivateMiB": 80.54,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 8.48,
+          "WorkingSetMB": 28.54,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.54,
+          "WorkingSetMB": 70.85,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.57,
+          "WorkingSetMB": 112.4,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.77,
+          "WorkingSetMB": 63.79,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.03,
+          "WorkingSetMB": 40.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.44,
+          "WorkingSetMB": 19.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-dm-before",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 29.359900000000152,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.0625,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.0625,
+        "observationMs": 346,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 615416,
+        "encodedBuffers": 8,
+        "encodedBytes": 461414,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 173.73,
+        "TotalResidentWorkingSetMb": 343.03,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.49,
+      "rendererPrivateMiB": 27.52,
+      "gpuPrivateMiB": 80.74,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.49,
+          "WorkingSetMB": 27.11,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.74,
+          "WorkingSetMB": 71.07,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.11,
+          "WorkingSetMB": 112.89,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 27.52,
+          "WorkingSetMB": 62.54,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.95,
+          "WorkingSetMB": 40.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-community-before",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 167.6586000000002,
+      "loadingCpu": {
+        "rust": 0.125,
+        "renderer": 0.359375,
+        "gpu": 0.03125,
+        "other": 0.046875,
+        "total": 0.5625,
+        "observationMs": 491,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 44815832,
+        "encodedBuffers": 8,
+        "encodedBytes": 33611731,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 255.19,
+        "TotalResidentWorkingSetMb": 432.83,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 82,
+      "rendererPrivateMiB": 23.45,
+      "gpuPrivateMiB": 91.18,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 82,
+          "WorkingSetMB": 102.61,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.18,
+          "WorkingSetMB": 73.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.56,
+          "WorkingSetMB": 112.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.45,
+          "WorkingSetMB": 75.19,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.06,
+          "WorkingSetMB": 40.29,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-unified",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.994699999999966,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.0625,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.0625,
+        "observationMs": 342,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 164.86,
+        "TotalResidentWorkingSetMb": 338.5,
+        "TotalCpuPercent": 0.1
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 5.76,
+      "rendererPrivateMiB": 24.07,
+      "gpuPrivateMiB": 75.96,
+      "rustCpuPercent": 0.05,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 5.76,
+          "WorkingSetMB": 26.69,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 75.96,
+          "WorkingSetMB": 69.03,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.09,
+          "WorkingSetMB": 112.83,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.07,
+          "WorkingSetMB": 60.44,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.07,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.44,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-dm-before",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 20.133699999999862,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0,
+        "other": 0.015625,
+        "total": 0.015625,
+        "observationMs": 336,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 169,
+        "TotalResidentWorkingSetMb": 341.72,
+        "TotalCpuPercent": 0.14
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.07,
+      "rendererPrivateMiB": 28.16,
+      "gpuPrivateMiB": 76.12,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.07,
+          "WorkingSetMB": 26.54,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.12,
+          "WorkingSetMB": 69.16,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.7,
+          "WorkingSetMB": 112.41,
+          "CpuPercent": 0.14
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 28.16,
+          "WorkingSetMB": 64.09,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.03,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-community-before",
+      "run": 2,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.923500000000104,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.125,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.125,
+        "observationMs": 336,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1036188,
+        "encodedBuffers": 8,
+        "encodedBytes": 777002,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 167.98,
+        "TotalResidentWorkingSetMb": 359.17,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.22,
+      "rendererPrivateMiB": 24.8,
+      "gpuPrivateMiB": 76.2,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.22,
+          "WorkingSetMB": 27.98,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.2,
+          "WorkingSetMB": 69.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.76,
+          "WorkingSetMB": 113.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.8,
+          "WorkingSetMB": 79.13,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.06,
+          "WorkingSetMB": 40.27,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.48,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-community-before",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 42.146600000000035,
+      "loadingCpu": {
+        "rust": 0.015625,
+        "renderer": 0.125,
+        "gpu": 0.015625,
+        "other": 0.03125,
+        "total": 0.1875,
+        "observationMs": 353,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        }
+      ],
+      "cache": {
+        "corpusBytes": 9287632,
+        "encodedBuffers": 8,
+        "encodedBytes": 6965576,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 193.29,
+        "TotalResidentWorkingSetMb": 363.06,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 21.18,
+      "rendererPrivateMiB": 23.59,
+      "gpuPrivateMiB": 88.24,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 21.18,
+          "WorkingSetMB": 41.73,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 88.24,
+          "WorkingSetMB": 74.42,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 38.2,
+          "WorkingSetMB": 115.41,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.59,
+          "WorkingSetMB": 61.84,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.14,
+          "WorkingSetMB": 40.35,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.48,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-dm-before",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 18.98389999999995,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.015625,
+        "observationMs": 332,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 351908,
+        "encodedBuffers": 8,
+        "encodedBytes": 263784,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 172.51,
+        "TotalResidentWorkingSetMb": 343.36,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.5,
+      "rendererPrivateMiB": 27.15,
+      "gpuPrivateMiB": 79.28,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.5,
+          "WorkingSetMB": 26.92,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 79.28,
+          "WorkingSetMB": 70.82,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.52,
+          "WorkingSetMB": 114.61,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 27.15,
+          "WorkingSetMB": 61.41,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.14,
+          "WorkingSetMB": 40.34,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-unified",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.963999999999942,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.015625,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.03125,
+        "observationMs": 345,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 800168,
+        "encodedBuffers": 8,
+        "encodedBytes": 599977,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 170.43,
+        "TotalResidentWorkingSetMb": 338.32,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.86,
+      "rendererPrivateMiB": 25.44,
+      "gpuPrivateMiB": 79.02,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.86,
+          "WorkingSetMB": 27.71,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 79.02,
+          "WorkingSetMB": 70.62,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.33,
+          "WorkingSetMB": 112.01,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 25.44,
+          "WorkingSetMB": 60.02,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.88,
+          "WorkingSetMB": 38.68,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 8.45,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-community-before",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 172.57799999999997,
+      "loadingCpu": {
+        "rust": 0.125,
+        "renderer": 0.46875,
+        "gpu": 0.03125,
+        "other": 0.0625,
+        "total": 0.6875,
+        "observationMs": 498,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 44815832,
+        "encodedBuffers": 8,
+        "encodedBytes": 33611731,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 254.85,
+        "TotalResidentWorkingSetMb": 430.81,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 81.97,
+      "rendererPrivateMiB": 23.01,
+      "gpuPrivateMiB": 91.39,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 81.97,
+          "WorkingSetMB": 102.4,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.39,
+          "WorkingSetMB": 73.43,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.73,
+          "WorkingSetMB": 112.62,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.01,
+          "WorkingSetMB": 74.44,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.85,
+          "WorkingSetMB": 38.67,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-dm-before",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 18.688500000000204,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.015625,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 615416,
+        "encodedBuffers": 8,
+        "encodedBytes": 461414,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 174.2,
+        "TotalResidentWorkingSetMb": 341.64,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.23,
+      "rendererPrivateMiB": 26.5,
+      "gpuPrivateMiB": 80.56,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.23,
+          "WorkingSetMB": 27.27,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.56,
+          "WorkingSetMB": 70.82,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 38.18,
+          "WorkingSetMB": 113.04,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.5,
+          "WorkingSetMB": 62.64,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.8,
+          "WorkingSetMB": 38.62,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-unified",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 28.77170000000001,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.015625,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.015625,
+        "observationMs": 341,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1196492,
+        "encodedBuffers": 8,
+        "encodedBytes": 897225,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 175.34,
+        "TotalResidentWorkingSetMb": 342.23,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 8.21,
+      "rendererPrivateMiB": 27.56,
+      "gpuPrivateMiB": 80.17,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 8.21,
+          "WorkingSetMB": 28.59,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.17,
+          "WorkingSetMB": 70.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.55,
+          "WorkingSetMB": 112.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 27.56,
+          "WorkingSetMB": 62.62,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.92,
+          "WorkingSetMB": 38.74,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 8.45,
+          "WorkingSetMB": 19.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-community-before",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.571699999999964,
+      "loadingCpu": {
+        "rust": 0.03125,
+        "renderer": 0.125,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.15625,
+        "observationMs": 347,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1036188,
+        "encodedBuffers": 8,
+        "encodedBytes": 777002,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 169.2,
+        "TotalResidentWorkingSetMb": 357.06,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.27,
+      "rendererPrivateMiB": 25.69,
+      "gpuPrivateMiB": 76.24,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.27,
+          "WorkingSetMB": 27.88,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.24,
+          "WorkingSetMB": 69.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.14,
+          "WorkingSetMB": 112.94,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 25.69,
+          "WorkingSetMB": 78.96,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.92,
+          "WorkingSetMB": 38.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 8.46,
+          "WorkingSetMB": 19.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-dm-before",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 20.041999999999916,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.015625,
+        "observationMs": 333,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 170.4,
+        "TotalResidentWorkingSetMb": 341.24,
+        "TotalCpuPercent": 0.1
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 5.87,
+      "rendererPrivateMiB": 29,
+      "gpuPrivateMiB": 75.94,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 5.87,
+          "WorkingSetMB": 26.72,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 75.94,
+          "WorkingSetMB": 68.97,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.71,
+          "WorkingSetMB": 112.35,
+          "CpuPercent": 0.1
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 29,
+          "WorkingSetMB": 65.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.96,
+          "WorkingSetMB": 38.75,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-unified",
+      "run": 3,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.11760000000004,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.015625,
+        "observationMs": 337,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 170.13,
+        "TotalResidentWorkingSetMb": 342.06,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.18,
+      "rendererPrivateMiB": 28.22,
+      "gpuPrivateMiB": 76.07,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.18,
+          "WorkingSetMB": 26.9,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.07,
+          "WorkingSetMB": 69.1,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.71,
+          "WorkingSetMB": 112.5,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 28.22,
+          "WorkingSetMB": 64.07,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.04,
+          "WorkingSetMB": 40.23,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-unified",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 29.795399999999972,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.015625,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.046875,
+        "observationMs": 341,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 800168,
+        "encodedBuffers": 8,
+        "encodedBytes": 599977,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 176,
+        "TotalResidentWorkingSetMb": 348.14,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.91,
+      "rendererPrivateMiB": 29.04,
+      "gpuPrivateMiB": 79.14,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.91,
+          "WorkingSetMB": 27.68,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 79.14,
+          "WorkingSetMB": 70.68,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 38.95,
+          "WorkingSetMB": 115.62,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 29.04,
+          "WorkingSetMB": 64.65,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.04,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-dm-before",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.106199999999944,
+      "loadingCpu": {
+        "rust": 0.0625,
+        "renderer": 0.03125,
+        "gpu": 0.03125,
+        "other": 0,
+        "total": 0.125,
+        "observationMs": 333,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 351908,
+        "encodedBuffers": 8,
+        "encodedBytes": 263784,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 170.66,
+        "TotalResidentWorkingSetMb": 341.14,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.66,
+      "rendererPrivateMiB": 26.17,
+      "gpuPrivateMiB": 78.94,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.66,
+          "WorkingSetMB": 26.9,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 78.94,
+          "WorkingSetMB": 70.54,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37,
+          "WorkingSetMB": 112.73,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.17,
+          "WorkingSetMB": 61.52,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.99,
+          "WorkingSetMB": 40.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-community-before",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 41.15840000000003,
+      "loadingCpu": {
+        "rust": 0.046875,
+        "renderer": 0.09375,
+        "gpu": 0,
+        "other": 0.046875,
+        "total": 0.1875,
+        "observationMs": 354,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        }
+      ],
+      "cache": {
+        "corpusBytes": 9287632,
+        "encodedBuffers": 8,
+        "encodedBytes": 6965576,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 193.24,
+        "TotalResidentWorkingSetMb": 360.56,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 21.12,
+      "rendererPrivateMiB": 23.6,
+      "gpuPrivateMiB": 89.3,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 21.12,
+          "WorkingSetMB": 41.81,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 89.3,
+          "WorkingSetMB": 74.24,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.31,
+          "WorkingSetMB": 113.02,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.6,
+          "WorkingSetMB": 62.03,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.97,
+          "WorkingSetMB": 40.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.47,
+          "WorkingSetMB": 19.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-unified",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 28.534599999999955,
+      "loadingCpu": {
+        "rust": 0.03125,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.046875,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1196492,
+        "encodedBuffers": 8,
+        "encodedBytes": 897225,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 172.71,
+        "TotalResidentWorkingSetMb": 343.75,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.57,
+      "rendererPrivateMiB": 26.36,
+      "gpuPrivateMiB": 80.31,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.57,
+          "WorkingSetMB": 28.52,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.31,
+          "WorkingSetMB": 70.79,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.52,
+          "WorkingSetMB": 112.28,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.36,
+          "WorkingSetMB": 62.66,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.03,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-dm-before",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.514900000000125,
+      "loadingCpu": {
+        "rust": 0.015625,
+        "renderer": 0.015625,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.0625,
+        "observationMs": 341,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 615416,
+        "encodedBuffers": 8,
+        "encodedBytes": 461414,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 173.72,
+        "TotalResidentWorkingSetMb": 343.05,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.56,
+      "rendererPrivateMiB": 27.38,
+      "gpuPrivateMiB": 80.53,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.56,
+          "WorkingSetMB": 27.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.53,
+          "WorkingSetMB": 70.77,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.16,
+          "WorkingSetMB": 113.01,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 27.38,
+          "WorkingSetMB": 62.49,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.18,
+          "WorkingSetMB": 40.36,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.19,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-community-before",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 175.52319999999986,
+      "loadingCpu": {
+        "rust": 0.078125,
+        "renderer": 0.359375,
+        "gpu": 0.015625,
+        "other": 0.0625,
+        "total": 0.515625,
+        "observationMs": 495,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 44815832,
+        "encodedBuffers": 8,
+        "encodedBytes": 33611731,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 256.25,
+        "TotalResidentWorkingSetMb": 432.54,
+        "TotalCpuPercent": 0.43
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 81.96,
+      "rendererPrivateMiB": 24.01,
+      "gpuPrivateMiB": 91.46,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0.38,
+      "gpuCpuPercent": 0.05,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 81.96,
+          "WorkingSetMB": 102.53,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 91.46,
+          "WorkingSetMB": 73.56,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.73,
+          "WorkingSetMB": 112.38,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.01,
+          "WorkingSetMB": 74.46,
+          "CpuPercent": 0.38
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.16,
+          "WorkingSetMB": 40.33,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-unified",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.903099999999995,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0,
+        "other": 0.03125,
+        "total": 0.03125,
+        "observationMs": 333,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 166.11,
+        "TotalResidentWorkingSetMb": 338.74,
+        "TotalCpuPercent": 0.14
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.09,
+      "rendererPrivateMiB": 24.77,
+      "gpuPrivateMiB": 76.18,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.09,
+          "WorkingSetMB": 26.8,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.18,
+          "WorkingSetMB": 69.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.16,
+          "WorkingSetMB": 112.79,
+          "CpuPercent": 0.14
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.77,
+          "WorkingSetMB": 60.42,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12,
+          "WorkingSetMB": 40.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-dm-before",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.318700000000035,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.03125,
+        "gpu": 0,
+        "other": 0.0625,
+        "total": 0.09375,
+        "observationMs": 332,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 164.23,
+        "TotalResidentWorkingSetMb": 337.55,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.17,
+      "rendererPrivateMiB": 23.47,
+      "gpuPrivateMiB": 75.97,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.17,
+          "WorkingSetMB": 26.69,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 75.97,
+          "WorkingSetMB": 68.99,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.71,
+          "WorkingSetMB": 112.33,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 23.47,
+          "WorkingSetMB": 60.06,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.98,
+          "WorkingSetMB": 40.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.47,
+          "WorkingSetMB": 19.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-community-before",
+      "run": 4,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.326000000000022,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.015625,
+        "gpu": 0,
+        "other": 0.015625,
+        "total": 0.03125,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1036188,
+        "encodedBuffers": 8,
+        "encodedBytes": 777002,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 167.69,
+        "TotalResidentWorkingSetMb": 358.69,
+        "TotalCpuPercent": 0.05
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.13,
+      "rendererPrivateMiB": 24.84,
+      "gpuPrivateMiB": 76.05,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.13,
+          "WorkingSetMB": 27.85,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.05,
+          "WorkingSetMB": 69.07,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.27,
+          "WorkingSetMB": 112.97,
+          "CpuPercent": 0.05
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.84,
+          "WorkingSetMB": 78.94,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.05,
+          "WorkingSetMB": 40.29,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.86,
+          "WorkingSetMB": 19.52,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.48,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-community-before",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 40.44049999999993,
+      "loadingCpu": {
+        "rust": 0.015625,
+        "renderer": 0.09375,
+        "gpu": 0.015625,
+        "other": 0,
+        "total": 0.125,
+        "observationMs": 358,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        },
+        {
+          "w": 1920,
+          "h": 1280,
+          "width": 320,
+          "height": 213
+        }
+      ],
+      "cache": {
+        "corpusBytes": 9287632,
+        "encodedBuffers": 8,
+        "encodedBytes": 6965576,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 195.82,
+        "TotalResidentWorkingSetMb": 363.55,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 21.13,
+      "rendererPrivateMiB": 25.3,
+      "gpuPrivateMiB": 89.64,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 21.13,
+          "WorkingSetMB": 41.71,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 89.64,
+          "WorkingSetMB": 74.33,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.65,
+          "WorkingSetMB": 113.3,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 25.3,
+          "WorkingSetMB": 64.55,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.17,
+          "WorkingSetMB": 40.38,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.23,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-dm-before",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 18.634500000000116,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.03125,
+        "observationMs": 342,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 351908,
+        "encodedBuffers": 8,
+        "encodedBytes": 263784,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 170.93,
+        "TotalResidentWorkingSetMb": 343.32,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.29,
+      "rendererPrivateMiB": 26.12,
+      "gpuPrivateMiB": 78.87,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.29,
+          "WorkingSetMB": 26.83,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 78.87,
+          "WorkingSetMB": 70.46,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.78,
+          "WorkingSetMB": 115.1,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.12,
+          "WorkingSetMB": 61.5,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 11.96,
+          "WorkingSetMB": 40.17,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-medium-unified",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.58680000000004,
+      "loadingCpu": {
+        "rust": 0.03125,
+        "renderer": 0.015625,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.078125,
+        "observationMs": 339,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        },
+        {
+          "w": 640,
+          "h": 427,
+          "width": 320,
+          "height": 214
+        }
+      ],
+      "cache": {
+        "corpusBytes": 800168,
+        "encodedBuffers": 8,
+        "encodedBytes": 599977,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 172.13,
+        "TotalResidentWorkingSetMb": 342.74,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.22,
+      "rendererPrivateMiB": 26.87,
+      "gpuPrivateMiB": 78.85,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.22,
+          "WorkingSetMB": 27.88,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 78.85,
+          "WorkingSetMB": 70.43,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.25,
+          "WorkingSetMB": 111.97,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.87,
+          "WorkingSetMB": 62.92,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.01,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.23,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-community-before",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 167.25469999999996,
+      "loadingCpu": {
+        "rust": 0.125,
+        "renderer": 0.375,
+        "gpu": 0,
+        "other": 0.046875,
+        "total": 0.546875,
+        "observationMs": 494,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 4000,
+          "h": 3000,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 44815832,
+        "encodedBuffers": 8,
+        "encodedBytes": 33611731,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 259.27,
+        "TotalResidentWorkingSetMb": 435.81,
+        "TotalCpuPercent": 0.19
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 82.02,
+      "rendererPrivateMiB": 25.71,
+      "gpuPrivateMiB": 92.58,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0.19,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 82.02,
+          "WorkingSetMB": 102.59,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 92.58,
+          "WorkingSetMB": 73.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.64,
+          "WorkingSetMB": 112.36,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 25.71,
+          "WorkingSetMB": 77.17,
+          "CpuPercent": 0.19
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.01,
+          "WorkingSetMB": 40.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.85,
+          "WorkingSetMB": 20.16,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.05,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-dm-before",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 26.30099999999993,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.078125,
+        "gpu": 0,
+        "other": 0,
+        "total": 0.078125,
+        "observationMs": 338,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 615416,
+        "encodedBuffers": 8,
+        "encodedBytes": 461414,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 175.74,
+        "TotalResidentWorkingSetMb": 348.36,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.45,
+      "rendererPrivateMiB": 29.12,
+      "gpuPrivateMiB": 80.19,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.45,
+          "WorkingSetMB": 27.13,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.19,
+          "WorkingSetMB": 70.73,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 38.01,
+          "WorkingSetMB": 115.71,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 29.12,
+          "WorkingSetMB": 65.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.05,
+          "WorkingSetMB": 40.25,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.22,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.47,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "jpeg-large-unified",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 27.320500000000038,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.015625,
+        "gpu": 0.015625,
+        "other": 0.015625,
+        "total": 0.046875,
+        "observationMs": 340,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        },
+        {
+          "w": 640,
+          "h": 480,
+          "width": 320,
+          "height": 240
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1196492,
+        "encodedBuffers": 8,
+        "encodedBytes": 897225,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 174.25,
+        "TotalResidentWorkingSetMb": 344.37,
+        "TotalCpuPercent": 0.19
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 8.32,
+      "rendererPrivateMiB": 26.38,
+      "gpuPrivateMiB": 80.55,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0.19,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 8.32,
+          "WorkingSetMB": 28.7,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 80.55,
+          "WorkingSetMB": 70.83,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.03,
+          "WorkingSetMB": 112.62,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.38,
+          "WorkingSetMB": 62.65,
+          "CpuPercent": 0.19
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.04,
+          "WorkingSetMB": 40.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.46,
+          "WorkingSetMB": 19.24,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.06,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-community-before",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 28.849099999999908,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.109375,
+        "gpu": 0,
+        "other": 0.015625,
+        "total": 0.125,
+        "observationMs": 343,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 2560,
+          "h": 1440,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 1036188,
+        "encodedBuffers": 8,
+        "encodedBytes": 777002,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 169.09,
+        "TotalResidentWorkingSetMb": 359.32,
+        "TotalCpuPercent": 0.19
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 7.75,
+      "rendererPrivateMiB": 24.79,
+      "gpuPrivateMiB": 76.25,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0.19,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 7.75,
+          "WorkingSetMB": 28.27,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 76.25,
+          "WorkingSetMB": 69.21,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 38.35,
+          "WorkingSetMB": 113.08,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 24.79,
+          "WorkingSetMB": 79.11,
+          "CpuPercent": 0.19
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.04,
+          "WorkingSetMB": 40.32,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.26,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.08,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-dm-before",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 19.06619999999998,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0,
+        "gpu": 0,
+        "other": 0,
+        "total": 0,
+        "observationMs": 328,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 166.8,
+        "TotalResidentWorkingSetMb": 340.83,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 5.92,
+      "rendererPrivateMiB": 26.47,
+      "gpuPrivateMiB": 75.59,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 5.92,
+          "WorkingSetMB": 26.69,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 75.59,
+          "WorkingSetMB": 68.88,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 36.77,
+          "WorkingSetMB": 112.51,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.47,
+          "WorkingSetMB": 63.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.14,
+          "WorkingSetMB": 40.32,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.18,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.46,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    },
+    {
+      "variant": "png-alpha-unified",
+      "run": 5,
+      "scenario": "first_high_resolution",
+      "environment": {
+        "dpr": 1,
+        "visibility": "visible",
+        "focused": true,
+        "width": 1440,
+        "height": 900
+      },
+      "readiness": "resource-complete-and-two-frames; no explicit decode()",
+      "loadMs": 18.84979999999996,
+      "loadingCpu": {
+        "rust": 0,
+        "renderer": 0.078125,
+        "gpu": 0,
+        "other": 0.015625,
+        "total": 0.09375,
+        "observationMs": 332,
+        "newProcesses": 0,
+        "exitedProcesses": 0
+      },
+      "imageCount": 8,
+      "images": [
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        },
+        {
+          "w": 640,
+          "h": 360,
+          "width": 320,
+          "height": 180
+        }
+      ],
+      "cache": {
+        "corpusBytes": 258736,
+        "encodedBuffers": 8,
+        "encodedBytes": 193918,
+        "entries": 8
+      },
+      "summary": {
+        "TotalPrivateCommitMb": 167.03,
+        "TotalResidentWorkingSetMb": 342.43,
+        "TotalCpuPercent": 0
+      },
+      "processCount": 7,
+      "rustPrivateMiB": 6.13,
+      "rendererPrivateMiB": 26.12,
+      "gpuPrivateMiB": 75.71,
+      "rustCpuPercent": 0,
+      "rendererCpuPercent": 0,
+      "gpuCpuPercent": 0,
+      "processes": [
+        {
+          "Role": "Host (Rust / Dioxus)",
+          "PrivateBytesMB": 6.13,
+          "WorkingSetMB": 26.71,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: GPU Process",
+          "PrivateBytesMB": 75.71,
+          "WorkingSetMB": 69.14,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Browser Controller",
+          "PrivateBytesMB": 37.08,
+          "WorkingSetMB": 114.32,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Renderer",
+          "PrivateBytesMB": 26.12,
+          "WorkingSetMB": 62.71,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Network Service",
+          "PrivateBytesMB": 12.06,
+          "WorkingSetMB": 40.28,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Storage Service",
+          "PrivateBytesMB": 7.45,
+          "WorkingSetMB": 19.2,
+          "CpuPercent": 0
+        },
+        {
+          "Role": "WebView2: Crashpad Handler",
+          "PrivateBytesMB": 2.48,
+          "WorkingSetMB": 10.07,
+          "CpuPercent": 0
+        }
+      ]
+    }
+  ],
+  "browser": {
+    "Browser": "Edg/156.0.4314.58",
+    "File-Path-Style": "windows",
+    "Protocol-Version": "1.3",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+    "V8-Version": "15.6.12.10",
+    "WebKit-Version": "537.36 (@7806b68d20d1c1273d5b07b4f4de18e8f5852581)",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:19348/devtools/browser/3ae2c34c-9299-4baa-a7bc-d15860c38a81"
+  }
+}

@@ -8,6 +8,61 @@ pub(crate) use discordia_protocol as protocol;
 #[path = "../../client/src/chat_image.rs"]
 mod chat_image;
 mod dm_server;
+#[cfg(feature = "unified-policy")]
+mod i18n {
+    pub fn text(value: &str, _args: &[(&str, &str)]) -> String {
+        value.to_owned()
+    }
+}
+#[cfg(feature = "unified-policy")]
+#[path = "../../client/src/features/image_attachment.rs"]
+mod image_attachment;
+#[cfg(feature = "progressive-viewer")]
+#[allow(dead_code)]
+#[path = "../../client/src/features/image_viewer.rs"]
+mod image_viewer;
+#[cfg(feature = "progressive-viewer")]
+mod icons {
+    pub const PLUS: &str = "+";
+    pub const CLOSE: &str = "×";
+}
+#[cfg(feature = "progressive-viewer")]
+mod mobile_back {
+    pub const SETTINGS: u16 = 10;
+    pub fn use_handler(_: u16, _: bool, _: impl FnMut(()) + 'static) {}
+}
+#[cfg(feature = "progressive-viewer")]
+mod nostr {
+    pub mod dm_image {
+        pub type Descriptor = String;
+        pub async fn load_original(_: &str, _: &Descriptor) -> Result<String, String> {
+            Err("fixture transport".into())
+        }
+    }
+}
+#[cfg(feature = "progressive-viewer")]
+mod state {
+    use super::*;
+    #[derive(Default)]
+    pub struct AppState {
+        pub image_viewer: Option<image_viewer::ImageView>,
+        pub original: Option<Arc<String>>,
+    }
+    impl AppState {
+        pub fn retry_image_viewer(&mut self, id: uuid::Uuid) {
+            self.original = None;
+            if let Some(view) = self.image_viewer.as_mut().filter(|v| v.id == id) {
+                view.retry();
+            }
+        }
+        pub fn media_src_shared(&self, _: &str) -> Option<Arc<String>> {
+            self.original.clone()
+        }
+    }
+    pub fn use_app_state() -> Signal<AppState> {
+        use_context()
+    }
+}
 #[cfg(feature = "thumbnails")]
 mod image_preview {
     include!("../../client/src/image_preview.rs");
@@ -69,6 +124,7 @@ mod image_assets {
     }
 }
 
+#[derive(PartialEq)]
 struct Resource {
     name: String,
     data: Arc<String>,
@@ -76,6 +132,10 @@ struct Resource {
 
 fn resources() -> Vec<Resource> {
     let directory = std::env::var("IMAGE_PROBE_DATA").expect("IMAGE_PROBE_DATA");
+    resources_from(Path::new(&directory))
+}
+
+fn resources_from(directory: &Path) -> Vec<Resource> {
     let mut paths: Vec<_> = std::fs::read_dir(directory)
         .expect("fixtures")
         .map(|e| e.expect("file").path())
@@ -110,20 +170,50 @@ fn resources() -> Vec<Resource> {
 #[component]
 fn Fixture() -> Element {
     image_assets::use_image_assets();
+    #[cfg(feature = "progressive-viewer")]
+    let _viewer_state = use_context_provider(|| Signal::new(state::AppState::default()));
     let data = use_hook(|| Arc::new(resources()));
+    let mut scenario = use_signal(|| 0usize);
+    let mut cycle = use_signal(|| 0usize);
+    #[cfg(feature = "unified-policy")]
+    let density = image_assets::preview_density();
+    #[cfg(not(feature = "unified-policy"))]
+    let density = Some(true);
+    #[cfg(feature = "unified-policy")]
+    let originals = use_resource(move || async move {
+        if image_assets::preview_density() != Some(false) && scenario() != 7 {
+            return None;
+        }
+        let directory = std::env::var("IMAGE_PROBE_ORIGINAL_DATA").ok()?;
+        tokio::task::spawn_blocking(move || Arc::new(resources_from(Path::new(&directory))))
+            .await
+            .ok()
+    });
     let corpus_bytes = data.iter().map(|r| r.data.len()).sum();
     assert!(
         corpus_bytes <= 128 * 1024 * 1024,
         "fixture exceeds desktop MediaCache budget"
     );
     image_assets::stats_route(corpus_bytes);
-    let mut scenario = use_signal(|| 0usize);
-    let mut cycle = use_signal(|| 0usize);
     let source_data = data.clone();
     let sources = use_memo(move || {
         let s = scenario();
         let c = cycle();
-        source_data
+        #[cfg(feature = "unified-policy")]
+        let selected_data = match image_assets::preview_density() {
+            Some(true) if s != 7 => source_data.clone(),
+            Some(true) | Some(false) => {
+                let value = originals.read();
+                let Some(Some(data)) = value.as_ref() else {
+                    return Vec::new();
+                };
+                data.clone()
+            }
+            None => return Vec::new(),
+        };
+        #[cfg(not(feature = "unified-policy"))]
+        let selected_data = source_data.clone();
+        selected_data
             .iter()
             .filter(|r| match s {
                 1 => r.name.starts_with("chat"),
@@ -141,6 +231,8 @@ fn Fixture() -> Element {
                         && r.name[2..].parse::<usize>().is_ok_and(|i| i % 3 == c % 3)
                 }
                 7 => r.name == "high0" && c % 2 == 0,
+                10 => r.name.starts_with("oriented"),
+                11 => r.name.starts_with("alpha"),
                 _ => false,
             })
             .map(|r| {
@@ -164,12 +256,15 @@ fn Fixture() -> Element {
     rsx! {
         style { "body{{margin:0;background:#181818;color:#eee;font:14px sans-serif}}nav{{height:48px}}#images{{display:flex;flex-wrap:wrap;gap:8px}}img{{object-fit:contain;width:auto;height:auto;max-width:320px;max-height:240px}}.avatars img{{width:32px;height:32px;object-fit:cover}}.full img{{max-width:none;max-height:none;width:100%}}" }
         nav {
-            for n in 0..10 {
+            for n in 0..12 {
                 button { id: "scenario-{n}", onclick: move |_| { cycle.set(0); scenario.set(n); }, "{n}" }
             }
             button { id: "next", onclick: move |_| cycle += 1, "next" }
+            if cfg!(feature="progressive-viewer") {
+                ViewerControls {data:data.clone()}
+            }
         }
-        div { id: "probe", "data-scenario": "{scenario}", "data-cycle": "{cycle}",
+        div { id: "probe", "data-scenario": "{scenario}", "data-cycle": "{cycle}", "data-density":"{density:?}",
             div { id: "images", class: if scenario() == 3 { "avatars" } else if scenario() == 7 { "full" } else { "chat" },
                 for src in sources() {
                     if image_assets::fixture_has_preview(&src) {
@@ -178,7 +273,9 @@ fn Fixture() -> Element {
                         img { src: image_assets::fixture_full_src(&src), alt: "fixture" }
                     }
                     } else {
-                        img { key: "{src}", src: "{src}", alt: "fixture" }
+                        if cfg!(feature="unified-policy") && !matches!(scenario(),3|7) {
+                            PolicyImage { key:"{src}",source:src }
+                        } else { img { key: "{src}", src: "{src}", alt: "fixture" } }
                     }
                 }
             }
@@ -187,7 +284,48 @@ fn Fixture() -> Element {
             }
         }
         document::Script { {include_str!("../../client/assets/gif-playback.js")} }
+        if cfg!(feature="progressive-viewer") {ProbeViewer {}}
     }
+}
+
+#[component]
+fn ProbeViewer() -> Element {
+    #[cfg(feature = "progressive-viewer")]
+    return rsx! {document::Style {{include_str!("../../client/assets/image-viewer.css")}}image_viewer::ImageViewer {}};
+    #[cfg(not(feature = "progressive-viewer"))]
+    rsx! {}
+}
+#[component]
+fn ViewerControls(data: Arc<Vec<Resource>>) -> Element {
+    #[cfg(feature = "progressive-viewer")]
+    {
+        let mut state = state::use_app_state();
+        return rsx! {
+            button {id:"viewer-open",onclick:move |_|{
+                let source=data.iter().find(|r|r.name=="high0").expect("fixture").data.clone();
+                {let mut s=state.write();s.original=None;s.image_viewer=Some(image_viewer::ImageView::new(source,Some(image_viewer::Original::Community("original".into()))));}
+            },"open preview"}
+            button {id:"viewer-deliver",onclick:move |_|{
+                let directory=std::env::var("IMAGE_PROBE_ORIGINAL_DATA").expect("fixture originals");
+                spawn(async move {let data=tokio::task::spawn_blocking(move||resources_from(Path::new(&directory)).into_iter().find(|r|r.name=="high0").expect("fixture").data).await.expect("fixture load");state.write().original=Some(data);});
+            },"deliver original"}
+            button {id:"viewer-fail",onclick:move |_|state.write().original=Some(Arc::new(String::new())),"fail"}
+            button {id:"viewer-corrupt",onclick:move |_|state.write().original=Some(Arc::new("data:image/png;base64,aW52YWxpZA==".into())),"corrupt"}
+        };
+    }
+    #[cfg(not(feature = "progressive-viewer"))]
+    {
+        let _ = data;
+        rsx! {}
+    }
+}
+
+#[component]
+fn PolicyImage(source: image_assets::ImageSource) -> Element {
+    #[cfg(feature = "unified-policy")]
+    return rsx! { image_attachment::ImageAttachment {source,onclick:move |_|{}} };
+    #[cfg(not(feature = "unified-policy"))]
+    rsx! {img {src:"{source}",alt:"fixture"}}
 }
 
 fn generate(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -246,7 +384,10 @@ fn generate(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(1).as_deref() == Some("compare-dm-server") {
-        return dm_server::prepare();
+        return dm_server::prepare(false);
+    }
+    if std::env::args().nth(1).as_deref() == Some("prepare-unified") {
+        return dm_server::prepare(true);
     }
     if std::env::args().nth(1).as_deref() == Some("compare") {
         let left = image::open(std::env::args().nth(2).ok_or("first PNG required")?)?.to_rgba8();

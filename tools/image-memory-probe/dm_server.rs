@@ -43,7 +43,7 @@ fn store(
     Ok(())
 }
 
-pub fn prepare() -> Result<(), Box<dyn std::error::Error>> {
+pub fn prepare(preview_server: bool) -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     let root = Path::new(args.get(2).ok_or("output root required")?);
     std::fs::create_dir_all(root)?;
@@ -139,11 +139,19 @@ pub fn prepare() -> Result<(), Box<dyn std::error::Error>> {
             let thumb = crate::chat_image::thumbnail_data_url(&dm_bytes)?;
             let dm_receive_image_ms = begin.elapsed().as_secs_f64() * 1000.;
             drop(validated);
-            let server_bytes = unpack(&server)?;
+            let server_original = unpack(&server)?;
+            let began = Instant::now();
+            let server_bytes = if preview_server {
+                unpack(&crate::chat_image::thumbnail_data_url(&server_original)?)?
+            } else {
+                server_original.clone()
+            };
+            let server_preview_ms = began.elapsed().as_secs_f64() * 1000.;
             let thumb_bytes = unpack(&thumb)?;
             store(root, case, "server", index, &server_bytes)?;
+            store(root, case, "server-original", index, &server_original)?;
             store(root, case, "dm", index, &thumb_bytes)?;
-            let mut row = serde_json::json!({"case":case,"index":index,"run":run,"input":metadata(&input)?,"server":metadata(&server_bytes)?,"dmOriginal":metadata(&dm_bytes)?,"dmThumbnail":metadata(&thumb_bytes)?,"serverSendMs":server_ms,"dmSendMs":dm_send_ms,"dmColdImageWorkMs":dm_receive_image_ms,"serverUnchanged":server_bytes==input,"dmOriginalUnchanged":dm_bytes==input});
+            let mut row = serde_json::json!({"case":case,"index":index,"run":run,"input":metadata(&input)?,"server":metadata(&server_bytes)?,"serverOriginal":metadata(&server_original)?,"serverPreviewMs":server_preview_ms,"dmOriginal":metadata(&dm_bytes)?,"dmThumbnail":metadata(&thumb_bytes)?,"serverSendMs":server_ms,"dmSendMs":dm_send_ms,"dmColdImageWorkMs":dm_receive_image_ms,"serverUnchanged":server_original==input,"dmOriginalUnchanged":dm_bytes==input});
             if case == "jpeg-large" {
                 let begin = Instant::now();
                 let restricted = crate::chat_image::read_file_with_limit(&path, 2 * 1024 * 1024)?;

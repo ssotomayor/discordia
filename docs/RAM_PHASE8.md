@@ -1,5 +1,8 @@
 # Fase 8 — imágenes y memoria gráfica
 
+Informe del tramo inicial, conservado como evidencia histórica. La continuación
+autorizada y su política de miniaturas están en [UNIFIED_IMAGE_POLICY.md](UNIFIED_IMAGE_POLICY.md).
+
 ## Referencia y alcance
 
 Rama inicial `perf/ram-optimization`, árbol limpio al iniciar en `b753f11`.

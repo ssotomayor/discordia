@@ -1,5 +1,8 @@
 # Imágenes de DMs y comunidades
 
+Línea base anterior a la unificación. La implementación y el A/B posterior
+están en [UNIFIED_IMAGE_POLICY.md](UNIFIED_IMAGE_POLICY.md).
+
 Comparación sobre `58ff9d3`, branch `perf/phase-8-image-memory`. Se reutilizan
 las funciones reales de `chat_image.rs`, ImageAssets y el profiler Windows.
 No modifica producción, política de archivos, protocolo ni datos del usuario.

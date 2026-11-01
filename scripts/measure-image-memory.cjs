@@ -96,6 +96,7 @@ async function run(runNumber) {
     }
     if (!url) throw new Error('Probe UI not ready');
     result.browser = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+    const environment = await evaluate(url,'({dpr:devicePixelRatio,visibility:document.visibilityState,focused:document.hasFocus(),width:innerWidth,height:innerHeight})');
     const settle = async () => evaluate(url, `(async()=>{for(let n=0;n<400;n++){if([...document.querySelectorAll('#images img')].every(i=>i.complete&&i.naturalWidth>0))break;if(n===399)throw new Error('Images did not finish loading');await new Promise(r=>setTimeout(r,10))}await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return [...document.querySelectorAll('#images img')].map(i=>({w:i.naturalWidth,h:i.naturalHeight,width:i.width,height:i.height,src:i.getAttribute('src')}));})()`);
     const click = async selector => evaluate(url, `document.querySelector(${JSON.stringify(selector)}).click()`);
     const waitState = async (n, cycle) => {
@@ -141,7 +142,7 @@ async function run(runNumber) {
       }
       const metric = await measure(child.pid, `${runNumber}-${name}`);
       const imageMetadata = images.map(({src, ...dimensions}) => dimensions);
-      result.samples.push({ variant, run: runNumber, scenario: name, readiness: 'resource-complete-and-two-frames; no explicit decode()', loadMs, loadingCpu, imageCount: images.length, images: imageMetadata, cache: cacheStats, ...metric }); save();
+      result.samples.push({ variant, run: runNumber, scenario: name, environment, readiness: 'resource-complete-and-two-frames; no explicit decode()', loadMs, loadingCpu, imageCount: images.length, images: imageMetadata, cache: cacheStats, ...metric }); save();
       console.log(variant, runNumber, name, metric.summary.TotalPrivateCommitMb, cacheStats.encodedBytes);
     }
   } finally {

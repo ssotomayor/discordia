@@ -990,6 +990,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "discordia-image-policy"
+version = "0.1.0"
+dependencies = [
+ "image",
+]
+
+[[package]]
 name = "discordia-image-probe"
 version = "0.1.0"
 dependencies = [
@@ -997,6 +1004,7 @@ dependencies = [
  "base64",
  "dioxus",
  "dioxus-desktop",
+ "discordia-image-policy",
  "discordia-protocol",
  "image",
  "parking_lot",
