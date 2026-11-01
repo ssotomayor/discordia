@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../client/src/features/screenshare.rs', import.meta.url), 'utf8');
-const bridge = source.split('pub(crate) const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
+const bridge = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
 
 function sinkFixture(enumerateDevices, setSinkId) {
   const warnings = [];

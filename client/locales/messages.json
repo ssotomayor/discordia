@@ -11,6 +11,7 @@
   "Image too large (max 10 MiB).": ["La imagen supera el máximo de 10 MiB.", "A imagem excede o máximo de 10 MiB.", "图片超过 10 MiB 上限。", "画像が最大サイズの10 MiBを超えています。"],
   "Encrypted image upload failed. Retry when connected.": ["No se pudo subir la imagen cifrada. Reintentá cuando tengas conexión.", "Não foi possível enviar a imagem criptografada. Tente novamente quando estiver conectado.", "加密图片上传失败，请联网后重试。", "暗号化画像のアップロードに失敗しました。接続後に再試行してください。"],
   "Could not download encrypted image.": ["No se pudo descargar la imagen cifrada.", "Não foi possível baixar a imagem criptografada.", "无法下载加密图片。", "暗号化画像をダウンロードできませんでした。"],
+  "Could not load image.": ["No se pudo cargar la imagen.", "Não foi possível carregar a imagem.", "无法加载图片。", "画像を読み込めませんでした。"],
   "Encrypted image failed its integrity check.": ["La imagen recibida está incompleta o fue alterada.", "A imagem recebida está incompleta ou foi alterada.", "收到的图片不完整或已被篡改。", "受信した画像が不完全か、改変されています。"],
   "Image authentication failed.": ["No se pudo verificar la imagen cifrada.", "Não foi possível verificar a imagem criptografada.", "无法验证加密图片。", "暗号化画像を検証できませんでした。"],
   "Could not queue the image. Your draft was kept.": ["No se pudo preparar el envío. Conservamos tu borrador.", "Não foi possível preparar o envio. Seu rascunho foi mantido.", "无法准备发送，草稿已保留。", "送信の準備ができませんでした。下書きは保持されています。"],
