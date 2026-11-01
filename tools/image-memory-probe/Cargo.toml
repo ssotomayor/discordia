@@ -1,0 +1,28 @@
+[package]
+name = "discordia-image-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+thumbnails = []
+
+[dependencies]
+dioxus = { version = "=0.7.10", default-features = false, features = ["launch", "lib", "desktop"] }
+dioxus-desktop = { version = "=0.7.10", default-features = false }
+discordia-protocol = { path = "../../protocol" }
+base64 = "0.22"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[patch.crates-io]
+dioxus-desktop = { path = "../../vendor/dioxus-desktop" }
+
+[[bin]]
+name = "DiscordiaImageProbe"
+path = "main.rs"

@@ -139,7 +139,7 @@ foreach ($p in $allProcs) {
     $privMb = [Math]::Round($gp.PrivateMemorySize64 / 1MB, 2)
     $peakMb = [Math]::Round($gp.PeakPagedMemorySize64 / 1MB, 2)
     $faults = $gp.BasePriority # Fallback or HandleCount
-    $role = Get-ProcessRole $p.Name $p.CommandLine
+    $role = if ($pidNum -eq $hostPid) { "Host (Rust / Dioxus)" } else { Get-ProcessRole $p.Name $p.CommandLine }
 
     $totalPrivateBytes += $gp.PrivateMemorySize64
     $totalWorkingSet += $gp.WorkingSet64
