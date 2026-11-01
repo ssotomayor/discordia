@@ -285,7 +285,7 @@ pub fn ChatView() -> Element {
         let s = state.read();
         let channel = s
             .selected_channel
-            .filter(|cid| !s.dm_mode && s.channel_unread.contains(cid));
+            .filter(|cid| s.app_foreground && !s.dm_mode && s.channel_unread.contains(cid));
         drop(s);
         if let Some(channel) = channel {
             state.write().mark_channel_read(channel);
@@ -632,7 +632,7 @@ fn day_label(day: chrono::NaiveDate) -> String {
 
 /// A bare `@word` is already painted for everyone; this is the narrower
 /// question of whether the word names *you*.
-fn mentions_user(content: &str, username: &str) -> bool {
+pub(crate) fn mentions_user(content: &str, username: &str) -> bool {
     content.match_indices('@').any(|(i, _)| {
         content[..i]
             .chars()

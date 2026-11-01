@@ -135,6 +135,12 @@ pub fn ChannelsColumn() -> Element {
         .filter(|c| snapshot.channel_shows_unread(c.id))
         .map(|c| c.id)
         .collect();
+    let channel_mentions: std::collections::HashMap<Id, u32> = snapshot
+        .channels
+        .iter()
+        .map(|c| (c.id, snapshot.channel_mention_count(c.id)))
+        .filter(|(_, count)| *count > 0)
+        .collect();
     // The effective state, not the channel's own flag: a guild muted as a whole
     // is silent, and a row that did not say so would be lying about what the
     // person will hear.
@@ -508,6 +514,7 @@ pub fn ChannelsColumn() -> Element {
                             } else {
                                 let active = selected_channel == Some(cid);
                                 let unread = channel_unread.contains(&cid);
+                                let mentions = channel_mentions.get(&cid).copied().unwrap_or(0);
                                 let cls = if active {
                                     "text-[var(--text)] font-medium bg-[var(--panel2)]"
                                 } else if unread {
@@ -560,7 +567,7 @@ pub fn ChannelsColumn() -> Element {
                                         }
                                         span { class: "font-mono text-[13px] opacity-70", draggable: false, "#" }
                                         span { class: "truncate", draggable: false, "{ch.name}" }
-                                        if unread {
+                                        if unread && mentions == 0 {
                                             span {
                                                 title: crate::i18n::text("Unread messages", &[]),
                                                 aria_label: crate::i18n::text("Unread messages", &[]),
@@ -568,6 +575,13 @@ pub fn ChannelsColumn() -> Element {
                                             }
                                         }
                                         span { class: "flex-1" }
+                                        if mentions > 0 {
+                                            span {
+                                                class: "shrink-0 min-w-5 h-5 px-1.5 rounded-full text-[11.5px] font-bold flex items-center justify-center",
+                                                style: "background-color: var(--danger); color: #fff;",
+                                                "{mentions}"
+                                            }
+                                        }
                                         if muted_channels.contains(&ch.id) {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: crate::i18n::text("Muted", &[]), "🔕" }
                                         }

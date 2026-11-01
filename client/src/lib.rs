@@ -9,6 +9,8 @@ mod agc;
 #[cfg(target_os = "android")]
 mod android;
 mod app;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod app_badge;
 mod audio_device;
 mod audio_diag;
 mod audio_queue;

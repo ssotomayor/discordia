@@ -1673,6 +1673,7 @@ fn apply(
                 s.messages.remove(cid);
                 s.history_loaded.remove(cid);
                 s.channel_unread.remove(cid);
+                s.channel_mentions.remove(cid);
             }
             if s.selected_guild == Some(guild_id) {
                 let next = s.guilds.first().map(|g| g.id);
@@ -1992,6 +1993,7 @@ fn apply(
         } => {
             s.channels.retain(|c| c.id != channel_id);
             s.channel_unread.remove(&channel_id);
+            s.channel_mentions.remove(&channel_id);
             s.messages.remove(&channel_id);
             s.history_loaded.remove(&channel_id);
             s.typing.remove(&channel_id);
