@@ -865,6 +865,7 @@ mod tests {
             .stderr(std::process::Stdio::null());
         let mut child = command.spawn().unwrap();
         let ready = wait_for_ready(&mut child, p.ws, &creds, Duration::from_secs(10)).await;
+        assert!(ready.is_ok(), "{ready:?}");
         // Go wildcard listeners bind IPv4 only on Darwin without dual-stack socket support.
         if !cfg!(target_os = "macos") && std::net::TcpListener::bind("[::1]:0").is_ok() {
             tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, p.ws))
@@ -921,7 +922,6 @@ mod tests {
         }
         child.kill().await.unwrap();
         remove_scratch(&dir);
-        assert!(ready.is_ok(), "{ready:?}");
         assert!(
             wrong.is_err(),
             "another profile's credentials must not pass readiness"
