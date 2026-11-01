@@ -341,6 +341,7 @@ pub(super) fn SocialPanel(
     let mut tab = use_signal(|| Tab::Direct);
     // Deleting is not undoable, so the ✕ only arms; the second click acts.
     let mut confirming = use_signal(|| None::<crate::protocol::Id>);
+    let mut dm_menu = use_signal(|| None::<super::dm_menu::DmMenu>);
     let mut cleared_for_none = use_signal(|| false);
     use_effect(move || {
         let channel = state.read().selected_channel;
@@ -546,6 +547,10 @@ pub(super) fn SocialPanel(
                             div {
                                 key: "{cid}",
                                 class: "group w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-[10px] transition-colors {cls}",
+                                oncontextmenu: move |e: MouseEvent| {
+                                    e.prevent_default();
+                                    dm_menu.set(Some(super::dm_menu::DmMenu::at(cid, &e)));
+                                },
                                 button {
                                     class: "flex-1 min-w-0 flex items-center gap-2.5 text-left",
                                     onclick: move |_| {
@@ -568,13 +573,10 @@ pub(super) fn SocialPanel(
                                     }
                                     span { class: "flex-1 min-w-0",
                                         span { class: "flex items-baseline gap-2",
-                                            span { class: "truncate text-[12.5px] font-medium text-[var(--text)]", "{uname}" }
-                                            if row.muted {
-                                                span {
-                                                    class: "shrink-0 text-[10px] text-[var(--text-dim)]",
-                                                    title: crate::i18n::text("Muted", &[]),
-                                                    "🔕"
-                                                }
+                                            span {
+                                                class: if row.muted { "truncate text-[12.5px] font-medium text-[var(--text)] opacity-60" } else { "truncate text-[12.5px] font-medium text-[var(--text)]" },
+                                                title: row.muted.then(|| crate::i18n::text("Muted", &[])),
+                                                "{uname}"
                                             }
                                             span { class: "flex-1" }
                                             if let Some(w) = row.when.clone() {
@@ -589,16 +591,6 @@ pub(super) fn SocialPanel(
                                 if row.unread > 0 && !asking {
                                     span { class: "shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-[var(--accent)] text-[#1a1206] text-[11.5px] font-bold flex items-center justify-center group-hover:hidden",
                                         "{row.unread}"
-                                    }
-                                }
-                                if !asking {
-                                    button {
-                                        class: "shrink-0 w-5 h-5 rounded-full hidden group-hover:flex items-center justify-center text-[11px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
-                                        title: if row.muted { crate::i18n::text("Unmute this conversation", &[]) } else { crate::i18n::text("Mute this conversation", &[]) },
-                                        onclick: move |_| {
-                                            crate::state::set_dm_muted(state, settings, cid, !row.muted);
-                                        },
-                                        if row.muted { "🔔" } else { "🔕" }
                                     }
                                 }
                                 button {
@@ -617,6 +609,9 @@ pub(super) fn SocialPanel(
                             }
                         }
                     }
+                }
+                if let Some(menu) = dm_menu() {
+                    super::dm_menu::DmMenuPopover { menu, on_close: move |_| dm_menu.set(None) }
                 }
             }
         }

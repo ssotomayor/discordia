@@ -59,6 +59,7 @@ pub(super) struct ScrollCommand {
 pub(super) struct ScrollState {
     channel: Option<Id>,
     height: f64,
+    top: f64,
     following: bool,
 }
 
@@ -67,6 +68,7 @@ impl Default for ScrollState {
         Self {
             channel: None,
             height: 0.0,
+            top: 0.0,
             following: true,
         }
     }
@@ -93,7 +95,16 @@ impl ScrollState {
             command.top = Some(sample.height);
         } else {
             match sample.mode.as_str() {
-                "scroll" => self.following = sample.height - sample.top - sample.viewport <= 40.0,
+                // A scroll event lands a frame after the move that caused it, so
+                // growth below in between must not read as the reader leaving.
+                "scroll" => {
+                    let left = sample.top < self.top - 1.0;
+                    self.following = sample.height - sample.top - sample.viewport <= 40.0
+                        || (self.following && !left);
+                }
+                // A relay replays a DM out of order: older messages can arrive
+                // in the same batch as the newest ones.
+                "prepend" if self.following => command.top = Some(sample.height),
                 "prepend" => {
                     let growth = sample
                         .anchor_shift
@@ -118,6 +129,9 @@ impl ScrollState {
         if sample.mode != "scroll" {
             self.height = sample.height;
         }
+        self.top = command.top.map_or(sample.top, |top| {
+            top.min(sample.height - sample.viewport).max(0.0)
+        });
         command
     }
 }
@@ -161,10 +175,34 @@ mod tests {
     fn invalid_measurements_do_not_corrupt_the_anchor() {
         let mut state = ScrollState::default();
         state.update(sample("channel", 1000.0, 0.0));
+        state.update(sample("scroll", 1000.0, 10.0));
         assert_eq!(state.update(sample("append", f64::NAN, 0.0)).top, None);
         assert_eq!(
             state.update(sample("prepend", 1200.0, 10.0)).top,
             Some(210.0)
+        );
+    }
+
+    #[test]
+    fn content_growing_before_a_late_scroll_event_keeps_following() {
+        let mut state = ScrollState::default();
+        state.update(sample("channel", 1000.0, 800.0));
+        state.update(sample("scroll", 1300.0, 800.0));
+        assert_eq!(
+            state.update(sample("resize", 1300.0, 800.0)).top,
+            Some(1300.0)
+        );
+        state.update(sample("scroll", 1300.0, 600.0));
+        assert_eq!(state.update(sample("append", 1400.0, 600.0)).top, None);
+    }
+
+    #[test]
+    fn older_messages_arriving_while_at_the_bottom_keep_the_bottom() {
+        let mut state = ScrollState::default();
+        state.update(sample("channel", 1000.0, 800.0));
+        assert_eq!(
+            state.update(sample("prepend", 1600.0, 800.0)).top,
+            Some(1600.0)
         );
     }
 
