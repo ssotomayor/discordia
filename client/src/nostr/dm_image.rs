@@ -602,7 +602,7 @@ pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> 
         .map_err(|_| "Image downloads unavailable.")?;
     image.validate()?;
     let cache = cache_root(owner)?.join("cache");
-    let thumb_path = cache.join(format!("{}.thumb", image.hash));
+    let thumb_path = cache.join(format!("{}.preview-v2.thumb", image.hash));
     if tokio::fs::metadata(&thumb_path).await.is_ok_and(|m| {
         m.is_file()
             && m.modified()
@@ -864,7 +864,7 @@ pub fn prepare(
             && let Ok(thumb_url) = crate::chat_image::thumbnail_data_url(&raw)
             && let Ok(thumb_enc) = job.image.encrypt_thumb(thumb_url.as_bytes())
         {
-            let thumb_path = cache.join(format!("{}.thumb", job.image.hash));
+            let thumb_path = cache.join(format!("{}.preview-v2.thumb", job.image.hash));
             cache_store(&cache, &thumb_path, &thumb_enc);
         }
     }
@@ -978,6 +978,8 @@ pub struct Image {
     pub status: Status,
     pub upload: bool,
     pub viewers: std::collections::HashSet<uuid::Uuid>,
+    pub original_viewers: std::collections::HashSet<uuid::Uuid>,
+    pub original_data: bool,
     pub data: Option<std::sync::Arc<String>>,
 }
 
@@ -1083,6 +1085,36 @@ mod tests {
         wrong_key.key = other.key.clone();
         assert!(wrong_key.decrypt(&bytes).is_err());
         assert!(!format!("{image:?}").contains(&image.key));
+    }
+
+    #[tokio::test]
+    async fn obsolete_thumbnail_is_regenerated_without_losing_encrypted_original() {
+        let secret = secp256k1::SecretKey::new(&mut rand::thread_rng());
+        let owner = event::xonly_hex(&secret);
+        let (mut descriptor, ciphertext) = encrypt(PNG).unwrap();
+        descriptor.url = format!("https://example.invalid/{}", descriptor.hash);
+        let directory = cache_root(&owner).unwrap().join("cache");
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let original = directory.join(format!("{}.bin", descriptor.hash));
+        tokio::fs::write(&original, ciphertext).await.unwrap();
+        let obsolete = directory.join(format!("{}.thumb", descriptor.hash));
+        tokio::fs::write(
+            &obsolete,
+            descriptor
+                .encrypt_thumb(b"obsolete-static-preview")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let result = receive(&owner, &descriptor).await.unwrap();
+        assert_eq!(result, PNG);
+        let current = directory.join(format!("{}.preview-v2.thumb", descriptor.hash));
+        assert!(current.is_file());
+        assert!(original.is_file());
+        assert_eq!(load_original(&owner, &descriptor).await.unwrap(), PNG);
+        for path in [original, obsolete, current] {
+            tokio::fs::remove_file(path).await.unwrap();
+        }
     }
 
     #[test]
@@ -1223,7 +1255,7 @@ mod tests {
         let thumb_file = cache_root(&owner)
             .unwrap()
             .join("cache")
-            .join(format!("{}.thumb", job.image.hash));
+            .join(format!("{}.preview-v2.thumb", job.image.hash));
         assert!(thumb_file.exists());
         let thumb_bytes = std::fs::read(&thumb_file).unwrap();
         let thumb_url = job.image.decrypt_thumb(&thumb_bytes).unwrap();
@@ -1267,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn image_limit_is_exactly_ten_mib_and_community_default_stays_two() {
+    fn image_limit_is_exactly_ten_mib_without_expanding_artwork_limit() {
         let (_, mut bytes) = blossom::split_data_url(PNG).unwrap();
         bytes.resize(MAX_BYTES, 0);
         let url = format!(

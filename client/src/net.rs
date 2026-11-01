@@ -1333,7 +1333,8 @@ pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage
     wanted.sort_unstable();
     wanted.dedup();
     wanted.retain(|address| {
-        !s.emoji_images.contains_key(address)
+        (!address.starts_with("preview-v2:") || s.server_image_previews)
+            && !s.emoji_images.contains_key(address)
             && !s
                 .emoji_requested
                 .get(address)
@@ -1341,6 +1342,21 @@ pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage
     });
     for address in &wanted {
         s.emoji_requested.insert(address.clone(), now);
+    }
+    let (previews, wanted): (Vec<_>, Vec<_>) = wanted
+        .into_iter()
+        .partition(|address| address.starts_with("preview-v2:"));
+    for chunk in previews.chunks(8) {
+        let images = chunk
+            .iter()
+            .filter_map(|s| s.strip_prefix("preview-v2:").map(str::to_owned))
+            .collect();
+        if tx
+            .send(ClientMessage::FetchImagePreviews { images })
+            .is_err()
+        {
+            tracing::debug!("preview session closed");
+        }
     }
     for chunk in wanted.chunks(8) {
         crate::media_cache::load(chunk.to_vec(), tx, &s.emoji_images);
@@ -1357,6 +1373,7 @@ fn apply(
     match msg {
         ServerMessage::Ready {
             chat_tools,
+            image_previews,
             user,
             guilds,
             channels,
@@ -1384,6 +1401,7 @@ fn apply(
             s.is_operator = operator;
             s.default_guild = default_guild;
             s.server_chat_tools = chat_tools;
+            s.server_image_previews = image_previews;
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
@@ -1861,6 +1879,17 @@ fn apply(
             if let Some(name) = name {
                 s.recent_sounds
                     .insert(user_pubkey, (name, std::time::Instant::now()));
+            }
+        }
+        ServerMessage::ImagePreviews { blobs } => {
+            for blob in blobs {
+                let key = format!("preview-v2:{}", blob.image);
+                s.emoji_requested.remove(&key);
+                s.emoji_images.insert_preview(
+                    key,
+                    std::sync::Arc::new(blob.data_url),
+                    blob.original,
+                );
             }
         }
         ServerMessage::EmojiBlobs { blobs } => {
@@ -2658,6 +2687,7 @@ mod tests {
                     &mut state,
                     ServerMessage::Ready {
                         chat_tools: false,
+                        image_previews: false,
                         user,
                         guilds: vec![],
                         channels: vec![],
@@ -2810,6 +2840,38 @@ mod tests {
         assert_eq!(
             s.media_src(&format!("media:{address}")),
             Some("data:image/png;base64,AA==")
+        );
+    }
+
+    #[tokio::test]
+    async fn previews_use_a_separate_demand_and_do_not_fetch_originals() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut state = AppState::empty();
+        state.server_image_previews = true;
+        let address = format!("{}.jpg", "c".repeat(64));
+        let key = format!("preview-v2:{address}");
+        assert!(state.emoji_images.get_shared(&key).is_none());
+        resolve_media(&mut state, &tx);
+        assert!(
+            matches!(rx.try_recv(),Ok(ClientMessage::FetchImagePreviews {images}) if images==[address.clone()])
+        );
+        assert!(!state.emoji_images.contains_key(&address));
+        resolve_media(&mut state, &tx);
+        assert!(rx.try_recv().is_err());
+        state.emoji_images.insert_preview(
+            key.clone(),
+            std::sync::Arc::new("preview".into()),
+            false,
+        );
+        assert!(!state.emoji_images.is_original(&key));
+        resolve_media(&mut state, &tx);
+        assert!(rx.try_recv().is_err());
+        let mut legacy = AppState::empty();
+        legacy.emoji_images.get_shared(&key);
+        resolve_media(&mut legacy, &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "legacy hosts never receive preview requests"
         );
     }
 

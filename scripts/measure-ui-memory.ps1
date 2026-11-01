@@ -16,12 +16,16 @@
 
 .PARAMETER OutputJson
     Optional path to write the structured JSON report.
+
+.PARAMETER DescendantsOnly
+    Exclude name-associated WebViews belonging to other Discordia sessions.
 #>
 
 param(
     [int]$TargetPid = 0,
     [double]$DurationSeconds = 3.0,
-    [string]$OutputJson = "target/ui-memory-live.json"
+    [string]$OutputJson = "target/ui-memory-live.json",
+    [switch]$DescendantsOnly
 )
 
 Set-StrictMode -Off
@@ -65,6 +69,7 @@ while ($changed) {
 
 # CommandLine association for user-data-dir and webview-exe-name
 foreach ($p in $allProcs) {
+    if ($DescendantsOnly) { break }
     $pidNum = [int]$p.ProcessId
     if ($discordiaPids.Contains($pidNum)) { continue }
     $cl = ($p.CommandLine + "").ToLower()
@@ -134,7 +139,7 @@ foreach ($p in $allProcs) {
     $privMb = [Math]::Round($gp.PrivateMemorySize64 / 1MB, 2)
     $peakMb = [Math]::Round($gp.PeakPagedMemorySize64 / 1MB, 2)
     $faults = $gp.BasePriority # Fallback or HandleCount
-    $role = Get-ProcessRole $p.Name $p.CommandLine
+    $role = if ($pidNum -eq $hostPid) { "Host (Rust / Dioxus)" } else { Get-ProcessRole $p.Name $p.CommandLine }
 
     $totalPrivateBytes += $gp.PrivateMemorySize64
     $totalWorkingSet += $gp.WorkingSet64

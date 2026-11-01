@@ -1307,6 +1307,8 @@ fn show_image_job(job: &super::dm_image::Job, owner: &str, state: &mut Signal<Ap
             status: super::dm_image::Status::Uploading,
             upload: true,
             viewers: Default::default(),
+            original_viewers: Default::default(),
+            original_data: false,
             data: None,
         },
     );
@@ -1335,6 +1337,8 @@ fn note_image(rumor: &event::Rumor, message: &nip17::ChatMessage, state: &mut Si
             status: super::dm_image::Status::Waiting,
             upload: false,
             viewers: Default::default(),
+            original_viewers: Default::default(),
+            original_data: false,
             data: None,
         });
     }

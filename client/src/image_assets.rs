@@ -9,8 +9,28 @@ use std::{
 
 type DecodedBytes = Arc<(&'static str, Vec<u8>)>;
 
+struct ViewLease {
+    assets: Weak<parking_lot::Mutex<AssetsInner>>,
+    key: String,
+}
+
+impl Drop for ViewLease {
+    fn drop(&mut self) {
+        if let Some(assets) = self.assets.upgrade() {
+            let mut inner = assets.lock();
+            // A replacement view can acquire this URL while the finalizer waits.
+            if let Some(entry) = inner.entries.get_mut(&self.key)
+                && std::ptr::eq(entry.view.as_ptr(), self)
+            {
+                entry.decoded = None;
+            }
+        }
+    }
+}
+
 struct AssetEntry {
     owner: Weak<String>,
+    view: Weak<ViewLease>,
     hash: u64,
     decoded: Option<DecodedBytes>,
 }
@@ -49,6 +69,7 @@ struct Assets(Arc<parking_lot::Mutex<AssetsInner>>);
 pub(crate) struct ImageSource {
     uri: Arc<String>,
     _data: Arc<String>,
+    _view: Option<Arc<ViewLease>>,
 }
 
 impl PartialEq for ImageSource {
@@ -97,6 +118,7 @@ impl Assets {
             return ImageSource {
                 uri: data.clone(),
                 _data: data,
+                _view: None,
             };
         };
         let mut inner = self.0.lock();
@@ -105,26 +127,44 @@ impl Assets {
             inner.clean_counter = 0;
             inner.purge_dead_entries();
         }
-        if let Some(keys) = inner.by_hash.get(&hash) {
-            for key in keys {
-                if let Some(shared) = inner
+        let existing = inner.by_hash.get(&hash).and_then(|keys| {
+            keys.iter().find_map(|key| {
+                inner
                     .entries
-                    .get(key)
-                    .and_then(|entry| entry.owner.upgrade())
+                    .get(key)?
+                    .owner
+                    .upgrade()
                     .filter(|shared| shared.as_ref() == data.as_ref())
-                {
-                    return ImageSource {
-                        uri: Arc::new(format!("/image-data/{key}")),
-                        _data: shared,
-                    };
-                }
-            }
+                    .map(|shared| (key.clone(), shared))
+            })
+        });
+        if let Some((key, shared)) = existing
+            && let Some(entry) = inner.entries.get_mut(&key)
+        {
+            let view = entry.view.upgrade().unwrap_or_else(|| {
+                let view = Arc::new(ViewLease {
+                    assets: Arc::downgrade(&self.0),
+                    key: key.clone(),
+                });
+                entry.view = Arc::downgrade(&view);
+                view
+            });
+            return ImageSource {
+                uri: Arc::new(format!("/image-data/{key}")),
+                _data: shared,
+                _view: Some(view),
+            };
         }
         let key = format!("{}.{ext}", uuid::Uuid::new_v4());
+        let view = Arc::new(ViewLease {
+            assets: Arc::downgrade(&self.0),
+            key: key.clone(),
+        });
         inner.entries.insert(
             key.clone(),
             AssetEntry {
                 owner: Arc::downgrade(&data),
+                view: Arc::downgrade(&view),
                 hash,
                 decoded: None,
             },
@@ -133,6 +173,7 @@ impl Assets {
         ImageSource {
             uri: Arc::new(format!("/image-data/{key}")),
             _data: data,
+            _view: Some(view),
         }
     }
 
@@ -150,7 +191,9 @@ impl Assets {
 
     fn store_decoded(&self, key: &str, decoded: DecodedBytes) {
         let mut inner = self.0.lock();
-        if let Some(entry) = inner.entries.get_mut(key) {
+        if let Some(entry) = inner.entries.get_mut(key)
+            && entry.view.strong_count() > 0
+        {
             entry.decoded = Some(decoded);
         }
     }
@@ -162,6 +205,7 @@ pub(crate) fn source(data: Arc<String>) -> ImageSource {
         None => ImageSource {
             uri: data.clone(),
             _data: data,
+            _view: None,
         },
     }
 }
@@ -172,11 +216,19 @@ pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
         None => ImageSource {
             uri: data.clone(),
             _data: data,
+            _view: None,
         },
     }
 }
 
+impl ImageSource {
+    pub(crate) fn data(&self) -> Arc<String> {
+        Arc::clone(&self._data)
+    }
+}
+
 pub(crate) fn use_image_assets() {
+    use_image_density();
     let assets = use_hook(|| dioxus::core::provide_root_context(Assets::default()));
     let assets_handler = assets.clone();
     crate::platform::use_asset_handler("image-data", move |request, responder| {
@@ -238,6 +290,48 @@ pub(crate) fn use_image_assets() {
     });
 }
 
+#[derive(Clone, Copy)]
+struct ImageDensity(Signal<Option<bool>>);
+
+pub(crate) fn preview_density() -> Option<bool> {
+    try_consume_context::<ImageDensity>()
+        .map(|density| (density.0)())
+        .unwrap_or(Some(true))
+}
+
+fn use_image_density() {
+    let mut density = use_hook(|| {
+        dioxus::core::provide_root_context(ImageDensity(Signal::new_in_scope(None, ScopeId::ROOT)))
+    })
+    .0;
+    use_effect(move || {
+        spawn(async move {
+            let mut eval = document::eval(
+                r#"return (async()=>{
+                if(window.__dxfImageDensityOff)window.__dxfImageDensityOff();
+                const query=matchMedia('(max-resolution: 2dppx)');
+                let last;const report=()=>{const value=devicePixelRatio<=2;if(value!==last){last=value;dioxus.send(value);}};
+                if(query.addEventListener)query.addEventListener('change',report);else query.addListener(report);
+                window.addEventListener('resize',report);report();
+                let off;
+                await new Promise(resolve=>{off=()=>{
+                    if(query.removeEventListener)query.removeEventListener('change',report);else query.removeListener(report);resolve();
+                    window.removeEventListener('resize',report);
+                };window.__dxfImageDensityOff=off;});
+                if(window.__dxfImageDensityOff===off)delete window.__dxfImageDensityOff;
+            })()"#,
+            );
+            while let Ok(value) = eval.recv::<bool>().await {
+                density.set(Some(value));
+            }
+            density.set(Some(false));
+        });
+    });
+    use_drop(|| {
+        document::eval("window.__dxfImageDensityOff && window.__dxfImageDensityOff()");
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +364,42 @@ mod tests {
         drop(image);
         assert!(assets.resolve(&key).is_none());
         assert!(assets.resolve("../../profile.json").is_none());
+    }
+
+    #[test]
+    fn last_view_releases_binary_cache_without_changing_a_live_owners_url() {
+        let assets = Assets::default();
+        let cached = Arc::new("data:image/png;base64,aGk=".to_owned());
+        let first = assets.source(cached.clone());
+        let second = first.clone();
+        let key = first.uri.strip_prefix("/image-data/").unwrap().to_owned();
+        assets.store_decoded(&key, Arc::new(("image/png", vec![42; 1024])));
+        drop(first);
+        assert!(assets.resolve_entry(&key).unwrap().1.is_some());
+        let uri = second.to_string();
+        drop(second);
+        assert!(assets.resolve_entry(&key).unwrap().1.is_none());
+        let reopened = assets.source(cached);
+        assert_eq!(reopened.to_string(), uri);
+        assets.store_decoded(&key, Arc::new(("image/png", vec![7])));
+        assert_eq!(assets.resolve_entry(&key).unwrap().1.unwrap().1, [7]);
+    }
+
+    #[test]
+    fn late_responses_do_not_retain_binary_bytes_after_the_view_closes() {
+        let assets = Assets::default();
+        let cached = Arc::new("data:image/gif;base64,R0lGODlh".to_owned());
+        let source = assets.source(cached.clone());
+        let key = source.uri.strip_prefix("/image-data/").unwrap().to_owned();
+        drop(source);
+        assets.store_decoded(&key, Arc::new(("image/gif", vec![1, 2, 3])));
+        assert!(assets.resolve_entry(&key).unwrap().1.is_none());
+        let source = assets.source(cached);
+        let bytes = Arc::new(("image/gif", vec![1, 2, 3]));
+        let weak = Arc::downgrade(&bytes);
+        assets.store_decoded(&key, bytes);
+        drop(source);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]

@@ -10,6 +10,7 @@ function (instance) {
   const listeners = [];
   let scale = 1, x = 0, y = 0, frame = null, closed = false;
   let backgroundTap = false, moved = false, lastTap = null, touchZoomAt = -Infinity;
+  let pendingImage = null, generation = 0, requested = '', aspect = null;
   const listen = (node, type, handler, options) => {
     node.addEventListener(type, handler, options);
     listeners.push(() => node.removeEventListener(type, handler, options));
@@ -32,6 +33,14 @@ function (instance) {
   };
   const paint = () => {
     frame = null;
+    if (root.dataset.viewerProgressive && image.naturalWidth && image.naturalHeight) {
+      aspect ||= image.naturalWidth / image.naturalHeight;
+      const padding = getComputedStyle(stage);
+      const width = stage.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight);
+      const height = stage.clientHeight - parseFloat(padding.paddingTop) - parseFloat(padding.paddingBottom);
+      const fitted = Math.min(width, height * aspect);
+      image.style.width = `${fitted}px`; image.style.height = `${fitted / aspect}px`;
+    }
     clamp();
     image.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
     stage.style.cursor = scale > 1 ? (pointers.size ? 'grabbing' : 'grab') : 'zoom-in';
@@ -183,7 +192,31 @@ function (instance) {
   listen(window, 'resize', draw);
   const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(draw);
   observer?.observe(stage);
+  const upgrade = async () => {
+    const src = root.dataset.viewerOriginal, token = root.dataset.viewerToken;
+    const key = `${token}:${src || ''}`;
+    if (key === requested) return;
+    requested = key;
+    const current = ++generation;
+    pendingImage?.removeAttribute('src'); pendingImage = null;
+    if (!src) return;
+    const next = new Image(); pendingImage = next;
+    try {
+      await new Promise((resolve, reject) => { next.onload = resolve; next.onerror = reject; next.src = src; });
+      if (closed || current !== generation || !root.isConnected) return;
+      image.src = src; draw();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!closed && current === generation && root.isConnected) dioxus.send(`loaded:${token}`);
+    } catch (_) {
+      if (!closed && current === generation && root.isConnected) dioxus.send(`error:${token}`);
+    } finally { if (pendingImage === next) pendingImage = null; }
+  };
+  const upgrades = new MutationObserver(upgrade);
+  upgrades.observe(root, { attributes: true, attributeFilter: ['data-viewer-original', 'data-viewer-token'] });
+  upgrade();
   const off = () => {
+    closed = true; generation++; upgrades.disconnect();
+    pendingImage?.removeAttribute('src'); pendingImage = null;
     listeners.splice(0).forEach(remove => remove());
     observer?.disconnect();
     pointers.clear();

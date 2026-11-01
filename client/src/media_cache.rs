@@ -23,6 +23,7 @@ const ENTRY_BUDGET: usize = 2048;
 #[derive(Clone)]
 struct Entry {
     data: Arc<String>,
+    original: bool,
     touched: Arc<AtomicU64>,
 }
 
@@ -134,6 +135,26 @@ impl MediaCache {
     }
 
     pub(crate) fn insert_shared(&mut self, address: String, data: Arc<String>) {
+        self.insert_preview(address, data, true);
+    }
+
+    pub(crate) fn is_original(&self, address: &str) -> bool {
+        self.entries
+            .get(address)
+            .is_some_and(|entry| entry.original)
+    }
+
+    pub(crate) fn retry_empty(&mut self, address: &str) {
+        if self
+            .entries
+            .get(address)
+            .is_some_and(|entry| entry.data.is_empty())
+        {
+            self.entries.remove(address);
+        }
+    }
+
+    pub(crate) fn insert_preview(&mut self, address: String, data: Arc<String>, original: bool) {
         if let Some(previous) = self.entries.remove(&address) {
             self.bytes -= previous.data.len();
         }
@@ -163,6 +184,7 @@ impl MediaCache {
             address,
             Entry {
                 data,
+                original,
                 touched: Arc::new(AtomicU64::new(self.clock.fetch_add(1, Ordering::Relaxed))),
             },
         );
@@ -285,6 +307,24 @@ mod tests {
         let second = cache.get_shared("a").unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(cache.bytes, 4);
+    }
+
+    #[test]
+    fn preview_metadata_uses_the_same_budget_and_preserves_original_identity() {
+        let mut cache = MediaCache::with_budget(8);
+        cache.insert_preview("preview-v2:photo".into(), Arc::new("1234".into()), false);
+        cache.insert_shared("photo".into(), Arc::new("5678".into()));
+        assert_eq!(cache.bytes, 8);
+        assert!(!cache.is_original("preview-v2:photo"));
+        assert!(cache.is_original("photo"));
+        cache.insert_preview(
+            "preview-v2:animated".into(),
+            Arc::new("animated".into()),
+            true,
+        );
+        assert_eq!(cache.bytes, 8);
+        assert!(cache.is_original("preview-v2:animated"));
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]

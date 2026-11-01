@@ -411,6 +411,10 @@ learns only that somebody messaged you.
 |---|---|
 | `cargo test -p discordia-protocol --release` | Existing release baseline |
 | `cargo test -p discordia-protocol --profile release-lto` | Optional thin-LTO candidate; same optimization level and panic behavior |
-| `cargo build -p discordia --profile release-lto` | Full-client candidate build, not measured in this iteration |
+| `cargo build -p discordia --profile release-lto` | Full-client candidate build |
 
 The protocol test executable on Windows was 2,562,048 bytes with release and 2,538,496 with release-lto. Both ran all 59 tests successfully. This does not establish a client-wide speed or size improvement; release automation continues using its existing profile. [Cargo profile settings](https://doc.rust-lang.org/cargo/reference/profiles.html).
+
+Full-client Windows comparison: [RAM Phase 7](RAM_PHASE7.md).
+`node scripts/measure-thinlto.cjs` measures five launches per profile after
+both binaries have been built; output is under `target/thinlto-stage4/`.
