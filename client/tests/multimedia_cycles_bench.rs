@@ -16,6 +16,10 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
+// Every test binds the one `ports()` block, which the host ownership lock
+// lets a single SFU hold at a time.
+static SFU_PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(target_os = "windows")]
 fn process_memory() -> (f64, f64) {
     #[repr(C)]
@@ -60,6 +64,7 @@ fn process_memory() -> (f64, f64) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ten_multimedia_cycles_stabilize_without_leak() {
+    let _ports = SFU_PORTS.lock().await;
     let dir = std::env::temp_dir().join(format!("discordia-mem-test-{}", uuid::Uuid::new_v4()));
     let credentials = Credentials::generate();
     let sfu = spawn_livekit(
@@ -262,6 +267,7 @@ async fn ten_multimedia_cycles_stabilize_without_leak() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ten_abrupt_disconnect_and_reconnect_cycles() {
+    let _ports = SFU_PORTS.lock().await;
     let dir = std::env::temp_dir().join(format!("discordia-abrupt-test-{}", uuid::Uuid::new_v4()));
     let credentials = Credentials::generate();
     let sfu = spawn_livekit(
@@ -366,6 +372,7 @@ async fn ten_abrupt_disconnect_and_reconnect_cycles() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn streaming_isolation_scenarios_and_cycles() {
+    let _ports = SFU_PORTS.lock().await;
     let dir = std::env::temp_dir().join(format!("discordia-stream-test-{}", uuid::Uuid::new_v4()));
     let credentials = Credentials::generate();
     let sfu = spawn_livekit(
