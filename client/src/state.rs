@@ -446,6 +446,8 @@ pub struct AppState {
     /// Opened from the title bar, rendered by the voice panel that owns the
     /// device signals — the flag is the only thing the two need to share.
     pub audio_settings: bool,
+    /// Account-level, so it survives moving between Home and a server.
+    pub agents_open: bool,
     /// The "where does my data go" panel, opened from the transport chip.
     pub topology_open: bool,
     /// The voice channel whose access dialog is open.
@@ -654,6 +656,7 @@ impl AppState {
             guild_dialog: None,
             rules_prompt: None,
             audio_settings: false,
+            agents_open: false,
             topology_open: false,
             channel_access_open: None,
             typing: HashMap::new(),
@@ -2517,6 +2520,7 @@ mod tests {
             roles: Vec::new(),
             xp: 0,
             look,
+            agent: None,
         };
         let dressed = crate::protocol::GuildLook {
             avatar: Some("data:image/png;base64,ours".into()),
@@ -3481,6 +3485,7 @@ mod tests {
             roles: Vec::new(),
             xp: 0,
             look: Default::default(),
+            agent: None,
         }
     }
 

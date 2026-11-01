@@ -348,6 +348,10 @@ pub struct Member {
     /// whole host. Only an installed app's row carries one, copied from its install.
     #[serde(default)]
     pub look: GuildLook,
+    /// An installed app's self-declared disclosure, copied from the manifest
+    /// its install pinned, so every member sees it is an LLM and where text goes.
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
 }
 
 /// Each `None` shows the profile's own.

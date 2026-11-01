@@ -104,6 +104,7 @@ mod tests {
                 roles: vec![],
                 xp: 0,
                 look: Default::default(),
+                agent: None,
             });
         }
         (state, channel)

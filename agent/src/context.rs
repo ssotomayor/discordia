@@ -3,7 +3,7 @@ use discordia_protocol::Message;
 use crate::config::AgentConfig;
 use crate::harness::{Role, Turn};
 
-pub(crate) fn system_prompt(config: &AgentConfig) -> String {
+pub fn system_prompt(config: &AgentConfig) -> String {
     let mut s = String::new();
     if !config.prompt.trim().is_empty() {
         s.push_str(config.prompt.trim());

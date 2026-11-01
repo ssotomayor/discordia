@@ -234,6 +234,7 @@ impl AppState {
                     roles: role_ids,
                     xp: 0,
                     look: Default::default(),
+                    agent: None,
                 },
             );
         }
@@ -273,12 +274,13 @@ impl AppState {
                 state.store.delete_member(i.guild_id, &i.bot_pubkey).await?;
                 state.apply_seat(&i, seat);
             }
-            // The members table keeps no look: the install is its one copy.
+            // The members table keeps no look or agent: the install is its one copy.
             if let Some(g) = state.members.get(&i.guild_id)
                 && let Some(mut m) = g.get_mut(&i.bot_pubkey)
                 && m.bot
             {
                 m.look = i.look.clone();
+                m.agent = apps::install_agent(&i);
             }
             state
                 .bot_installs
@@ -1185,6 +1187,7 @@ impl AppState {
             roles: Vec::new(),
             xp: 0,
             look: Default::default(),
+            agent: None,
         };
         durable(
             self.store
@@ -1926,6 +1929,7 @@ impl AppState {
                 roles: Vec::new(),
                 xp: 0,
                 look: Default::default(),
+                agent: None,
             });
         member.online = true;
         durable(self.store.admit_member(&member, invite).await, "member add")?;

@@ -131,6 +131,7 @@ pub fn AccountView(
         }
     }));
     provide_context(nostr.clone());
+    provide_context(crate::agents::use_agents(identity.pubkey.clone(), state));
     let name_nostr = nostr.clone();
     use_effect(use_reactive((&identity.display_name,), move |(name,)| {
         name_nostr.send(crate::nostr::service::NostrCmd::PublishName(name));
@@ -272,6 +273,7 @@ pub fn AccountView(
                 on_sign_out,
             }
         }
+        super::agents::AgentsDialog {}
     }
 }
 

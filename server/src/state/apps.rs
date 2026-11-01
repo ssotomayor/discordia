@@ -167,10 +167,14 @@ impl AppState {
             .members
             .get(&install.guild_id)
             .and_then(|g| g.get(&install.bot_pubkey).map(|m| m.clone()));
+        let agent = install_agent(install);
         match (install.seated(), current) {
             (_, Some(m)) if !m.bot => Seat::Unchanged,
             (true, Some(m))
-                if m.bot && m.user.username == install.name && m.look == install.look =>
+                if m.bot
+                    && m.user.username == install.name
+                    && m.look == install.look
+                    && m.agent == agent =>
             {
                 Seat::Unchanged
             }
@@ -178,6 +182,7 @@ impl AppState {
                 m.bot = true;
                 m.user.username = install.name.clone();
                 m.look = install.look.clone();
+                m.agent = agent;
                 Seat::Taken(m)
             }
             (true, None) => Seat::Taken(Member {
@@ -193,6 +198,7 @@ impl AppState {
                 roles: Vec::new(),
                 xp: 0,
                 look: install.look.clone(),
+                agent,
             }),
             (false, Some(m)) if m.bot => Seat::Vacated(None),
             (false, _) => Seat::Unchanged,
@@ -377,6 +383,11 @@ impl AppState {
 }
 
 /// `None` when the install has no pin, or already holds this version or newer.
+/// What the guild approved, never a pending manifest it has not seen.
+pub(super) fn install_agent(install: &BotInstall) -> Option<crate::protocol::AgentInfo> {
+    install.app.as_ref().and_then(|app| app.agent.clone())
+}
+
 fn apply_newer(mut install: BotInstall, newer: &AppManifest) -> Option<BotInstall> {
     let pinned = install.app.as_ref()?;
     if newer.version <= pinned.version {

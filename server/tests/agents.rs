@@ -8,7 +8,7 @@ use discordia_agent::{
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::protocol::{
-    ArgValue, ChannelKind, ClientMessage, CommandArg, Id, Intent, Message, Permission,
+    ArgValue, ChannelKind, ClientMessage, CommandArg, Id, Intent, Member, Message, Permission,
     ServerMessage,
 };
 
@@ -48,6 +48,7 @@ struct World {
     text: Id,
     agent_key: String,
     echo: Echo,
+    seat: Member,
     _agent: tokio::task::JoinHandle<()>,
 }
 
@@ -153,10 +154,14 @@ async fn world(limits: Limits) -> World {
             .unwrap();
     });
     // Commands are registered after Ready: once they arrive, the agent listens.
-    while !matches!(
-        next_timeout(&mut member).await,
-        ServerMessage::BotCommands(_)
-    ) {}
+    let mut seat = None;
+    loop {
+        match next_timeout(&mut member).await {
+            ServerMessage::BotCommands(_) => break,
+            ServerMessage::MemberJoin(m) if m.user.pubkey == agent_key => seat = Some(m),
+            _ => {}
+        }
+    }
 
     World {
         _handle: handle,
@@ -165,6 +170,7 @@ async fn world(limits: Limits) -> World {
         text,
         agent_key,
         echo,
+        seat: seat.expect("members are told the agent took a seat"),
         _agent: agent,
     }
 }
@@ -302,4 +308,17 @@ async fn ask_answers_only_the_person_who_asked() {
         }
     };
     assert_eq!(content, "echo: Member: is it lunch yet?");
+}
+
+#[tokio::test]
+async fn every_member_sees_that_the_app_is_an_agent_and_where_text_goes() {
+    let w = world(Limits::default()).await;
+    assert!(w.seat.bot);
+    let agent = w
+        .seat
+        .agent
+        .as_ref()
+        .expect("the seat carries the disclosure");
+    assert_eq!(agent.provider, "Anthropic");
+    assert_eq!(agent.model, "claude-opus-5-5");
 }

@@ -3750,6 +3750,7 @@ where
             roles: Vec::new(),
             xp: state.xp_of(guild_id, &joiner.pubkey),
             look: Default::default(),
+            agent: None,
         }),
     );
     let emojis = state.emojis_of(guild_id);

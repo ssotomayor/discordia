@@ -6,6 +6,7 @@ pub(crate) use dioxus::mobile as platform;
 mod activity_bundle;
 mod activity_window;
 mod agc;
+mod agents;
 #[cfg(target_os = "android")]
 mod android;
 mod app;

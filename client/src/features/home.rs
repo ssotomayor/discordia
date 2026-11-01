@@ -285,6 +285,20 @@ fn TopBar(
                 div { class: "dxf-home-tools dxf-no-drag flex items-center gap-3 shrink-0",
                     onmousedown: move |e| e.stop_propagation(),
                     button {
+                        class: "dxf-home-agents flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--accent)]",
+                        aria_label: crate::i18n::text("Agents", &[]),
+                        onclick: move |_| {
+                            open.set(false);
+                            let mut app = state;
+                            app.write().agents_open = true;
+                        },
+                        span {
+                            class: "shrink-0 flex items-center",
+                            dangerous_inner_html: crate::features::icons::BOT,
+                        }
+                        span { class: "dxf-home-social-label", {crate::i18n::text("Agents", &[])} }
+                    }
+                    button {
                         class: "dxf-home-social flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
                         aria_label: if unread > 0 { format!("{} {unread}", crate::i18n::text("Social", &[])) } else { crate::i18n::text("Social", &[]) },
                         aria_expanded: "{social()}",

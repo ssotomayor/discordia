@@ -84,6 +84,7 @@ impl Store {
                     roles,
                     xp,
                     look: Default::default(),
+                    agent: None,
                 }
             })
             .collect();

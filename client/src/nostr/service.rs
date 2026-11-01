@@ -1718,6 +1718,7 @@ mod tests {
                 roles: vec![],
                 xp: 0,
                 look: Default::default(),
+                agent: None,
             });
         }
         apply_own_name(&mut state, "me", "After", 101);

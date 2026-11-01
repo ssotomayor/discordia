@@ -86,6 +86,7 @@ mod tests {
             roles: vec![],
             xp: 0,
             look: Default::default(),
+            agent: None,
         }
     }
     fn channel(guild_id: Id) -> Channel {
