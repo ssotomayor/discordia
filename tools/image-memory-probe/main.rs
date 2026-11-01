@@ -4,9 +4,10 @@ use std::{path::Path, sync::Arc};
 
 pub(crate) use dioxus_desktop as platform;
 pub(crate) use discordia_protocol as protocol;
-mod chat_image {
-    pub const MAX_DM_BYTES: usize = 10 * 1024 * 1024;
-}
+#[allow(dead_code)]
+#[path = "../../client/src/chat_image.rs"]
+mod chat_image;
+mod dm_server;
 #[cfg(feature = "thumbnails")]
 mod image_preview {
     include!("../../client/src/image_preview.rs");
@@ -244,6 +245,9 @@ fn generate(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("compare-dm-server") {
+        return dm_server::prepare();
+    }
     if std::env::args().nth(1).as_deref() == Some("compare") {
         let left = image::open(std::env::args().nth(2).ok_or("first PNG required")?)?.to_rgba8();
         let right = image::open(std::env::args().nth(3).ok_or("second PNG required")?)?.to_rgba8();

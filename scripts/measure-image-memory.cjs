@@ -5,15 +5,15 @@ const { spawn, spawnSync } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 
 const root = path.resolve(__dirname, '..');
-const out = path.join(root, 'target/image-memory');
 const value = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
+const out = path.resolve(value('--out') || path.join(root, 'target/image-memory'));
 const variant = value('--variant');
 const exe = path.resolve(value('--exe'));
 const repetitions = Number(value('--runs') || 5);
 const loadCpu = process.argv.includes('--load-cpu');
-const fixtures = path.join(out, 'fixtures');
+const fixtures = path.resolve(value('--fixtures') || path.join(out, 'fixtures'));
 const resultFile = path.join(out, 'results.json');
-const durableFile = path.join(root, 'docs/RAM_PHASE8_RESULTS.json');
+const durableFile = path.resolve(value('--report') || path.join(root, 'docs/RAM_PHASE8_RESULTS.json'));
 fs.mkdirSync(out, { recursive: true });
 const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile)) : {
   sourceCommit: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim(),
@@ -21,7 +21,8 @@ const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile
   fixtures: fs.readdirSync(fixtures).sort().map(name => { const bytes = fs.readFileSync(path.join(fixtures, name)); return { name, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }; }),
   binaries: {}, samples: [],
 };
-result.binaries[variant] = { sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex'), bytes: fs.statSync(exe).size };
+const variantFixtures = fs.readdirSync(fixtures).sort().map(name => {const bytes=fs.readFileSync(path.join(fixtures,name));return {name,bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')};});
+result.binaries[variant] = { sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex'), bytes: fs.statSync(exe).size, fixtures:variantFixtures };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let sequence = 0;
 async function rpc(url, method, params = {}) {
