@@ -33,6 +33,7 @@ another. Deferred work goes in a GitHub issue, never only in a commit message.
 | Crate | Package | Role |
 |---|---|---|
 | `protocol/` | `discordia-protocol` | Wire types. Single source of truth for `ClientMessage`/`ServerMessage`. |
+| `image-policy/` | `discordia-image-policy` | Shared bounded chat previews; preserves original files, animation, orientation, alpha and ICC. |
 | `server/` | `discordia-server` | axum gateway: WS protocol, state, SQLite, media blobs, LiveKit, export/import. |
 | `client/` | `discordia` | Dioxus 0.7 desktop app (wry). Also the self-host path — embeds the server in-process. |
 | `rendezvous/` | `discordia-rendezvous` | Discovery + NAT relay: hosts register, friends join by code, frames proxied. |

@@ -1403,22 +1403,31 @@ fn ChatImage(address: String) -> Element {
     let mut state = use_app_state();
     let resolved = use_memo(use_reactive((&address,), move |(address,)| {
         let s = state.read();
-        let data = s.media_src_shared(&address)?;
+        let previews = crate::image_assets::preview_density()?;
+        let data = if previews && s.server_image_previews {
+            match address.strip_prefix("media:") {
+                Some(name) => s.emoji_images.get_shared(&format!("preview-v2:{name}")),
+                None => s.media_src_shared(&address),
+            }
+        } else {
+            s.media_src_shared(&address)
+        }
+        .filter(|data| !data.is_empty())?;
         Some(crate::image_assets::chat_source(data))
     }));
     rsx! {
         if let Some(src) = resolved() {
-            img {
-                class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
-                style: "max-width: min(320px, 82vw); max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
-                src: "{src}",
-                alt: crate::i18n::text("attachment", &[]),
-                title: crate::i18n::text("Click to view full size", &[]),
+            super::image_attachment::ImageAttachment {
+                source:src,
                 onclick: move |_| {
-                    let full = state.peek().media_src(&address).map(str::to_string);
-                    if let Some(full) = full {
-                        state.write().image_viewer = Some(full);
+
+                    if let Some(source)=resolved(){
+                        let data=source.data();let s=state.read();
+                        let original=address.strip_prefix("media:").is_some_and(|name|s.emoji_images.is_original(&format!("preview-v2:{name}")));
+                        let target=(!original).then(||super::image_viewer::Original::Community(address.clone()));drop(s);
+                        state.write().image_viewer=Some(super::image_viewer::ImageView::new(data,target));
                     }
+
                 },
             }
         } else {
@@ -2822,7 +2831,7 @@ fn Composer(
                         title: crate::i18n::text("Enlarge image preview", &[]),
                         aria_label: crate::i18n::text("Enlarge image preview", &[]),
                         style: "cursor:zoom-in;",
-                        onclick: { let full = img.url.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
+                        onclick: { let full = img.url.clone(); move |_| state.write().image_viewer = Some(full.clone().into()) },
                         img {
                             class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
                             src: "{img.url}",

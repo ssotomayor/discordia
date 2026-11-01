@@ -1255,6 +1255,13 @@ pub struct EmojiBlob {
     pub data_url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImagePreviewBlob {
+    pub image: String,
+    pub data_url: String,
+    pub original: bool,
+}
+
 pub const MAX_SHORTCODE_LEN: usize = 32;
 pub const MAX_EMOJIS_PER_GUILD: usize = 100;
 
@@ -2223,6 +2230,9 @@ pub enum ClientMessage {
     FetchEmoji {
         images: Vec<String>,
     },
+    FetchImagePreviews {
+        images: Vec<String>,
+    },
     CreateGuildSound {
         guild_id: Id,
         name: String,
@@ -2655,6 +2665,8 @@ pub enum ServerMessage {
     Ready {
         #[serde(default)]
         chat_tools: bool,
+        #[serde(default)]
+        image_previews: bool,
         user: User,
         guilds: Vec<Guild>,
         channels: Vec<Channel>,
@@ -2699,6 +2711,9 @@ pub enum ServerMessage {
     },
     EmojiBlobs {
         blobs: Vec<EmojiBlob>,
+    },
+    ImagePreviews {
+        blobs: Vec<ImagePreviewBlob>,
     },
     MessageHistory {
         channel_id: Id,
@@ -2994,15 +3009,18 @@ mod identify_wire_tests {
             legacy,
             super::ServerMessage::Ready {
                 chat_tools: false,
+                image_previews: false,
                 ..
             }
         ));
         frame["d"]["chat_tools"] = serde_json::json!(true);
+        frame["d"]["image_previews"] = serde_json::json!(true);
         let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             current,
             super::ServerMessage::Ready {
                 chat_tools: true,
+                image_previews: true,
                 ..
             }
         ));

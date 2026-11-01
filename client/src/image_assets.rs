@@ -221,7 +221,14 @@ pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
     }
 }
 
+impl ImageSource {
+    pub(crate) fn data(&self) -> Arc<String> {
+        Arc::clone(&self._data)
+    }
+}
+
 pub(crate) fn use_image_assets() {
+    use_image_density();
     let assets = use_hook(|| dioxus::core::provide_root_context(Assets::default()));
     let assets_handler = assets.clone();
     crate::platform::use_asset_handler("image-data", move |request, responder| {
@@ -280,6 +287,48 @@ pub(crate) fn use_image_assets() {
             );
             responder.respond(response);
         });
+    });
+}
+
+#[derive(Clone, Copy)]
+struct ImageDensity(Signal<Option<bool>>);
+
+pub(crate) fn preview_density() -> Option<bool> {
+    try_consume_context::<ImageDensity>()
+        .map(|density| (density.0)())
+        .unwrap_or(Some(true))
+}
+
+fn use_image_density() {
+    let mut density = use_hook(|| {
+        dioxus::core::provide_root_context(ImageDensity(Signal::new_in_scope(None, ScopeId::ROOT)))
+    })
+    .0;
+    use_effect(move || {
+        spawn(async move {
+            let mut eval = document::eval(
+                r#"return (async()=>{
+                if(window.__dxfImageDensityOff)window.__dxfImageDensityOff();
+                const query=matchMedia('(max-resolution: 2dppx)');
+                let last;const report=()=>{const value=devicePixelRatio<=2;if(value!==last){last=value;dioxus.send(value);}};
+                if(query.addEventListener)query.addEventListener('change',report);else query.addListener(report);
+                window.addEventListener('resize',report);report();
+                let off;
+                await new Promise(resolve=>{off=()=>{
+                    if(query.removeEventListener)query.removeEventListener('change',report);else query.removeListener(report);resolve();
+                    window.removeEventListener('resize',report);
+                };window.__dxfImageDensityOff=off;});
+                if(window.__dxfImageDensityOff===off)delete window.__dxfImageDensityOff;
+            })()"#,
+            );
+            while let Ok(value) = eval.recv::<bool>().await {
+                density.set(Some(value));
+            }
+            density.set(Some(false));
+        });
+    });
+    use_drop(|| {
+        document::eval("window.__dxfImageDensityOff && window.__dxfImageDensityOff()");
     });
 }
 

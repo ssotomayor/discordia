@@ -90,10 +90,18 @@ pub(crate) async fn handle_connection_with_route<S>(
     let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
     let mut last_received = tokio::time::Instant::now();
     let mut graceful = false;
+    let mut preview_jobs = tokio::task::JoinSet::<ServerMessage>::new();
 
     loop {
         watch.finish(&who);
         tokio::select! {
+            finished = preview_jobs.join_next(), if !preview_jobs.is_empty() => {
+                match finished {
+                    Some(Ok(message)) => if send(&mut ws_tx,&message).await.is_err() {break;},
+                    Some(Err(error)) => tracing::warn!(%error,"image preview job failed"),
+                    None => {}
+                }
+            }
             incoming = ws_rx.next() => {
                 let msg = match incoming {
                     Some(Ok(msg)) => msg,
@@ -854,6 +862,36 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             }
                         }
+                    }
+                    ClientMessage::FetchImagePreviews { images } => {
+                        if user.is_none() {
+                            let _ = send(&mut ws_tx,&ServerMessage::Error {message:"identify first".into()}).await;
+                            continue;
+                        }
+                        if !reads.allow() {reject_rate_limited(&mut ws_tx).await;continue;}
+                        if preview_jobs.len()>=8 {continue;}
+                        let media=ctx.state.media.clone();
+                        let mut images:Vec<_>=images.into_iter().take(MAX_EMOJI_FETCH).collect();
+                        images.sort_unstable();images.dedup();
+                        preview_jobs.spawn(async move {
+                            static CONVERSIONS:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(2);
+                            let Ok(permit)=CONVERSIONS.acquire().await else {return ServerMessage::ImagePreviews {blobs:Vec::new()};};
+                            match tokio::task::spawn_blocking(move || {
+                                let _permit=permit;
+                                let mut budget=MAX_BLOB_RESPONSE_BYTES.min(crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN+1024);
+                                let mut blobs=Vec::new();
+                                for image in images {
+                                    if let Some((data_url,original))=media.preview(&format!("media:{image}"),budget) {
+                                        budget=budget.saturating_sub(data_url.len());
+                                        blobs.push(crate::protocol::ImagePreviewBlob {image,data_url,original});
+                                    }
+                                }
+                                ServerMessage::ImagePreviews {blobs}
+                            }).await {
+                                Ok(message)=>message,
+                                Err(error)=>{tracing::warn!(%error,"image preview conversion failed");ServerMessage::ImagePreviews {blobs:Vec::new()}}
+                            }
+                        });
                     }
                     ClientMessage::FetchEmoji { images } => {
                         if user.is_none() {

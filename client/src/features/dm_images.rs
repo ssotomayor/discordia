@@ -16,12 +16,38 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     let mut attempt = use_signal(|| None::<uuid::Uuid>);
     let viewer = use_hook(uuid::Uuid::new_v4);
     use_effect(move || {
-        if let Some(image) = state.write().dm_images.get_mut(&message_id) {
+        let Some(previews) = crate::image_assets::preview_density() else {
+            return;
+        };
+        let changed = state
+            .read()
+            .dm_images
+            .get(&message_id)
+            .is_some_and(|image| {
+                !image.viewers.contains(&viewer)
+                    || image.original_viewers.contains(&viewer) == previews
+            });
+        if changed && let Some(image) = state.write().dm_images.get_mut(&message_id) {
             image.viewers.insert(viewer);
+            if previews {
+                image.original_viewers.remove(&viewer);
+            } else {
+                image.original_viewers.insert(viewer);
+            }
+            if !image.upload
+                && image.original_data != !image.original_viewers.is_empty()
+                && matches!(image.status, Status::Ready | Status::Loading(_))
+            {
+                image.status = Status::Waiting;
+                image.data = None;
+            }
         }
     });
     let effect_owner = identity.pubkey.clone();
     use_effect(move || {
+        if crate::image_assets::preview_density().is_none() {
+            return;
+        }
         let wanted = {
             let s = state.read();
             let allowed = s
@@ -36,13 +62,19 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             return;
         };
         let token = uuid::Uuid::new_v4();
+        let original = !image.original_viewers.is_empty();
         attempt.set(Some(token));
         if let Some(image) = state.write().dm_images.get_mut(&message_id) {
             image.status = Status::Loading(token);
+            image.original_data = original;
         }
         let account = effect_owner.clone();
         spawn(async move {
-            let result = crate::nostr::dm_image::receive(&account, &image.descriptor).await;
+            let result = if original {
+                crate::nostr::dm_image::load_original(&account, &image.descriptor).await
+            } else {
+                crate::nostr::dm_image::receive(&account, &image.descriptor).await
+            };
             let mut s = state.write();
             if !s
                 .dm_images
@@ -104,14 +136,18 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             && let Some(image) = s.dm_images.get_mut(&message_id)
         {
             image.viewers.remove(&viewer);
+            image.original_viewers.remove(&viewer);
             let ours =
                 matches!(image.status, Status::Loading(token) if Some(token) == *attempt.peek());
             if !image.upload
-                && (ours || (image.viewers.is_empty() && image.status == Status::Ready))
+                && (ours
+                    || (image.viewers.is_empty() && image.status == Status::Ready)
+                    || (image.original_data != !image.original_viewers.is_empty()
+                        && matches!(image.status, Status::Ready | Status::Loading(_))))
             {
                 image.status = Status::Waiting;
             }
-            if image.viewers.is_empty() {
+            if image.viewers.is_empty() || image.status == Status::Waiting {
                 image.data = None;
             }
         }
@@ -135,29 +171,18 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
         return rsx! {};
     };
     let account = identity.pubkey.clone();
-    let mut opening_full = use_signal(|| false);
     if status == Status::Ready {
         return rsx! {
             if let Some(src) = source() {
-                img {
-                    class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
-                    style: "max-width: min(320px, 82vw); max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
-                    src: "{src}",
-                    alt: crate::i18n::text("attachment", &[]),
-                    title: crate::i18n::text("Click to view full size", &[]),
+                super::image_attachment::ImageAttachment {
+                    source:src,
                     onclick: move |_| {
-                        if *opening_full.peek() {
-                            return;
-                        }
-                        opening_full.set(true);
-                        let desc = descriptor.clone();
-                        let acc = account.clone();
-                        spawn(async move {
-                            if let Ok(full) = crate::nostr::dm_image::load_original(&acc, &desc).await {
-                                state.write().image_viewer = Some(full);
-                            }
-                            opening_full.set(false);
-                        });
+
+                        let view={let s=state.peek();s.dm_images.get(&message_id).and_then(|image|image.data.clone().map(|data|{
+                            let target=(!image.original_data).then(||super::image_viewer::Original::Dm {owner:account.clone(),descriptor:descriptor.clone()});
+                            super::image_viewer::ImageView::new(data,target)
+                        }))};
+                        if let Some(view)=view {state.write().image_viewer=Some(view);}
                     },
                 }
             }
