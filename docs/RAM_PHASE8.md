@@ -70,3 +70,33 @@ No se convierten dimensiones de imágenes en una supuesta medición gráfica.
 Los resultados compactos se escriben después de cada muestra en
 `docs/RAM_PHASE8_RESULTS.json`; logs y capturas quedan bajo
 `target/image-memory/`.
+
+## Optimización 1 — copia binaria ligada a las vistas
+
+`ImageSource` comparte un lease por recurso visible. Al cerrar la última
+vista se suelta `AssetEntry.decoded`; se conserva el índice y la misma URL
+mientras el owner original siga en MediaCache. Una respuesta tardía no vuelve
+a llenar la caché sin vistas. Un finalizador antiguo no borra el buffer de
+una generación nueva. No se cambia ningún byte de imagen ni el cache-control.
+
+Cinco procesos por variante, mediana (mínimo–máximo):
+
+| Métrica | Original | Lease |
+|---|---:|---:|
+| Rust al desmontar todo, MiB | 143,05 (142,37–144,19) | 93,96 (93,70–95,01) |
+| Binarios retenidos al desmontar, bytes | 50.806.393 | 0 |
+| Rust tras cambios de canal, MiB | 128,32 (127,36–129,10) | 78,35 (77,97–79,71) |
+| Total al desmontar, MiB | 608,54 (595,98–613,09) | 562,75 (543,93–574,12) |
+| CPU total tras cambios de canal, % | 0,10 (0,05–0,15) | 0,10 (0,05–0,10) |
+| Seis cambios de canal, ms | 557,00 (546,95–616,38) | 599,02 (549,20–633,38) |
+
+Se conserva: **49,09 MiB menos de Private Commit del host Rust** en el
+desmontaje del banco y liberación exacta de 48,45 MiB de buffers binarios.
+No se atribuye el ruido del proceso GPU a este cambio. La latencia de cambios
+de canal no mejoró; sus rangos se solapan. Las variantes se ejecutaron en
+bloques consecutivos, no intercaladas: existe posible deriva temporal del equipo.
+
+Pasaron nueve tests del archivo real ImageAssets, sin ejecutar su benchmark
+anterior: deduplicación, colisiones, límites, URL estable al reabrir, clones,
+última vista, respuesta tardía, limpieza y concurrencia. Las respuestas siguen
+usando el mismo payload, MIME y extensión de origen.
