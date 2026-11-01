@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { spawn, spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+fs.mkdirSync(path.join(root, 'target/image-reports'), { recursive: true });
 const out = path.join(root, 'target/image-memory');
 const experimental = process.argv.includes('--thumbnail-experiment');
 const exeIndex = process.argv.indexOf('--exe');
@@ -104,7 +105,7 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
     const cache=await evaluate(url,"fetch('/probe-stats/current').then(r=>r.json())");assert.equal(cache.encodedBytes,0);
     passed.push('unmount releases all binary buffers');
     const result={passed,environment:env,exeSha256:hash(fs.readFileSync(exe)),thumbnailExperiment:experimental,manualTests:false};
-    fs.writeFileSync(path.join(root,experimental?'docs/RAM_PHASE8_THUMBNAIL_CHECKS.json':'docs/RAM_PHASE8_CHECKS.json'),JSON.stringify(result,null,2)+'\n');
+    fs.writeFileSync(path.join(root,experimental?'target/image-reports/RAM_PHASE8_THUMBNAIL_CHECKS.json':'target/image-reports/RAM_PHASE8_CHECKS.json'),JSON.stringify(result,null,2)+'\n');
     console.log(result);
   } finally {
     channel?.ws.close();

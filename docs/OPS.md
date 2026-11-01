@@ -415,6 +415,5 @@ learns only that somebody messaged you.
 
 The protocol test executable on Windows was 2,562,048 bytes with release and 2,538,496 with release-lto. Both ran all 59 tests successfully. This does not establish a client-wide speed or size improvement; release automation continues using its existing profile. [Cargo profile settings](https://doc.rust-lang.org/cargo/reference/profiles.html).
 
-Full-client Windows comparison: [RAM Phase 7](RAM_PHASE7.md).
 `node scripts/measure-thinlto.cjs` measures five launches per profile after
 both binaries have been built; output is under `target/thinlto-stage4/`.

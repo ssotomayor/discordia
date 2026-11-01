@@ -1,5 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{spawn,spawnSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..'),out=path.join(root,'target/unified-images'),exe=path.join(out,'Progressive.exe');
+fs.mkdirSync(path.join(root,'target/image-reports'),{recursive:true});
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let id = 0;
 let channel;
@@ -62,5 +63,5 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
    const cleanup=spawnSync('powershell.exe',['-NoProfile','-Command',"$p=Get-Process -Id "+child.pid+" -ErrorAction SilentlyContinue;if($p -and $p.Path -eq '"+exe.replaceAll("'","''")+"'){[void]$p.CloseMainWindow();if(-not $p.WaitForExit(5000)){taskkill /PID "+child.pid+" /T /F}};'closed'"],{encoding:'utf8',windowsHide:true});fs.writeFileSync(path.join(folder,'cleanup.log'),cleanup.stdout+cleanup.stderr);await sleep(1500);if(child.exitCode===null)throw Error('Owned native probe remains');
   }
  }
- fs.writeFileSync(path.join(root,'docs/PROGRESSIVE_IMAGE_CHECKS.json'),JSON.stringify({runs,exeSha256:hash(fs.readFileSync(exe)),manualTests:false,scope:'Production ImageViewer/ImageAssets/JS in real WebView2 with controlled transport; real gateway and DM crypto covered separately'},null,2)+'\n');
+ fs.writeFileSync(path.join(root,'target/image-reports/PROGRESSIVE_IMAGE_CHECKS.json'),JSON.stringify({runs,exeSha256:hash(fs.readFileSync(exe)),manualTests:false,scope:'Production ImageViewer/ImageAssets/JS in real WebView2 with controlled transport; real gateway and DM crypto covered separately'},null,2)+'\n');
 })().catch(error=>{console.error(error);process.exitCode=1});

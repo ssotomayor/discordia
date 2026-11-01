@@ -13,8 +13,9 @@ const repetitions = Number(value('--runs') || 5);
 const loadCpu = process.argv.includes('--load-cpu');
 const fixtures = path.resolve(value('--fixtures') || path.join(out, 'fixtures'));
 const resultFile = path.join(out, 'results.json');
-const durableFile = path.resolve(value('--report') || path.join(root, 'docs/RAM_PHASE8_RESULTS.json'));
+const durableFile = path.resolve(value('--report') || path.join(root, 'target/image-reports/RAM_PHASE8_RESULTS.json'));
 fs.mkdirSync(out, { recursive: true });
+fs.mkdirSync(path.dirname(durableFile), { recursive: true });
 const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile)) : {
   sourceCommit: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim(),
   scope: 'Real Dioxus/ImageAssets/WebView2 component fixture; not full Discordia or network transfer; GPU process private commit is not VRAM',

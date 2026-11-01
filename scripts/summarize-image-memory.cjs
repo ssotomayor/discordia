@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const results = JSON.parse(fs.readFileSync(path.join(root, 'docs/RAM_PHASE8_RESULTS.json')));
+const results = JSON.parse(fs.readFileSync(path.join(root, 'target/image-reports/RAM_PHASE8_RESULTS.json')));
 const statistics = values => {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   if (!sorted.length) return undefined;
@@ -40,7 +40,7 @@ for (const variant of [...new Set(results.samples.map(sample => sample.variant))
     output.variants[variant][scenario] = Object.fromEntries(Object.entries(metrics).map(([name, metric]) => [name, statistics(samples.map(metric))]).filter(([, value]) => value));
   }
 }
-fs.writeFileSync(path.join(root, 'docs/RAM_PHASE8_STATISTICS.json'), JSON.stringify(output, null, 2) + '\n');
+fs.writeFileSync(path.join(root, 'target/image-reports/RAM_PHASE8_STATISTICS.json'), JSON.stringify(output, null, 2) + '\n');
 const format = stats => `${stats.median.toFixed(2)} [${stats.min.toFixed(2)}–${stats.max.toFixed(2)}]; SD ${stats.sampleSD.toFixed(2)}`;
 const comparison = output.conclusionVariants;
 console.log('# Fase 8 — comparación completa\n');

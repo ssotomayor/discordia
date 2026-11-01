@@ -15,7 +15,7 @@ for(let run=1;run<=5;run++)for(const name of cases){
   if(run%2===0)variants.reverse();
   for(const [kind,exe,fixtures] of variants){
     console.log(new Date().toISOString(),name,kind,run);
-    const done=spawnSync(process.execPath,[path.join(root,'scripts/measure-image-memory.cjs'),'--out',out,'--variant',`${name}-${kind}`,'--exe',path.join(out,exe),'--fixtures',fixtures,'--report',path.join(root,'docs/UNIFIED_IMAGE_RESULTS.json'),'--runs',String(run),'--load-cpu'],{cwd:root,stdio:'inherit',windowsHide:true});
+    const done=spawnSync(process.execPath,[path.join(root,'scripts/measure-image-memory.cjs'),'--out',out,'--variant',`${name}-${kind}`,'--exe',path.join(out,exe),'--fixtures',fixtures,'--report',path.join(root,'target/image-reports/UNIFIED_IMAGE_RESULTS.json'),'--runs',String(run),'--load-cpu'],{cwd:root,stdio:'inherit',windowsHide:true});
     if(done.status!==0)process.exit(done.status||1);
   }
 }

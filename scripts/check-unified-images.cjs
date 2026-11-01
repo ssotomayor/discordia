@@ -1,5 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict'),{spawn,spawnSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..'),out=path.join(root,'target/unified-images'),exe=path.join(out,'Candidate.exe');
+fs.mkdirSync(path.join(root,'target/image-reports'),{recursive:true});
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let id = 0;
 let channel;
@@ -59,7 +60,7 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
   const first=await frame();await sleep(240);assert.notEqual(first,await frame());passed.push('Large GIF advances animated frames');
   const gifSrc=await evaluate(url,'performance.getEntriesByType("resource").filter(r=>/gif$/.test(r.name)).map(r=>r.name)');const gifHashes=await Promise.all(gifSrc.map(async s=>hash(await getBytes(s))));assert.ok(gifHashes.includes(hash(fs.readFileSync(path.join(out,'qa/original/gif3.gif')))));passed.push('Large GIF bytes preserved');
   await scene(0,0);await sleep(200);const cache=await evaluate(url,"fetch('/probe-stats/current').then(r=>r.json())");assert.equal(cache.encodedBytes,0);passed.push('Unmount releases all ImageAssets binary buffers');
-  const result={environment:env,passed,manualTests:false,scope:'Native production image component and asset transport; excludes accounts, network and DM state',exeSha256:hash(fs.readFileSync(exe))};fs.writeFileSync(path.join(root,'docs/UNIFIED_IMAGE_CHECKS.json'),JSON.stringify(result,null,2)+'\n');console.log(result);
+  const result={environment:env,passed,manualTests:false,scope:'Native production image component and asset transport; excludes accounts, network and DM state',exeSha256:hash(fs.readFileSync(exe))};fs.writeFileSync(path.join(root,'target/image-reports/UNIFIED_IMAGE_CHECKS.json'),JSON.stringify(result,null,2)+'\n');console.log(result);
  }finally{
   channel?.ws.close();const clean=spawnSync('powershell.exe',['-NoProfile','-Command',"$p=Get-Process -Id "+child.pid+" -ErrorAction SilentlyContinue;if($p -and $p.Path -eq '"+exe.replaceAll("'","''")+"'){[void]$p.CloseMainWindow();if(-not $p.WaitForExit(5000)){taskkill /PID "+child.pid+" /T /F}};'closed'"],{encoding:'utf8',windowsHide:true});fs.writeFileSync(path.join(folder,'cleanup.log'),clean.stdout+clean.stderr);await sleep(1500);if(child.exitCode===null)throw Error('Owned probe remains');
  }
