@@ -404,7 +404,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                         active_generation.set(generation);
                         let Some(s) = model.peek().clone() else { return; };
                         let ids: Vec<_> = s.streams.iter().map(|v| &v.pubkey).collect();
-                        format!("window.dxScreen.setNativeStreamAudio(true);window.dxScreen.setViewerTargets({});window.dxScreen.connect({},{},{},{},{},{});",
+                        format!("{}window.dxScreen.setNativeStreamAudio(true);window.dxScreen.setViewerTargets({});window.dxScreen.connect({},{},{},{},{},{});", crate::app::livekit_bundle_js(),
                             json(&ids), json(&target.url), json(&target.token), json(&s.key), s.encrypted, generation,
                             super::screenshare::ice_servers_js(&target.ice_servers))
                     }

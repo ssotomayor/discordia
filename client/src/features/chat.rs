@@ -398,6 +398,46 @@ pub fn ChatView() -> Element {
             "window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure('resize', {channel});"
         ));
     });
+    let jump = use_memo(move || state.read().message_jump);
+    let mut jump_fetched = use_signal(|| None::<i64>);
+    let jump_gateway = gateway.clone();
+    use_effect(move || {
+        let Some((channel_id, target, at)) = jump() else {
+            return;
+        };
+        let (selected, ..) = scroll_key();
+        let s = state.peek();
+        let held = s
+            .messages
+            .get(&channel_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let found = held.iter().position(|m| m.id == target);
+        let oldest = held.first().map(|m| m.created_at.timestamp_millis());
+        let page = found.map(|i| held[i - i % PAGE_SIZE].id);
+        drop(s);
+        if selected != Some(channel_id) || (page.is_none() && oldest.is_some_and(|o| o < at)) {
+            state.write().message_jump = None;
+            return;
+        }
+        if let Some(page) = page {
+            state.write().message_jump = None;
+            let id = |id: Id| serde_json::to_string(&id).unwrap_or_default();
+            let _ = document::eval(&format!("({JUMP_JS})({}, {});", id(page), id(target)));
+            return;
+        }
+        // Contiguous pages back from the oldest held, so no gap opens above it.
+        if let Some(oldest) = oldest
+            && *jump_fetched.peek() != Some(oldest)
+        {
+            jump_fetched.set(Some(oldest));
+            jump_gateway.send(ClientMessage::FetchMessages {
+                channel_id,
+                limit: JUMP_PAGE,
+                before_ms: Some(oldest),
+            });
+        }
+    });
 
     let history = state.read();
     let messages = selected_channel
@@ -591,6 +631,26 @@ fn MessagePage(
 }
 
 const PAGE_SIZE: usize = 50;
+const JUMP_PAGE: u32 = 200;
+
+/// A page off screen is a placeholder until the scroll policy activates it, so
+/// the page comes into view first and the row is looked for until it mounts.
+const JUMP_JS: &str = r#"function (page, row) {
+  let tries = 0;
+  const step = () => {
+    const el = document.querySelector('[data-chat-row="' + row + '"]');
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      const glow = getComputedStyle(el).getPropertyValue('--accent-soft').trim();
+      if (el.animate && glow) el.animate([{ backgroundColor: glow }, { backgroundColor: 'transparent' }], { duration: 1600, easing: 'ease-out' });
+      return;
+    }
+    const placeholder = document.querySelector('[data-chat-page="' + page + '"]');
+    if (placeholder) placeholder.scrollIntoView({ block: 'start' });
+    if (++tries < 40) setTimeout(step, 50);
+  };
+  step();
+}"#;
 
 fn composer_locked(s: &crate::state::AppState, channel_id: Id) -> bool {
     s.channels
@@ -688,7 +748,11 @@ fn typing_label(typers: &[String]) -> Option<String> {
 }
 
 #[component]
-pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
+pub(super) fn MessageRow(
+    message: Message,
+    grouped: bool,
+    #[props(default)] on_jump: Option<EventHandler<()>>,
+) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
@@ -954,7 +1018,17 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                 }
                             }
                         }
-                        span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
+                        if let Some(on_jump) = on_jump {
+                            button {
+                                r#type: "button",
+                                class: "text-[10px] text-[var(--text-dim)] underline-offset-2 hover:underline hover:text-[var(--accent)]",
+                                title: crate::i18n::text("Jump to message", &[]),
+                                onclick: move |_| on_jump.call(()),
+                                "{timestamp}"
+                            }
+                        } else {
+                            span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
+                        }
                     }
                 }
                 if let Some(draft) = editing() {
@@ -1440,22 +1514,31 @@ fn ChatImage(address: String) -> Element {
     let mut state = use_app_state();
     let resolved = use_memo(use_reactive((&address,), move |(address,)| {
         let s = state.read();
-        let data = s.media_src_shared(&address)?;
+        let previews = crate::image_assets::preview_density()?;
+        let data = if previews && s.server_image_previews {
+            match address.strip_prefix("media:") {
+                Some(name) => s.emoji_images.get_shared(&format!("preview-v2:{name}")),
+                None => s.media_src_shared(&address),
+            }
+        } else {
+            s.media_src_shared(&address)
+        }
+        .filter(|data| !data.is_empty())?;
         Some(crate::image_assets::chat_source(data))
     }));
     rsx! {
         if let Some(src) = resolved() {
-            img {
-                class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
-                style: "max-width: min(320px, 82vw); max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
-                src: "{src}",
-                alt: crate::i18n::text("attachment", &[]),
-                title: crate::i18n::text("Click to view full size", &[]),
+            super::image_attachment::ImageAttachment {
+                source:src,
                 onclick: move |_| {
-                    let full = state.peek().media_src(&address).map(str::to_string);
-                    if let Some(full) = full {
-                        state.write().image_viewer = Some(full);
+
+                    if let Some(source)=resolved(){
+                        let data=source.data();let s=state.read();
+                        let original=address.strip_prefix("media:").is_some_and(|name|s.emoji_images.is_original(&format!("preview-v2:{name}")));
+                        let target=(!original).then(||super::image_viewer::Original::Community(address.clone()));drop(s);
+                        state.write().image_viewer=Some(super::image_viewer::ImageView::new(data,target));
                     }
+
                 },
             }
         } else {
@@ -1912,7 +1995,7 @@ fn composer_call(id: &str, method: &str, args: &[Value]) {
     ));
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ComposerPick {
     Unicode(&'static str),
     Custom { code: String, url: String },
@@ -2043,6 +2126,48 @@ fn suggestions_now(
     }
     let (list, urls) = guild_emojis_of(s, channel_id);
     emoji_suggestions(token, &list, &urls)
+}
+
+fn note_recent_emoji(mut settings: Signal<crate::settings::ClientSettings>, pick: &ComposerPick) {
+    let key = match pick {
+        ComposerPick::Unicode(e) => e.to_string(),
+        ComposerPick::Custom { code, .. } => format!(":{code}:"),
+        ComposerPick::Mention { .. } => return,
+    };
+    let mut next = settings.peek().clone();
+    next.note_emoji_used(&key);
+    settings.set(next.clone());
+    crate::settings::save(&next);
+}
+
+/// The recent picks this conversation can still send, with their titles: a
+/// picture from another guild has no place here.
+fn recent_picks(
+    recent: &[String],
+    list: &[GuildEmoji],
+    urls: &std::collections::HashMap<String, String>,
+) -> Vec<(ComposerPick, String)> {
+    recent
+        .iter()
+        .filter_map(
+            |e| match e.strip_prefix(':').and_then(|e| e.strip_suffix(':')) {
+                Some(code) => list.iter().find(|g| g.shortcode == code).map(|g| {
+                    let url = urls.get(&g.image).cloned().unwrap_or_default();
+                    (
+                        ComposerPick::Custom {
+                            code: code.to_string(),
+                            url,
+                        },
+                        e.clone(),
+                    )
+                }),
+                None => EMOJIS
+                    .iter()
+                    .find(|(u, _)| u == e)
+                    .map(|&(u, name)| (ComposerPick::Unicode(u), format!(":{name}:"))),
+            },
+        )
+        .collect()
 }
 
 fn insert_pick(id: &str, pick: &ComposerPick, replace_token: bool, space: bool) {
@@ -2344,6 +2469,11 @@ fn Composer(
         guild_emojis_of(&state.read(), channel_id)
     } else {
         Default::default()
+    };
+    let recent = if show_emoji() {
+        recent_picks(&settings.read().recent_emoji, &guild_emojis, &emoji_urls)
+    } else {
+        Vec::new()
     };
     let suggestions = caret_token()
         .as_deref()
@@ -2647,6 +2777,7 @@ fn Composer(
             let list = suggestions_now(&state.peek(), channel_id, &token);
             if let Some(s) = list.get(i) {
                 insert_pick(&id, &s.pick, true, true);
+                note_recent_emoji(settings, &s.pick);
             }
             caret_token.set(None);
         }
@@ -2736,11 +2867,46 @@ fn Composer(
                     if let Some(target) = emoji_menu() {
                         EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
                     } else {
+                    if !recent.is_empty() {
+                        div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
+                            {crate::i18n::text("Recently used", &[])}
+                        }
+                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                            onmousedown: move |e| e.prevent_default(),
+                            for (pick, title) in recent.iter().cloned() {
+                                {
+                                    let id = composer_id.clone();
+                                    let face = pick.clone();
+                                    rsx! {
+                                        button {
+                                            key: "{title}",
+                                            r#type: "button",
+                                            class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                            title: "{title}",
+                                            onclick: move |_| {
+                                                insert_pick(&id, &pick, false, false);
+                                                note_recent_emoji(settings, &pick);
+                                                show_emoji.set(false);
+                                            },
+                                            match face {
+                                                ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! {
+                                                    img { src: "{url}", style: "height:1.2em;width:auto;" }
+                                                },
+                                                ComposerPick::Unicode(e) => rsx! { "{e}" },
+                                                _ => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if !guild_emojis.is_empty() {
                         div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
                             if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
                         }
                         div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                            onmousedown: move |e| e.prevent_default(),
                             for e in guild_emojis.iter().cloned() {
                                 {
                                     let code = e.shortcode.clone();
@@ -2754,7 +2920,9 @@ fn Composer(
                                             class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                             title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
                                             onclick: move |_| {
-                                                insert_pick(&id, &ComposerPick::Custom { code: code.clone(), url: url.clone() }, false, false);
+                                                let pick = ComposerPick::Custom { code: code.clone(), url: url.clone() };
+                                                insert_pick(&id, &pick, false, false);
+                                                note_recent_emoji(settings, &pick);
                                                 show_emoji.set(false);
                                             },
                                             oncontextmenu: move |ev: MouseEvent| {
@@ -2773,6 +2941,7 @@ fn Composer(
                         }
                     }
                     div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5",
+                        onmousedown: move |e| e.prevent_default(),
                         for (emoji, name) in EMOJIS.iter().copied() {
                             {
                                 let id = composer_id.clone();
@@ -2783,6 +2952,7 @@ fn Composer(
                                         title: ":{name}:",
                                         onclick: move |_| {
                                             insert_pick(&id, &ComposerPick::Unicode(emoji), false, false);
+                                            note_recent_emoji(settings, &ComposerPick::Unicode(emoji));
                                             show_emoji.set(false);
                                         },
                                         "{emoji}"
@@ -2860,7 +3030,7 @@ fn Composer(
                         title: crate::i18n::text("Enlarge image preview", &[]),
                         aria_label: crate::i18n::text("Enlarge image preview", &[]),
                         style: "cursor:zoom-in;",
-                        onclick: { let full = img.url.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
+                        onclick: { let full = img.url.clone(); move |_| state.write().image_viewer = Some(full.clone().into()) },
                         img {
                             class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
                             src: "{img.url}",
@@ -2974,6 +3144,8 @@ fn Composer(
                             "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                         },
                         title: crate::i18n::text("Emoji", &[]),
+                        // As with the suggestions: a button that takes focus takes the caret's place with it.
+                        onmousedown: move |e| e.prevent_default(),
                         onclick: move |_| { show_stickers.set(false); show_emoji.toggle(); },
                         span { class: "block w-4 h-4", dangerous_inner_html: super::icons::SMILE }
                     }
@@ -3085,6 +3257,32 @@ mod composer_tests {
             added_by: String::new(),
             created_ms: 0,
         }
+    }
+
+    #[test]
+    fn recent_emoji_offer_only_what_this_conversation_can_send() {
+        let urls = std::collections::HashMap::from([("lp.png".to_string(), "blob:lp".to_string())]);
+        let (unicode, name) = EMOJIS[0];
+        let recent = [
+            ":lp:".to_string(),
+            ":elsewhere:".to_string(),
+            unicode.to_string(),
+            "not an emoji".to_string(),
+        ];
+        let picks = recent_picks(&recent, &[custom("lp")], &urls);
+        assert_eq!(
+            picks,
+            [
+                (
+                    ComposerPick::Custom {
+                        code: "lp".into(),
+                        url: "blob:lp".into()
+                    },
+                    ":lp:".to_string()
+                ),
+                (ComposerPick::Unicode(unicode), format!(":{name}:")),
+            ]
+        );
     }
 
     #[test]

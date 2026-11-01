@@ -80,6 +80,9 @@ pub struct MediaStore {
     dir: PathBuf,
     used: Arc<AtomicU64>,
     max_bytes: u64,
+    preview_used: Arc<AtomicU64>,
+    writes: Arc<std::sync::Mutex<()>>,
+    preview_locks: Arc<[std::sync::Mutex<()>; 16]>,
 }
 
 impl MediaStore {
@@ -98,10 +101,22 @@ impl MediaStore {
             .filter_map(|e| e.metadata().ok())
             .map(|m| m.len())
             .sum();
+        let preview_used = std::fs::read_dir(&dir)?
+            .flatten()
+            .filter(|e| {
+                e.file_type().is_ok_and(|t| t.is_file())
+                    && preview_owner(&e.file_name().to_string_lossy()).is_some()
+            })
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
         Ok(MediaStore {
             dir,
             used: Arc::new(AtomicU64::new(used)),
             max_bytes,
+            preview_used: Arc::new(AtomicU64::new(preview_used)),
+            writes: Arc::new(std::sync::Mutex::new(())),
+            preview_locks: Arc::new(std::array::from_fn(|_| std::sync::Mutex::new(()))),
         })
     }
 
@@ -153,11 +168,13 @@ impl MediaStore {
         let (bytes, ext) = decode(data_url, kind, max_image_bytes)?;
         let hash = hex::encode(Sha256::digest(&bytes));
         let name = format!("{hash}.{ext}");
+        let _write = self.writes.lock().map_err(|_| StoreError::Io)?;
         let path = self.dir.join(&name);
         if path.exists() {
             return Ok(format!("{SENTINEL}{name}"));
         }
         let len = bytes.len() as u64;
+        self.evict_previews(len, 0);
         if self.used_bytes().saturating_add(len) > self.max_bytes {
             return Err(StoreError::Full);
         }
@@ -221,6 +238,9 @@ impl MediaStore {
         files_only: bool,
     ) -> SweepReport {
         let mut report = SweepReport::default();
+        let Ok(_write) = self.writes.lock() else {
+            return report;
+        };
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return report;
         };
@@ -233,7 +253,12 @@ impl MediaStore {
             if files_only && !name.ends_with(".bin") {
                 continue;
             }
-            if referenced.contains(&name) {
+            let owner = preview_owner(&name);
+            if referenced.contains(&name)
+                || owner.as_ref().is_some_and(|(version, source)| {
+                    *version == discordia_image_policy::VERSION && referenced.contains(*source)
+                })
+            {
                 report.kept += 1;
                 continue;
             }
@@ -251,6 +276,9 @@ impl MediaStore {
             if std::fs::remove_file(entry.path()).is_ok() {
                 report.deleted += 1;
                 report.freed_bytes += size;
+                if owner.is_some() {
+                    self.preview_used.fetch_sub(size, Ordering::Relaxed);
+                }
             }
         }
         let mut used = self.used.load(Ordering::Relaxed);
@@ -305,7 +333,173 @@ const STORED_EXTENSIONS: [&str; 10] = [
 /// deletes only these, so nothing it finds in the directory leads it elsewhere.
 fn is_blob(entry: &std::fs::DirEntry) -> bool {
     entry.file_type().is_ok_and(|t| t.is_file())
-        && sanitize(&entry.file_name().to_string_lossy()).is_some()
+        && (sanitize(&entry.file_name().to_string_lossy()).is_some()
+            || preview_owner(&entry.file_name().to_string_lossy()).is_some())
+}
+
+fn preview_owner(name: &str) -> Option<(u8, &str)> {
+    let (version, source) = name
+        .strip_prefix("preview-")?
+        .strip_suffix(".thumb")?
+        .split_once('-')?;
+    let parsed = version.parse::<u8>().ok()?;
+    if parsed.to_string() != version {
+        return None;
+    }
+    let version = parsed;
+    let source_name = sanitize(source)?;
+    matches!(
+        source_name.rsplit_once('.')?.1,
+        "png" | "jpg" | "gif" | "webp" | "avif"
+    )
+    .then_some((version, source))
+}
+
+impl MediaStore {
+    fn evict_previews(&self, incoming: u64, preview_incoming: u64) {
+        let limit = (self.max_bytes / 8).min(128 * 1024 * 1024);
+        if self.used_bytes().saturating_add(incoming) <= self.max_bytes
+            && (preview_incoming == 0
+                || self
+                    .preview_used
+                    .load(Ordering::Relaxed)
+                    .saturating_add(preview_incoming)
+                    <= limit)
+        {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut files: Vec<_> = entries
+            .flatten()
+            .filter(|e| {
+                e.file_type().is_ok_and(|t| t.is_file())
+                    && preview_owner(&e.file_name().to_string_lossy()).is_some()
+            })
+            .filter_map(|e| {
+                e.metadata()
+                    .ok()
+                    .map(|m| (m.modified().ok(), e.path(), m.len()))
+            })
+            .collect();
+        files.sort_by_key(|f| f.0);
+        for (_, path, size) in files {
+            if self.used_bytes().saturating_add(incoming) <= self.max_bytes
+                && (preview_incoming == 0
+                    || self
+                        .preview_used
+                        .load(Ordering::Relaxed)
+                        .saturating_add(preview_incoming)
+                        <= limit)
+            {
+                break;
+            }
+            if std::fs::remove_file(path).is_ok() {
+                self.used.fetch_sub(size, Ordering::Relaxed);
+                self.preview_used.fetch_sub(size, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn preview(&self, stored: &str, budget: usize) -> Option<(String, bool)> {
+        use std::io::Read;
+        let name = sanitize(stored.strip_prefix(SENTINEL)?)?;
+        if !matches!(
+            name.rsplit_once('.')?.1,
+            "png" | "jpg" | "gif" | "webp" | "avif"
+        ) {
+            return None;
+        }
+        let size = self.stored_size(stored)?;
+        if size > discordia_image_policy::MAX_INPUT_BYTES as u64 {
+            return None;
+        }
+        let stripe = usize::from(u8::from_str_radix(&name[..2], 16).ok()?) % 16;
+        let _same = self.preview_locks[stripe].lock().ok()?;
+        let cached = self.dir.join(format!(
+            "preview-{}-{name}.thumb",
+            discordia_image_policy::VERSION
+        ));
+        if let Ok(meta) = std::fs::symlink_metadata(&cached)
+            && meta.file_type().is_file()
+            && meta.len() <= discordia_image_policy::MAX_OUTPUT_BYTES as u64
+        {
+            if (meta.len() as usize).div_ceil(3) * 4 + "data:image/jpeg;base64,".len() > budget {
+                return None;
+            }
+            if let Ok(bytes) = std::fs::read(&cached)
+                && let Ok(format) = image::guess_format(&bytes)
+            {
+                let result = format!(
+                    "data:{};base64,{}",
+                    format.to_mime_type(),
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                );
+                return (result.len() <= budget).then_some((result, false));
+            }
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(self.dir.join(&name))
+            .ok()?
+            .take(discordia_image_policy::MAX_INPUT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let prepared = match discordia_image_policy::create(&bytes) {
+            Ok(Some(preview)) => preview,
+            _ => {
+                let mime = mime_for_name(&name);
+                if "data:;base64,".len() + mime.len() + bytes.len().div_ceil(3) * 4 > budget {
+                    return None;
+                }
+                return Some((
+                    format!(
+                        "data:{mime};base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    ),
+                    true,
+                ));
+            }
+        };
+        let result = format!(
+            "data:{};base64,{}",
+            prepared.mime,
+            base64::engine::general_purpose::STANDARD.encode(&prepared.bytes)
+        );
+        if result.len() > budget {
+            return None;
+        }
+        let len = prepared.bytes.len() as u64;
+        if let Ok(_write) = self.writes.lock() {
+            let limit = (self.max_bytes / 8).min(128 * 1024 * 1024);
+            if len <= limit {
+                self.evict_previews(len, len);
+                if self.used_bytes().saturating_add(len) <= self.max_bytes
+                    && self
+                        .preview_used
+                        .load(Ordering::Relaxed)
+                        .saturating_add(len)
+                        <= limit
+                    && !cached.exists()
+                {
+                    let temporary = self
+                        .dir
+                        .join(format!(".preview-{}.tmp", uuid::Uuid::new_v4()));
+                    if std::fs::write(&temporary, &prepared.bytes).is_ok()
+                        && std::fs::rename(&temporary, &cached).is_ok()
+                    {
+                        self.used.fetch_add(len, Ordering::Relaxed);
+                        self.preview_used.fetch_add(len, Ordering::Relaxed);
+                    } else if let Err(error) = std::fs::remove_file(&temporary)
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        tracing::debug!(%error,"preview temporary cleanup failed");
+                    }
+                }
+            }
+        }
+        Some((result, false))
+    }
 }
 
 fn decode(

@@ -65,6 +65,8 @@ cargo fmt --all
 Add `--features devtools` to client builds for Dioxus hot reload and developer
 tools. Normal builds retain application logging and the Diagnostics panel.
 Desktop dependency patches are recorded in `vendor/dioxus-desktop/PATCHES.md`.
+The shared image policy, Windows measurements and remaining manual checks are
+recorded in [docs/UNIFIED_IMAGE_POLICY.md](docs/UNIFIED_IMAGE_POLICY.md).
 
 The opt-in `human_speech_audit` test needs `DISCORDIA_SPEECH_FIXTURES` pointing to
 a directory with `female.wav` and `male.wav`: Open Speech Repository recordings

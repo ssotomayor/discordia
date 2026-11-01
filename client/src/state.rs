@@ -339,8 +339,11 @@ pub struct AppState {
     pub account_pictures: Option<(String, crate::profile::Pictures)>,
     pub account_dnd: Option<(String, bool)>,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
+    /// A search result to bring into view: channel, message, its time in ms.
+    pub message_jump: Option<(Id, Id, i64)>,
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
+    pub server_image_previews: bool,
     pub guild_file_policies: BTreeMap<Id, crate::protocol::FilePolicy>,
     pub guild_stickers: BTreeMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub voice_states: Vec<VoiceState>,
@@ -437,7 +440,7 @@ pub struct AppState {
     pub activities: HashMap<String, crate::protocol::Activity>,
     pub profile_card: Option<String>,
     pub command_form: Option<CommandForm>,
-    pub image_viewer: Option<String>,
+    pub image_viewer: Option<crate::features::image_viewer::ImageView>,
     pub guild_dialog: Option<GuildDialog>,
     pub rules_prompt: Option<RulesPrompt>,
     /// Opened from the title bar, rendered by the voice panel that owns the
@@ -589,8 +592,10 @@ impl AppState {
             account_pictures: None,
             account_dnd: None,
             message_search: None,
+            message_jump: None,
             file_upload_result: None,
             server_chat_tools: false,
+            server_image_previews: false,
             guild_file_policies: BTreeMap::new(),
             guild_stickers: BTreeMap::new(),
             voice_states: Vec::new(),
@@ -880,9 +885,11 @@ impl AppState {
         self.profiles.clear();
         self.activities.clear();
         self.message_search = None;
+        self.message_jump = None;
         self.pending_edits.clear();
         self.file_upload_result = None;
         self.server_chat_tools = false;
+        self.server_image_previews = false;
         self.guild_file_policies.clear();
         self.guild_stickers.clear();
         self.server_origin = None;
@@ -934,10 +941,25 @@ impl AppState {
         self.evict_inactive_dm_images(self.selected_channel);
     }
 
+    pub(crate) fn retry_image_viewer(&mut self, id: Id) {
+        let Some(view) = self.image_viewer.as_mut().filter(|view| view.id == id) else {
+            return;
+        };
+        if let Some(crate::features::image_viewer::Original::Community(address)) = &view.target
+            && let Some(name) = address.strip_prefix("media:")
+        {
+            self.emoji_images.retry_empty(name);
+            self.emoji_requested.remove(name);
+        }
+        view.retry();
+    }
+
     pub fn evict_inactive_dm_images(&mut self, active_channel: Option<Id>) {
         for image in self.dm_images.values_mut() {
             if Some(image.channel_id) != active_channel {
                 image.viewers.clear();
+                image.original_viewers.clear();
+                image.original_data = false;
                 if !matches!(image.status, crate::nostr::dm_image::Status::Uploading)
                     && image.data.is_some()
                 {
@@ -3687,6 +3709,8 @@ mod tests {
                 upload: false,
                 data: Some(std::sync::Arc::new("data_a".into())),
                 viewers: std::collections::HashSet::from([Id::new_v4()]),
+                original_viewers: Default::default(),
+                original_data: false,
             },
         );
         s.dm_images.insert(
@@ -3698,6 +3722,8 @@ mod tests {
                 upload: false,
                 data: Some(std::sync::Arc::new("data_b".into())),
                 viewers: std::collections::HashSet::from([Id::new_v4()]),
+                original_viewers: Default::default(),
+                original_data: false,
             },
         );
 

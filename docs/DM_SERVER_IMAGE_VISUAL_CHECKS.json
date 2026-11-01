@@ -1,0 +1,29 @@
+{
+  "scope": "Comparación automática de capturas del componente a densidad nativa; no prueba perceptual ni manual de cuentas reales",
+  "cases": {
+    "jpeg-medium": {
+      "changedPixels": 537581,
+      "height": 900,
+      "maxChannelDifference": 207,
+      "rgbMeanAbsoluteError": 1.1234053497942387,
+      "rgbRootMeanSquareError": 6.483171988534765,
+      "width": 1440
+    },
+    "jpeg-large": {
+      "changedPixels": 610988,
+      "height": 900,
+      "maxChannelDifference": 61,
+      "rgbMeanAbsoluteError": 1.1350740740740741,
+      "rgbRootMeanSquareError": 2.836004097085039,
+      "width": 1440
+    },
+    "png-alpha": {
+      "changedPixels": 0,
+      "height": 900,
+      "maxChannelDifference": 0,
+      "rgbMeanAbsoluteError": 0,
+      "rgbRootMeanSquareError": 0,
+      "width": 1440
+    }
+  }
+}

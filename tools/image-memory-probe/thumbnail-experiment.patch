@@ -1,0 +1,542 @@
+diff --git a/client/src/features/chat.rs b/client/src/features/chat.rs
+index 35ddf05..e1b1bf7 100644
+--- a/client/src/features/chat.rs
++++ b/client/src/features/chat.rs
+@@ -1404,14 +1404,14 @@ fn ChatImage(address: String) -> Element {
+     let resolved = use_memo(use_reactive((&address,), move |(address,)| {
+         let s = state.read();
+         let data = s.media_src_shared(&address)?;
+-        Some(crate::image_assets::chat_source(data))
++        Some(crate::image_assets::chat_preview_source(data))
+     }));
+-    rsx! {
+-        if let Some(src) = resolved() {
++    if let Some(src) = resolved() {
++        let image = rsx! {
+             img {
+                 class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] object-contain block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",
+                 style: "max-width: min(320px, 82vw); max-height: 240px; width: auto; height: auto; cursor: zoom-in;",
+-                src: "{src}",
++                src: src.full_src(),
+                 alt: crate::i18n::text("attachment", &[]),
+                 title: crate::i18n::text("Click to view full size", &[]),
+                 onclick: move |_| {
+@@ -1421,13 +1421,22 @@ fn ChatImage(address: String) -> Element {
+                     }
+                 },
+             }
++        };
++        return if src.has_preview() {
++            rsx! { picture { style: "display:contents;",
++                source { style: "display:none;", "media": "(max-resolution: 2dppx)", "srcset": "{src}" }
++                {image}
++            } }
+         } else {
++            image
++        };
++    }
++    rsx! {
+             div {
+                 class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                 style: "max-width: min(320px, 82vw); width: 280px; height: 120px;",
+                 {crate::i18n::text("Loading image…", &[])}
+             }
+-        }
+     }
+ }
+ 
+diff --git a/client/src/image_assets.rs b/client/src/image_assets.rs
+index cae3e22..4c272aa 100644
+--- a/client/src/image_assets.rs
++++ b/client/src/image_assets.rs
+@@ -33,6 +33,7 @@ struct AssetEntry {
+     view: Weak<ViewLease>,
+     hash: u64,
+     decoded: Option<DecodedBytes>,
++    preview: bool,
+ }
+ 
+ #[derive(Default)]
+@@ -70,6 +71,20 @@ pub(crate) struct ImageSource {
+     uri: Arc<String>,
+     _data: Arc<String>,
+     _view: Option<Arc<ViewLease>>,
++    original: Option<Box<ImageSource>>,
++}
++
++impl ImageSource {
++    pub(crate) fn has_preview(&self) -> bool {
++        self.original.is_some()
++    }
++
++    pub(crate) fn full_src(&self) -> &str {
++        self.original
++            .as_ref()
++            .map(|original| original.uri.as_str())
++            .unwrap_or(self.uri.as_str())
++    }
+ }
+ 
+ impl PartialEq for ImageSource {
+@@ -114,11 +129,36 @@ impl Assets {
+     }
+ 
+     fn source_with_hash(&self, data: Arc<String>, limit: usize, hash: u64) -> ImageSource {
++        self.source_variant(data, limit, hash, false)
++    }
++
++    fn preview_source(&self, data: Arc<String>) -> ImageSource {
++        let limit = crate::chat_image::MAX_DM_BYTES;
++        let hash = hash_content(&data);
++        let original = self.source_variant(data.clone(), limit, hash, false);
++        if !payload(&data, limit).is_some_and(|(mime, _, encoded)| {
++            mime == "image/jpeg" && crate::image_preview::needed(encoded)
++        }) {
++            return original;
++        }
++        let mut preview = self.source_variant(data, limit, hash, true);
++        preview.original = Some(Box::new(original));
++        preview
++    }
++
++    fn source_variant(
++        &self,
++        data: Arc<String>,
++        limit: usize,
++        hash: u64,
++        preview: bool,
++    ) -> ImageSource {
+         let Some((_, ext, _)) = payload(&data, limit) else {
+             return ImageSource {
+                 uri: data.clone(),
+                 _data: data,
+                 _view: None,
++                original: None,
+             };
+         };
+         let mut inner = self.0.lock();
+@@ -131,7 +171,8 @@ impl Assets {
+             keys.iter().find_map(|key| {
+                 inner
+                     .entries
+-                    .get(key)?
++                    .get(key)
++                    .filter(|entry| entry.preview == preview)?
+                     .owner
+                     .upgrade()
+                     .filter(|shared| shared.as_ref() == data.as_ref())
+@@ -153,6 +194,7 @@ impl Assets {
+                 uri: Arc::new(format!("/image-data/{key}")),
+                 _data: shared,
+                 _view: Some(view),
++                original: None,
+             };
+         }
+         let key = format!("{}.{ext}", uuid::Uuid::new_v4());
+@@ -167,6 +209,7 @@ impl Assets {
+                 view: Arc::downgrade(&view),
+                 hash,
+                 decoded: None,
++                preview,
+             },
+         );
+         inner.by_hash.entry(hash).or_default().push(key.clone());
+@@ -174,6 +217,7 @@ impl Assets {
+             uri: Arc::new(format!("/image-data/{key}")),
+             _data: data,
+             _view: Some(view),
++            original: None,
+         }
+     }
+ 
+@@ -182,11 +226,19 @@ impl Assets {
+         self.0.lock().entries.get(key)?.owner.upgrade()
+     }
+ 
+-    fn resolve_entry(&self, key: &str) -> Option<(Arc<String>, Option<DecodedBytes>)> {
++    fn resolve_entry(&self, key: &str) -> Option<(Arc<String>, Option<DecodedBytes>, bool)> {
+         let inner = self.0.lock();
+         let entry = inner.entries.get(key)?;
+         let owner = entry.owner.upgrade()?;
+-        Some((owner, entry.decoded.clone()))
++        Some((owner, entry.decoded.clone(), entry.preview))
++    }
++
++    fn is_viewed(&self, key: &str) -> bool {
++        self.0
++            .lock()
++            .entries
++            .get(key)
++            .is_some_and(|entry| entry.view.strong_count() > 0)
+     }
+ 
+     fn store_decoded(&self, key: &str, decoded: DecodedBytes) {
+@@ -206,6 +258,7 @@ pub(crate) fn source(data: Arc<String>) -> ImageSource {
+             uri: data.clone(),
+             _data: data,
+             _view: None,
++            original: None,
+         },
+     }
+ }
+@@ -217,10 +270,18 @@ pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
+             uri: data.clone(),
+             _data: data,
+             _view: None,
++            original: None,
+         },
+     }
+ }
+ 
++pub(crate) fn chat_preview_source(data: Arc<String>) -> ImageSource {
++    match try_consume_context::<Assets>() {
++        Some(assets) => assets.preview_source(data),
++        None => chat_source(data),
++    }
++}
++
+ pub(crate) fn use_image_assets() {
+     let assets = use_hook(|| dioxus::core::provide_root_context(Assets::default()));
+     let assets_handler = assets.clone();
+@@ -232,53 +293,97 @@ pub(crate) fn use_image_assets() {
+             .unwrap_or("")
+             .to_string();
+         let resolved = assets_handler.resolve_entry(&path);
++        let needs_preview = resolved
++            .as_ref()
++            .is_some_and(|(_, cached, preview)| *preview && cached.is_none());
+         let assets_task = assets_handler.clone();
+-        tokio::task::spawn_blocking(move || {
+-            use crate::platform::wry::http::{
+-                Response, StatusCode,
+-                header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue},
+-            };
+-            let decoded: Option<DecodedBytes> = match resolved {
+-                Some((_, Some(cached))) => Some(cached),
+-                Some((data, None)) => {
+-                    let decoded = (|| {
+-                        let (mime, _, encoded) = payload(&data, crate::chat_image::MAX_DM_BYTES)?;
+-                        let bytes = base64::engine::general_purpose::STANDARD
+-                            .decode(encoded)
+-                            .ok()?;
+-                        (bytes.len() <= crate::chat_image::MAX_DM_BYTES)
+-                            .then_some(Arc::new((mime, bytes)))
+-                    })();
+-                    if let Some(ref d) = decoded {
+-                        assets_task.store_decoded(&path, Arc::clone(d));
++        tokio::spawn(async move {
++            static PREVIEW_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
++            let permit = if needs_preview {
++                match PREVIEW_JOBS.acquire().await {
++                    Ok(permit) => Some(permit),
++                    Err(_) => {
++                        let mut response = crate::platform::wry::http::Response::new(Vec::new());
++                        *response.status_mut() =
++                            crate::platform::wry::http::StatusCode::SERVICE_UNAVAILABLE;
++                        responder.respond(response);
++                        return;
+                     }
+-                    decoded
+-                }
+-                None => None,
+-            };
+-            let mut response = match decoded {
+-                Some(payload) => {
+-                    let mut response = Response::new(payload.1.clone());
+-                    response
+-                        .headers_mut()
+-                        .insert(CONTENT_TYPE, HeaderValue::from_static(payload.0));
+-                    response.headers_mut().insert(
+-                        CACHE_CONTROL,
+-                        HeaderValue::from_static("private, max-age=300"),
+-                    );
+-                    response
+-                }
+-                None => {
+-                    let mut response = Response::new(Vec::new());
+-                    *response.status_mut() = StatusCode::NOT_FOUND;
+-                    response
+                 }
++            } else {
++                None
+             };
+-            response.headers_mut().insert(
+-                "x-content-type-options",
+-                HeaderValue::from_static("nosniff"),
+-            );
+-            responder.respond(response);
++            if needs_preview && !assets_task.is_viewed(&path) {
++                let mut response = crate::platform::wry::http::Response::new(Vec::new());
++                *response.status_mut() = crate::platform::wry::http::StatusCode::NOT_FOUND;
++                response.headers_mut().insert(
++                    "cache-control",
++                    crate::platform::wry::http::HeaderValue::from_static("no-store"),
++                );
++                responder.respond(response);
++                return;
++            }
++            if let Err(error) = tokio::task::spawn_blocking(move || {
++                let _permit = permit;
++                use crate::platform::wry::http::{
++                    Response, StatusCode,
++                    header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue},
++                };
++                let decoded: Option<DecodedBytes> = match resolved {
++                    Some((_, Some(cached), _)) => Some(cached),
++                    Some((data, None, preview)) => {
++                        let decoded = (|| {
++                            let (mime, _, encoded) =
++                                payload(&data, crate::chat_image::MAX_DM_BYTES)?;
++                            let bytes = base64::engine::general_purpose::STANDARD
++                                .decode(encoded)
++                                .ok()?;
++                            if bytes.len() > crate::chat_image::MAX_DM_BYTES {
++                                return None;
++                            }
++                            let payload = if preview {
++                                crate::image_preview::downsample(mime, &bytes)
++                                    .unwrap_or((mime, bytes))
++                            } else {
++                                (mime, bytes)
++                            };
++                            Some(Arc::new(payload))
++                        })();
++                        if let Some(ref d) = decoded {
++                            assets_task.store_decoded(&path, Arc::clone(d));
++                        }
++                        decoded
++                    }
++                    None => None,
++                };
++                let mut response = match decoded {
++                    Some(payload) => {
++                        let mut response = Response::new(payload.1.clone());
++                        response
++                            .headers_mut()
++                            .insert(CONTENT_TYPE, HeaderValue::from_static(payload.0));
++                        response.headers_mut().insert(
++                            CACHE_CONTROL,
++                            HeaderValue::from_static("private, max-age=300"),
++                        );
++                        response
++                    }
++                    None => {
++                        let mut response = Response::new(Vec::new());
++                        *response.status_mut() = StatusCode::NOT_FOUND;
++                        response
++                    }
++                };
++                response.headers_mut().insert(
++                    "x-content-type-options",
++                    HeaderValue::from_static("nosniff"),
++                );
++                responder.respond(response);
++            })
++            .await
++            {
++                tracing::warn!(%error, "image asset response failed");
++            }
+         });
+     });
+ }
+@@ -353,6 +458,43 @@ mod tests {
+         assert!(weak.upgrade().is_none());
+     }
+ 
++    #[test]
++    fn preview_and_original_have_separate_payloads_and_shared_original_storage() {
++        let image = image::RgbImage::new(2000, 1200);
++        let mut jpeg = std::io::Cursor::new(Vec::new());
++        image.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
++        let data = Arc::new(format!(
++            "data:image/jpeg;base64,{}",
++            base64::engine::general_purpose::STANDARD.encode(jpeg.into_inner())
++        ));
++        let assets = Assets::default();
++        let original = assets.source_with_limit(data.clone(), crate::chat_image::MAX_DM_BYTES);
++        let preview = assets.preview_source(data.clone());
++        assert!(preview.has_preview());
++        assert_eq!(preview.full_src(), original.to_string());
++        assert_ne!(preview.to_string(), original.to_string());
++        assert!(Arc::ptr_eq(&preview._data, &data));
++        let original_key = original.uri.strip_prefix("/image-data/").unwrap();
++        let preview_key = preview.uri.strip_prefix("/image-data/").unwrap();
++        assert!(!assets.resolve_entry(original_key).unwrap().2);
++        assert!(assets.resolve_entry(preview_key).unwrap().2);
++    }
++
++    #[test]
++    fn png_and_gif_keep_the_same_source_instead_of_a_second_animation_resource() {
++        let assets = Assets::default();
++        for value in [
++            "data:image/png;base64,aGk=",
++            "data:image/gif;base64,R0lGODlh",
++        ] {
++            let data = Arc::new(value.to_owned());
++            let original = assets.source(data.clone());
++            let preview = assets.preview_source(data);
++            assert!(!preview.has_preview());
++            assert_eq!(preview.full_src(), original.to_string());
++        }
++    }
++
+     #[test]
+     fn chat_images_can_use_the_larger_upload_budget_without_expanding_artwork() {
+         let assets = Assets::default();
+diff --git a/client/src/image_preview.rs b/client/src/image_preview.rs
+new file mode 100644
+index 0000000..12301d3
+--- /dev/null
++++ b/client/src/image_preview.rs
+@@ -0,0 +1,139 @@
++use std::io::Cursor;
++
++use base64::Engine as _;
++use image::{ImageDecoder, ImageEncoder, ImageFormat, ImageReader};
++
++const WIDTH: u32 = 640;
++const HEIGHT: u32 = 480;
++const MIN_PIXELS: u64 = 2_000_000;
++
++pub(crate) fn needed(encoded: &str) -> bool {
++    let length = encoded.len().min(65536) / 4 * 4;
++    let Ok(header) =
++        base64::engine::general_purpose::STANDARD.decode(&encoded.as_bytes()[..length])
++    else {
++        return false;
++    };
++    image::codecs::jpeg::JpegDecoder::new(Cursor::new(header)).is_ok_and(|decoder| {
++        let (width, height) = decoder.dimensions();
++        u64::from(width) * u64::from(height) >= MIN_PIXELS
++            && (width > WIDTH || height > HEIGHT)
++            && width <= 8192
++            && height <= 8192
++            && u64::from(width) * u64::from(height) <= 16_000_000
++    })
++}
++
++fn limits() -> image::Limits {
++    let mut limits = image::Limits::default();
++    limits.max_image_width = Some(8192);
++    limits.max_image_height = Some(8192);
++    limits.max_alloc = Some(128 * 1024 * 1024);
++    limits
++}
++
++pub(crate) fn downsample(mime: &'static str, bytes: &[u8]) -> Option<(&'static str, Vec<u8>)> {
++    let format = image::guess_format(bytes).ok()?;
++    if mime != "image/jpeg" || format != ImageFormat::Jpeg {
++        return None;
++    }
++    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
++    reader.limits(limits());
++    let mut decoder = reader.into_decoder().ok()?;
++    let (width, height) = decoder.dimensions();
++    if !(MIN_PIXELS..=16_000_000).contains(&(u64::from(width) * u64::from(height))) {
++        return None;
++    }
++    let orientation = decoder.orientation().ok()?;
++    let profile = decoder.icc_profile().ok()?;
++    if profile
++        .as_ref()
++        .is_some_and(|bytes| bytes.len() > 1024 * 1024)
++    {
++        return None;
++    }
++    let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
++    image.apply_orientation(orientation);
++    let resized = image.thumbnail(WIDTH, HEIGHT);
++    let mut output = Vec::new();
++    let mut encoder = image::codecs::png::PngEncoder::new_with_quality(
++        &mut output,
++        image::codecs::png::CompressionType::Fast,
++        image::codecs::png::FilterType::Adaptive,
++    );
++    if let Some(profile) = profile {
++        encoder.set_icc_profile(profile).ok()?;
++    }
++    encoder
++        .write_image(
++            resized.as_bytes(),
++            resized.width(),
++            resized.height(),
++            resized.color().into(),
++        )
++        .ok()?;
++    (output.len() <= 1024 * 1024).then_some(("image/png", output))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn preview_is_bounded_lossless_encoded_and_preserves_original_bytes() {
++        let image = image::RgbImage::from_fn(2560, 1440, |x, y| {
++            image::Rgb([(x / 16) as u8, (y / 8) as u8, 120])
++        });
++        let mut bytes = Cursor::new(Vec::new());
++        image.write_to(&mut bytes, ImageFormat::Jpeg).unwrap();
++        let original = bytes.into_inner();
++        let copy = original.clone();
++        assert!(needed(
++            &base64::engine::general_purpose::STANDARD.encode(&original)
++        ));
++        let (mime, preview) = downsample("image/jpeg", &original).unwrap();
++        let decoded = image::load_from_memory(&preview).unwrap();
++        assert_eq!(mime, "image/png");
++        assert_eq!((decoded.width(), decoded.height()), (640, 360));
++        assert_eq!(original, copy);
++    }
++
++    #[test]
++    fn small_images_animation_and_invalid_payloads_keep_the_original() {
++        let image = image::RgbImage::new(64, 48);
++        let mut bytes = Cursor::new(Vec::new());
++        image.write_to(&mut bytes, ImageFormat::Png).unwrap();
++        assert!(downsample("image/png", bytes.get_ref()).is_none());
++        let gif = include_bytes!("../tests/fixtures/optimized-profile.gif");
++        assert!(downsample("image/gif", gif).is_none());
++        assert!(downsample("image/png", gif).is_none());
++        assert!(downsample("image/webp", b"RIFF").is_none());
++        assert!(downsample("image/jpeg", b"bad").is_none());
++        assert!(!needed("bad"));
++        assert!(!needed(&("A".repeat(65535) + "éAAA")));
++        let medium = image::RgbImage::new(1024, 768);
++        let mut jpeg = Cursor::new(Vec::new());
++        medium.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
++        assert!(!needed(
++            &base64::engine::general_purpose::STANDARD.encode(jpeg.get_ref())
++        ));
++        assert!(downsample("image/jpeg", jpeg.get_ref()).is_none());
++    }
++
++    #[test]
++    fn jpeg_orientation_is_applied_before_resizing() {
++        let image = image::RgbImage::new(1600, 2000);
++        let mut encoded = Cursor::new(Vec::new());
++        image.write_to(&mut encoded, ImageFormat::Jpeg).unwrap();
++        let jpeg = encoded.into_inner();
++        let exif = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
++        let mut oriented = jpeg[..2].to_vec();
++        oriented.extend_from_slice(&[0xff, 0xe1]);
++        oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
++        oriented.extend_from_slice(exif);
++        oriented.extend_from_slice(&jpeg[2..]);
++        let (_, result) = downsample("image/jpeg", &oriented).unwrap();
++        let decoded = image::load_from_memory(&result).unwrap();
++        assert_eq!((decoded.width(), decoded.height()), (600, 480));
++    }
++}
+diff --git a/client/src/lib.rs b/client/src/lib.rs
+index cbe75ae..7b8f8f8 100644
+--- a/client/src/lib.rs
++++ b/client/src/lib.rs
+@@ -42,6 +42,7 @@ mod i18n;
+ mod identity;
+ mod image_assets;
+ mod image_edit;
++mod image_preview;
+ mod keyvault;
+ mod known_servers;
+ #[cfg(test)]

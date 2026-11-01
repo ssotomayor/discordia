@@ -49,7 +49,7 @@ pub(crate) fn StreamQualityNotice(
 
 /// `screen-…` is a misnomer since the camera moved onto this same room and
 /// connection. The name is load-bearing on the wire, so it stays.
-pub(crate) const SCREEN_JS: &str = r#"
+pub const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
   let connectionRequest = null;
@@ -1176,9 +1176,23 @@ window.dxScreen = window.dxScreen || (function () {
     }
     try { at.stop(); } catch (e) {}
   }
-  async function stopShare() {
+  async function stopLocalShareVideo() {
     healthReports.delete('local');
-    await stopLocalShareAudio();
+    const vt = localShareVideoTrack;
+    const ct = screenCaptureTrack;
+    localShareVideoTrack = null;
+    screenCaptureTrack = null;
+    post('screen-stats', { active: false });
+    if (ct) { try { ct.stop(); } catch (e) {} }
+    if (vt) {
+      if (room) { try { await room.localParticipant.unpublishTrack(vt, true); } catch (e) {} }
+      try { vt.stop(); } catch (e) {}
+    }
+  }
+  async function stopShare() {
+    const videoStopped = stopLocalShareVideo();
+    const audioStopped = stopLocalShareAudio();
+    await Promise.all([videoStopped, audioStopped]);
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
@@ -1395,15 +1409,18 @@ window.dxScreen = window.dxScreen || (function () {
 
   async function disconnect() {
     stopCameraPreview();
+    if (screenStatsTimer) { clearInterval(screenStatsTimer); screenStatsTimer = null; }
+    keyArrived();
     const request = {};
     connectionRequest = request;
     const previous = room;
     const audioStopped = stopLocalShareAudio();
     const cameraStopped = stopCamera();
+    const shareStopped = stopLocalShareVideo();
     room = null;
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
-    await Promise.all([audioStopped, cameraStopped]);
+    await Promise.all([audioStopped, cameraStopped, shareStopped]);
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
     if (connectionRequest !== request) return;
     connectionRequest = null;
@@ -1701,12 +1718,15 @@ fn capture_settings_for_session(
 #[component]
 pub fn ScreenShareBridge() -> Element {
     let visibility_window = crate::platform::use_window();
+    let state = use_app_state();
     use_future(move || {
         let window = visibility_window.clone();
         async move {
             // The eval crosses into the WebView; visibility rarely changes, so
             // send only on a change and let the JS keep its state otherwise.
             let mut sent: Option<bool> = None;
+            #[cfg(target_os = "windows")]
+            let mut memory_level_low: Option<bool> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let visible = window_shown(&window);
@@ -1716,10 +1736,24 @@ pub fn ScreenShareBridge() -> Element {
                         "window.dxScreen?.setViewerVisibility({visible});"
                     ));
                 }
+                #[cfg(target_os = "windows")]
+                {
+                    use crate::platform::wry::{MemoryUsageLevel, WebViewExtWindows as _};
+                    let video_active = screen_connection_target(&state.read()).is_some();
+                    let should_be_low = !visible && !video_active;
+                    if memory_level_low != Some(should_be_low) {
+                        memory_level_low = Some(should_be_low);
+                        let level = if should_be_low {
+                            MemoryUsageLevel::Low
+                        } else {
+                            MemoryUsageLevel::Normal
+                        };
+                        let _ = window.webview.set_memory_usage_level(level);
+                    }
+                }
             }
         }
     });
-    let state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let watching = use_memo(move || state.read().screen_viewing.clone());
@@ -1822,7 +1856,7 @@ pub fn ScreenShareBridge() -> Element {
                             let key = crate::e2ee::current_key().map(|k| js_str(&k)).unwrap_or_else(|| "null".into());
                             let encrypt = crate::e2ee::enabled();
                             let ice = ice_servers_js(&target.ice_servers);
-                            format!("window.dxScreen.connect({url},{token},{key},{encrypt},{generation},{ice});")
+                            format!("{}window.dxScreen.connect({url},{token},{key},{encrypt},{generation},{ice});", crate::app::livekit_bundle_js())
                         }
                         super::video_lifecycle::Action::Disconnect => "window.dxScreen.disconnect();".into(),
                     };
@@ -3777,5 +3811,42 @@ mod js_escaping_tests {
             screen_stats_js(true).ends_with("window.dxScreen?.setStatsEnabled(true);"),
             "diagnostics can enable sender stats polling"
         );
+    }
+
+    #[test]
+    fn teardown_cleans_screen_tracks_and_stats_timer() {
+        let js = super::SCREEN_JS;
+        assert!(
+            js.contains("async function stopLocalShareVideo()")
+                && js.contains("localShareVideoTrack = null;")
+                && js.contains("screenCaptureTrack = null;"),
+            "stopping local share unpublishes, stops and nulls video and capture tracks"
+        );
+        assert!(
+            js.contains("if (screenStatsTimer) { clearInterval(screenStatsTimer); screenStatsTimer = null; }"),
+            "disconnect halts the screen statistics polling timer"
+        );
+        assert!(
+            js.contains("const shareStopped = stopLocalShareVideo();"),
+            "disconnect stops and cleans active screen video tracks"
+        );
+    }
+
+    #[test]
+    fn adaptive_webview_memory_policy_evaluation() {
+        fn evaluate_policy(visible: bool, video_active: bool) -> &'static str {
+            let should_be_low = !visible && !video_active;
+            if should_be_low { "Low" } else { "Normal" }
+        }
+
+        // Visible window: always Normal
+        assert_eq!(evaluate_policy(true, false), "Normal");
+        assert_eq!(evaluate_policy(true, true), "Normal");
+
+        // Inactive window (minimized or tray) without active video: Low
+        assert_eq!(evaluate_policy(false, false), "Low");
+
+        // Inactive window (minimized or tray) WITH active video streaming: Normal
+        assert_eq!(evaluate_policy(false, true), "Normal");
     }
 }

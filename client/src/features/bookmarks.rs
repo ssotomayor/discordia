@@ -133,7 +133,7 @@ pub(super) fn BookmarksDialog() -> Element {
                                             p { class: "dxf-bookmarks-text", "{message.content}" }
                                             if let Some(image) = image {
                                                 img { src: "{image}", alt: crate::i18n::text("attachment", &[]),
-                                                    onclick: move |_| { open.set(false); app.clone().write().image_viewer = Some(image.clone()); } }
+                                                    onclick: move |_| { open.set(false); app.clone().write().image_viewer = Some(image.clone().into()); } }
                                             } else if message.image.is_some() { p { {crate::i18n::text("Image unavailable", &[])} } }
                                             if let Some(attachment) = &message.attachment { p { class: "dxf-bookmarks-file", "📎 {attachment.name}" } }
                                         }

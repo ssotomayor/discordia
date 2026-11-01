@@ -90,10 +90,18 @@ pub(crate) async fn handle_connection_with_route<S>(
     let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
     let mut last_received = tokio::time::Instant::now();
     let mut graceful = false;
+    let mut preview_jobs = tokio::task::JoinSet::<ServerMessage>::new();
 
     loop {
         watch.finish(&who);
         tokio::select! {
+            finished = preview_jobs.join_next(), if !preview_jobs.is_empty() => {
+                match finished {
+                    Some(Ok(message)) => if send(&mut ws_tx,&message).await.is_err() {break;},
+                    Some(Err(error)) => tracing::warn!(%error,"image preview job failed"),
+                    None => {}
+                }
+            }
             incoming = ws_rx.next() => {
                 let msg = match incoming {
                     Some(Ok(msg)) => msg,
@@ -854,6 +862,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             }
                         }
+                    }
+                    ClientMessage::FetchImagePreviews { images } => {
+                        if user.is_none() {
+                            let _ = send(&mut ws_tx,&ServerMessage::Error {message:"identify first".into()}).await;
+                            continue;
+                        }
+                        if !reads.allow() {reject_rate_limited(&mut ws_tx).await;continue;}
+                        if !spawn_previews(ctx.state.media.clone(),images,&mut preview_jobs)
+                            && send(&mut ws_tx,&ServerMessage::ImagePreviews {blobs:Vec::new()}).await.is_err(){break;}
                     }
                     ClientMessage::FetchEmoji { images } => {
                         if user.is_none() {
@@ -3070,6 +3087,117 @@ fn valid_emoji_payload(image: &str) -> bool {
     image.starts_with("data:image/") && image.len() <= MAX_EMOJI_DATA_LEN
 }
 const MAX_EMOJI_FETCH: usize = 64;
+static PREVIEW_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+static PREVIEW_CONVERSIONS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+fn spawn_previews(
+    media: crate::media::MediaStore,
+    images: Vec<String>,
+    jobs: &mut tokio::task::JoinSet<ServerMessage>,
+) -> bool {
+    if jobs.len() >= 8 {
+        return false;
+    }
+    let mut images: Vec<_> = images
+        .into_iter()
+        .take(MAX_EMOJI_FETCH)
+        .filter(|name| {
+            matches!(name.len(), 68 | 69)
+                && crate::media::is_address(name)
+                && name
+                    .rsplit_once('.')
+                    .is_some_and(|(_, ext)| matches!(ext, "png" | "jpg" | "gif" | "webp" | "avif"))
+        })
+        .collect();
+    images.sort_unstable();
+    images.dedup();
+    if images.is_empty() {
+        return false;
+    }
+    let Ok(slot) = PREVIEW_JOBS.try_acquire() else {
+        return false;
+    };
+    jobs.spawn(async move {
+        let Ok(permit) = PREVIEW_CONVERSIONS.acquire().await else {
+            return ServerMessage::ImagePreviews { blobs: Vec::new() };
+        };
+        match tokio::task::spawn_blocking(move || {
+            let (_slot, _permit) = (slot, permit);
+            let mut budget =
+                MAX_BLOB_RESPONSE_BYTES.min(crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN + 1024);
+            let mut blobs = Vec::new();
+            for image in images {
+                if let Some((data_url, original)) = media.preview(&format!("media:{image}"), budget)
+                {
+                    budget = budget.saturating_sub(data_url.len());
+                    blobs.push(crate::protocol::ImagePreviewBlob {
+                        image,
+                        data_url,
+                        original,
+                    });
+                }
+            }
+            ServerMessage::ImagePreviews { blobs }
+        })
+        .await
+        {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::warn!(%error,"image preview conversion failed");
+                ServerMessage::ImagePreviews { blobs: Vec::new() }
+            }
+        }
+    });
+    true
+}
+
+#[cfg(test)]
+mod preview_admission_tests {
+    use super::*;
+    #[tokio::test]
+    async fn queued_previews_are_globally_bounded_and_cancellation_releases_slots() {
+        let dir = std::env::temp_dir().join(format!(
+            "discordia-preview-admission-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let media =
+            crate::media::MediaStore::open(dir.clone(), crate::media::DEFAULT_MAX_BYTES).unwrap();
+        let blocked = PREVIEW_CONVERSIONS.acquire_many(2).await.unwrap();
+        let names = || vec![format!("{}.jpg", "f".repeat(64))];
+        let mut groups = Vec::new();
+        for _ in 0..16 {
+            let mut jobs = tokio::task::JoinSet::new();
+            assert!(spawn_previews(media.clone(), names(), &mut jobs));
+            groups.push(jobs);
+        }
+        let mut extra = tokio::task::JoinSet::new();
+        assert!(!spawn_previews(media.clone(), names(), &mut extra));
+        drop(groups.pop());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while PREVIEW_JOBS.available_permits() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!spawn_previews(
+            media.clone(),
+            vec!["x".repeat(100_000)],
+            &mut extra
+        ));
+        assert!(spawn_previews(media, names(), &mut extra));
+        groups.push(extra);
+        drop(blocked);
+        for mut jobs in groups {
+            while let Some(result) = jobs.join_next().await {
+                assert!(result.is_ok());
+            }
+        }
+        assert_eq!(PREVIEW_JOBS.available_permits(), 16);
+        assert_eq!(PREVIEW_CONVERSIONS.available_permits(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
 const MAX_SOUND_DATA_LEN: usize = crate::protocol::MAX_SOUND_BYTES.div_ceil(3) * 4 + 64;
 /// Four full-size images, so a client asking for message pictures four at a time
 /// is never cut off, and 64 of them cannot be asked for in one frame.

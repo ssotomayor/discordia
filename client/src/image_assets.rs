@@ -3,23 +3,73 @@ use dioxus::prelude::*;
 use std::{
     collections::HashMap,
     fmt,
+    hash::{Hash, Hasher},
     sync::{Arc, Weak},
 };
 
 type DecodedBytes = Arc<(&'static str, Vec<u8>)>;
 
+struct ViewLease {
+    assets: Weak<parking_lot::Mutex<AssetsInner>>,
+    key: String,
+}
+
+impl Drop for ViewLease {
+    fn drop(&mut self) {
+        if let Some(assets) = self.assets.upgrade() {
+            let mut inner = assets.lock();
+            // A replacement view can acquire this URL while the finalizer waits.
+            if let Some(entry) = inner.entries.get_mut(&self.key)
+                && std::ptr::eq(entry.view.as_ptr(), self)
+            {
+                entry.decoded = None;
+            }
+        }
+    }
+}
+
 struct AssetEntry {
     owner: Weak<String>,
+    view: Weak<ViewLease>,
+    hash: u64,
     decoded: Option<DecodedBytes>,
 }
 
+#[derive(Default)]
+struct AssetsInner {
+    entries: HashMap<String, AssetEntry>,
+    by_hash: HashMap<u64, Vec<String>>,
+    clean_counter: usize,
+}
+
+impl AssetsInner {
+    fn purge_dead_entries(&mut self) {
+        let mut dead = Vec::new();
+        for (key, entry) in &self.entries {
+            if entry.owner.strong_count() == 0 {
+                dead.push((key.clone(), entry.hash));
+            }
+        }
+        for (key, hash) in dead {
+            self.entries.remove(&key);
+            if let Some(keys) = self.by_hash.get_mut(&hash) {
+                keys.retain(|k| k != &key);
+                if keys.is_empty() {
+                    self.by_hash.remove(&hash);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Default)]
-struct Assets(Arc<parking_lot::Mutex<HashMap<String, AssetEntry>>>);
+struct Assets(Arc<parking_lot::Mutex<AssetsInner>>);
 
 #[derive(Clone)]
 pub(crate) struct ImageSource {
     uri: Arc<String>,
     _data: Arc<String>,
+    _view: Option<Arc<ViewLease>>,
 }
 
 impl PartialEq for ImageSource {
@@ -32,6 +82,12 @@ impl fmt::Display for ImageSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.uri.fmt(f)
     }
+}
+
+fn hash_content(data: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn payload(data: &str, max_bytes: usize) -> Option<(&'static str, &'static str, &str)> {
@@ -53,52 +109,91 @@ impl Assets {
     }
 
     fn source_with_limit(&self, data: Arc<String>, limit: usize) -> ImageSource {
+        let hash = hash_content(&data);
+        self.source_with_hash(data, limit, hash)
+    }
+
+    fn source_with_hash(&self, data: Arc<String>, limit: usize, hash: u64) -> ImageSource {
         let Some((_, ext, _)) = payload(&data, limit) else {
             return ImageSource {
                 uri: data.clone(),
                 _data: data,
+                _view: None,
             };
         };
-        let mut entries = self.0.lock();
-        entries.retain(|_, entry| entry.owner.strong_count() > 0);
-        if let Some((key, shared)) = entries.iter().find_map(|(key, entry)| {
-            let shared = entry.owner.upgrade()?;
-            (shared.as_ref() == data.as_ref()).then_some((key.clone(), shared))
-        }) {
+        let mut inner = self.0.lock();
+        inner.clean_counter += 1;
+        if inner.clean_counter >= 64 {
+            inner.clean_counter = 0;
+            inner.purge_dead_entries();
+        }
+        let existing = inner.by_hash.get(&hash).and_then(|keys| {
+            keys.iter().find_map(|key| {
+                inner
+                    .entries
+                    .get(key)?
+                    .owner
+                    .upgrade()
+                    .filter(|shared| shared.as_ref() == data.as_ref())
+                    .map(|shared| (key.clone(), shared))
+            })
+        });
+        if let Some((key, shared)) = existing
+            && let Some(entry) = inner.entries.get_mut(&key)
+        {
+            let view = entry.view.upgrade().unwrap_or_else(|| {
+                let view = Arc::new(ViewLease {
+                    assets: Arc::downgrade(&self.0),
+                    key: key.clone(),
+                });
+                entry.view = Arc::downgrade(&view);
+                view
+            });
             return ImageSource {
                 uri: Arc::new(format!("/image-data/{key}")),
                 _data: shared,
+                _view: Some(view),
             };
         }
         let key = format!("{}.{ext}", uuid::Uuid::new_v4());
-        entries.insert(
+        let view = Arc::new(ViewLease {
+            assets: Arc::downgrade(&self.0),
+            key: key.clone(),
+        });
+        inner.entries.insert(
             key.clone(),
             AssetEntry {
                 owner: Arc::downgrade(&data),
+                view: Arc::downgrade(&view),
+                hash,
                 decoded: None,
             },
         );
+        inner.by_hash.entry(hash).or_default().push(key.clone());
         ImageSource {
             uri: Arc::new(format!("/image-data/{key}")),
             _data: data,
+            _view: Some(view),
         }
     }
 
     #[cfg(test)]
     fn resolve(&self, key: &str) -> Option<Arc<String>> {
-        self.0.lock().get(key)?.owner.upgrade()
+        self.0.lock().entries.get(key)?.owner.upgrade()
     }
 
     fn resolve_entry(&self, key: &str) -> Option<(Arc<String>, Option<DecodedBytes>)> {
-        let entries = self.0.lock();
-        let entry = entries.get(key)?;
+        let inner = self.0.lock();
+        let entry = inner.entries.get(key)?;
         let owner = entry.owner.upgrade()?;
         Some((owner, entry.decoded.clone()))
     }
 
     fn store_decoded(&self, key: &str, decoded: DecodedBytes) {
-        let mut entries = self.0.lock();
-        if let Some(entry) = entries.get_mut(key) {
+        let mut inner = self.0.lock();
+        if let Some(entry) = inner.entries.get_mut(key)
+            && entry.view.strong_count() > 0
+        {
             entry.decoded = Some(decoded);
         }
     }
@@ -110,6 +205,7 @@ pub(crate) fn source(data: Arc<String>) -> ImageSource {
         None => ImageSource {
             uri: data.clone(),
             _data: data,
+            _view: None,
         },
     }
 }
@@ -120,11 +216,19 @@ pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
         None => ImageSource {
             uri: data.clone(),
             _data: data,
+            _view: None,
         },
     }
 }
 
+impl ImageSource {
+    pub(crate) fn data(&self) -> Arc<String> {
+        Arc::clone(&self._data)
+    }
+}
+
 pub(crate) fn use_image_assets() {
+    use_image_density();
     let assets = use_hook(|| dioxus::core::provide_root_context(Assets::default()));
     let assets_handler = assets.clone();
     crate::platform::use_asset_handler("image-data", move |request, responder| {
@@ -186,6 +290,48 @@ pub(crate) fn use_image_assets() {
     });
 }
 
+#[derive(Clone, Copy)]
+struct ImageDensity(Signal<Option<bool>>);
+
+pub(crate) fn preview_density() -> Option<bool> {
+    try_consume_context::<ImageDensity>()
+        .map(|density| (density.0)())
+        .unwrap_or(Some(true))
+}
+
+fn use_image_density() {
+    let mut density = use_hook(|| {
+        dioxus::core::provide_root_context(ImageDensity(Signal::new_in_scope(None, ScopeId::ROOT)))
+    })
+    .0;
+    use_effect(move || {
+        spawn(async move {
+            let mut eval = document::eval(
+                r#"return (async()=>{
+                if(window.__dxfImageDensityOff)window.__dxfImageDensityOff();
+                const query=matchMedia('(max-resolution: 2dppx)');
+                let last;const report=()=>{const value=devicePixelRatio<=2;if(value!==last){last=value;dioxus.send(value);}};
+                if(query.addEventListener)query.addEventListener('change',report);else query.addListener(report);
+                window.addEventListener('resize',report);report();
+                let off;
+                await new Promise(resolve=>{off=()=>{
+                    if(query.removeEventListener)query.removeEventListener('change',report);else query.removeListener(report);resolve();
+                    window.removeEventListener('resize',report);
+                };window.__dxfImageDensityOff=off;});
+                if(window.__dxfImageDensityOff===off)delete window.__dxfImageDensityOff;
+            })()"#,
+            );
+            while let Ok(value) = eval.recv::<bool>().await {
+                density.set(Some(value));
+            }
+            density.set(Some(false));
+        });
+    });
+    use_drop(|| {
+        document::eval("window.__dxfImageDensityOff && window.__dxfImageDensityOff()");
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +367,42 @@ mod tests {
     }
 
     #[test]
+    fn last_view_releases_binary_cache_without_changing_a_live_owners_url() {
+        let assets = Assets::default();
+        let cached = Arc::new("data:image/png;base64,aGk=".to_owned());
+        let first = assets.source(cached.clone());
+        let second = first.clone();
+        let key = first.uri.strip_prefix("/image-data/").unwrap().to_owned();
+        assets.store_decoded(&key, Arc::new(("image/png", vec![42; 1024])));
+        drop(first);
+        assert!(assets.resolve_entry(&key).unwrap().1.is_some());
+        let uri = second.to_string();
+        drop(second);
+        assert!(assets.resolve_entry(&key).unwrap().1.is_none());
+        let reopened = assets.source(cached);
+        assert_eq!(reopened.to_string(), uri);
+        assets.store_decoded(&key, Arc::new(("image/png", vec![7])));
+        assert_eq!(assets.resolve_entry(&key).unwrap().1.unwrap().1, [7]);
+    }
+
+    #[test]
+    fn late_responses_do_not_retain_binary_bytes_after_the_view_closes() {
+        let assets = Assets::default();
+        let cached = Arc::new("data:image/gif;base64,R0lGODlh".to_owned());
+        let source = assets.source(cached.clone());
+        let key = source.uri.strip_prefix("/image-data/").unwrap().to_owned();
+        drop(source);
+        assets.store_decoded(&key, Arc::new(("image/gif", vec![1, 2, 3])));
+        assert!(assets.resolve_entry(&key).unwrap().1.is_none());
+        let source = assets.source(cached);
+        let bytes = Arc::new(("image/gif", vec![1, 2, 3]));
+        let weak = Arc::downgrade(&bytes);
+        assets.store_decoded(&key, bytes);
+        drop(source);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
     fn chat_images_can_use_the_larger_upload_budget_without_expanding_artwork() {
         let assets = Assets::default();
         let data = Arc::new(format!(
@@ -246,6 +428,409 @@ mod tests {
             let image = assets.source(Arc::new(data.clone()));
             assert_eq!(image.to_string(), data);
         }
-        assert!(assets.0.lock().is_empty());
+        assert!(assets.0.lock().entries.is_empty());
+    }
+
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct ScenarioConfig {
+        n_distinct: usize,
+        payload_kb: usize,
+        hit_ratio_pct: usize, // e.g. 100, 90, 50
+        n_threads: usize,
+        total_ops: usize,
+    }
+
+    #[allow(dead_code)]
+    struct ScenarioResult {
+        total_time_ms: f64,
+        lock_us_per_op: f64,
+        throughput_ops_sec: f64,
+    }
+
+    fn run_legacy_bench(cfg: ScenarioConfig, images: &[Arc<String>]) -> ScenarioResult {
+        let legacy_entries = Arc::new(parking_lot::Mutex::new(
+            HashMap::<String, Weak<String>>::new(),
+        ));
+        let lock_nanos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let start = std::time::Instant::now();
+        let ops_per_thread = cfg.total_ops / cfg.n_threads;
+
+        let mut handles = Vec::new();
+        for t in 0..cfg.n_threads {
+            let entries = legacy_entries.clone();
+            let lock_dur = lock_nanos.clone();
+            let images = images.to_vec();
+            handles.push(std::thread::spawn(move || {
+                let mut kept = Vec::with_capacity(ops_per_thread);
+                for i in 0..ops_per_thread {
+                    let is_hit = (i % 100) < cfg.hit_ratio_pct;
+                    let img = if is_hit && !images.is_empty() {
+                        images[(t * ops_per_thread + i) % images.len()].clone()
+                    } else {
+                        Arc::new(format!(
+                            "data:image/png;base64,{t}_{i}_unique_{}",
+                            "X".repeat(cfg.payload_kb * 1024)
+                        ))
+                    };
+                    let t0 = std::time::Instant::now();
+                    let mut map = entries.lock();
+                    map.retain(|_, owner| owner.strong_count() > 0);
+                    let found = map.iter().find_map(|(k, owner)| {
+                        let shared = owner.upgrade()?;
+                        (shared.as_ref() == img.as_ref()).then_some((k.clone(), shared))
+                    });
+                    let (key, _shared) = match found {
+                        Some((k, s)) => (k, s),
+                        None => {
+                            let k = format!("{}.png", uuid::Uuid::new_v4());
+                            map.insert(k.clone(), Arc::downgrade(&img));
+                            (k, img.clone())
+                        }
+                    };
+                    lock_dur.fetch_add(
+                        t0.elapsed().as_nanos() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    drop(map);
+                    kept.push(key);
+                }
+                kept
+            }));
+        }
+        let all_keys: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        let total = start.elapsed();
+        let total_lock_ns = lock_nanos.load(std::sync::atomic::Ordering::Relaxed);
+        ScenarioResult {
+            total_time_ms: total.as_secs_f64() * 1000.0,
+            lock_us_per_op: (total_lock_ns as f64 / 1000.0) / all_keys.len() as f64,
+            throughput_ops_sec: all_keys.len() as f64 / total.as_secs_f64(),
+        }
+    }
+
+    fn run_new_bench(cfg: ScenarioConfig, images: &[Arc<String>]) -> ScenarioResult {
+        let assets = Assets::default();
+        let lock_nanos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let start = std::time::Instant::now();
+        let ops_per_thread = cfg.total_ops / cfg.n_threads;
+
+        let mut handles = Vec::new();
+        for t in 0..cfg.n_threads {
+            let assets = assets.clone();
+            let lock_dur = lock_nanos.clone();
+            let images = images.to_vec();
+            handles.push(std::thread::spawn(move || {
+                let mut kept = Vec::with_capacity(ops_per_thread);
+                for i in 0..ops_per_thread {
+                    let is_hit = (i % 100) < cfg.hit_ratio_pct;
+                    let img = if is_hit && !images.is_empty() {
+                        images[(t * ops_per_thread + i) % images.len()].clone()
+                    } else {
+                        Arc::new(format!(
+                            "data:image/png;base64,{t}_{i}_unique_{}",
+                            "X".repeat(cfg.payload_kb * 1024)
+                        ))
+                    };
+                    let hash = hash_content(&img);
+                    let t0 = std::time::Instant::now();
+                    let src = assets.source_with_hash(img, crate::protocol::MAX_IMAGE_BYTES, hash);
+                    lock_dur.fetch_add(
+                        t0.elapsed().as_nanos() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    kept.push(src);
+                }
+                kept
+            }));
+        }
+        let all_keys: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        let total = start.elapsed();
+        let total_lock_ns = lock_nanos.load(std::sync::atomic::Ordering::Relaxed);
+        ScenarioResult {
+            total_time_ms: total.as_secs_f64() * 1000.0,
+            lock_us_per_op: (total_lock_ns as f64 / 1000.0) / all_keys.len() as f64,
+            throughput_ops_sec: all_keys.len() as f64 / total.as_secs_f64(),
+        }
+    }
+
+    #[test]
+    fn benchmark_image_assets_comprehensive_matrix() {
+        eprintln!(
+            "\n=========================================================================================="
+        );
+        eprintln!(
+            " IMAGEASSETS DETAILED BENCHMARK MATRIX (Legacy Linear Scan vs New Hash Indexed)"
+        );
+        eprintln!(
+            "=========================================================================================="
+        );
+
+        // 1. Varying N distinct images (1, 20, 100, 500, 2000) at 64 KB, 90% hits, 1 thread, 1000 ops
+        eprintln!(
+            "\n--- DIMENSION 1: Varying N Entries (Payload: 64 KB, Hits: 90%, Sequential, 1000 ops) ---"
+        );
+        eprintln!(
+            "N_Entries | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &n in &[1, 20, 100, 500, 2000] {
+            let payload_base = "A".repeat(64 * 1024);
+            let images: Vec<Arc<String>> = (0..n)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:06}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: n,
+                payload_kb: 64,
+                hit_ratio_pct: 90,
+                n_threads: 1,
+                total_ops: 1000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                n,
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+
+        // 2. Varying Payload size (1 KB, 64 KB, 500 KB) at N=100, 90% hits, 1 thread, 1000 ops
+        eprintln!(
+            "\n--- DIMENSION 2: Varying Payload Size (N=100, Hits: 90%, Sequential, 1000 ops) ---"
+        );
+        eprintln!(
+            "Payload   | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &kb in &[1, 64, 500] {
+            let payload_base = "B".repeat(kb * 1024);
+            let images: Vec<Arc<String>> = (0..100)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:04}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: 100,
+                payload_kb: kb,
+                hit_ratio_pct: 90,
+                n_threads: 1,
+                total_ops: 1000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                format!("{kb} KB"),
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+
+        // 3. Varying Hit Ratio (100%, 90%, 50%) at N=100, 64 KB, 1 thread, 1000 ops
+        eprintln!(
+            "\n--- DIMENSION 3: Varying Hit Ratio (N=100, Payload: 64 KB, Sequential, 1000 ops) ---"
+        );
+        eprintln!(
+            "Hit Ratio | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &hits in &[100, 90, 50] {
+            let payload_base = "C".repeat(64 * 1024);
+            let images: Vec<Arc<String>> = (0..100)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:04}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: 100,
+                payload_kb: 64,
+                hit_ratio_pct: hits,
+                n_threads: 1,
+                total_ops: 1000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                format!("{hits}%"),
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+
+        // 4. Concurrency: 1 Thread vs 4 Threads (N=100, 64 KB, 90% hits, 2000 total ops)
+        eprintln!(
+            "\n--- DIMENSION 4: Concurrency (N=100, Payload: 64 KB, Hits: 90%, 2000 ops) ---"
+        );
+        eprintln!(
+            "Threads   | Legacy Total (ms) | Legacy Lock (µs) | New Total (ms) | New Lock (µs) | Lock Speedup | Total Speedup"
+        );
+        eprintln!(
+            "----------+-------------------+------------------+----------------+---------------+--------------+--------------"
+        );
+        for &threads in &[1, 4] {
+            let payload_base = "D".repeat(64 * 1024);
+            let images: Vec<Arc<String>> = (0..100)
+                .map(|i| Arc::new(format!("data:image/png;base64,{i:04}_{payload_base}")))
+                .collect();
+            let cfg = ScenarioConfig {
+                n_distinct: 100,
+                payload_kb: 64,
+                hit_ratio_pct: 90,
+                n_threads: threads,
+                total_ops: 2000,
+            };
+            let leg = run_legacy_bench(cfg, &images);
+            let nw = run_new_bench(cfg, &images);
+            eprintln!(
+                "{:<9} | {:<17.2} | {:<16.2} | {:<14.2} | {:<13.2} | {:<12.1}x | {:.2}x",
+                format!("{threads} thr"),
+                leg.total_time_ms,
+                leg.lock_us_per_op,
+                nw.total_time_ms,
+                nw.lock_us_per_op,
+                leg.lock_us_per_op / nw.lock_us_per_op.max(0.001),
+                leg.total_time_ms / nw.total_time_ms.max(0.001),
+            );
+        }
+        eprintln!(
+            "==========================================================================================\n"
+        );
+    }
+
+    #[test]
+    fn test_weak_cleanup_amortization() {
+        let assets = Assets::default();
+        {
+            let mut temp_sources = Vec::new();
+            for i in 0..128 {
+                let img = Arc::new(format!("data:image/png;base64,{i:04}temp"));
+                temp_sources.push(assets.source(img));
+            }
+            assert_eq!(assets.0.lock().entries.len(), 128);
+        }
+
+        // Trigger amortized purge by running queries
+        for _ in 0..64 {
+            let dummy = Arc::new("data:image/png;base64,dummy".to_string());
+            let _ = assets.source(dummy);
+        }
+
+        let inner = assets.0.lock();
+        // The 128 temporary entries must be purged
+        assert!(inner.entries.len() <= 1);
+        assert!(inner.by_hash.len() <= 1);
+    }
+
+    #[test]
+    fn test_concurrent_image_registration() {
+        let assets = Assets::default();
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let a = assets.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut kept = Vec::new();
+                for i in 0..100 {
+                    let img = Arc::new(format!(
+                        "data:image/png;base64,{:02}abcd",
+                        (t * 10 + i) % 15
+                    ));
+                    kept.push(a.source(img));
+                }
+                kept
+            }));
+        }
+        let all_kept: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(all_kept.len(), 400);
+        assert_eq!(assets.0.lock().entries.len(), 15);
+        assert_eq!(assets.0.lock().by_hash.len(), 15);
+
+        drop(all_kept);
+        assets.0.lock().purge_dead_entries();
+        assert!(assets.0.lock().entries.is_empty());
+        assert!(assets.0.lock().by_hash.is_empty());
+    }
+
+    #[test]
+    fn test_hash_collision_exact_equality() {
+        let assets = Assets::default();
+        let forced_collision_hash = 0xDEAD_BEEF_CAFE_BABE_u64;
+        let img1 = Arc::new("data:image/png;base64,image_payload_alpha_one".to_string());
+        let img2 = Arc::new("data:image/png;base64,image_payload_beta_two".to_string());
+
+        // Register both distinct payloads with the exact same forced hash
+        let src1 = assets.source_with_hash(
+            img1.clone(),
+            crate::protocol::MAX_IMAGE_BYTES,
+            forced_collision_hash,
+        );
+        let src2 = assets.source_with_hash(
+            img2.clone(),
+            crate::protocol::MAX_IMAGE_BYTES,
+            forced_collision_hash,
+        );
+
+        let key1 = src1.uri.strip_prefix("/image-data/").unwrap().to_string();
+        let key2 = src2.uri.strip_prefix("/image-data/").unwrap().to_string();
+
+        // 1. Different payloads must receive different keys despite hash collision
+        assert_ne!(src1.to_string(), src2.to_string());
+        assert_ne!(key1, key2);
+
+        // 2. Both keys must be stored in the same hash bucket
+        assert_eq!(
+            assets
+                .0
+                .lock()
+                .by_hash
+                .get(&forced_collision_hash)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // 3. Resolving each key must return its exact original data
+        assert_eq!(assets.resolve(&key1).unwrap().as_str(), img1.as_str());
+        assert_eq!(assets.resolve(&key2).unwrap().as_str(), img2.as_str());
+
+        // 4. Querying img1 again with the colliding hash returns src1 (not src2)
+        let src1_again = assets.source_with_hash(
+            img1.clone(),
+            crate::protocol::MAX_IMAGE_BYTES,
+            forced_collision_hash,
+        );
+        assert_eq!(src1_again.to_string(), src1.to_string());
+
+        // 5. Querying img2 again with the colliding hash returns src2 (not src1)
+        let src2_again = assets.source_with_hash(
+            img2.clone(),
+            crate::protocol::MAX_IMAGE_BYTES,
+            forced_collision_hash,
+        );
+        assert_eq!(src2_again.to_string(), src2.to_string());
     }
 }

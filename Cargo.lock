@@ -2459,6 +2459,7 @@ dependencies = [
  "dioxus-grid-layout",
  "dirs 5.0.1",
  "discordia-bot",
+ "discordia-image-policy",
  "discordia-protocol",
  "discordia-rendezvous",
  "discordia-server",
@@ -2547,6 +2548,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "discordia-image-policy"
+version = "0.1.0"
+dependencies = [
+ "image",
+]
+
+[[package]]
 name = "discordia-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2603,6 +2611,7 @@ dependencies = [
  "clap",
  "dashmap",
  "discordia-bot",
+ "discordia-image-policy",
  "discordia-protocol",
  "discordia-rendezvous",
  "flate2",
