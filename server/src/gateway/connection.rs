@@ -404,7 +404,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }).await;
                                 continue;
                             }
-                        if content.len() > 2000 || (content.is_empty() && image.is_none()) {
+                        if content.len() > crate::protocol::MAX_MESSAGE_BYTES || (content.is_empty() && image.is_none()) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "message must be 1..=2000 chars (or include an image)".into(),
                             }).await;

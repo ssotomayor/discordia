@@ -690,18 +690,6 @@ fn day_label(day: chrono::NaiveDate) -> String {
     }
 }
 
-/// A bare `@word` is already painted for everyone; this is the narrower
-/// question of whether the word names *you*.
-pub(crate) fn mentions_user(content: &str, username: &str) -> bool {
-    content.match_indices('@').any(|(i, _)| {
-        content[..i]
-            .chars()
-            .next_back()
-            .is_none_or(char::is_whitespace)
-            && super::markup::mention_len(&content[i + 1..], username).is_some()
-    })
-}
-
 /// Names a mention in `content` could spell with a space, which only knowing
 /// the people here can tell apart from a mention followed by a word.
 fn spaced_mentions(s: &crate::state::AppState, content: &str, channel_id: Id) -> Vec<String> {
@@ -786,7 +774,7 @@ pub(super) fn MessageRow(
         .read()
         .self_user
         .as_ref()
-        .is_some_and(|u| mentions_user(&message.content, &u.username));
+        .is_some_and(|u| crate::protocol::mentions_name(&message.content, &u.username));
     let mention_style = if mentions_me {
         "background: color-mix(in srgb, var(--accent) 6%, transparent); box-shadow: inset 2px 0 0 var(--accent);"
     } else {
@@ -3314,16 +3302,6 @@ mod composer_tests {
         assert!(matches!(got[1].pick, ComposerPick::Unicode("🔥")));
         assert!(emoji_suggestions("zzzz", &guild, &urls).is_empty());
         assert_eq!(emoji_suggestions("_", &guild, &urls).len(), MAX_SUGGESTIONS);
-    }
-
-    #[test]
-    fn a_mention_of_a_spaced_name_names_its_owner() {
-        assert!(mentions_user("hey @john doe, look", "John Doe"));
-        assert!(mentions_user("@John Doe", "John Doe"));
-        assert!(!mentions_user("@John Doer", "John Doe"));
-        assert!(!mentions_user("mail@John Doe", "John Doe"));
-        assert!(mentions_user("hi @alex.", "alex"));
-        assert!(!mentions_user("hi @alex.b", "alex"));
     }
 
     #[test]

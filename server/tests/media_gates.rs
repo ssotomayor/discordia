@@ -127,6 +127,7 @@ async fn only_the_named_bundle_is_ever_written() {
         permissions: vec![],
         intents: vec![],
         commands: vec![],
+        agent: None,
         activity: Some(ActivityManifest {
             sha256: hex::encode(Sha256::digest(&page)),
             capabilities: vec![ActivityCapability::UserRead],

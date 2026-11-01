@@ -1,0 +1,17 @@
+[package]
+name = "discordia-agent"
+version = "0.1.0"
+edition = "2024"
+description = "Runs an LLM agent as a discordia app: triggers, context, limits and provider harnesses."
+
+[dependencies]
+discordia-bot = { path = "../bot-sdk" }
+discordia-protocol = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

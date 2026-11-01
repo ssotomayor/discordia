@@ -23,6 +23,8 @@ pub struct User {
 }
 
 pub const MAX_USERNAME_LEN: usize = 32;
+/// Counted in bytes by the gateway, so a reply split to fit must count bytes too.
+pub const MAX_MESSAGE_BYTES: usize = 2000;
 
 /// Must stay idempotent: the server canonicalizes before verifying the
 /// signature, and the bot SDK signs the canonicalized form.
@@ -154,6 +156,26 @@ pub fn sanitize_name(kind: &str, raw: &str, max_chars: usize) -> Result<String, 
 /// optional and nobody is waiting on an error to fix them.
 pub fn sanitize_line(raw: &str, max_chars: usize) -> String {
     cap(raw.chars().filter(|c| !unsafe_to_display(*c)), max_chars)
+}
+
+/// The bytes after `@` that spell `name`, plus any trailing punctuation, or
+/// `None` when they spell something longer.
+pub fn mention_len(after_at: &str, name: &str) -> Option<usize> {
+    let head = after_at.get(..name.len())?;
+    let tail = after_at[name.len()..].split(char::is_whitespace).next()?;
+    (head.eq_ignore_ascii_case(name) && tail.chars().all(|c| c.is_ascii_punctuation()))
+        .then_some(name.len() + tail.len())
+}
+
+/// Whether `content` mentions `name` as a word of its own, not inside an address.
+pub fn mentions_name(content: &str, name: &str) -> bool {
+    content.match_indices('@').any(|(i, _)| {
+        content[..i]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace)
+            && mention_len(&content[i + 1..], name).is_some()
+    })
 }
 
 /// A bio, a description and a set of rules are written in a `textarea`, so the
@@ -1354,6 +1376,7 @@ pub const MAX_APP_NAME: usize = 32;
 pub const MAX_APP_DESCRIPTION: usize = 300;
 pub const MAX_APP_ICON: usize = 16;
 pub const MAX_APP_URL: usize = 512;
+pub const MAX_AGENT_LABEL: usize = 64;
 pub const MAX_ACTIVITY_PLAYERS: u8 = 16;
 pub const MAX_MANIFEST_EVENT_BYTES: usize = 64 * 1024;
 /// Fits one gateway frame as base64, beside the rest of the message.
@@ -1514,6 +1537,17 @@ pub struct AppManifest {
     pub commands: Vec<BotCommand>,
     #[serde(default)]
     pub activity: Option<ActivityManifest>,
+    /// Set when an LLM writes this app's replies. Self-declared, like `bot` in
+    /// `Identify`: it is shown to people, never trusted for a decision.
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
+}
+
+/// Where what an agent reads goes: shown on consent so the guild knows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub provider: String,
+    pub model: String,
 }
 
 impl AppManifest {
@@ -1543,6 +1577,7 @@ impl AppManifest {
             || newer.intents.iter().any(|i| !self.intents.contains(i))
             || caps(newer).iter().any(|c| !old_caps.contains(c))
             || players(newer) > players(self).max(1)
+            || (newer.agent.is_some() && newer.agent != self.agent)
     }
 }
 
@@ -1602,6 +1637,17 @@ pub fn validate_manifest(raw: AppManifest) -> Result<AppManifest, String> {
     let mut intents = raw.intents;
     intents.sort_unstable_by_key(|i| format!("{i:?}"));
     intents.dedup();
+    let agent = match raw.agent {
+        None => None,
+        Some(a) => {
+            let provider = sanitize_line(a.provider.trim(), MAX_AGENT_LABEL);
+            let model = sanitize_line(a.model.trim(), MAX_AGENT_LABEL);
+            if provider.is_empty() || model.is_empty() {
+                return Err("an agent names its provider and model".into());
+            }
+            Some(AgentInfo { provider, model })
+        }
+    };
     Ok(AppManifest {
         name,
         description: raw.description.trim().to_string(),
@@ -1611,6 +1657,7 @@ pub fn validate_manifest(raw: AppManifest) -> Result<AppManifest, String> {
         intents,
         commands,
         activity,
+        agent,
     })
 }
 
@@ -3729,5 +3776,65 @@ mod command_tests {
         assert_eq!(json["d"]["args"][0]["value"]["type"], "integer");
         let kind = serde_json::to_value(OptionKind::Members { min: 1, max: 2 }).unwrap();
         assert_eq!(kind["type"], "members");
+    }
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::mentions_name;
+
+    #[test]
+    fn a_mention_is_the_whole_name_as_its_own_word() {
+        assert!(mentions_name("hey @john doe, look", "John Doe"));
+        assert!(mentions_name("@John Doe", "John Doe"));
+        assert!(!mentions_name("@John Doer", "John Doe"));
+        assert!(!mentions_name("mail@John Doe", "John Doe"));
+        assert!(mentions_name("hi @alex.", "alex"));
+        assert!(!mentions_name("hi @alex.b", "alex"));
+        assert!(!mentions_name("hi @ñ", "n"));
+    }
+}
+
+#[cfg(test)]
+mod agent_manifest_tests {
+    use super::{AgentInfo, AppManifest, validate_manifest};
+
+    fn manifest(agent: Option<AgentInfo>) -> AppManifest {
+        AppManifest {
+            name: "Helper".into(),
+            description: String::new(),
+            icon: String::new(),
+            version: 1,
+            permissions: vec![],
+            intents: vec![],
+            commands: vec![],
+            activity: None,
+            agent,
+        }
+    }
+
+    fn info(provider: &str, model: &str) -> Option<AgentInfo> {
+        Some(AgentInfo {
+            provider: provider.into(),
+            model: model.into(),
+        })
+    }
+
+    #[test]
+    fn a_new_place_for_what_the_agent_reads_is_approved_again() {
+        let old = manifest(info("Anthropic", "claude-opus-5-5"));
+        assert!(!old.widens(&manifest(info("Anthropic", "claude-opus-5-5"))));
+        assert!(old.widens(&manifest(info("OpenRouter", "claude-opus-5-5"))));
+        assert!(old.widens(&manifest(info("Anthropic", "claude-haiku-5-5"))));
+        assert!(manifest(None).widens(&manifest(info("Anthropic", "m"))));
+        assert!(!old.widens(&manifest(None)));
+    }
+
+    #[test]
+    fn an_agent_must_say_where_it_sends_text() {
+        assert!(validate_manifest(manifest(info(" ", "m"))).is_err());
+        assert!(validate_manifest(manifest(info("p", ""))).is_err());
+        let ok = validate_manifest(manifest(info(" Anthropic ", "claude-opus-5-5"))).unwrap();
+        assert_eq!(ok.agent, info("Anthropic", "claude-opus-5-5"));
     }
 }

@@ -584,6 +584,7 @@ mod tests {
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages],
             commands: Vec::new(),
+            agent: None,
             activity: Some(ActivityManifest {
                 sha256: "0".repeat(64),
                 capabilities: vec![ActivityCapability::UserRead],

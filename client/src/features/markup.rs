@@ -308,15 +308,6 @@ fn rich_word(word: &str) -> bool {
         || crate::emoji::needs_rendering(word)
 }
 
-/// How much of `after_at` is a mention of `name`: the name, then only
-/// punctuation up to the next space.
-pub(super) fn mention_len(after_at: &str, name: &str) -> Option<usize> {
-    let head = after_at.get(..name.len())?;
-    let tail = after_at[name.len()..].split(char::is_whitespace).next()?;
-    (head.eq_ignore_ascii_case(name) && tail.chars().all(|c| c.is_ascii_punctuation()))
-        .then_some(name.len() + tail.len())
-}
-
 /// Splits on spaces, except inside a mention of one of `names`, whose
 /// spaces would otherwise cut `@John Doe` down to `@John`.
 fn words<'a>(line: &'a str, names: &[String]) -> Vec<&'a str> {
@@ -325,7 +316,12 @@ fn words<'a>(line: &'a str, names: &[String]) -> Vec<&'a str> {
     loop {
         let len = rest
             .strip_prefix('@')
-            .and_then(|after| names.iter().filter_map(|n| mention_len(after, n)).max())
+            .and_then(|after| {
+                names
+                    .iter()
+                    .filter_map(|n| crate::protocol::mention_len(after, n))
+                    .max()
+            })
             .map_or(0, |len| len + 1);
         match rest[len..].find(' ') {
             Some(i) => {

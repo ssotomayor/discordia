@@ -71,6 +71,7 @@ fn manifest(version: u64, permissions: Vec<Permission>) -> AppManifest {
         permissions,
         intents: vec![Intent::GuildMessages],
         commands: Vec::new(),
+        agent: None,
         activity: Some(ActivityManifest {
             sha256: "ab".repeat(32),
             capabilities: vec![ActivityCapability::UserRead, ActivityCapability::Instance],
