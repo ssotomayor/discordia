@@ -295,6 +295,13 @@ pub struct PendingDmEdit {
     pub emoji: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppBadge {
+    None,
+    Unread,
+    Count(u32),
+}
+
 /// Which list a conversation belongs in. A bot with `Members` can harvest every
 /// pubkey and DM it over relays, outside any server's reach (#311).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +361,9 @@ pub struct AppState {
     pub saved_emoji: Vec<crate::settings::SavedEmoji>,
     pub dm_unread: HashMap<Id, u32>,
     pub channel_unread: HashSet<Id>,
+    /// Messages naming us since the channel was last read; counted live only,
+    /// since Ready carries one timestamp per channel and no content.
+    pub channel_mentions: HashMap<Id, u32>,
     /// Seeded from `ClientSettings::channel_read_at`; see there.
     pub channel_read_at: BTreeMap<String, BTreeMap<Id, i64>>,
     /// Newest message time (ms) per channel on this server, so opening one can
@@ -404,6 +414,7 @@ pub struct AppState {
     /// home drawer closes over a DM that stays selected, and a message arriving
     /// behind it is unread however selected it is.
     pub dm_pane_open: bool,
+    /// Android's resume state; on desktop, whether any of our windows has focus.
     pub app_foreground: bool,
     pub dm_notification_open: Option<Id>,
     pub catalog: Vec<GuildSummary>,
@@ -598,6 +609,7 @@ impl AppState {
             saved_emoji: Vec::new(),
             dm_unread: HashMap::new(),
             channel_unread: HashSet::new(),
+            channel_mentions: HashMap::new(),
             channel_read_at: BTreeMap::new(),
             channel_latest: HashMap::new(),
             dm_cleared_at: HashMap::new(),
@@ -849,6 +861,7 @@ impl AppState {
         self.voice_invite_on_ready = None;
         crate::channel_selection::remember_current(self);
         self.channel_unread.clear();
+        self.channel_mentions.clear();
         self.channel_latest.clear();
         self.voice_route_revision = 0;
         self.status = ConnectionStatus::Disconnected;
@@ -1590,7 +1603,8 @@ impl AppState {
             .self_user
             .as_ref()
             .is_some_and(|u| u.pubkey == message.author.pubkey);
-        let viewing = !self.dm_mode && self.selected_channel == Some(channel_id);
+        let viewing =
+            self.app_foreground && !self.dm_mode && self.selected_channel == Some(channel_id);
         if self.channels.iter().any(|channel| channel.id == channel_id) {
             let at = message.created_at.timestamp_millis();
             let latest = self.channel_latest.entry(channel_id).or_insert(at);
@@ -1599,6 +1613,11 @@ impl AppState {
                 self.advance_read_mark(channel_id, at);
             } else {
                 self.channel_unread.insert(channel_id);
+                if self.self_user.as_ref().is_some_and(|u| {
+                    crate::features::chat::mentions_user(&message.content, &u.username)
+                }) {
+                    *self.channel_mentions.entry(channel_id).or_insert(0) += 1;
+                }
             }
         }
         let held = self.messages.entry(channel_id).or_default();
@@ -1622,8 +1641,47 @@ impl AppState {
             })
     }
 
+    /// Hidden under a mute and kept, like the dot: a mute silences everything.
+    pub fn channel_mention_count(&self, channel_id: Id) -> u32 {
+        if self.is_muted(channel_id) {
+            return 0;
+        }
+        self.channel_mentions.get(&channel_id).copied().unwrap_or(0)
+    }
+
+    pub fn guild_mention_count(&self, guild_id: Id) -> u32 {
+        self.channels
+            .iter()
+            .filter(|channel| channel.guild_id == guild_id)
+            .map(|channel| self.channel_mention_count(channel.id))
+            .sum()
+    }
+
+    /// What the dock or taskbar icon says: a number for what is addressed to
+    /// us, a bare dot for anything else unread.
+    pub fn app_badge(&self) -> AppBadge {
+        let mentions = self.dm_unread_total()
+            + self
+                .channels
+                .iter()
+                .map(|channel| self.channel_mention_count(channel.id))
+                .sum::<u32>();
+        if mentions > 0 {
+            AppBadge::Count(mentions)
+        } else if self
+            .channels
+            .iter()
+            .any(|channel| self.channel_shows_unread(channel.id))
+        {
+            AppBadge::Unread
+        } else {
+            AppBadge::None
+        }
+    }
+
     pub fn mark_channel_read(&mut self, channel_id: Id) {
         self.channel_unread.remove(&channel_id);
+        self.channel_mentions.remove(&channel_id);
         if let Some(at) = self.channel_latest.get(&channel_id).copied() {
             self.advance_read_mark(channel_id, at);
         }
@@ -1664,7 +1722,8 @@ impl AppState {
         let marks = self.channel_read_at.entry(server).or_default();
         let mut changed = false;
         for (channel_id, at) in latest {
-            let viewing = !self.dm_mode && self.selected_channel == Some(channel_id);
+            let viewing =
+                self.app_foreground && !self.dm_mode && self.selected_channel == Some(channel_id);
             if !viewing && marks.get(&channel_id).is_some_and(|mark| at > *mark) {
                 self.channel_unread.insert(channel_id);
             } else {
@@ -1744,6 +1803,7 @@ impl AppState {
                         .is_some_and(|latest| *latest <= mark_val)
                 {
                     self.channel_unread.remove(channel_id);
+                    self.channel_mentions.remove(channel_id);
                 }
             }
         }
@@ -3069,6 +3129,67 @@ mod tests {
         assert!(s.should_ring(cid, false, false));
         assert!(!s.should_ring(cid, false, true), "you are looking at it");
         assert!(!s.should_ring(cid, true, false), "you wrote it");
+    }
+
+    fn mention(channel_id: Id, secs: i64) -> Message {
+        let mut message = at(Id::new_v4(), channel_id, secs);
+        message.content = "hey @u-self look".into();
+        message
+    }
+
+    #[test]
+    fn a_mention_counts_until_its_channel_is_read() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        let guild = Id::new_v4();
+        let open = text_channel(&mut s, guild);
+        let other = text_channel(&mut s, guild);
+        s.selected_channel = Some(open);
+        s.insert_message(open, mention(open, 1));
+        s.insert_message(other, at(Id::new_v4(), other, 2));
+        assert_eq!(s.guild_mention_count(guild), 0, "read on arrival");
+        assert_eq!(s.app_badge(), AppBadge::Unread);
+        s.insert_message(other, mention(other, 3));
+        s.insert_message(other, mention(other, 4));
+        assert_eq!(s.channel_mention_count(other), 2);
+        assert_eq!(s.guild_mention_count(guild), 2);
+        assert_eq!(s.app_badge(), AppBadge::Count(2));
+        s.mark_channel_read(other);
+        assert_eq!(s.guild_mention_count(guild), 0);
+        assert_eq!(s.app_badge(), AppBadge::None);
+    }
+
+    /// A channel open behind another app is not being read, so a mention in
+    /// it still reaches the dock.
+    #[test]
+    fn an_open_channel_counts_while_the_app_is_in_the_background() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        let cid = text_channel(&mut s, Id::new_v4());
+        s.selected_channel = Some(cid);
+        s.app_foreground = false;
+        s.insert_message(cid, mention(cid, 1));
+        assert_eq!(s.app_badge(), AppBadge::Count(1));
+    }
+
+    #[test]
+    fn a_muted_channel_keeps_its_mentions_out_of_sight() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        let cid = text_channel(&mut s, Id::new_v4());
+        s.set_channel_muted(cid, true);
+        s.insert_message(cid, mention(cid, 1));
+        assert_eq!(s.app_badge(), AppBadge::None);
+        s.set_channel_muted(cid, false);
+        assert_eq!(s.app_badge(), AppBadge::Count(1));
+    }
+
+    #[test]
+    fn unread_dms_count_on_the_badge() {
+        let mut s = AppState::empty();
+        let cid = dm_with(&mut s, "peer", &[100]);
+        s.dm_unread.insert(cid, 3);
+        assert_eq!(s.app_badge(), AppBadge::Count(3));
     }
 
     /// Muting means one thing, so it silences everything in that channel. A

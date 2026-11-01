@@ -63,6 +63,11 @@ pub fn GuildsSidebar() -> Element {
         .filter(|guild| snapshot.guild_has_unread(guild.id))
         .map(|guild| guild.id)
         .collect();
+    let guild_mentions: std::collections::HashMap<Id, u32> = guilds
+        .iter()
+        .map(|guild| (guild.id, snapshot.guild_mention_count(guild.id)))
+        .filter(|(_, count)| *count > 0)
+        .collect();
     let is_operator = snapshot.is_operator;
     let status = snapshot.status;
     drop(snapshot);
@@ -187,6 +192,7 @@ pub fn GuildsSidebar() -> Element {
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 unread: unread_guilds.contains(&guild.id),
+                                mentions: guild_mentions.get(&guild.id).copied().unwrap_or(0),
                                 has_menu,
                                 is_mine,
                                 on_select: {
@@ -486,10 +492,21 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
             }
             span { {crate::i18n::text("DM", &[])} }
             if count > 0 {
-                span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
-                    "{count}"
-                }
+                MentionBadge { count: count as u32 }
             }
+        }
+    }
+}
+
+/// Red, not the accent: a theme can pick any accent, and this has to read as
+/// "someone wants you" on every one of them.
+#[component]
+fn MentionBadge(count: u32) -> Element {
+    rsx! {
+        span {
+            class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center",
+            style: "background-color: var(--danger); color: #fff; border: 2px solid var(--panel-solid); pointer-events: none; z-index: 1;",
+            "{count}"
         }
     }
 }
@@ -502,6 +519,7 @@ fn GuildIcon(
     name: String,
     selected: bool,
     unread: bool,
+    mentions: u32,
     has_menu: bool,
     is_mine: bool,
     on_select: EventHandler<Id>,
@@ -532,7 +550,9 @@ fn GuildIcon(
 
     rsx! {
         div { class: "relative group dxf-tip-host",
-            if unread {
+            if mentions > 0 {
+                MentionBadge { count: mentions }
+            } else if unread {
                 span {
                     title: crate::i18n::text("Unread messages", &[]),
                     aria_label: crate::i18n::text("Unread messages", &[]),

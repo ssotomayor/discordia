@@ -240,6 +240,7 @@ pub fn Markup(
     markdown: bool,
     guild_id: Option<Id>,
     extra: Vec<(String, String)>,
+    mentions: Vec<String>,
 ) -> Element {
     let nodes = use_memo(use_reactive(
         (&content, &markdown),
@@ -253,41 +254,46 @@ pub fn Markup(
     ));
     if markdown {
         rsx! {
-            div { class: "dxf-md", Nodes { nodes: nodes(), guild_id, extra } }
+            div { class: "dxf-md", Nodes { nodes: nodes(), guild_id, extra, mentions } }
         }
     } else {
-        rsx! { Nodes { nodes: nodes(), guild_id, extra } }
+        rsx! { Nodes { nodes: nodes(), guild_id, extra, mentions } }
     }
 }
 
 #[component]
-fn Nodes(nodes: Vec<Node>, guild_id: Option<Id>, extra: Vec<(String, String)>) -> Element {
+fn Nodes(
+    nodes: Vec<Node>,
+    guild_id: Option<Id>,
+    extra: Vec<(String, String)>,
+    mentions: Vec<String>,
+) -> Element {
     rsx! {
         for node in nodes {
             match node {
-                Node::Text(text) => rsx! { PlainRun { text, guild_id, extra: extra.clone() } },
-                Node::Bold(c) => rsx! { strong { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Italic(c) => rsx! { em { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Underline(c) => rsx! { u { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Strike(c) => rsx! { s { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
+                Node::Text(text) => rsx! { PlainRun { text, guild_id, extra: extra.clone(), mentions: mentions.clone() } },
+                Node::Bold(c) => rsx! { strong { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Italic(c) => rsx! { em { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Underline(c) => rsx! { u { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Strike(c) => rsx! { s { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
                 Node::Code(text) => rsx! { code { "{text}" } },
                 Node::Link(Some(href), c) => rsx! {
                     span {
                         class: "text-[var(--accent)] underline cursor-pointer hover:text-[var(--accent-strong)]",
                         title: "{href}",
                         onclick: move |_| crate::app::open_external(&href),
-                        Nodes { nodes: c, guild_id, extra: extra.clone() }
+                        Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() }
                     }
                 },
-                Node::Link(None, c) => rsx! { Nodes { nodes: c, guild_id, extra: extra.clone() } },
-                Node::Paragraph(c) => rsx! { p { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Heading(1, c) => rsx! { h1 { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Heading(2, c) => rsx! { h2 { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Heading(_, c) => rsx! { h3 { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Quote(c) => rsx! { blockquote { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::List(Some(start), c) => rsx! { ol { start: "{start}", Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::List(None, c) => rsx! { ul { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
-                Node::Item(c) => rsx! { li { Nodes { nodes: c, guild_id, extra: extra.clone() } } },
+                Node::Link(None, c) => rsx! { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } },
+                Node::Paragraph(c) => rsx! { p { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Heading(1, c) => rsx! { h1 { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Heading(2, c) => rsx! { h2 { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Heading(_, c) => rsx! { h3 { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Quote(c) => rsx! { blockquote { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::List(Some(start), c) => rsx! { ol { start: "{start}", Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::List(None, c) => rsx! { ul { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Item(c) => rsx! { li { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
                 Node::CodeBlock(text) => rsx! { pre { code { "{text}" } } },
                 Node::Rule => rsx! { hr {} },
             }
@@ -302,15 +308,52 @@ fn rich_word(word: &str) -> bool {
         || crate::emoji::needs_rendering(word)
 }
 
+/// How much of `after_at` is a mention of `name`: the name, then only
+/// punctuation up to the next space.
+pub(super) fn mention_len(after_at: &str, name: &str) -> Option<usize> {
+    let head = after_at.get(..name.len())?;
+    let tail = after_at[name.len()..].split(char::is_whitespace).next()?;
+    (head.eq_ignore_ascii_case(name) && tail.chars().all(|c| c.is_ascii_punctuation()))
+        .then_some(name.len() + tail.len())
+}
+
+/// Splits on spaces, except inside a mention of one of `names`, whose
+/// spaces would otherwise cut `@John Doe` down to `@John`.
+fn words<'a>(line: &'a str, names: &[String]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    loop {
+        let len = rest
+            .strip_prefix('@')
+            .and_then(|after| names.iter().filter_map(|n| mention_len(after, n)).max())
+            .map_or(0, |len| len + 1);
+        match rest[len..].find(' ') {
+            Some(i) => {
+                out.push(&rest[..len + i]);
+                rest = &rest[len + i + 1..];
+            }
+            None => {
+                out.push(rest);
+                return out;
+            }
+        }
+    }
+}
+
 #[component]
-fn PlainRun(text: String, guild_id: Option<Id>, extra: Vec<(String, String)>) -> Element {
+fn PlainRun(
+    text: String,
+    guild_id: Option<Id>,
+    extra: Vec<(String, String)>,
+    mentions: Vec<String>,
+) -> Element {
     let lines: Vec<&str> = text.split('\n').collect();
     let last = lines.len().saturating_sub(1);
     rsx! {
         for (li, line) in lines.iter().enumerate() {
             {
                 let rich = line.split(' ').any(rich_word);
-                let words: Vec<&str> = if rich { line.split(' ').collect() } else { Vec::new() };
+                let words = if rich { words(line, &mentions) } else { Vec::new() };
                 let lastw = words.len().saturating_sub(1);
                 rsx! {
                     if !rich { "{line}" }
@@ -374,11 +417,22 @@ mod tests {
     }
 
     #[test]
+    fn a_mention_keeps_the_spaces_of_a_known_name() {
+        let names = vec!["John Doe".to_string(), "John Doe Jr".to_string()];
+        assert_eq!(
+            words("hi @john doe, and @John Doe Jr! @John Smith", &names),
+            ["hi", "@john doe,", "and", "@John Doe Jr!", "@John", "Smith"]
+        );
+        assert_eq!(words("@John Doer", &names), ["@John", "Doer"]);
+        assert_eq!(words("a  b ", &names), ["a", "", "b", ""]);
+    }
+
+    #[test]
     fn ordinary_paragraphs_keep_a_bounded_dom_when_opening_a_chat() {
         let line = "ordinary chat text ".repeat(200);
         let started = std::time::Instant::now();
         let mut dom = VirtualDom::new_with_props(
-            |text: String| rsx! { PlainRun { text, guild_id: None, extra: Vec::new() } },
+            |text: String| rsx! { PlainRun { text, guild_id: None, extra: Vec::new(), mentions: Vec::new() } },
             format!("{line}\nsecond line"),
         );
         let edits = dom.rebuild_to_vec().edits;

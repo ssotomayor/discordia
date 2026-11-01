@@ -168,6 +168,11 @@ pub fn AccountView(
     crate::dm_notifications::use_notifications(state, identity.pubkey.clone());
     #[cfg(target_os = "android")]
     crate::call_notifications::use_controls(state, nostr.clone());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        crate::app_badge::use_foreground(state);
+        crate::app_badge::use_badge(state);
+    }
     let updates = try_consume_context::<crate::update::Updates>();
     let mut update_request = use_signal(|| {
         updates

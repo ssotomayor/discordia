@@ -100,6 +100,17 @@ impl DesktopService {
                 wry::MemoryUsageLevel::Low
             };
             let _ = self.webview.set_memory_usage_level(level);
+            if !visible {
+                // SAFETY: GetCurrentProcess returns a valid pseudo-handle and
+                // trimming the working set with usize::MAX is safe and infallible.
+                unsafe {
+                    extern "system" {
+                        fn GetCurrentProcess() -> isize;
+                        fn SetProcessWorkingSetSize(process: isize, min: usize, max: usize) -> i32;
+                    }
+                    let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+                }
+            }
         }
     }
 
