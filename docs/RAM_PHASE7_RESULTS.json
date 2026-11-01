@@ -1,0 +1,465 @@
+{
+  "sourceCommit": "79ffc913f73e3f0c578f00125d565bb9cd76a4ef",
+  "environment": {
+    "platform": "win32",
+    "release": "10.0.26300",
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor             ",
+    "logicalCpus": 16,
+    "ram": 33459019776,
+    "node": "v24.22.1",
+    "rust": "1.99.0",
+    "target": "x86_64-pc-windows-msvc",
+    "crtStatic": true,
+    "commit": "79ffc913f73e3f0c578f00125d565bb9cd76a4ef"
+  },
+  "method": {
+    "ui": "fresh identity setup",
+    "startup": "process creation to observed #main[data-ready] over CDP",
+    "settleSeconds": 15,
+    "cpuSampleSeconds": 5,
+    "topology": "host and recursive WebView2 descendants",
+    "systemCacheFlushed": false,
+    "webviewVersion": "Edg/156.0.4314.58",
+    "sameUiSnapshot": true,
+    "order": [
+      "release-1",
+      "release-lto-1",
+      "release-lto-2",
+      "release-2",
+      "release-3",
+      "release-lto-3",
+      "release-lto-4",
+      "release-4",
+      "release-5",
+      "release-lto-5"
+    ]
+  },
+  "binaries": {
+    "release": {
+      "bytes": 109267968,
+      "sha256": "1ea66da7bfdb8f1cb072127a5df44610cb487f56bd2de2eeabe0f611a9fcc4e1",
+      "imageBytes": 111464448,
+      "debugDirectoryBytes": 84,
+      "sections": [
+        {
+          "name": ".text",
+          "virtualBytes": 66036084,
+          "rawBytes": 66036224
+        },
+        {
+          "name": ".rodata",
+          "virtualBytes": 4512,
+          "rawBytes": 4608
+        },
+        {
+          "name": "malloc_h",
+          "virtualBytes": 416,
+          "rawBytes": 512
+        },
+        {
+          "name": ".rdata",
+          "virtualBytes": 39972740,
+          "rawBytes": 39972864
+        },
+        {
+          "name": ".data",
+          "virtualBytes": 2290560,
+          "rawBytes": 122368
+        },
+        {
+          "name": ".pdata",
+          "virtualBytes": 2823780,
+          "rawBytes": 2824192
+        },
+        {
+          "name": ".fptable",
+          "virtualBytes": 256,
+          "rawBytes": 512
+        },
+        {
+          "name": ".rsrc",
+          "virtualBytes": 37728,
+          "rawBytes": 37888
+        },
+        {
+          "name": ".reloc",
+          "virtualBytes": 267768,
+          "rawBytes": 267776
+        }
+      ]
+    },
+    "release-lto": {
+      "bytes": 113718784,
+      "sha256": "e121859940d96c2929e9f48fd05d882f713cdc59c7c3ce17a44725602a5420aa",
+      "imageBytes": 115912704,
+      "debugDirectoryBytes": 84,
+      "sections": [
+        {
+          "name": ".text",
+          "virtualBytes": 70318132,
+          "rawBytes": 70318592
+        },
+        {
+          "name": ".rodata",
+          "virtualBytes": 4512,
+          "rawBytes": 4608
+        },
+        {
+          "name": "malloc_h",
+          "virtualBytes": 416,
+          "rawBytes": 512
+        },
+        {
+          "name": ".rdata",
+          "virtualBytes": 40110956,
+          "rawBytes": 40111104
+        },
+        {
+          "name": ".data",
+          "virtualBytes": 2289904,
+          "rawBytes": 121856
+        },
+        {
+          "name": ".pdata",
+          "virtualBytes": 2858820,
+          "rawBytes": 2859008
+        },
+        {
+          "name": ".fptable",
+          "virtualBytes": 256,
+          "rawBytes": 512
+        },
+        {
+          "name": ".rsrc",
+          "virtualBytes": 37728,
+          "rawBytes": 37888
+        },
+        {
+          "name": ".reloc",
+          "virtualBytes": 263232,
+          "rawBytes": 263680
+        }
+      ]
+    }
+  },
+  "builds": [
+    {
+      "log": "build-release.log",
+      "exit_code": 0,
+      "seconds": 89.1243007,
+      "profile": "release"
+    },
+    {
+      "log": "build-release-lto.log",
+      "profile": "release-lto",
+      "seconds": 81.4331324,
+      "exit_code": 101
+    },
+    {
+      "log": "build-release-lto-retry.log",
+      "profile": "release-lto",
+      "exit_code": 101,
+      "seconds": 40.2969636
+    },
+    {
+      "log": "build-release-lto-cached.log",
+      "seconds": 268.4631842,
+      "profile": "release-lto",
+      "exit_code": 0
+    }
+  ],
+  "runs": [
+    {
+      "profile": "release",
+      "run": 1,
+      "timestamp": "2026-11-01T00:51:13Z",
+      "processCount": 8,
+      "privateCommitMiB": 200.93,
+      "workingSetMiB": 400.72,
+      "cpuPercent": 0.93,
+      "startupMs": 516.5056999999999,
+      "actualCpuSampleSeconds": 5.07,
+      "host": {
+        "privateCommitMiB": 10.39,
+        "workingSetMiB": 36.91,
+        "cpuPercent": 0.08
+      }
+    },
+    {
+      "profile": "release-lto",
+      "run": 1,
+      "timestamp": "2026-11-01T00:51:43Z",
+      "processCount": 8,
+      "privateCommitMiB": 200.6,
+      "workingSetMiB": 421.89,
+      "cpuPercent": 0.85,
+      "startupMs": 815.2142000000022,
+      "actualCpuSampleSeconds": 5.05,
+      "host": {
+        "privateCommitMiB": 10.14,
+        "workingSetMiB": 51.31,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release-lto",
+      "run": 2,
+      "timestamp": "2026-11-01T00:52:13Z",
+      "processCount": 8,
+      "privateCommitMiB": 202.05,
+      "workingSetMiB": 412.26,
+      "cpuPercent": 0.65,
+      "startupMs": 607.5456999999951,
+      "actualCpuSampleSeconds": 5.05,
+      "host": {
+        "privateCommitMiB": 10.18,
+        "workingSetMiB": 36.62,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release",
+      "run": 2,
+      "timestamp": "2026-11-01T00:52:43Z",
+      "processCount": 8,
+      "privateCommitMiB": 201.99,
+      "workingSetMiB": 409.86,
+      "cpuPercent": 0.9,
+      "startupMs": 623.0924999999988,
+      "actualCpuSampleSeconds": 5.06,
+      "host": {
+        "privateCommitMiB": 10.23,
+        "workingSetMiB": 34.93,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release",
+      "run": 3,
+      "timestamp": "2026-11-01T00:53:12Z",
+      "processCount": 8,
+      "privateCommitMiB": 194.75,
+      "workingSetMiB": 391.34,
+      "cpuPercent": 0.86,
+      "startupMs": 559.1777000000002,
+      "actualCpuSampleSeconds": 5.05,
+      "host": {
+        "privateCommitMiB": 10.12,
+        "workingSetMiB": 34.78,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release-lto",
+      "run": 3,
+      "timestamp": "2026-11-01T00:53:42Z",
+      "processCount": 8,
+      "privateCommitMiB": 195.23,
+      "workingSetMiB": 391.46,
+      "cpuPercent": 0.58,
+      "startupMs": 591.036300000007,
+      "actualCpuSampleSeconds": 5.04,
+      "host": {
+        "privateCommitMiB": 9.82,
+        "workingSetMiB": 34.74,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release-lto",
+      "run": 4,
+      "timestamp": "2026-11-01T00:54:12Z",
+      "processCount": 8,
+      "privateCommitMiB": 206.42,
+      "workingSetMiB": 406.38,
+      "cpuPercent": 0.73,
+      "startupMs": 577.9305999999924,
+      "actualCpuSampleSeconds": 5.05,
+      "host": {
+        "privateCommitMiB": 10.05,
+        "workingSetMiB": 34.95,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release",
+      "run": 4,
+      "timestamp": "2026-11-01T00:54:41Z",
+      "processCount": 8,
+      "privateCommitMiB": 195.3,
+      "workingSetMiB": 393.32,
+      "cpuPercent": 0.81,
+      "startupMs": 578.209600000002,
+      "actualCpuSampleSeconds": 5.06,
+      "host": {
+        "privateCommitMiB": 10,
+        "workingSetMiB": 36.56,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release",
+      "run": 5,
+      "timestamp": "2026-11-01T00:55:11Z",
+      "processCount": 8,
+      "privateCommitMiB": 196.06,
+      "workingSetMiB": 393.11,
+      "cpuPercent": 0.77,
+      "startupMs": 562.4801999999909,
+      "actualCpuSampleSeconds": 5.04,
+      "host": {
+        "privateCommitMiB": 9.86,
+        "workingSetMiB": 36.55,
+        "cpuPercent": 0
+      }
+    },
+    {
+      "profile": "release-lto",
+      "run": 5,
+      "timestamp": "2026-11-01T00:55:41Z",
+      "processCount": 8,
+      "privateCommitMiB": 200.03,
+      "workingSetMiB": 407.97,
+      "cpuPercent": 0.8,
+      "startupMs": 574.2033999999985,
+      "actualCpuSampleSeconds": 5.05,
+      "host": {
+        "privateCommitMiB": 10.14,
+        "workingSetMiB": 36.71,
+        "cpuPercent": 0
+      }
+    }
+  ],
+  "statistics": {
+    "release": {
+      "privateCommitMiB": {
+        "n": 5,
+        "median": 196.06,
+        "mean": 197.80599999999998,
+        "sampleStdDev": 3.388691487875521,
+        "min": 194.75,
+        "max": 201.99
+      },
+      "workingSetMiB": {
+        "n": 5,
+        "median": 393.32,
+        "mean": 397.66999999999996,
+        "sampleStdDev": 7.708495313613429,
+        "min": 391.34,
+        "max": 409.86
+      },
+      "cpuPercent": {
+        "n": 5,
+        "median": 0.86,
+        "mean": 0.8539999999999999,
+        "sampleStdDev": 0.0650384501660364,
+        "min": 0.77,
+        "max": 0.93
+      },
+      "startupMs": {
+        "n": 5,
+        "median": 562.4801999999909,
+        "mean": 567.8931399999983,
+        "sampleStdDev": 38.403536604497816,
+        "min": 516.5056999999999,
+        "max": 623.0924999999988
+      }
+    },
+    "release-lto": {
+      "privateCommitMiB": {
+        "n": 5,
+        "median": 200.6,
+        "mean": 200.866,
+        "sampleStdDev": 4.024391879526645,
+        "min": 195.23,
+        "max": 206.42
+      },
+      "workingSetMiB": {
+        "n": 5,
+        "median": 407.97,
+        "mean": 407.992,
+        "sampleStdDev": 11.03716766204084,
+        "min": 391.46,
+        "max": 421.89
+      },
+      "cpuPercent": {
+        "n": 5,
+        "median": 0.73,
+        "mean": 0.722,
+        "sampleStdDev": 0.10940749517286281,
+        "min": 0.58,
+        "max": 0.85
+      },
+      "startupMs": {
+        "n": 5,
+        "median": 591.036300000007,
+        "mean": 633.186039999999,
+        "sampleStdDev": 102.591902849754,
+        "min": 574.2033999999985,
+        "max": 815.2142000000022
+      }
+    }
+  },
+  "tests": [
+    {
+      "seconds": 399.539103,
+      "exit_code": 0,
+      "profile": "release",
+      "test": "compile"
+    },
+    {
+      "seconds": 1.5985074,
+      "exit_code": 0,
+      "profile": "release",
+      "test": "test_webview2_livekit_lazy_load_and_multimedia_suite"
+    },
+    {
+      "seconds": 13.6479982,
+      "exit_code": 101,
+      "profile": "release",
+      "test": "bundled_sfu_preserves_screen_audio_source"
+    },
+    {
+      "seconds": 16.2037875,
+      "exit_code": 0,
+      "profile": "release",
+      "test": "audio_red_survives_end_to_end_encryption"
+    },
+    {
+      "seconds": 16.5201737,
+      "exit_code": 0,
+      "profile": "release",
+      "test": "native_screen_codecs_reach_a_real_decoder"
+    },
+    {
+      "seconds": 1354.872427,
+      "exit_code": 0,
+      "profile": "release-lto",
+      "test": "compile"
+    },
+    {
+      "seconds": 1.4854532,
+      "exit_code": 0,
+      "profile": "release-lto",
+      "test": "test_webview2_livekit_lazy_load_and_multimedia_suite"
+    },
+    {
+      "seconds": 13.4670074,
+      "exit_code": 101,
+      "profile": "release-lto",
+      "test": "bundled_sfu_preserves_screen_audio_source"
+    },
+    {
+      "seconds": 16.1060547,
+      "exit_code": 0,
+      "profile": "release-lto",
+      "test": "audio_red_survives_end_to_end_encryption"
+    },
+    {
+      "seconds": 16.3991345,
+      "exit_code": 0,
+      "profile": "release-lto",
+      "test": "native_screen_codecs_reach_a_real_decoder"
+    }
+  ]
+}
