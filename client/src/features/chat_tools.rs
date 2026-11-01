@@ -55,7 +55,7 @@ fn date_ms(value: &str, next_day: bool) -> Result<Option<i64>, String> {
 
 #[component]
 pub(super) fn ChatTools(channel_id: Id) -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let gateway = use_gateway();
     let mut panel = use_signal(|| "");
     let mut text = use_signal(String::new);
@@ -224,7 +224,18 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                                 }
                             }
                             div { class: "flex flex-col border-t border-[var(--border)] pt-2",
-                                for message in &results { super::chat::MessageRow { key: "{message.id}", message: message.clone(), grouped: false } }
+                                for message in &results {
+                                    {
+                                        let target = (channel_id, message.id, message.created_at.timestamp_millis());
+                                        rsx! {
+                                            super::chat::MessageRow { key: "{message.id}", message: message.clone(), grouped: false,
+                                                on_jump: move |_| {
+                                                    state.write().message_jump = Some(target);
+                                                    panel.set("");
+                                                } }
+                                        }
+                                    }
+                                }
                             }
                             if offset() > 0 || results.len() == 100 {
                                 div { class: "flex justify-center gap-2",

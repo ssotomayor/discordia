@@ -332,6 +332,8 @@ pub struct AppState {
     pub account_pictures: Option<(String, crate::profile::Pictures)>,
     pub account_dnd: Option<(String, bool)>,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
+    /// A search result to bring into view: channel, message, its time in ms.
+    pub message_jump: Option<(Id, Id, i64)>,
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
     pub server_image_previews: bool,
@@ -579,6 +581,7 @@ impl AppState {
             account_pictures: None,
             account_dnd: None,
             message_search: None,
+            message_jump: None,
             file_upload_result: None,
             server_chat_tools: false,
             server_image_previews: false,
@@ -869,6 +872,7 @@ impl AppState {
         self.profiles.clear();
         self.activities.clear();
         self.message_search = None;
+        self.message_jump = None;
         self.pending_edits.clear();
         self.file_upload_result = None;
         self.server_chat_tools = false;

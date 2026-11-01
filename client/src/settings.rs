@@ -101,6 +101,9 @@ pub struct ClientSettings {
     /// no gateway, may offer and send.
     #[serde(default)]
     pub saved_emoji: Vec<SavedEmoji>,
+    /// Newest first: a unicode emoji, or `:code:` for a picture.
+    #[serde(default)]
+    pub recent_emoji: Vec<String>,
     /// The Blossom server saved emoji pictures go to, so a DM links them
     /// instead of carrying them. None: inline under budget. Not `blossom_server`:
     /// files saved that name as null, which would have hidden this default.
@@ -234,6 +237,8 @@ fn default_sfx_volume() -> u8 {
 }
 
 pub const DEFAULT_SOUNDBOARD_VOLUME: u8 = 60;
+/// Two rows of the emoji picker.
+const RECENT_EMOJI: usize = 16;
 
 fn default_soundboard_volume() -> u8 {
     DEFAULT_SOUNDBOARD_VOLUME
@@ -406,6 +411,7 @@ impl Default for ClientSettings {
             dm_blocked: Vec::new(),
             dm_deleted_ids: Vec::new(),
             saved_emoji: Vec::new(),
+            recent_emoji: Vec::new(),
             emoji_blob_server: default_emoji_blob_server(),
             dm_blob_server: default_dm_blob_server(),
             blob_servers: Vec::new(),
@@ -549,6 +555,12 @@ impl ClientSettings {
         }
     }
 
+    pub fn note_emoji_used(&mut self, emoji: &str) {
+        self.recent_emoji.retain(|e| e != emoji);
+        self.recent_emoji.insert(0, emoji.to_string());
+        self.recent_emoji.truncate(RECENT_EMOJI);
+    }
+
     pub fn set_muted_channel(&mut self, channel_id: crate::protocol::Id, muted: bool) {
         set_membership(&mut self.muted_channels, channel_id, muted);
     }
@@ -655,6 +667,18 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_emoji_put_the_latest_first_without_repeats_and_stay_bounded() {
+        let mut s = ClientSettings::default();
+        for i in 0..20 {
+            s.note_emoji_used(&format!(":e{i}:"));
+        }
+        s.note_emoji_used(":e10:");
+        assert_eq!(s.recent_emoji.len(), RECENT_EMOJI);
+        assert_eq!(s.recent_emoji[..2], [":e10:", ":e19:"]);
+        assert_eq!(s.recent_emoji.iter().filter(|e| *e == ":e10:").count(), 1);
+    }
 
     #[test]
     fn deleted_dm_messages_are_deduplicated() {

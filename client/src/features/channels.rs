@@ -199,6 +199,7 @@ pub fn ChannelsColumn() -> Element {
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut dm_confirming = use_signal::<Option<Id>>(|| None);
+    let mut dm_menu = use_signal::<Option<super::dm_menu::DmMenu>>(|| None);
     let mut show_requests = use_signal(|| false);
     let mut show_create = use_signal(|| false);
     let mut dragging = use_signal::<Option<Id>>(|| None);
@@ -303,6 +304,10 @@ pub fn ChannelsColumn() -> Element {
                                 div {
                                     key: "{cid}",
                                     class: "dxf-dm-row group w-full flex items-center gap-2 px-2 py-1 rounded text-sm transition-colors {cls}",
+                                    oncontextmenu: move |e: MouseEvent| {
+                                        e.prevent_default();
+                                        dm_menu.set(Some(super::dm_menu::DmMenu::at(cid, &e)));
+                                    },
                                     button {
                                         class: "dxf-dm-open flex-1 min-w-0 flex items-center gap-2 text-left",
                                         onclick: move |_| {
@@ -315,7 +320,9 @@ pub fn ChannelsColumn() -> Element {
                                             size: "w-6 h-6",
                                             text: "text-[10px]",
                                         }
-                                        span { class: "truncate flex-1",
+                                        span {
+                                            class: if muted { "truncate flex-1 opacity-60" } else { "truncate flex-1" },
+                                            title: muted.then(|| crate::i18n::text("Muted", &[])),
                                             "{uname}"
                                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
                                         }
@@ -323,21 +330,6 @@ pub fn ChannelsColumn() -> Element {
                                     if unread > 0 && !asking {
                                         span { class: "shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-[var(--accent)] text-[#1a1206] text-[11.5px] font-bold flex items-center justify-center group-hover:hidden",
                                             "{unread}"
-                                        }
-                                    }
-                                    if muted && !asking {
-                                        span {
-                                            class: "shrink-0 text-[9px] text-[var(--text-dim)] group-hover:hidden",
-                                            title: crate::i18n::text("Muted", &[]),
-                                            "🔕"
-                                        }
-                                    }
-                                    if !asking {
-                                        button {
-                                            class: "shrink-0 w-4 h-4 rounded-full hidden group-hover:flex items-center justify-center text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
-                                            title: if muted { crate::i18n::text("Unmute this conversation", &[]) } else { crate::i18n::text("Mute this conversation", &[]) },
-                                            onclick: move |_| crate::state::set_dm_muted(state, settings, cid, !muted),
-                                            if muted { "🔔" } else { "🔕" }
                                         }
                                     }
                                     button {
@@ -591,6 +583,9 @@ pub fn ChannelsColumn() -> Element {
             UserPanel { self_voice: self_voice, self_username: self_user.map(|u| u.username) }
             }
 
+            if let Some(menu) = dm_menu() {
+                super::dm_menu::DmMenuPopover { menu, on_close: move |_| dm_menu.set(None) }
+            }
             if let Some(m) = chan_menu() {
                 ChannelMenuPopover {
                     menu: m,

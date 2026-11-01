@@ -14,6 +14,7 @@ pub mod connect;
 pub mod discord_import;
 pub mod dm_call;
 mod dm_images;
+pub(crate) mod dm_menu;
 mod dm_requests;
 pub mod globe;
 mod globe_geometry;
