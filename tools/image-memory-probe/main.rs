@@ -7,10 +7,14 @@ pub(crate) use discordia_protocol as protocol;
 mod chat_image {
     pub const MAX_DM_BYTES: usize = 10 * 1024 * 1024;
 }
+#[cfg(feature = "thumbnails")]
+mod image_preview {
+    include!("../../client/src/image_preview.rs");
+}
 
 #[allow(dead_code)]
 mod image_assets {
-    include!("../../client/src/image_assets.rs");
+    include!(env!("IMAGE_PROBE_ASSETS_SOURCE"));
 
     pub fn stats_route(corpus_bytes: usize) {
         let assets = try_consume_context::<Assets>().expect("fixture asset context");
@@ -44,6 +48,23 @@ mod image_assets {
         }
         let _ = preview;
         chat_source(data)
+    }
+
+    pub fn fixture_full_src(source: &ImageSource) -> &str {
+        #[cfg(feature = "thumbnails")]
+        return source.full_src();
+        #[cfg(not(feature = "thumbnails"))]
+        &source.uri
+    }
+
+    pub fn fixture_has_preview(source: &ImageSource) -> bool {
+        #[cfg(feature = "thumbnails")]
+        return source.has_preview();
+        #[cfg(not(feature = "thumbnails"))]
+        {
+            let _ = source;
+            false
+        }
     }
 }
 
@@ -150,7 +171,14 @@ fn Fixture() -> Element {
         div { id: "probe", "data-scenario": "{scenario}", "data-cycle": "{cycle}",
             div { id: "images", class: if scenario() == 3 { "avatars" } else if scenario() == 7 { "full" } else { "chat" },
                 for src in sources() {
-                    img { key: "{src}", src: "{src}", alt: "fixture" }
+                    if image_assets::fixture_has_preview(&src) {
+                    picture { key: "{src}", style: "display:contents;",
+                        source { style: "display:none;", "media": "(max-resolution: 2dppx)", "srcset": "{src}" }
+                        img { src: image_assets::fixture_full_src(&src), alt: "fixture" }
+                    }
+                    } else {
+                        img { key: "{src}", src: "{src}", alt: "fixture" }
+                    }
                 }
             }
             if let Some(src) = background {
@@ -216,6 +244,38 @@ fn generate(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("compare") {
+        let left = image::open(std::env::args().nth(2).ok_or("first PNG required")?)?.to_rgba8();
+        let right = image::open(std::env::args().nth(3).ok_or("second PNG required")?)?.to_rgba8();
+        if left.dimensions() != right.dimensions() {
+            return Err("screenshot dimensions differ".into());
+        }
+        let mut total = 0u64;
+        let mut squared = 0u64;
+        let mut max = 0u8;
+        let mut changed = 0usize;
+        for (a, b) in left
+            .as_raw()
+            .chunks_exact(4)
+            .zip(right.as_raw().chunks_exact(4))
+        {
+            let mut different = false;
+            for channel in 0..3 {
+                let delta = a[channel].abs_diff(b[channel]);
+                total += u64::from(delta);
+                squared += u64::from(delta) * u64::from(delta);
+                max = max.max(delta);
+                different |= delta != 0;
+            }
+            changed += usize::from(different);
+        }
+        let pixels = u64::from(left.width()) * u64::from(left.height());
+        println!(
+            "{}",
+            serde_json::json!({"width":left.width(),"height":left.height(),"rgbMeanAbsoluteError":total as f64/(pixels*3) as f64,"rgbRootMeanSquareError":(squared as f64/(pixels*3) as f64).sqrt(),"maxChannelDifference":max,"changedPixels":changed})
+        );
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("generate") {
         return generate(Path::new(
             &std::env::args()

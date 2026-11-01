@@ -1,0 +1,7558 @@
+{
+  "units": "MiB = 1048576 bytes; CPU load = cumulative core seconds; idle CPU follows existing profiler normalization; GPU Private Commit is not VRAM",
+  "scope": "Real Dioxus/ImageAssets/WebView2 component fixture; not full Discordia or network transfer; GPU process private commit is not VRAM",
+  "excludedAttempts": [
+    {
+      "variant": "final-incomplete",
+      "reason": "GIF source changed during decode; excluded from final n=5"
+    }
+  ],
+  "conclusionVariants": [
+    "paint-baseline",
+    "paint-leases",
+    "paint-thumbnails"
+  ],
+  "exploratoryOnly": "Unprefixed variants explicitly called img.decode(); their memory and latency do not represent the normal production JPEG path.",
+  "variants": {
+    "baseline": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 84.46,
+          "min": 84.36,
+          "max": 84.59,
+          "sampleSD": 0.09257429448826501
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.82,
+          "min": 23.8,
+          "max": 26.47,
+          "sampleSD": 1.084195554316655
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 241.51,
+          "min": 232.94,
+          "max": 252.7,
+          "sampleSD": 8.41598360264562
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 411.78,
+          "min": 401.85,
+          "max": 420.48,
+          "sampleSD": 8.010731552111826
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 524.96,
+          "min": 514.45,
+          "max": 527.59,
+          "sampleSD": 6.078467734552845
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.33,
+          "min": 0.24,
+          "max": 0.56,
+          "sampleSD": 0.12308533625091174
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 76.02950000000419,
+          "min": 69.89359999999999,
+          "max": 83.76469999999972,
+          "sampleSD": 5.455819260017197
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 6.642890930175781,
+          "min": 6.642890930175781,
+          "max": 6.642890930175781,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 118.14,
+          "min": 118,
+          "max": 118.22,
+          "sampleSD": 0.08438009243891718
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.97,
+          "min": 24.97,
+          "max": 28.71,
+          "sampleSD": 1.5132085117392122
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 778.83,
+          "min": 762.28,
+          "max": 790.34,
+          "sampleSD": 10.088526651597865
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 983.58,
+          "min": 966.53,
+          "max": 995.29,
+          "sampleSD": 10.569093149367173
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 967.07,
+          "min": 949.21,
+          "max": 977.12,
+          "sampleSD": 11.123073765825685
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.15,
+          "min": 0.05,
+          "max": 0.19,
+          "sampleSD": 0.07127411872482184
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 331.84920000000056,
+          "min": 267.043800000014,
+          "max": 334.412599999996,
+          "sampleSD": 28.95037696018183
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 38.69753551483154,
+          "min": 38.69753551483154,
+          "max": 38.69753551483154,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 126.84,
+          "min": 126.59,
+          "max": 128.11,
+          "sampleSD": 0.6008910050916106
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 26.8,
+          "min": 26.17,
+          "max": 29.41,
+          "sampleSD": 1.2658870407741756
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 738.63,
+          "min": 667.7,
+          "max": 824.03,
+          "sampleSD": 68.61931302483285
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 953.16,
+          "min": 882.51,
+          "max": 1041.76,
+          "sampleSD": 69.62804176479473
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 929.72,
+          "min": 862.28,
+          "max": 1004.5,
+          "sampleSD": 66.49653051099735
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.39,
+          "sampleSD": 0.16392071254115512
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 68.90450000000419,
+          "min": 64.5054999999993,
+          "max": 77.17799999999988,
+          "sampleSD": 4.589884950953419
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 47.453330993652344,
+          "min": 47.453330993652344,
+          "max": 47.453330993652344,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 52,
+          "min": 52,
+          "max": 52,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 52,
+          "min": 52,
+          "max": 52,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.74,
+          "min": 128,
+          "max": 129.91,
+          "sampleSD": 0.8077932903905534
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.5,
+          "min": 27.53,
+          "max": 31.11,
+          "sampleSD": 1.3451282466738994
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 575.54,
+          "min": 558.8,
+          "max": 581.05,
+          "sampleSD": 8.443620076720656
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 794.29,
+          "min": 779.95,
+          "max": 800.44,
+          "sampleSD": 7.581354100686756
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 872.83,
+          "min": 859.8,
+          "max": 889.58,
+          "sampleSD": 11.965739425543276
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.43,
+          "sampleSD": 0.1879627622695517
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 17.882100000002538,
+          "min": 17.155899999999747,
+          "max": 18.262900000001537,
+          "sampleSD": 0.4273501000335409
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 47.803956031799316,
+          "min": 47.803956031799316,
+          "max": 47.803956031799316,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.32,
+          "min": 127.36,
+          "max": 129.1,
+          "sampleSD": 0.7391752160347367
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.96,
+          "min": 28.87,
+          "max": 31.51,
+          "sampleSD": 1.1455915502481682
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 708.59,
+          "min": 706.39,
+          "max": 713.88,
+          "sampleSD": 2.8798611077619656
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 928.73,
+          "min": 925.8,
+          "max": 931.79,
+          "sampleSD": 2.2967106914019495
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 1011.96,
+          "min": 1009.34,
+          "max": 1017.44,
+          "sampleSD": 3.5528974091577594
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0.05,
+          "max": 0.15,
+          "sampleSD": 0.049999999999999996
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 556.9968000000081,
+          "min": 546.9495000000006,
+          "max": 616.3818000000028,
+          "sampleSD": 32.32239591431901
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 47.803956031799316,
+          "min": 47.803956031799316,
+          "max": 47.803956031799316,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.49,
+          "min": 127.73,
+          "max": 129.63,
+          "sampleSD": 0.7313685801290604
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.54,
+          "min": 29.45,
+          "max": 32.29,
+          "sampleSD": 1.2349008057329947
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 577.62,
+          "min": 517.86,
+          "max": 712.24,
+          "sampleSD": 86.27166000489386
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 800.38,
+          "min": 737.09,
+          "max": 930.88,
+          "sampleSD": 85.79876671607813
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 941.48,
+          "min": 842.09,
+          "max": 1019.05,
+          "sampleSD": 72.5101581159495
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.15,
+          "sampleSD": 0.06519202405202648
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 113.22789999999804,
+          "min": 112.24400000000605,
+          "max": 114.8386999999966,
+          "sampleSD": 1.0152819352234999
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.49,
+          "min": 127.73,
+          "max": 129.63,
+          "sampleSD": 0.7313685801290604
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.29,
+          "min": 30.07,
+          "max": 33.02,
+          "sampleSD": 1.2436961043599049
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 340.47,
+          "min": 337.38,
+          "max": 353.16,
+          "sampleSD": 6.162639856425177
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 563.29,
+          "min": 556.77,
+          "max": 573.91,
+          "sampleSD": 6.216797407025574
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 771.29,
+          "min": 768.39,
+          "max": 775.61,
+          "sampleSD": 3.4204780367662013
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 100.43000000000029,
+          "min": 97.78260000000591,
+          "max": 105.66879999999946,
+          "sampleSD": 2.890752079993913
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.26,
+          "min": 127.58,
+          "max": 129.4,
+          "sampleSD": 0.725892554032624
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.33,
+          "min": 28.27,
+          "max": 31,
+          "sampleSD": 1.185255246771766
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 359.31,
+          "min": 105.16,
+          "max": 360.51,
+          "sampleSD": 113.65927612825976
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 577.91,
+          "min": 323.82,
+          "max": 582.47,
+          "sampleSD": 114.43271180042882
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 891.56,
+          "min": 752.44,
+          "max": 921.23,
+          "sampleSD": 66.57243145627172
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.09984988733093293
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.26,
+          "min": 127.59,
+          "max": 129.4,
+          "sampleSD": 0.7228969497791533
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.58,
+          "min": 28.52,
+          "max": 31.25,
+          "sampleSD": 1.185255246771766
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 127.84,
+          "min": 127.23,
+          "max": 129.65,
+          "sampleSD": 1.018223943933751
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 349.27,
+          "min": 345.5,
+          "max": 349.58,
+          "sampleSD": 1.7033056096895807
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 770.89,
+          "min": 763.49,
+          "max": 773.02,
+          "sampleSD": 3.682291406176319
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 136.08050000001094,
+          "min": 135.85759999998845,
+          "max": 136.79330000000118,
+          "sampleSD": 0.4440083614146954
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 146.75,
+          "min": 146.16,
+          "max": 147.89,
+          "sampleSD": 0.7012631460443324
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 61.87,
+          "min": 43.07,
+          "max": 64.47,
+          "sampleSD": 10.755197813150625
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 342.1,
+          "min": 326.11,
+          "max": 362.47,
+          "sampleSD": 17.611801441079216
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 613.57,
+          "min": 599.78,
+          "max": 616.75,
+          "sampleSD": 7.637861611734013
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 902.07,
+          "min": 885.96,
+          "max": 904.07,
+          "sampleSD": 8.906845681833717
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.05477225575051661
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 417.3440999999875,
+          "min": 410.6186000000016,
+          "max": 434.65170000000217,
+          "sampleSD": 8.988902255838688
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 143.05,
+          "min": 142.37,
+          "max": 144.19,
+          "sampleSD": 0.7113508276511602
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 61.88,
+          "min": 43.14,
+          "max": 64.48,
+          "sampleSD": 10.723037349557263
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 340.63,
+          "min": 326.08,
+          "max": 362.45,
+          "sampleSD": 17.676101662979878
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 608.54,
+          "min": 595.98,
+          "max": 613.09,
+          "sampleSD": 7.494346535889576
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 896.94,
+          "min": 882.32,
+          "max": 900.37,
+          "sampleSD": 8.654593000251376
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 17.767699999996694,
+          "min": 17.08419999999751,
+          "max": 18.852899999998044,
+          "sampleSD": 0.6379940712895934
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "first_high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 113.04,
+          "min": 112.21,
+          "max": 113.07,
+          "sampleSD": 0.4566180022732349
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 23.47,
+          "min": 23.38,
+          "max": 27.15,
+          "sampleSD": 1.827148050925266
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 608.52,
+          "min": 606.89,
+          "max": 617.79,
+          "sampleSD": 4.404546514682294
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 803.95,
+          "min": 801.62,
+          "max": 815.35,
+          "sampleSD": 5.570428170257653
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 842.66,
+          "min": 808.02,
+          "max": 851.57,
+          "sampleSD": 17.110010812387014
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.14,
+          "sampleSD": 0.05718391382198319
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 321.1988999999994,
+          "min": 229.50190000000293,
+          "max": 334.4494999999988,
+          "sampleSD": 45.86451980357882
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 32.05464458465576,
+          "min": 32.05464458465576,
+          "max": 32.05464458465576,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "loadingCpuRustCoreSeconds": {
+          "n": 5,
+          "median": 0.109375,
+          "min": 0.09375,
+          "max": 0.109375,
+          "sampleSD": 0.006987712429686842
+        },
+        "loadingCpuRendererCoreSeconds": {
+          "n": 5,
+          "median": 0.5625,
+          "min": 0.515625,
+          "max": 0.578125,
+          "sampleSD": 0.028384222069663984
+        },
+        "loadingCpuGpuCoreSeconds": {
+          "n": 5,
+          "median": 0.125,
+          "min": 0.109375,
+          "max": 0.15625,
+          "sampleSD": 0.020372507516258277
+        },
+        "loadingCpuTotalCoreSeconds": {
+          "n": 5,
+          "median": 0.84375,
+          "min": 0.796875,
+          "max": 0.90625,
+          "sampleSD": 0.054798993489844315
+        },
+        "cpuObservationMs": {
+          "n": 5,
+          "median": 633,
+          "min": 554,
+          "max": 667,
+          "sampleSD": 46.65511761854213
+        }
+      }
+    },
+    "leases": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 84.43,
+          "min": 84.38,
+          "max": 84.56,
+          "sampleSD": 0.08080841540335088
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.74,
+          "min": 23.82,
+          "max": 27.5,
+          "sampleSD": 1.5031699837343744
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 242.9,
+          "min": 232.78,
+          "max": 255.6,
+          "sampleSD": 9.78156020274884
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 410.41,
+          "min": 400.46,
+          "max": 424.28,
+          "sampleSD": 9.523438454675915
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 524.16,
+          "min": 515.82,
+          "max": 555.11,
+          "sampleSD": 15.959228678103457
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.29,
+          "min": 0.19,
+          "max": 0.33,
+          "sampleSD": 0.06418722614352486
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 75.98170000000391,
+          "min": 69.16250000000002,
+          "max": 105.31030000001192,
+          "sampleSD": 14.613766194859773
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 6.642890930175781,
+          "min": 6.642890930175781,
+          "max": 6.642890930175781,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 111.46,
+          "min": 111.43,
+          "max": 111.6,
+          "sampleSD": 0.06730527468185168
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 26,
+          "min": 24.97,
+          "max": 28.71,
+          "sampleSD": 1.4045889078303309
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 777.23,
+          "min": 763.3,
+          "max": 829.19,
+          "sampleSD": 26.212245802296327
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 973.51,
+          "min": 963.36,
+          "max": 1026.38,
+          "sampleSD": 25.735246841637302
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 959.68,
+          "min": 946.07,
+          "max": 1030.32,
+          "sampleSD": 33.412725569758564
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0.1,
+          "max": 0.43,
+          "sampleSD": 0.14758048651498612
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 320.65700000000015,
+          "min": 318.27029999997467,
+          "max": 329.5051999999996,
+          "sampleSD": 4.4841648858023575
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 32.05464458465576,
+          "min": 32.05464458465576,
+          "max": 32.05464458465576,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 88.62,
+          "min": 87.07,
+          "max": 89.73,
+          "sampleSD": 1.1652553368253689
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 26.9,
+          "min": 26.72,
+          "max": 29.5,
+          "sampleSD": 1.165555661476534
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 752.86,
+          "min": 673.18,
+          "max": 833.36,
+          "sampleSD": 67.86178806957567
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 929.1,
+          "min": 849.78,
+          "max": 1012.01,
+          "sampleSD": 68.39371118750613
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 955.63,
+          "min": 824.04,
+          "max": 985.99,
+          "sampleSD": 72.5310474900232
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.07416198487095663
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 70.636599999998,
+          "min": 63.30839999997988,
+          "max": 77.0318000000043,
+          "sampleSD": 5.3159673872287385
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 8.7557954788208,
+          "min": 8.7557954788208,
+          "max": 8.7557954788208,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 52,
+          "min": 52,
+          "max": 52,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 81.57,
+          "min": 80.68,
+          "max": 81.91,
+          "sampleSD": 0.5547341705718093
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.53,
+          "min": 28.4,
+          "max": 31.16,
+          "sampleSD": 1.1922248110151041
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 571.81,
+          "min": 565.8,
+          "max": 573.98,
+          "sampleSD": 3.5589422585931643
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 742.73,
+          "min": 736.11,
+          "max": 746.5,
+          "sampleSD": 4.231459559064707
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 857.71,
+          "min": 804.51,
+          "max": 874.48,
+          "sampleSD": 30.935769426345296
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0,
+          "max": 0.57,
+          "sampleSD": 0.22796929617823536
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.76219999999921,
+          "min": 17.909500000008848,
+          "max": 18.993900000001304,
+          "sampleSD": 0.43502178335791053
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0.35062503814697266,
+          "min": 0.35062503814697266,
+          "max": 0.35062503814697266,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 78.35,
+          "min": 77.97,
+          "max": 79.71,
+          "sampleSD": 0.6930223661614375
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.01,
+          "min": 28.92,
+          "max": 31.67,
+          "sampleSD": 1.2061218843881412
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 673.04,
+          "min": 659.42,
+          "max": 716.23,
+          "sampleSD": 26.52608489770024
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 841.93,
+          "min": 829.27,
+          "max": 886.38,
+          "sampleSD": 26.447163742072604
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 928.33,
+          "min": 915.09,
+          "max": 993.52,
+          "sampleSD": 33.34798239774033
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0.05,
+          "max": 0.1,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 599.0239000000001,
+          "min": 549.2019,
+          "max": 633.3782999999821,
+          "sampleSD": 39.03360884118647
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.21,
+          "min": 79,
+          "max": 80.45,
+          "sampleSD": 0.6022208897074245
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.6,
+          "min": 29.52,
+          "max": 32.25,
+          "sampleSD": 1.194583609463984
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 652.85,
+          "min": 574.39,
+          "max": 699.55,
+          "sampleSD": 50.75693075827182
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 822.54,
+          "min": 743.59,
+          "max": 871.08,
+          "sampleSD": 51.82035671432609
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 916.67,
+          "min": 861.41,
+          "max": 995.45,
+          "sampleSD": 50.71038700305888
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.041833001326703784
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 111.6368999999977,
+          "min": 104.77159999999276,
+          "max": 115.48090000000957,
+          "sampleSD": 3.961899802119932
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.21,
+          "min": 79,
+          "max": 80.45,
+          "sampleSD": 0.6022208897074245
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.34,
+          "min": 30.31,
+          "max": 32.98,
+          "sampleSD": 1.1863051883895632
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 341.02,
+          "min": 337.92,
+          "max": 426.13,
+          "sampleSD": 37.88868722983154
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 512.37,
+          "min": 508.02,
+          "max": 598.42,
+          "sampleSD": 38.129389976762006
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 728.87,
+          "min": 714.04,
+          "max": 758.14,
+          "sampleSD": 16.207269048177125
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 98.73420000000624,
+          "min": 96.35000000000582,
+          "max": 100.43999999999869,
+          "sampleSD": 1.5894847712323559
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.42,
+          "min": 78.91,
+          "max": 80.21,
+          "sampleSD": 0.5194708846509086
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.42,
+          "min": 28.38,
+          "max": 31.07,
+          "sampleSD": 1.1880572376783873
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 359.48,
+          "min": 354.85,
+          "max": 631.37,
+          "sampleSD": 122.18018509562015
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 529.36,
+          "min": 527.59,
+          "max": 800.1,
+          "sampleSD": 121.25470238304163
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 846.37,
+          "min": 829.71,
+          "max": 867.55,
+          "sampleSD": 15.722381498996876
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.15,
+          "sampleSD": 0.06123724356957945
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.42,
+          "min": 78.91,
+          "max": 80.21,
+          "sampleSD": 0.5194708846509086
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.67,
+          "min": 28.63,
+          "max": 31.32,
+          "sampleSD": 1.1880572376783873
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 128.7,
+          "min": 127.43,
+          "max": 129.93,
+          "sampleSD": 0.9618471812091541
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 298.25,
+          "min": 297.18,
+          "max": 301.79,
+          "sampleSD": 2.051004631881659
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 730.12,
+          "min": 714.17,
+          "max": 739.58,
+          "sampleSD": 10.662417643292741
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.0447213595499958
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 135.35329999998794,
+          "min": 129.77399999999034,
+          "max": 135.50890000000072,
+          "sampleSD": 2.513986114328125
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 97.66,
+          "min": 97.4,
+          "max": 98.7,
+          "sampleSD": 0.5266877632905469
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 46.07,
+          "min": 43.21,
+          "max": 61.84,
+          "sampleSD": 9.695002836513252
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 359.83,
+          "min": 325.41,
+          "max": 375.88,
+          "sampleSD": 23.16545553189057
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 566.39,
+          "min": 547.62,
+          "max": 578.12,
+          "sampleSD": 13.556355336151368
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 852.59,
+          "min": 844.32,
+          "max": 858.7,
+          "sampleSD": 5.834966152429678
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 433.034799999994,
+          "min": 407.7890999999945,
+          "max": 436.0604000000021,
+          "sampleSD": 11.947564148060778
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 93.96,
+          "min": 93.7,
+          "max": 95.01,
+          "sampleSD": 0.5313473440227228
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 46.14,
+          "min": 43.32,
+          "max": 61.85,
+          "sampleSD": 9.65202932030358
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 359.82,
+          "min": 325.41,
+          "max": 374.4,
+          "sampleSD": 22.776331574685134
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 562.75,
+          "min": 543.93,
+          "max": 574.12,
+          "sampleSD": 13.484834815451036
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 848.98,
+          "min": 840.7,
+          "max": 853.73,
+          "sampleSD": 5.443494282168403
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.452699999994365,
+          "min": 17.767399999982445,
+          "max": 18.713700000000244,
+          "sampleSD": 0.3827954453837638
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "first_high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 113.01,
+          "min": 112.23,
+          "max": 113.05,
+          "sampleSD": 0.43752714201521437
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 23.46,
+          "min": 23.45,
+          "max": 24.46,
+          "sampleSD": 0.4484082960873946
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 607.62,
+          "min": 607.23,
+          "max": 617.61,
+          "sampleSD": 4.51331031505701
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 803.36,
+          "min": 802.05,
+          "max": 812.8,
+          "sampleSD": 4.415933649863845
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 842.2,
+          "min": 841.52,
+          "max": 847.64,
+          "sampleSD": 2.581356232680798
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.041833001326703784
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 320.44720000000234,
+          "min": 314.9326000000001,
+          "max": 322.5761999999995,
+          "sampleSD": 2.872929213363511
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 32.05464458465576,
+          "min": 32.05464458465576,
+          "max": 32.05464458465576,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "loadingCpuRustCoreSeconds": {
+          "n": 5,
+          "median": 0.125,
+          "min": 0.125,
+          "max": 0.21875,
+          "sampleSD": 0.04739297152532219
+        },
+        "loadingCpuRendererCoreSeconds": {
+          "n": 5,
+          "median": 0.515625,
+          "min": 0.5,
+          "max": 0.53125,
+          "sampleSD": 0.011048543456039806
+        },
+        "loadingCpuGpuCoreSeconds": {
+          "n": 5,
+          "median": 0.125,
+          "min": 0.109375,
+          "max": 0.171875,
+          "sampleSD": 0.02614562582918986
+        },
+        "loadingCpuTotalCoreSeconds": {
+          "n": 5,
+          "median": 0.875,
+          "min": 0.8125,
+          "max": 0.984375,
+          "sampleSD": 0.06498948232214194
+        },
+        "cpuObservationMs": {
+          "n": 5,
+          "median": 638,
+          "min": 630,
+          "max": 645,
+          "sampleSD": 5.683308895353129
+        }
+      }
+    },
+    "thumbnails": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 112.69,
+          "min": 112.59,
+          "max": 113.52,
+          "sampleSD": 0.38487660360172277
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.08,
+          "min": 24.91,
+          "max": 25.98,
+          "sampleSD": 0.5103430218980176
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 142.83,
+          "min": 142.11,
+          "max": 154.43,
+          "sampleSD": 5.236875977145151
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 339.39,
+          "min": 339.05,
+          "max": 351.84,
+          "sampleSD": 5.454774972443856
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 450.75,
+          "min": 449.14,
+          "max": 457.99,
+          "sampleSD": 4.403808578946194
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.43,
+          "min": 0.24,
+          "max": 0.67,
+          "sampleSD": 0.15508062419270824
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 176.01080000000366,
+          "min": 172.30179999998654,
+          "max": 185.3024000000005,
+          "sampleSD": 5.523137475480787
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 17.479886054992676,
+          "min": 17.479886054992676,
+          "max": 17.479886054992676,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 107.75,
+          "min": 107.68,
+          "max": 109.15,
+          "sampleSD": 0.7791469694479995
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.03,
+          "min": 26.06,
+          "max": 27.07,
+          "sampleSD": 0.4396930747692083
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 206.68,
+          "min": 205.93,
+          "max": 218.53,
+          "sampleSD": 6.055234925252693
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 400.75,
+          "min": 399.38,
+          "max": 412.97,
+          "sampleSD": 6.444406101418508
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 477.08,
+          "min": 474.91,
+          "max": 489,
+          "sampleSD": 6.070307240988707
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 512.6374999999971,
+          "min": 452.8706999999995,
+          "max": 548.3788999999961,
+          "sampleSD": 37.380440749298195
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 14.903268814086914,
+          "min": 14.903268814086914,
+          "max": 14.903268814086914,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 32,
+          "min": 32,
+          "max": 32,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 89.06,
+          "min": 87.59,
+          "max": 89.44,
+          "sampleSD": 0.8004186404626022
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 26.43,
+          "min": 25.52,
+          "max": 26.68,
+          "sampleSD": 0.4677285537574119
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 363.95,
+          "min": 347.84,
+          "max": 380.82,
+          "sampleSD": 12.70977655193041
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 538.36,
+          "min": 522.54,
+          "max": 557.52,
+          "sampleSD": 13.29153979040803
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 571.18,
+          "min": 550.3,
+          "max": 589.46,
+          "sampleSD": 15.530314871244578
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.81,
+          "sampleSD": 0.34171625656383403
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 70.81540000002133,
+          "min": 69.41829999999936,
+          "max": 78.34100000000035,
+          "sampleSD": 4.262084883947922
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 8.7557954788208,
+          "min": 8.7557954788208,
+          "max": 8.7557954788208,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 68,
+          "min": 68,
+          "max": 68,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 81.93,
+          "min": 80.48,
+          "max": 82.04,
+          "sampleSD": 0.7346223519605176
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.05,
+          "min": 27.07,
+          "max": 28.29,
+          "sampleSD": 0.486312656631513
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 362.02,
+          "min": 347.42,
+          "max": 379.88,
+          "sampleSD": 12.469173188307225
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 531.34,
+          "min": 517.14,
+          "max": 550.8,
+          "sampleSD": 12.790851418103472
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 567.57,
+          "min": 546.74,
+          "max": 584.85,
+          "sampleSD": 15.43434579112443
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.24,
+          "min": 0,
+          "max": 0.62,
+          "sampleSD": 0.26855167100578614
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 19.099899999999252,
+          "min": 18.170200000000477,
+          "max": 19.344100000002072,
+          "sampleSD": 0.5381876224930334
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0.35062503814697266,
+          "min": 0.35062503814697266,
+          "max": 0.35062503814697266,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.44,
+          "min": 78.59,
+          "max": 79.76,
+          "sampleSD": 0.4570886128531319
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.5,
+          "min": 27.53,
+          "max": 28.61,
+          "sampleSD": 0.4580065501715009
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 356.43,
+          "min": 341.93,
+          "max": 371.69,
+          "sampleSD": 11.960454840849492
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 525.75,
+          "min": 510.21,
+          "max": 540.7,
+          "sampleSD": 12.200974141436435
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 565.63,
+          "min": 544.46,
+          "max": 580.21,
+          "sampleSD": 14.810219444694258
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 143.50530000000072,
+          "min": 142.94289999999455,
+          "max": 148.18959999999788,
+          "sampleSD": 2.146891629776051
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.48,
+          "min": 79.66,
+          "max": 80.68,
+          "sampleSD": 0.46941452896134495
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.04,
+          "min": 28.06,
+          "max": 29.12,
+          "sampleSD": 0.45486261662176686
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 301.52,
+          "min": 300.43,
+          "max": 334.58,
+          "sampleSD": 14.797078427851892
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 471.77,
+          "min": 470.7,
+          "max": 504.06,
+          "sampleSD": 14.376158388109118
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 511.55,
+          "min": 508.2,
+          "max": 543.83,
+          "sampleSD": 15.03355180920333
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 112.64029999999912,
+          "min": 111.14410000000498,
+          "max": 113.98600000000442,
+          "sampleSD": 1.1031866455874904
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.48,
+          "min": 79.66,
+          "max": 80.68,
+          "sampleSD": 0.46941452896134495
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.92,
+          "min": 29.89,
+          "max": 30.05,
+          "sampleSD": 0.06633249580710793
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 410.83,
+          "min": 408.44,
+          "max": 425.3,
+          "sampleSD": 6.915129789092907
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 583.04,
+          "min": 579.09,
+          "max": 596.57,
+          "sampleSD": 6.9505337924507735
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 629.29,
+          "min": 625.63,
+          "max": 641.41,
+          "sampleSD": 6.525902236472739
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 196.17139999999927,
+          "min": 195.5064999999886,
+          "max": 198.23449999999139,
+          "sampleSD": 1.3351086408962505
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.16,
+          "min": 79.42,
+          "max": 80.29,
+          "sampleSD": 0.38765964453370744
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.76,
+          "min": 27.62,
+          "max": 27.86,
+          "sampleSD": 0.0947628619238565
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 404.98,
+          "min": 402.82,
+          "max": 412.05,
+          "sampleSD": 3.695263184131818
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 574.3,
+          "min": 571.96,
+          "max": 581.05,
+          "sampleSD": 3.52762668092867
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 631.72,
+          "min": 626.54,
+          "max": 635.46,
+          "sampleSD": 4.139580896660954
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.34,
+          "sampleSD": 0.14342245291445826
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.19,
+          "min": 79.43,
+          "max": 80.29,
+          "sampleSD": 0.3636206814800265
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.62,
+          "min": 29.5,
+          "max": 29.7,
+          "sampleSD": 0.08294576541331045
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 308.22,
+          "min": 295.14,
+          "max": 333.16,
+          "sampleSD": 18.716493261292303
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 479.87,
+          "min": 466.97,
+          "max": 505.23,
+          "sampleSD": 18.802800855191755
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 589.96,
+          "min": 589.07,
+          "max": 597.05,
+          "sampleSD": 3.3694851238727557
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 25.33279999998922,
+          "min": 24.201800000009825,
+          "max": 26.05279999999766,
+          "sampleSD": 0.6731267874577294
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 98.65,
+          "min": 98.52,
+          "max": 98.79,
+          "sampleSD": 0.11649034294739148
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 42.96,
+          "min": 42.85,
+          "max": 61.55,
+          "sampleSD": 10.18237349540862
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 320.78,
+          "min": 291.46,
+          "max": 321.95,
+          "sampleSD": 13.859410160609292
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 525.35,
+          "min": 514.15,
+          "max": 526.27,
+          "sampleSD": 5.156269969658307
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 686.91,
+          "min": 681.64,
+          "max": 713.39,
+          "sampleSD": 14.249844560555733
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.19,
+          "sampleSD": 0.08757853618324526
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 413.2213000000047,
+          "min": 402.68929999998363,
+          "max": 416.46250000000146,
+          "sampleSD": 6.348510433009261
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 94.91,
+          "min": 94.82,
+          "max": 95.08,
+          "sampleSD": 0.1094074951728634
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 43.04,
+          "min": 42.92,
+          "max": 61.56,
+          "sampleSD": 10.151315185728398
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 315.75,
+          "min": 249.62,
+          "max": 320.04,
+          "sampleSD": 34.293703066306506
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 516.25,
+          "min": 468.96,
+          "max": 520.36,
+          "sampleSD": 24.207386269483962
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 679.66,
+          "min": 663.6,
+          "max": 681.64,
+          "sampleSD": 7.304654680407545
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.3807000000088,
+          "min": 18.27229999998235,
+          "max": 18.823199999984354,
+          "sampleSD": 0.22719793572625946
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      }
+    },
+    "thumbnails2x": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 85.63,
+          "min": 84.33,
+          "max": 85.89,
+          "sampleSD": 0.7845508269067101
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 23.9,
+          "min": 23.84,
+          "max": 26.63,
+          "sampleSD": 1.2268373975388909
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 94.43,
+          "min": 91.8,
+          "max": 102.78,
+          "sampleSD": 4.153464818678498
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 263.18,
+          "min": 258.46,
+          "max": 272.95,
+          "sampleSD": 5.7190707287110865
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 419.28,
+          "min": 415.68,
+          "max": 436.09,
+          "sampleSD": 8.048378718723411
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.29,
+          "min": 0.1,
+          "max": 0.39,
+          "sampleSD": 0.11853269591129698
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 101.55769999997574,
+          "min": 98.51719999999477,
+          "max": 106.96220000000005,
+          "sampleSD": 3.592031842425899
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 3.370356559753418,
+          "min": 3.370356559753418,
+          "max": 3.370356559753418,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 83.88,
+          "min": 83.55,
+          "max": 85.5,
+          "sampleSD": 0.8559322403087767
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.49,
+          "min": 24.47,
+          "max": 27.19,
+          "sampleSD": 1.2098264338325568
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 112.73,
+          "min": 108.41,
+          "max": 124.34,
+          "sampleSD": 5.934818447096763
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 281.34,
+          "min": 276.97,
+          "max": 292.08,
+          "sampleSD": 5.693777305093682
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 425.23,
+          "min": 422.06,
+          "max": 438.61,
+          "sampleSD": 6.834905266351544
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.08660254037844388
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 373.1902000000118,
+          "min": 359.76910000000044,
+          "max": 386.25670000001264,
+          "sampleSD": 10.507048350848478
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 2.9838523864746094,
+          "min": 2.9838523864746094,
+          "max": 2.9838523864746094,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 32,
+          "min": 32,
+          "max": 32,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 88.97,
+          "min": 87.82,
+          "max": 90.54,
+          "sampleSD": 1.231105194530511
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.32,
+          "min": 24.95,
+          "max": 28.68,
+          "sampleSD": 1.5626483929534503
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 273.54,
+          "min": 257.41,
+          "max": 284.13,
+          "sampleSD": 11.05408386072767
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 446.96,
+          "min": 435.92,
+          "max": 460.82,
+          "sampleSD": 10.127219756675558
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 519.73,
+          "min": 514.86,
+          "max": 541.36,
+          "sampleSD": 10.600059905491097
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.53,
+          "sampleSD": 0.2272223580548358
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 69.99950000000536,
+          "min": 68.0337999999756,
+          "max": 88.08870000000024,
+          "sampleSD": 8.418997206499453
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 8.7557954788208,
+          "min": 8.7557954788208,
+          "max": 8.7557954788208,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 68,
+          "min": 68,
+          "max": 68,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 82.37,
+          "min": 81.27,
+          "max": 83.67,
+          "sampleSD": 0.9357991237439811
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27,
+          "min": 26.71,
+          "max": 30.69,
+          "sampleSD": 1.6580048250834498
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 274.58,
+          "min": 258.56,
+          "max": 285.37,
+          "sampleSD": 11.542608024185869
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 444.94,
+          "min": 431,
+          "max": 457.75,
+          "sampleSD": 11.074970880322892
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 515.58,
+          "min": 510.64,
+          "max": 536.42,
+          "sampleSD": 10.132758755640033
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.28,
+          "min": 0,
+          "max": 0.52,
+          "sampleSD": 0.19919839356781974
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 19.313499999996566,
+          "min": 18.24439999999595,
+          "max": 19.745300000009593,
+          "sampleSD": 0.6788465570378024
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0.35062503814697266,
+          "min": 0.35062503814697266,
+          "max": 0.35062503814697266,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 78.95,
+          "min": 78.59,
+          "max": 80.1,
+          "sampleSD": 0.6229205406791432
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.75,
+          "min": 27.64,
+          "max": 31.45,
+          "sampleSD": 1.6293464947640814
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 270.98,
+          "min": 250.1,
+          "max": 278.68,
+          "sampleSD": 12.687412265706515
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 437.76,
+          "min": 418.7,
+          "max": 448.06,
+          "sampleSD": 11.726146852227291
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 512.54,
+          "min": 507.57,
+          "max": 533.79,
+          "sampleSD": 10.317113452899498
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 143.46700000000055,
+          "min": 141.74750000000495,
+          "max": 145.141100000008,
+          "sampleSD": 1.2392691648715042
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.9,
+          "min": 79.32,
+          "max": 80.91,
+          "sampleSD": 0.6418488918740931
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.76,
+          "min": 28.62,
+          "max": 32.46,
+          "sampleSD": 1.6317689787466851
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 222.69,
+          "min": 222.23,
+          "max": 261.36,
+          "sampleSD": 17.349891354126697
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 393.14,
+          "min": 391.23,
+          "max": 431.37,
+          "sampleSD": 17.17238859332038
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 481.98,
+          "min": 470.58,
+          "max": 510.95,
+          "sampleSD": 16.025823847777684
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 111.43670000000566,
+          "min": 110.97950000000128,
+          "max": 113.38520000000062,
+          "sampleSD": 1.0910835036742708
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.9,
+          "min": 79.32,
+          "max": 80.91,
+          "sampleSD": 0.6418488918740931
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.51,
+          "min": 29.38,
+          "max": 33.23,
+          "sampleSD": 1.6403901974835122
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 330.98,
+          "min": 329.29,
+          "max": 342.95,
+          "sampleSD": 5.5796890594369
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 502.44,
+          "min": 499.42,
+          "max": 514.6,
+          "sampleSD": 6.036044234430367
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 599.84,
+          "min": 588.13,
+          "max": 608.74,
+          "sampleSD": 8.327044493696436
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 195.79139999998733,
+          "min": 190.43540000001667,
+          "max": 198.61000000000058,
+          "sampleSD": 3.707990011849394
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.71,
+          "min": 79.12,
+          "max": 80.77,
+          "sampleSD": 0.6658077800686897
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.61,
+          "min": 27.46,
+          "max": 31.25,
+          "sampleSD": 1.6021641613767297
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 324.43,
+          "min": 323.51,
+          "max": 330.67,
+          "sampleSD": 2.9696380250798335
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 494.69,
+          "min": 492.47,
+          "max": 500.41,
+          "sampleSD": 3.454000579038749
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 602.77,
+          "min": 590.41,
+          "max": 608.12,
+          "sampleSD": 7.563407300945793
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.14,
+          "min": 0.05,
+          "max": 0.29,
+          "sampleSD": 0.10261578825892241
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.71,
+          "min": 79.14,
+          "max": 80.79,
+          "sampleSD": 0.6729561649914525
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.71,
+          "min": 29.56,
+          "max": 33.29,
+          "sampleSD": 1.57656905969894
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 259.93,
+          "min": 238.04,
+          "max": 274.01,
+          "sampleSD": 13.64102378855781
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 434.68,
+          "min": 410.02,
+          "max": 445.07,
+          "sampleSD": 13.264962118302494
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 584.4,
+          "min": 566.61,
+          "max": 597.1,
+          "sampleSD": 11.855753877337373
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 24.457499999989523,
+          "min": 23.8127000000095,
+          "max": 26.325700000001234,
+          "sampleSD": 1.266022405804468
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 98.56,
+          "min": 98.2,
+          "max": 99.77,
+          "sampleSD": 0.6257555433234263
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 43.61,
+          "min": 43.57,
+          "max": 46.62,
+          "sampleSD": 1.3300939816418973
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 350.54,
+          "min": 347.73,
+          "max": 373.19,
+          "sampleSD": 10.401444611206653
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 554.98,
+          "min": 553.88,
+          "max": 579.08,
+          "sampleSD": 10.724821676839218
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 657.16,
+          "min": 649.2,
+          "max": 667.4,
+          "sampleSD": 7.294614451771917
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 413.7951999999932,
+          "min": 401.4186000000045,
+          "max": 422.70130000000063,
+          "sampleSD": 8.521437341083223
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 94.86,
+          "min": 94.3,
+          "max": 96.07,
+          "sampleSD": 0.6786972815622568
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 43.68,
+          "min": 43.64,
+          "max": 46.69,
+          "sampleSD": 1.3300939816418982
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 350.39,
+          "min": 325.21,
+          "max": 352.14,
+          "sampleSD": 11.28734113952441
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 550.93,
+          "min": 527.48,
+          "max": 555.78,
+          "sampleSD": 11.231308917485961
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 653.55,
+          "min": 645.57,
+          "max": 661.76,
+          "sampleSD": 6.457619530446175
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.109599999996135,
+          "min": 17.334399999992456,
+          "max": 18.390699999996286,
+          "sampleSD": 0.42098221221663706
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      }
+    },
+    "final": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 85.94,
+          "min": 84.64,
+          "max": 86.63,
+          "sampleSD": 0.8235714905216184
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.24,
+          "min": 24.18,
+          "max": 24.62,
+          "sampleSD": 0.18907670401189075
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 94.44,
+          "min": 91.5,
+          "max": 103.31,
+          "sampleSD": 4.477189966932384
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 262.87,
+          "min": 259.94,
+          "max": 273.04,
+          "sampleSD": 4.995985388289291
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 420.57,
+          "min": 419.11,
+          "max": 427.04,
+          "sampleSD": 3.1339703253221862
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.24,
+          "min": 0.19,
+          "max": 0.34,
+          "sampleSD": 0.07582875444051551
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 98.94229999999516,
+          "min": 98.26320000000123,
+          "max": 110.31239999999997,
+          "sampleSD": 5.552463215098149
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 3.370356559753418,
+          "min": 3.370356559753418,
+          "max": 3.370356559753418,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 85.89,
+          "min": 83.93,
+          "max": 86.18,
+          "sampleSD": 0.9449179858590876
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.81,
+          "min": 24.73,
+          "max": 25.08,
+          "sampleSD": 0.15254507530562825
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 112.75,
+          "min": 111.17,
+          "max": 121.54,
+          "sampleSD": 4.099692671408435
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 283.77,
+          "min": 279.13,
+          "max": 291.45,
+          "sampleSD": 4.4587083331386435
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 426.68,
+          "min": 424.61,
+          "max": 431.2,
+          "sampleSD": 2.696214012277209
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.24,
+          "sampleSD": 0.10733126291998991
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 373.7473999999929,
+          "min": 340.23979999999574,
+          "max": 391.0960999999952,
+          "sampleSD": 24.347622173739868
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 2.9838523864746094,
+          "min": 2.9838523864746094,
+          "max": 2.9838523864746094,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 32,
+          "min": 32,
+          "max": 32,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 88.39,
+          "min": 87.68,
+          "max": 89.28,
+          "sampleSD": 0.6957513923809266
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.49,
+          "min": 25.18,
+          "max": 26.54,
+          "sampleSD": 0.5500181815176655
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 273.08,
+          "min": 268.22,
+          "max": 279.11,
+          "sampleSD": 3.989902254441826
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 448.86,
+          "min": 443.15,
+          "max": 452.72,
+          "sampleSD": 3.4545231219373997
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 526.77,
+          "min": 520.89,
+          "max": 538.91,
+          "sampleSD": 6.985805608517889
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.07905694150420949
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 64.04210000002058,
+          "min": 62.249299999995856,
+          "max": 80.59319999999934,
+          "sampleSD": 7.761067567542456
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 8.7557954788208,
+          "min": 8.7557954788208,
+          "max": 8.7557954788208,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 68,
+          "min": 68,
+          "max": 68,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 81.49,
+          "min": 81.17,
+          "max": 82.68,
+          "sampleSD": 0.635161396811868
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.38,
+          "min": 27.09,
+          "max": 28.16,
+          "sampleSD": 0.4978152267659156
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 274.43,
+          "min": 269.69,
+          "max": 280.7,
+          "sampleSD": 4.585294974153781
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 446.34,
+          "min": 440.28,
+          "max": 450.29,
+          "sampleSD": 4.280928637573881
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 523.07,
+          "min": 515.41,
+          "max": 535.76,
+          "sampleSD": 7.665332999942009
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0,
+          "max": 0.19,
+          "sampleSD": 0.07596051605933177
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.489499999996042,
+          "min": 18.211999999999534,
+          "max": 18.785000000003492,
+          "sampleSD": 0.22962213525912578
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0.35062503814697266,
+          "min": 0.35062503814697266,
+          "max": 0.35062503814697266,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80,
+          "min": 78.86,
+          "max": 80.99,
+          "sampleSD": 1.0168726567274753
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.04,
+          "min": 28.02,
+          "max": 29.32,
+          "sampleSD": 0.6026026883444848
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 268.4,
+          "min": 262.75,
+          "max": 273.97,
+          "sampleSD": 4.626159314161163
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 437.13,
+          "min": 432.07,
+          "max": 444.22,
+          "sampleSD": 4.869982546169964
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 520.82,
+          "min": 514.04,
+          "max": 535.76,
+          "sampleSD": 8.513035298881363
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.0447213595499958
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 144.18880000000354,
+          "min": 142.88650000000052,
+          "max": 145.61099999998987,
+          "sampleSD": 1.049070234536591
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.72,
+          "min": 79.59,
+          "max": 81,
+          "sampleSD": 0.6896158350850129
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.86,
+          "min": 28.71,
+          "max": 30.16,
+          "sampleSD": 0.6887161969926365
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 222.49,
+          "min": 222.34,
+          "max": 237.97,
+          "sampleSD": 6.893143695005926
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 394.14,
+          "min": 393.27,
+          "max": 407.71,
+          "sampleSD": 6.24538389532621
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 482.49,
+          "min": 479.76,
+          "max": 487.93,
+          "sampleSD": 3.214055071090105
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.044721359549995794
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 112.30379999999423,
+          "min": 111.90910000001895,
+          "max": 115.44080000001122,
+          "sampleSD": 1.4658071779741764
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.72,
+          "min": 79.59,
+          "max": 81,
+          "sampleSD": 0.6870443944899034
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.51,
+          "min": 29.41,
+          "max": 30.8,
+          "sampleSD": 0.6425496089797268
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 332.32,
+          "min": 330.74,
+          "max": 343.26,
+          "sampleSD": 5.142497447738792
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 503.93,
+          "min": 503.65,
+          "max": 515.66,
+          "sampleSD": 5.206252971187616
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 600.2,
+          "min": 594.73,
+          "max": 605.69,
+          "sampleSD": 4.157772240034333
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 195.3634999999922,
+          "min": 190.23629999998957,
+          "max": 197.88409999999567,
+          "sampleSD": 2.9780454541565033
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.66,
+          "min": 79.84,
+          "max": 80.91,
+          "sampleSD": 0.4562017097732075
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.61,
+          "min": 27.72,
+          "max": 28.71,
+          "sampleSD": 0.47747251229782844
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 325.18,
+          "min": 324.29,
+          "max": 327.58,
+          "sampleSD": 1.257688355674794
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 496.55,
+          "min": 495.79,
+          "max": 498.27,
+          "sampleSD": 1.0223257797786183
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 602.81,
+          "min": 587.66,
+          "max": 607.64,
+          "sampleSD": 7.711703443468258
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.15,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.10034938963441681
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.62,
+          "min": 79.8,
+          "max": 81.58,
+          "sampleSD": 0.7883527129400899
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 31.21,
+          "min": 29.91,
+          "max": 31.43,
+          "sampleSD": 0.6509224224129936
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 262.31,
+          "min": 257.61,
+          "max": 272.95,
+          "sampleSD": 6.1610697123145695
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 437.18,
+          "min": 430.43,
+          "max": 446.96,
+          "sampleSD": 6.260617381696462
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 593.09,
+          "min": 554.16,
+          "max": 595.95,
+          "sampleSD": 18.031091203806856
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 24.952000000019325,
+          "min": 24.451700000005076,
+          "max": 25.714099999997416,
+          "sampleSD": 0.6134456373582561
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 98.63,
+          "min": 96.79,
+          "max": 100.07,
+          "sampleSD": 1.341834565063813
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 43.98,
+          "min": 43.93,
+          "max": 45.08,
+          "sampleSD": 0.49125349871527607
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 318.38,
+          "min": 318.33,
+          "max": 334.44,
+          "sampleSD": 7.0724854188609
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 524.95,
+          "min": 521.8,
+          "max": 542.48,
+          "sampleSD": 8.38984088049351
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 657.36,
+          "min": 655.36,
+          "max": 660.63,
+          "sampleSD": 2.271966108902159
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.044721359549995794
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 418.0167999999976,
+          "min": 415.6892999999982,
+          "max": 433.3625999999931,
+          "sampleSD": 7.212784763389572
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 94.93,
+          "min": 93.09,
+          "max": 96.38,
+          "sampleSD": 1.3443139514265239
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 44.06,
+          "min": 44,
+          "max": 45.17,
+          "sampleSD": 0.4971217154782124
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 318.36,
+          "min": 289.38,
+          "max": 319.67,
+          "sampleSD": 13.11582441175545
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 519.77,
+          "min": 493.81,
+          "max": 522.72,
+          "sampleSD": 12.053745061183257
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 653.74,
+          "min": 651.3,
+          "max": 657.02,
+          "sampleSD": 2.7141978557209296
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.27270000000135,
+          "min": 17.072299999999814,
+          "max": 19.22490000000107,
+          "sampleSD": 0.962573128650743
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "first_high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 84.88,
+          "min": 83.61,
+          "max": 85.18,
+          "sampleSD": 0.6489067729651179
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.43,
+          "min": 24.19,
+          "max": 27.02,
+          "sampleSD": 1.4593149077563758
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 95.25,
+          "min": 93.7,
+          "max": 104.83,
+          "sampleSD": 4.646810734256345
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 265.55,
+          "min": 261.73,
+          "max": 273.18,
+          "sampleSD": 4.347646489768917
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 423.93,
+          "min": 421.68,
+          "max": 427.86,
+          "sampleSD": 2.4930804238933018
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 292.09929999999804,
+          "min": 290.83520000000135,
+          "max": 298.4655999999959,
+          "sampleSD": 3.1002880083939433
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 2.9838523864746094,
+          "min": 2.9838523864746094,
+          "max": 2.9838523864746094,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "loadingCpuRustCoreSeconds": {
+          "n": 5,
+          "median": 0.546875,
+          "min": 0.53125,
+          "max": 0.5625,
+          "sampleSD": 0.01307281291459493
+        },
+        "loadingCpuRendererCoreSeconds": {
+          "n": 5,
+          "median": 0.03125,
+          "min": 0.03125,
+          "max": 0.078125,
+          "sampleSD": 0.025674494883054663
+        },
+        "loadingCpuGpuCoreSeconds": {
+          "n": 5,
+          "median": 0.03125,
+          "min": 0.015625,
+          "max": 0.078125,
+          "sampleSD": 0.023696485762661094
+        },
+        "loadingCpuTotalCoreSeconds": {
+          "n": 5,
+          "median": 0.671875,
+          "min": 0.625,
+          "max": 0.734375,
+          "sampleSD": 0.03983608994994363
+        },
+        "cpuObservationMs": {
+          "n": 5,
+          "median": 611,
+          "min": 604,
+          "max": 615,
+          "sampleSD": 5.06951674225463
+        }
+      }
+    },
+    "paint-baseline": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 84.41,
+          "min": 84.36,
+          "max": 84.5,
+          "sampleSD": 0.057706152185014126
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 23.73,
+          "min": 23.71,
+          "max": 24.69,
+          "sampleSD": 0.42435833914275845
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 88.04,
+          "min": 87.5,
+          "max": 99.63,
+          "sampleSD": 5.213885307522594
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 256.12,
+          "min": 254.85,
+          "max": 267.39,
+          "sampleSD": 5.221069813745068
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 424.76,
+          "min": 423.75,
+          "max": 431.62,
+          "sampleSD": 3.2450038520778413
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.38,
+          "min": 0.19,
+          "max": 0.53,
+          "sampleSD": 0.13026895255585652
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 41.06500000000233,
+          "min": 39.592299999989336,
+          "max": 41.350900000000024,
+          "sampleSD": 0.7148797437383669
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 6.642890930175781,
+          "min": 6.642890930175781,
+          "max": 6.642890930175781,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 118.13,
+          "min": 118.06,
+          "max": 118.15,
+          "sampleSD": 0.03563705936241101
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.53,
+          "min": 25.19,
+          "max": 26.48,
+          "sampleSD": 0.5904235767650202
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 102.82,
+          "min": 102.08,
+          "max": 114.38,
+          "sampleSD": 5.299426384053277
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 306.72,
+          "min": 304.99,
+          "max": 316.5,
+          "sampleSD": 4.639388968387967
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 476.81,
+          "min": 474.03,
+          "max": 479.38,
+          "sampleSD": 2.481245654908045
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 167.20129999998608,
+          "min": 165.85739999999987,
+          "max": 168.21330000000307,
+          "sampleSD": 0.9729517372398548
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 38.69753551483154,
+          "min": 38.69753551483154,
+          "max": 38.69753551483154,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 126.82,
+          "min": 126.01,
+          "max": 127.65,
+          "sampleSD": 0.632984991923189
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.1,
+          "min": 26.9,
+          "max": 30.22,
+          "sampleSD": 1.4399999999999993
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 104.34,
+          "min": 103.75,
+          "max": 114.7,
+          "sampleSD": 4.728796887158509
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 317.49,
+          "min": 317.4,
+          "max": 333.41,
+          "sampleSD": 6.932526956312552
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 487.36,
+          "min": 484.91,
+          "max": 490.86,
+          "sampleSD": 2.6772056327447054
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.0447213595499958
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 54.936699999991106,
+          "min": 54.00200000000041,
+          "max": 56.41710000000057,
+          "sampleSD": 0.877586022563599
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 47.453330993652344,
+          "min": 47.453330993652344,
+          "max": 47.453330993652344,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 52,
+          "min": 52,
+          "max": 52,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 52,
+          "min": 52,
+          "max": 52,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.23,
+          "min": 127.45,
+          "max": 129.57,
+          "sampleSD": 0.8131297559430443
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.02,
+          "min": 28.83,
+          "max": 31.73,
+          "sampleSD": 1.2303942457602772
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 99.33,
+          "min": 98.46,
+          "max": 111.87,
+          "sampleSD": 5.647541943182009
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 319.17,
+          "min": 315.46,
+          "max": 335.74,
+          "sampleSD": 8.32226351421295
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 492.04,
+          "min": 489.05,
+          "max": 499.73,
+          "sampleSD": 4.365486227214566
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.14,
+          "min": 0.05,
+          "max": 0.29,
+          "sampleSD": 0.0896102672688794
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 17.859800000000178,
+          "min": 17.630999999993946,
+          "max": 25.12510000000475,
+          "sampleSD": 3.877540618488115
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 47.803956031799316,
+          "min": 47.803956031799316,
+          "max": 47.803956031799316,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 127.45,
+          "min": 127.16,
+          "max": 129.16,
+          "sampleSD": 0.8264199900776824
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.44,
+          "min": 29.27,
+          "max": 32.18,
+          "sampleSD": 1.2612692020342045
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 96.98,
+          "min": 96.46,
+          "max": 109.79,
+          "sampleSD": 5.8076802597939245
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 313.86,
+          "min": 313.81,
+          "max": 333.54,
+          "sampleSD": 8.589276453811472
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 490.51,
+          "min": 487.72,
+          "max": 498.71,
+          "sampleSD": 4.538959131783394
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 141.8755999999994,
+          "min": 140.6654000000126,
+          "max": 143.01900000000023,
+          "sampleSD": 0.8621355044267088
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 47.803956031799316,
+          "min": 47.803956031799316,
+          "max": 47.803956031799316,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.53,
+          "min": 127.55,
+          "max": 129.18,
+          "sampleSD": 0.6383807641212285
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.89,
+          "min": 30.64,
+          "max": 33.28,
+          "sampleSD": 1.1234233396186857
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 99,
+          "min": 98.62,
+          "max": 111.28,
+          "sampleSD": 5.545170872029101
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 319.28,
+          "min": 317.73,
+          "max": 335.48,
+          "sampleSD": 7.3945554295035265
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 493.21,
+          "min": 490.32,
+          "max": 500.61,
+          "sampleSD": 4.1399070037864485
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.041833001326703784
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 99.03669999999693,
+          "min": 95.73400000001129,
+          "max": 106.88869999999952,
+          "sampleSD": 4.581674465406321
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.53,
+          "min": 127.55,
+          "max": 129.18,
+          "sampleSD": 0.6383807641212285
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 31.55,
+          "min": 31.18,
+          "max": 33.97,
+          "sampleSD": 1.160452497950691
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 139.3,
+          "min": 135.28,
+          "max": 153.28,
+          "sampleSD": 6.898222959574442
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 359.06,
+          "min": 358.2,
+          "max": 378.39,
+          "sampleSD": 8.59385652661248
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 515.81,
+          "min": 512.52,
+          "max": 523.36,
+          "sampleSD": 4.480431898824048
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 127.81840000000375,
+          "min": 126.28580000001239,
+          "max": 128.03019999999742,
+          "sampleSD": 0.7136010453953665
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.31,
+          "min": 127.32,
+          "max": 129.04,
+          "sampleSD": 0.6692309018567505
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.08,
+          "min": 27.95,
+          "max": 30.7,
+          "sampleSD": 1.1898655386219066
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 135.75,
+          "min": 131.73,
+          "max": 138.54,
+          "sampleSD": 2.5863159126448605
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 353.45,
+          "min": 351.85,
+          "max": 358.96,
+          "sampleSD": 3.0110297241973467
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 516.75,
+          "min": 516.04,
+          "max": 522.07,
+          "sampleSD": 2.552220601750577
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.041833001326703784
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 128.32,
+          "min": 127.33,
+          "max": 129.04,
+          "sampleSD": 0.6676975363141574
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.39,
+          "min": 28.27,
+          "max": 31.03,
+          "sampleSD": 1.2006581528478457
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 131.79,
+          "min": 130.43,
+          "max": 140.13,
+          "sampleSD": 3.9915322872300534
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 350.87,
+          "min": 348.64,
+          "max": 362.21,
+          "sampleSD": 5.565211586274139
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 524.55,
+          "min": 517.36,
+          "max": 540.61,
+          "sampleSD": 8.947270533520268
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 24.62640000000829,
+          "min": 23.64130000001751,
+          "max": 26.323899999999412,
+          "sampleSD": 0.9875127872534546
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 146.82,
+          "min": 145.83,
+          "max": 147.45,
+          "sampleSD": 0.6392573816546732
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 61.88,
+          "min": 43.12,
+          "max": 64.98,
+          "sampleSD": 10.936356797398302
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 351.42,
+          "min": 322.71,
+          "max": 355.68,
+          "sampleSD": 14.400573599686936
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 608.16,
+          "min": 592.91,
+          "max": 624.67,
+          "sampleSD": 11.258980859740369
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 651.86,
+          "min": 629.58,
+          "max": 665.45,
+          "sampleSD": 15.271537905528715
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.0447213595499958
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 414.76900000000023,
+          "min": 412.8984000000055,
+          "max": 421.46310000000085,
+          "sampleSD": 3.730593901777427
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 143.12,
+          "min": 142.12,
+          "max": 143.75,
+          "sampleSD": 0.6425107002999999
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 61.89,
+          "min": 43.2,
+          "max": 65.02,
+          "sampleSD": 10.907794002455306
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 351.38,
+          "min": 322.69,
+          "max": 355.68,
+          "sampleSD": 14.651991332238769
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 604.56,
+          "min": 589.2,
+          "max": 620.95,
+          "sampleSD": 11.232206817896474
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 648.14,
+          "min": 625.96,
+          "max": 660.3,
+          "sampleSD": 14.830245109235342
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 18.240499999999884,
+          "min": 16.747899999987567,
+          "max": 18.507100000002538,
+          "sampleSD": 0.870717699947314
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 48.452752113342285,
+          "min": 48.452752113342285,
+          "max": 48.452752113342285,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "first_high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 113.05,
+          "min": 112.23,
+          "max": 113.06,
+          "sampleSD": 0.36478760943869537
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 23.02,
+          "min": 23,
+          "max": 25.71,
+          "sampleSD": 1.1776119904280868
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 91.12,
+          "min": 90.97,
+          "max": 103.68,
+          "sampleSD": 5.60029195667512
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 286.61,
+          "min": 286.02,
+          "max": 299.39,
+          "sampleSD": 5.69004833019896
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 464.18,
+          "min": 463.57,
+          "max": 472.38,
+          "sampleSD": 3.7149872139753053
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.38,
+          "sampleSD": 0.1546932448428179
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 168.1136000000006,
+          "min": 166.31780000000072,
+          "max": 174.8567000000039,
+          "sampleSD": 3.328638524233137
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 32.05464458465576,
+          "min": 32.05464458465576,
+          "max": 32.05464458465576,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "loadingCpuRustCoreSeconds": {
+          "n": 5,
+          "median": 0.125,
+          "min": 0.109375,
+          "max": 0.21875,
+          "sampleSD": 0.05344572305152209
+        },
+        "loadingCpuRendererCoreSeconds": {
+          "n": 5,
+          "median": 0.375,
+          "min": 0.359375,
+          "max": 0.40625,
+          "sampleSD": 0.020372507516258277
+        },
+        "loadingCpuGpuCoreSeconds": {
+          "n": 5,
+          "median": 0.03125,
+          "min": 0.015625,
+          "max": 0.046875,
+          "sampleSD": 0.01307281291459493
+        },
+        "loadingCpuTotalCoreSeconds": {
+          "n": 5,
+          "median": 0.671875,
+          "min": 0.5625,
+          "max": 0.71875,
+          "sampleSD": 0.06935106569116296
+        },
+        "cpuObservationMs": {
+          "n": 5,
+          "median": 493,
+          "min": 489,
+          "max": 505,
+          "sampleSD": 6.6932802122726045
+        }
+      }
+    },
+    "paint-leases": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 84.43,
+          "min": 84.35,
+          "max": 85.31,
+          "sampleSD": 0.3976430560188386
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.66,
+          "min": 23.72,
+          "max": 26.42,
+          "sampleSD": 1.0052462384908498
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 87.74,
+          "min": 87.45,
+          "max": 101.78,
+          "sampleSD": 6.181655927015026
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 257.71,
+          "min": 255.34,
+          "max": 270.97,
+          "sampleSD": 6.330518936074683
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 427.07,
+          "min": 422.97,
+          "max": 429.82,
+          "sampleSD": 2.53689179903281
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.19,
+          "min": 0.19,
+          "max": 0.43,
+          "sampleSD": 0.10401922899156675
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 41.177900000009686,
+          "min": 40.70049999999901,
+          "max": 53.9169,
+          "sampleSD": 5.658753341501938
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 6.642890930175781,
+          "min": 6.642890930175781,
+          "max": 6.642890930175781,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 111.52,
+          "min": 111.43,
+          "max": 111.57,
+          "sampleSD": 0.06633249580710177
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 26.41,
+          "min": 25.44,
+          "max": 27.91,
+          "sampleSD": 0.9104559297406983
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 102.7,
+          "min": 102.62,
+          "max": 114.52,
+          "sampleSD": 5.224871290280745
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 301.57,
+          "min": 300.38,
+          "max": 312.27,
+          "sampleSD": 4.981522859527995
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 469.23,
+          "min": 467.33,
+          "max": 472.6,
+          "sampleSD": 2.0992308115116938
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 167.55829999997513,
+          "min": 167.28169999999227,
+          "max": 169.36130000000412,
+          "sampleSD": 0.8933024907678083
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 32.05464458465576,
+          "min": 32.05464458465576,
+          "max": 32.05464458465576,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 87.58,
+          "min": 87.25,
+          "max": 87.8,
+          "sampleSD": 0.21524404753674306
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 26.9,
+          "min": 26.14,
+          "max": 29.5,
+          "sampleSD": 1.284632243095276
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 104.22,
+          "min": 100.06,
+          "max": 114.25,
+          "sampleSD": 5.267658872782101
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 279.84,
+          "min": 275.27,
+          "max": 288.39,
+          "sampleSD": 4.791061469027504
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 446.79,
+          "min": 445.99,
+          "max": 448.74,
+          "sampleSD": 1.3203711599394998
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.09354143466934854
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 56.30340000000433,
+          "min": 54.18830000000162,
+          "max": 56.366099999984726,
+          "sampleSD": 0.9729295102888291
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 8.7557954788208,
+          "min": 8.7557954788208,
+          "max": 8.7557954788208,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 52,
+          "min": 52,
+          "max": 52,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.88,
+          "min": 80.45,
+          "max": 84.31,
+          "sampleSD": 1.7487481236587514
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.86,
+          "min": 27.93,
+          "max": 31.55,
+          "sampleSD": 1.3608930891146451
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 100.01,
+          "min": 98.21,
+          "max": 114.49,
+          "sampleSD": 6.911462942098438
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 272.24,
+          "min": 270.25,
+          "max": 286.5,
+          "sampleSD": 6.72536021340121
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 443.1,
+          "min": 441.73,
+          "max": 445.95,
+          "sampleSD": 1.7593834147223149
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0,
+          "max": 0.29,
+          "sampleSD": 0.11541230437002806
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 17.875599999999395,
+          "min": 17.606800000001385,
+          "max": 18.27310000000034,
+          "sampleSD": 0.3004826500789876
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0.35062503814697266,
+          "min": 0.35062503814697266,
+          "max": 0.35062503814697266,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 78.49,
+          "min": 78.34,
+          "max": 79.29,
+          "sampleSD": 0.43183330117071933
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 29.23,
+          "min": 28.25,
+          "max": 31.87,
+          "sampleSD": 1.3499185160593958
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 96.97,
+          "min": 96.79,
+          "max": 115.94,
+          "sampleSD": 8.516779320846581
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 266.71,
+          "min": 265.31,
+          "max": 285.82,
+          "sampleSD": 8.743676000401658
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 440.23,
+          "min": 438.87,
+          "max": 442.64,
+          "sampleSD": 1.605963885023571
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 143.57970000000023,
+          "min": 142.14040000000386,
+          "max": 145.5691999999981,
+          "sampleSD": 1.3427524146302146
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 56,
+          "min": 56,
+          "max": 56,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.9,
+          "min": 79.73,
+          "max": 80.05,
+          "sampleSD": 0.14046351839534613
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.57,
+          "min": 29.75,
+          "max": 33.29,
+          "sampleSD": 1.3477685261201195
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 98.84,
+          "min": 98.8,
+          "max": 111.79,
+          "sampleSD": 5.7809514787792535
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 272.12,
+          "min": 269.94,
+          "max": 284.29,
+          "sampleSD": 5.91865271831353
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 443.43,
+          "min": 441.58,
+          "max": 445.81,
+          "sampleSD": 1.701402362758441
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 98.87750000000233,
+          "min": 97.66640000001644,
+          "max": 108.476800000004,
+          "sampleSD": 4.526675379125837
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.9,
+          "min": 79.73,
+          "max": 80.05,
+          "sampleSD": 0.14046351839534613
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 31.21,
+          "min": 30.38,
+          "max": 33.93,
+          "sampleSD": 1.345373554073366
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 140.76,
+          "min": 137.4,
+          "max": 151.22,
+          "sampleSD": 5.21584413110668
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 314.63,
+          "min": 309.25,
+          "max": 323.35,
+          "sampleSD": 5.059750982014835
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 466.25,
+          "min": 464.34,
+          "max": 467.59,
+          "sampleSD": 1.414839213479752
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.0447213595499958
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 127.88950000001932,
+          "min": 125.70720000000438,
+          "max": 128.2505999999994,
+          "sampleSD": 1.0420785325483346
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.71,
+          "min": 77.73,
+          "max": 79.82,
+          "sampleSD": 0.8951927166817172
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.04,
+          "min": 27.04,
+          "max": 30.71,
+          "sampleSD": 1.378415757309819
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 136.88,
+          "min": 133.9,
+          "max": 138.56,
+          "sampleSD": 1.7644602574158443
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 308.3,
+          "min": 301.38,
+          "max": 309.1,
+          "sampleSD": 3.2897902668711363
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 468.12,
+          "min": 461.67,
+          "max": 470.73,
+          "sampleSD": 3.5488138863569567
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.044721359549995794
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.71,
+          "min": 77.76,
+          "max": 79.82,
+          "sampleSD": 0.8905616205518821
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.36,
+          "min": 27.37,
+          "max": 31.03,
+          "sampleSD": 1.3766008862411796
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 132.95,
+          "min": 129.79,
+          "max": 138.5,
+          "sampleSD": 3.1464217771939
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 304.75,
+          "min": 297.67,
+          "max": 308.54,
+          "sampleSD": 3.9718660601787676
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 473.14,
+          "min": 470.24,
+          "max": 475.52,
+          "sampleSD": 1.958333475177289
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 24.000499999994645,
+          "min": 23.544900000008056,
+          "max": 24.561000000001513,
+          "sampleSD": 0.4507719079500805
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 98.19,
+          "min": 97.04,
+          "max": 99.66,
+          "sampleSD": 0.9301774024346073
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 61.96,
+          "min": 42.3,
+          "max": 64.71,
+          "sampleSD": 9.177304615190671
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 324.61,
+          "min": 293.63,
+          "max": 353.15,
+          "sampleSD": 21.272850772757273
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 549.27,
+          "min": 517.61,
+          "max": 555.6,
+          "sampleSD": 15.38212761616546
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 601.21,
+          "min": 575.5,
+          "max": 607.45,
+          "sampleSD": 13.174575135464535
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.15,
+          "sampleSD": 0.06519202405202648
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 416.70610000001034,
+          "min": 411.8899000000092,
+          "max": 431.90460000000894,
+          "sampleSD": 7.6163666385633455
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 94.49,
+          "min": 93.34,
+          "max": 95.88,
+          "sampleSD": 0.9037311547136101
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 62,
+          "min": 42.39,
+          "max": 64.74,
+          "sampleSD": 9.155331779897438
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 324.56,
+          "min": 293.6,
+          "max": 353.08,
+          "sampleSD": 21.200245753292563
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 545.54,
+          "min": 513.86,
+          "max": 551.93,
+          "sampleSD": 15.196696022491187
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 596.79,
+          "min": 571.78,
+          "max": 602.32,
+          "sampleSD": 12.760507435051327
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 17.75810000000638,
+          "min": 17.659799999993993,
+          "max": 18.49210000000312,
+          "sampleSD": 0.3551614562439996
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 62,
+          "min": 62,
+          "max": 62,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "first_high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 112.26,
+          "min": 112.23,
+          "max": 113.05,
+          "sampleSD": 0.35688933859110666
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.15,
+          "min": 22.99,
+          "max": 25.71,
+          "sampleSD": 1.355551548263658
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 91.36,
+          "min": 90.95,
+          "max": 103.41,
+          "sampleSD": 5.34438677492563
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 288.82,
+          "min": 285.08,
+          "max": 298.8,
+          "sampleSD": 5.422372174611413
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 465.06,
+          "min": 458.72,
+          "max": 468.68,
+          "sampleSD": 4.210353904364804
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 168.46359999999913,
+          "min": 165.89970000000176,
+          "max": 173.5757999999987,
+          "sampleSD": 3.1297027457884106
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 32.05464458465576,
+          "min": 32.05464458465576,
+          "max": 32.05464458465576,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "loadingCpuRustCoreSeconds": {
+          "n": 5,
+          "median": 0.109375,
+          "min": 0.09375,
+          "max": 0.21875,
+          "sampleSD": 0.05568290525376707
+        },
+        "loadingCpuRendererCoreSeconds": {
+          "n": 5,
+          "median": 0.40625,
+          "min": 0.34375,
+          "max": 0.40625,
+          "sampleSD": 0.027063293868263706
+        },
+        "loadingCpuGpuCoreSeconds": {
+          "n": 5,
+          "median": 0.03125,
+          "min": 0.015625,
+          "max": 0.078125,
+          "sampleSD": 0.025674494883054663
+        },
+        "loadingCpuTotalCoreSeconds": {
+          "n": 5,
+          "median": 0.640625,
+          "min": 0.515625,
+          "max": 0.6875,
+          "sampleSD": 0.07245014449606019
+        },
+        "cpuObservationMs": {
+          "n": 5,
+          "median": 489,
+          "min": 484,
+          "max": 493,
+          "sampleSD": 3.605551275463989
+        }
+      }
+    },
+    "paint-thumbnails": {
+      "chat": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 85.81,
+          "min": 84.37,
+          "max": 86.75,
+          "sampleSD": 1.0325066585741687
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.25,
+          "min": 24.09,
+          "max": 25.07,
+          "sampleSD": 0.4075904807524336
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 80.32,
+          "min": 79.21,
+          "max": 92.77,
+          "sampleSD": 5.7210995446679656
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 249.2,
+          "min": 247,
+          "max": 260.14,
+          "sampleSD": 5.238484513673772
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 413.38,
+          "min": 411.05,
+          "max": 422.89,
+          "sampleSD": 4.628242647052976
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.24,
+          "min": 0.1,
+          "max": 0.38,
+          "sampleSD": 0.1051189802081432
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 104.96709999999439,
+          "min": 104.08460000000196,
+          "max": 106.17769999999996,
+          "sampleSD": 0.7683729608724175
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 3.370356559753418,
+          "min": 3.370356559753418,
+          "max": 3.370356559753418,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 83.93,
+          "min": 83.7,
+          "max": 86.16,
+          "sampleSD": 1.0941115116842501
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 24.74,
+          "min": 24.64,
+          "max": 25.64,
+          "sampleSD": 0.42272922775696536
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 83.58,
+          "min": 78.61,
+          "max": 96.28,
+          "sampleSD": 6.596065493913778
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 251.73,
+          "min": 250.68,
+          "max": 265.74,
+          "sampleSD": 6.465035189386061
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 414.91,
+          "min": 413.89,
+          "max": 426.32,
+          "sampleSD": 5.1655851556237
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.15,
+          "sampleSD": 0.06519202405202648
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 383.69430000000284,
+          "min": 371.33950000000004,
+          "max": 413.8429999999935,
+          "sampleSD": 18.84146438753858
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 2.9838523864746094,
+          "min": 2.9838523864746094,
+          "max": 2.9838523864746094,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 32,
+          "min": 32,
+          "max": 32,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "avatars_emojis": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 88.41,
+          "min": 88.11,
+          "max": 89.63,
+          "sampleSD": 0.6139381076297501
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.91,
+          "min": 24.93,
+          "max": 26.25,
+          "sampleSD": 0.5384886256923169
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 85.61,
+          "min": 84.95,
+          "max": 98.07,
+          "sampleSD": 5.566589620225291
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 260.25,
+          "min": 258.93,
+          "max": 272.54,
+          "sampleSD": 5.615278265589346
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 426.99,
+          "min": 424.88,
+          "max": 437.29,
+          "sampleSD": 5.133193937501303
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0.05,
+          "max": 0.43,
+          "sampleSD": 0.15978110025907322
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 55.11779999999999,
+          "min": 53.48040000000037,
+          "max": 56.27780000001076,
+          "sampleSD": 1.102063949143059
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 8.7557954788208,
+          "min": 8.7557954788208,
+          "max": 8.7557954788208,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 68,
+          "min": 68,
+          "max": 68,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 36,
+          "min": 36,
+          "max": 36,
+          "sampleSD": 0
+        }
+      },
+      "animated": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 81.88,
+          "min": 81.72,
+          "max": 82.42,
+          "sampleSD": 0.3066757245039132
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.51,
+          "min": 26.84,
+          "max": 27.88,
+          "sampleSD": 0.408570679319992
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 89.18,
+          "min": 88.58,
+          "max": 103.98,
+          "sampleSD": 6.62264901682099
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 260.06,
+          "min": 258.33,
+          "max": 274.5,
+          "sampleSD": 6.781889854605424
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 421.94,
+          "min": 421.52,
+          "max": 434.58,
+          "sampleSD": 5.648820230809253
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.05,
+          "min": 0.05,
+          "max": 0.19,
+          "sampleSD": 0.06099180272790763
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 25.94090000000142,
+          "min": 19.099099999999453,
+          "max": 31.155999999988126,
+          "sampleSD": 4.878792873443341
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0.35062503814697266,
+          "min": 0.35062503814697266,
+          "max": 0.35062503814697266,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "channel_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.04,
+          "min": 78.95,
+          "max": 79.45,
+          "sampleSD": 0.1988718180135135
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 28.46,
+          "min": 27.54,
+          "max": 28.58,
+          "sampleSD": 0.4444097208657797
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 86.71,
+          "min": 86.3,
+          "max": 98.37,
+          "sampleSD": 5.271055871454982
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 254.84,
+          "min": 253.44,
+          "max": 267,
+          "sampleSD": 5.581702249314271
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 420.63,
+          "min": 420.03,
+          "max": 433.25,
+          "sampleSD": 5.7273222364382494
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 144.49079999999958,
+          "min": 141.16750000001048,
+          "max": 145.2743000000046,
+          "sampleSD": 1.9317275695604732
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 72,
+          "min": 72,
+          "max": 72,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 4,
+          "min": 4,
+          "max": 4,
+          "sampleSD": 0
+        }
+      },
+      "dm_switches": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.12,
+          "min": 79.83,
+          "max": 81.21,
+          "sampleSD": 0.5498636194548584
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.18,
+          "min": 29.46,
+          "max": 30.36,
+          "sampleSD": 0.36949966170485116
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 89.81,
+          "min": 89.46,
+          "max": 101.54,
+          "sampleSD": 5.296338357771343
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 260.95,
+          "min": 259.55,
+          "max": 273.92,
+          "sampleSD": 6.06493775730634
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 423.86,
+          "min": 423.55,
+          "max": 436.54,
+          "sampleSD": 5.6236705095515775
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 97.85970000000088,
+          "min": 96.26979999999458,
+          "max": 98.62810000000172,
+          "sampleSD": 0.9402160405988335
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 2,
+          "min": 2,
+          "max": 2,
+          "sampleSD": 0
+        }
+      },
+      "full_viewer": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 80.12,
+          "min": 79.83,
+          "max": 81.21,
+          "sampleSD": 0.5484250176642168
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.8,
+          "min": 30,
+          "max": 30.89,
+          "sampleSD": 0.37745198370123845
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 129.01,
+          "min": 125.84,
+          "max": 136.09,
+          "sampleSD": 3.7704800755341488
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 300.45,
+          "min": 297.49,
+          "max": 309.38,
+          "sampleSD": 4.499547755052723
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 448.96,
+          "min": 448.46,
+          "max": 461.38,
+          "sampleSD": 5.560442428440387
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.1,
+          "sampleSD": 0.05477225575051661
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 148.6201000000001,
+          "min": 147.36200000000827,
+          "max": 149.08329999999842,
+          "sampleSD": 0.8088100500085825
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 1,
+          "min": 1,
+          "max": 1,
+          "sampleSD": 0
+        }
+      },
+      "minimized": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.93,
+          "min": 79.55,
+          "max": 81.05,
+          "sampleSD": 0.6790287180966647
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 27.75,
+          "min": 27.16,
+          "max": 27.87,
+          "sampleSD": 0.3654722971717551
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 126.02,
+          "min": 124.32,
+          "max": 129.9,
+          "sampleSD": 2.11842394246289
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 294.8,
+          "min": 293.6,
+          "max": 299.49,
+          "sampleSD": 2.4861355554353803
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 454.23,
+          "min": 453.73,
+          "max": 461.85,
+          "sampleSD": 3.451133147243097
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0.1,
+          "min": 0,
+          "max": 0.2,
+          "sampleSD": 0.07416198487095663
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "minimize_restore": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 79.95,
+          "min": 79.36,
+          "max": 81.01,
+          "sampleSD": 0.7482446124096078
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 30.42,
+          "min": 29.53,
+          "max": 30.53,
+          "sampleSD": 0.4294414977619187
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 118.23,
+          "min": 116.52,
+          "max": 124.8,
+          "sampleSD": 3.183209072618385
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 290.06,
+          "min": 288.5,
+          "max": 297.13,
+          "sampleSD": 3.494469916882957
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 450.01,
+          "min": 449.52,
+          "max": 460.15,
+          "sampleSD": 4.523862287912834
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 24.989400000005844,
+          "min": 24.56789999999455,
+          "max": 25.50830000001588,
+          "sampleSD": 0.35135711605880315
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        }
+      },
+      "background": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 98.45,
+          "min": 97.88,
+          "max": 100.21,
+          "sampleSD": 0.9764578843964518
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 43.61,
+          "min": 43.43,
+          "max": 44.14,
+          "sampleSD": 0.2677312084909042
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 305.8,
+          "min": 298.85,
+          "max": 317.39,
+          "sampleSD": 6.669930284493222
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 510.56,
+          "min": 505.54,
+          "max": 522.15,
+          "sampleSD": 6.294026533150288
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 560.8,
+          "min": 553.33,
+          "max": 573.99,
+          "sampleSD": 7.447259227393651
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 422.25919999998587,
+          "min": 420.33759999999893,
+          "max": 436.98240000000806,
+          "sampleSD": 6.775958907937727
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "cleared": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 94.71,
+          "min": 94.18,
+          "max": 96.52,
+          "sampleSD": 0.992723526466456
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 43.69,
+          "min": 43.55,
+          "max": 44.22,
+          "sampleSD": 0.2562225595063798
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 305.71,
+          "min": 298.83,
+          "max": 312.73,
+          "sampleSD": 4.933019359378202
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 506.64,
+          "min": 501.91,
+          "max": 514.9,
+          "sampleSD": 4.805021331898525
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 557.07,
+          "min": 549.71,
+          "max": 568.02,
+          "sampleSD": 6.540048164960237
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.027386127875258306
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 17.888899999990826,
+          "min": 17.797099999996135,
+          "max": 17.910200000012992,
+          "sampleSD": 0.04627367502523222
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 78,
+          "min": 78,
+          "max": 78,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "sampleSD": 0
+        }
+      },
+      "first_high_resolution": {
+        "rustPrivateMiB": {
+          "n": 5,
+          "median": 85.16,
+          "min": 83.54,
+          "max": 86.18,
+          "sampleSD": 1.1827848494126079
+        },
+        "rendererPrivateMiB": {
+          "n": 5,
+          "median": 25.09,
+          "min": 23.77,
+          "max": 27.62,
+          "sampleSD": 1.520476898870878
+        },
+        "gpuPrivateMiB": {
+          "n": 5,
+          "median": 81.16,
+          "min": 79.72,
+          "max": 92.79,
+          "sampleSD": 5.498329746386627
+        },
+        "totalPrivateMiB": {
+          "n": 5,
+          "median": 250.91,
+          "min": 248.39,
+          "max": 263.16,
+          "sampleSD": 5.9815942690891495
+        },
+        "workingSetMiB": {
+          "n": 5,
+          "median": 415.17,
+          "min": 412.77,
+          "max": 419.04,
+          "sampleSD": 2.4994439381590623
+        },
+        "idleCpuPercent": {
+          "n": 5,
+          "median": 0,
+          "min": 0,
+          "max": 0.05,
+          "sampleSD": 0.022360679774997897
+        },
+        "loadMs": {
+          "n": 5,
+          "median": 291.69459999999526,
+          "min": 283.9524999999994,
+          "max": 294.72479999999996,
+          "sampleSD": 4.145728335648654
+        },
+        "encodedMiB": {
+          "n": 5,
+          "median": 2.9838523864746094,
+          "min": 2.9838523864746094,
+          "max": 2.9838523864746094,
+          "sampleSD": 0
+        },
+        "cacheEntries": {
+          "n": 5,
+          "median": 16,
+          "min": 16,
+          "max": 16,
+          "sampleSD": 0
+        },
+        "cacheBuffers": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "imageCount": {
+          "n": 5,
+          "median": 8,
+          "min": 8,
+          "max": 8,
+          "sampleSD": 0
+        },
+        "loadingCpuRustCoreSeconds": {
+          "n": 5,
+          "median": 0.53125,
+          "min": 0.515625,
+          "max": 0.546875,
+          "sampleSD": 0.015625
+        },
+        "loadingCpuRendererCoreSeconds": {
+          "n": 5,
+          "median": 0.015625,
+          "min": 0.015625,
+          "max": 0.03125,
+          "sampleSD": 0.00855816496101822
+        },
+        "loadingCpuGpuCoreSeconds": {
+          "n": 5,
+          "median": 0.015625,
+          "min": 0,
+          "max": 0.015625,
+          "sampleSD": 0.008558164961018222
+        },
+        "loadingCpuTotalCoreSeconds": {
+          "n": 5,
+          "median": 0.59375,
+          "min": 0.578125,
+          "max": 0.609375,
+          "sampleSD": 0.01307281291459493
+        },
+        "cpuObservationMs": {
+          "n": 5,
+          "median": 609,
+          "min": 599,
+          "max": 625,
+          "sampleSD": 9.364827814754525
+        }
+      }
+    }
+  }
+}

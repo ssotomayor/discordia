@@ -1,0 +1,19 @@
+{
+  "passed": [
+    "JPEG inline preserves the original image source",
+    "original asset bytes match the source SHA-256",
+    "emulated 3x mount selects the untouched original",
+    "six full-view open/close transitions preserve the original",
+    "distinct avatar payloads have distinct URLs; remount keeps the same URL",
+    "GIF bytes are unchanged and animation advances after focus event",
+    "unmount releases all binary buffers"
+  ],
+  "environment": {
+    "dpr": 1,
+    "visibility": "visible",
+    "focus": true
+  },
+  "exeSha256": "4225fe49c140483a8ece270a931ad46767242da3ac9a2d2d4d54de9d4f2d0e48",
+  "thumbnailExperiment": false,
+  "manualTests": false
+}

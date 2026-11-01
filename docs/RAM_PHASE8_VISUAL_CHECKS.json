@@ -1,0 +1,53 @@
+{
+  "scope": "Automatic screenshot comparison of production-like component fixtures, baseline vs retained lease; not manual whole-client QA",
+  "cases": {
+    "chat": {
+      "changedPixels": 63287,
+      "height": 900,
+      "maxChannelDifference": 4,
+      "rgbMeanAbsoluteError": 0.042555555555555555,
+      "rgbRootMeanSquareError": 0.2286208426892311,
+      "width": 1440
+    },
+    "high_resolution": {
+      "changedPixels": 0,
+      "height": 900,
+      "maxChannelDifference": 0,
+      "rgbMeanAbsoluteError": 0,
+      "rgbRootMeanSquareError": 0,
+      "width": 1440
+    },
+    "avatars_emojis": {
+      "changedPixels": 0,
+      "height": 900,
+      "maxChannelDifference": 0,
+      "rgbMeanAbsoluteError": 0,
+      "rgbRootMeanSquareError": 0,
+      "width": 1440
+    },
+    "dm_switches": {
+      "changedPixels": 0,
+      "height": 900,
+      "maxChannelDifference": 0,
+      "rgbMeanAbsoluteError": 0,
+      "rgbRootMeanSquareError": 0,
+      "width": 1440
+    },
+    "full_viewer": {
+      "changedPixels": 0,
+      "height": 900,
+      "maxChannelDifference": 0,
+      "rgbMeanAbsoluteError": 0,
+      "rgbRootMeanSquareError": 0,
+      "width": 1440
+    },
+    "background": {
+      "changedPixels": 0,
+      "height": 900,
+      "maxChannelDifference": 0,
+      "rgbMeanAbsoluteError": 0,
+      "rgbRootMeanSquareError": 0,
+      "width": 1440
+    }
+  }
+}
