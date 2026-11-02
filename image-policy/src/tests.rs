@@ -22,6 +22,15 @@ fn preserves_small_originals_and_alpha_without_jpeg_conversion() {
 }
 
 #[test]
+fn validates_sender_previews_without_reencoding_them() {
+    let preview = png(WIDTH, HEIGHT);
+    assert!(validate_preview(&preview).is_ok());
+    assert!(validate_preview(&png(WIDTH + 1, HEIGHT)).is_err());
+    assert!(validate_preview(b"not an image").is_err());
+    assert!(validate_preview(&vec![0; MAX_OUTPUT_BYTES + 1]).is_err());
+}
+
+#[test]
 fn rotates_pixels_and_preserves_icc_profile() {
     let original = image::RgbImage::from_fn(1200, 800, |x, _| {
         if x < 600 {
@@ -141,6 +150,7 @@ fn apng_is_never_flattened() {
         2
     );
     assert!(create(&animated).unwrap().is_none());
+    assert!(validate_preview(&animated).is_err());
 }
 
 #[test]

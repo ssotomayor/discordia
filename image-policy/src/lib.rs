@@ -142,5 +142,30 @@ pub fn create(bytes: &[u8]) -> Result<Option<Preview>, String> {
     }))
 }
 
+pub fn validate_preview(bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() || bytes.len() > MAX_OUTPUT_BYTES {
+        return Err("Image preview exceeds the output limit.".into());
+    }
+    let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    if !matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
+        return Err("Image preview must be a static JPEG or PNG.".into());
+    }
+    if format == ImageFormat::Png {
+        let png = image::codecs::png::PngDecoder::with_limits(Cursor::new(bytes), limits())
+            .map_err(|e| e.to_string())?;
+        if png.is_apng().map_err(|e| e.to_string())? {
+            return Err("Animated PNGs cannot be used as image previews.".into());
+        }
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits());
+    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    if width == 0 || height == 0 || width > WIDTH || height > HEIGHT {
+        return Err("Image preview exceeds 640×480 pixels.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

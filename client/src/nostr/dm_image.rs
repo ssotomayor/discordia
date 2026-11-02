@@ -40,6 +40,8 @@ pub struct Descriptor {
     pub hash: String,
     pub original_hash: String,
     pub size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Box<Descriptor>>,
 }
 
 impl std::fmt::Debug for Descriptor {
@@ -102,6 +104,18 @@ impl Descriptor {
         if !self.url.is_empty() {
             public_url(&self.url)?;
         }
+        if let Some(preview) = self.preview.as_deref() {
+            if preview.preview.is_some() {
+                return Err("Nested image previews are invalid.".into());
+            }
+            if !matches!(preview.mime.as_str(), "image/jpeg" | "image/png")
+                || preview.size < 17
+                || preview.size > discordia_image_policy::MAX_OUTPUT_BYTES + 16
+            {
+                return Err("Invalid encrypted image preview metadata.".into());
+            }
+            preview.validate()?;
+        }
         Ok(())
     }
 
@@ -117,6 +131,26 @@ impl Descriptor {
             ("size", &self.size.to_string()),
         ] {
             tags.push(vec![tag.into(), value.into()]);
+        }
+        if let Some(preview) = self.preview.as_deref() {
+            for (tag, value) in [
+                ("preview-file-type", preview.mime.as_str()),
+                ("preview-encryption-algorithm", "aes-gcm"),
+                ("preview-decryption-key", preview.key.as_str()),
+                ("preview-decryption-nonce", preview.nonce.as_str()),
+                ("preview-x", preview.hash.as_str()),
+                ("preview-ox", preview.original_hash.as_str()),
+                ("preview-size", ""),
+                ("preview-url", preview.url.as_str()),
+            ] {
+                let size = preview.size.to_string();
+                let value = if tag == "preview-size" {
+                    size.as_str()
+                } else {
+                    value
+                };
+                tags.push(vec![tag.into(), value.into()]);
+            }
         }
         if let Some(reply) = reply {
             tags.push(vec![
@@ -139,6 +173,14 @@ impl Descriptor {
             "ox",
             "size",
             "p",
+            "preview-file-type",
+            "preview-encryption-algorithm",
+            "preview-decryption-key",
+            "preview-decryption-nonce",
+            "preview-x",
+            "preview-ox",
+            "preview-size",
+            "preview-url",
         ] {
             if rumor
                 .tags
@@ -158,7 +200,7 @@ impl Descriptor {
         if rumor.kind != KIND || get("encryption-algorithm")? != "aes-gcm" {
             return Err("Unsupported image encryption.".into());
         }
-        let descriptor = Self {
+        let mut descriptor = Self {
             url: rumor.content.clone(),
             mime: get("file-type")?.into(),
             key: hex::encode(decode_field(get("decryption-key")?, 32)?.as_slice()),
@@ -171,10 +213,51 @@ impl Descriptor {
                 .transpose()
                 .map_err(|_| "Invalid image size.")?
                 .unwrap_or(0),
+            preview: None,
         };
+        let preview_tags = [
+            "preview-file-type",
+            "preview-encryption-algorithm",
+            "preview-decryption-key",
+            "preview-decryption-nonce",
+            "preview-x",
+            "preview-ox",
+            "preview-size",
+            "preview-url",
+        ];
+        let present = preview_tags
+            .iter()
+            .filter(|tag| rumor.tag(tag).is_some())
+            .count();
+        if present != 0 {
+            if present != preview_tags.len()
+                || rumor.tag("preview-encryption-algorithm") != Some("aes-gcm")
+            {
+                return Err("Incomplete encrypted image preview metadata.".into());
+            }
+            descriptor.preview = Some(Box::new(Self {
+                url: get("preview-url")?.into(),
+                mime: get("preview-file-type")?.into(),
+                key: hex::encode(decode_field(get("preview-decryption-key")?, 32)?.as_slice()),
+                nonce: hex::encode(decode_field(get("preview-decryption-nonce")?, 12)?.as_slice()),
+                hash: get("preview-x")?.to_ascii_lowercase(),
+                original_hash: get("preview-ox")?.to_ascii_lowercase(),
+                size: get("preview-size")?
+                    .parse()
+                    .map_err(|_| "Invalid preview image size.")?,
+                preview: None,
+            }));
+        }
         descriptor.validate()?;
         if descriptor.url.is_empty() {
             return Err("Missing encrypted image URL.".into());
+        }
+        if descriptor
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.url.is_empty())
+        {
+            return Err("Missing encrypted image preview URL.".into());
         }
         Ok(descriptor)
     }
@@ -207,6 +290,12 @@ impl Descriptor {
 
     pub fn decrypt(&self, ciphertext: &[u8]) -> Result<String, String> {
         self.decrypt_raw(ciphertext).map(|(_, image)| image)
+    }
+
+    pub fn decrypt_preview(&self, ciphertext: &[u8]) -> Result<String, String> {
+        let (plain, image) = self.decrypt_raw(ciphertext)?;
+        discordia_image_policy::validate_preview(&plain)?;
+        Ok(image)
     }
 
     pub fn encrypt_thumb(&self, thumb_bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -268,6 +357,7 @@ pub fn encrypt(data_url: &str) -> Result<(Descriptor, Vec<u8>), String> {
             hash: blossom::sha256_hex(&ciphertext),
             original_hash: blossom::sha256_hex(&bytes),
             size: ciphertext.len(),
+            preview: None,
         },
         ciphertext,
     ))
@@ -595,6 +685,9 @@ async fn download_ciphertext(image: &Descriptor) -> Result<Vec<u8>, String> {
 }
 
 pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> {
+    if let Some(preview) = image.preview.as_deref() {
+        return receive_uploaded_preview(owner, preview).await;
+    }
     static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
     let _permit = DOWNLOADS
         .acquire()
@@ -659,6 +752,51 @@ pub async fn receive(owner: &str, image: &Descriptor) -> Result<String, String> 
                 .await;
     }
     Ok(thumb_url)
+}
+
+async fn receive_uploaded_preview(owner: &str, preview: &Descriptor) -> Result<String, String> {
+    static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let _permit = DOWNLOADS
+        .acquire()
+        .await
+        .map_err(|_| "Image downloads unavailable.")?;
+    preview.validate()?;
+    let cache = cache_root(owner)?.join("cache");
+    let path = cache.join(format!("{}.bin", preview.hash));
+    let cached = tokio::fs::metadata(&path).await.is_ok_and(|metadata| {
+        metadata.is_file()
+            && metadata.len() <= MAX_CIPHER_BYTES as u64
+            && metadata.len() == preview.size as u64
+            && metadata
+                .modified()
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age <= CACHE_TTL)
+    });
+    let bytes = if cached {
+        tokio::fs::read(&path).await.ok()
+    } else {
+        None
+    };
+    let bytes = match bytes {
+        Some(bytes) => bytes,
+        None => {
+            let downloaded = download_ciphertext(preview).await?;
+            if tokio::fs::create_dir_all(&cache).await.is_ok() {
+                let cache_ref = cache.clone();
+                let path_ref = path.clone();
+                let saved = downloaded.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || cache_store(&cache_ref, &path_ref, &saved))
+                        .await;
+            }
+            downloaded
+        }
+    };
+    let descriptor = preview.clone();
+    tokio::task::spawn_blocking(move || descriptor.decrypt_preview(&bytes))
+        .await
+        .map_err(|_| "Could not decode image.")?
 }
 
 pub async fn load_original(owner: &str, image: &Descriptor) -> Result<String, String> {
@@ -792,31 +930,49 @@ impl Job {
             // An upload finishing concurrently must never resurrect a canceled pending job.
             let _ = std::fs::write(path.with_extension("cancel"), b"");
             let _ = std::fs::remove_file(path.with_extension("bin"));
+            let _ = std::fs::remove_file(path.with_extension("preview-bin"));
             let _ = std::fs::remove_file(path);
         }
     }
 
     pub async fn upload(&self, secret: &secp256k1::SecretKey) -> Result<Self, String> {
-        if !self.image.url.is_empty() {
-            return Ok(self.clone());
-        }
-        let path = self.path(&event::xonly_hex(secret))?.with_extension("bin");
-        if tokio::fs::metadata(&path)
-            .await
-            .map_err(|_| "Pending image is missing.")?
-            .len()
-            != self.image.size as u64
-        {
-            return Err("Pending image size does not match.".into());
-        }
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|_| "Could not read pending image.")?;
         let mut job = self.clone();
-        job.image.url = upload(&self.server, secret, bytes, &self.image.hash).await?;
-        job.save(secret)?;
+        let owner = event::xonly_hex(secret);
+        let path = self.path(&owner)?;
+        if let Some(preview) = job.image.preview.as_deref_mut()
+            && preview.url.is_empty()
+        {
+            let preview_path = path.with_extension("preview-bin");
+            let bytes = read_pending_blob(&preview_path, preview.size).await?;
+            let url = upload(&self.server, secret, bytes, &preview.hash).await?;
+            job.image
+                .preview
+                .as_deref_mut()
+                .ok_or("Missing preview descriptor.")?
+                .url = url;
+            job.save(secret)?;
+        }
+        if job.image.url.is_empty() {
+            let bytes = read_pending_blob(&path.with_extension("bin"), job.image.size).await?;
+            job.image.url = upload(&self.server, secret, bytes, &job.image.hash).await?;
+            job.save(secret)?;
+        }
         Ok(job)
     }
+}
+
+async fn read_pending_blob(path: &std::path::Path, expected: usize) -> Result<Vec<u8>, String> {
+    if tokio::fs::metadata(path)
+        .await
+        .map_err(|_| "Pending image is missing.")?
+        .len()
+        != expected as u64
+    {
+        return Err("Pending image size does not match.".into());
+    }
+    tokio::fs::read(path)
+        .await
+        .map_err(|_| "Could not read pending image.".into())
 }
 
 pub fn prepare(
@@ -824,6 +980,7 @@ pub fn prepare(
     peer: String,
     server: String,
     data: &str,
+    preview_data_url: Option<&str>,
     text: String,
     reply_to: Option<String>,
 ) -> Result<Job, String> {
@@ -835,7 +992,19 @@ pub fn prepare(
     )
     .map_err(|_| "Invalid image recipient.")?;
     public_url(&server)?;
-    let (image, bytes) = encrypt(data)?;
+    let (mut image, bytes) = encrypt(data)?;
+    let preview_bytes = if let Some(preview) = preview_data_url {
+        let (mime, raw) = blossom::split_data_url(preview).ok_or("Invalid image preview.")?;
+        if !matches!(mime.as_str(), "image/jpeg" | "image/png") {
+            return Err("Image previews must be static JPEG or PNG files.".into());
+        }
+        discordia_image_policy::validate_preview(&raw)?;
+        let (descriptor, ciphertext) = encrypt(preview)?;
+        image.preview = Some(Box::new(descriptor));
+        Some(ciphertext)
+    } else {
+        None
+    };
     let job = Job {
         id: uuid::Uuid::new_v4().to_string(),
         peer,
@@ -851,8 +1020,16 @@ pub fn prepare(
         .map_err(|_| "Could not create image queue.")?;
     let bin = path.with_extension("bin");
     std::fs::write(&bin, &bytes).map_err(|_| "Could not save encrypted image.")?;
+    if let Some(preview_bytes) = &preview_bytes
+        && let Err(error) = std::fs::write(path.with_extension("preview-bin"), preview_bytes)
+    {
+        let _ = std::fs::remove_file(bin);
+        let _ = std::fs::remove_file(path.with_extension("preview-bin"));
+        return Err(format!("Could not save encrypted image preview: {error}"));
+    }
     if let Err(error) = job.save(secret) {
         let _ = std::fs::remove_file(bin);
+        let _ = std::fs::remove_file(path.with_extension("preview-bin"));
         return Err(error);
     }
     if let Ok(cache) = cache_root(&owner).map(|r| r.join("cache"))
@@ -860,7 +1037,15 @@ pub fn prepare(
     {
         let cache_path = cache.join(format!("{}.bin", job.image.hash));
         cache_store(&cache, &cache_path, &bytes);
-        if let Some((_mime, raw)) = blossom::split_data_url(data)
+        if let (Some(preview), Some(preview_bytes)) =
+            (job.image.preview.as_deref(), preview_bytes.as_deref())
+        {
+            cache_store(
+                &cache,
+                &cache.join(format!("{}.bin", preview.hash)),
+                preview_bytes,
+            );
+        } else if let Some((_mime, raw)) = blossom::split_data_url(data)
             && let Ok(thumb_url) = crate::chat_image::thumbnail_data_url(&raw)
             && let Ok(thumb_enc) = job.image.encrypt_thumb(thumb_url.as_bytes())
         {
@@ -951,6 +1136,12 @@ fn sweep_pending(directory: &std::path::Path) {
                 let _ = std::fs::remove_file(path);
             }
             Some("bin")
+                if !path.with_extension("json").exists()
+                    && old.is_some_and(|age| age > Duration::from_secs(3600)) =>
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            Some("preview-bin")
                 if !path.with_extension("json").exists()
                     && old.is_some_and(|age| age > Duration::from_secs(3600)) =>
             {
@@ -1125,6 +1316,9 @@ mod tests {
         let (owner, peer) = (event::xonly_hex(&sender), event::xonly_hex(&receiver));
         let (mut image, bytes) = encrypt(PNG).unwrap();
         image.url = format!("https://example.com/{}.bin", image.hash);
+        let (mut preview, preview_bytes) = encrypt(PNG).unwrap();
+        preview.url = format!("https://example.com/{}.preview", preview.hash);
+        image.preview = Some(Box::new(preview));
         let rumor = image.rumor(&owner, &peer, Some(&"a".repeat(64)), 100);
         let (theirs, ours) = super::super::nip17::wrap_both(&sender, &peer, &rumor, 100).unwrap();
         for wrap in [&theirs, &ours] {
@@ -1140,6 +1334,16 @@ mod tests {
             assert_eq!(message.reply_to.as_deref(), Some("a".repeat(64).as_str()));
             assert_eq!(
                 Descriptor::parse(&opened).unwrap().decrypt(&bytes).unwrap(),
+                PNG
+            );
+            assert_eq!(
+                Descriptor::parse(&opened)
+                    .unwrap()
+                    .preview
+                    .as_deref()
+                    .unwrap()
+                    .decrypt_preview(&preview_bytes)
+                    .unwrap(),
                 PNG
             );
         }
@@ -1240,6 +1444,7 @@ mod tests {
             peer_hex,
             "https://nostr.download".into(),
             PNG,
+            None,
             "caption".into(),
             None,
         )
@@ -1265,6 +1470,38 @@ mod tests {
         let _ = std::fs::remove_file(job.path(&owner).unwrap().with_extension("cancel"));
         let _ = std::fs::remove_file(&cache_file);
         let _ = std::fs::remove_file(&thumb_file);
+    }
+
+    #[tokio::test]
+    async fn prepared_sender_preview_is_independently_encrypted_and_loads_without_original() {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let peer = secp256k1::SecretKey::from_slice(&[8; 32]).unwrap();
+        let owner = event::xonly_hex(&secret);
+        let job = prepare(
+            &secret,
+            event::xonly_hex(&peer),
+            "https://nostr.download".into(),
+            PNG,
+            Some(PNG),
+            String::new(),
+            None,
+        )
+        .unwrap();
+        let preview = job.image.preview.as_deref().unwrap();
+        assert_ne!(preview.key, job.image.key);
+        assert_ne!(preview.nonce, job.image.nonce);
+        assert_eq!(
+            receive_uploaded_preview(&owner, preview).await.unwrap(),
+            PNG
+        );
+        let path = job.path(&owner).unwrap();
+        assert!(path.with_extension("preview-bin").is_file());
+        assert_eq!(job.image.url, "");
+        job.remove(&owner);
+        let _ = std::fs::remove_file(path.with_extension("cancel"));
+        let cache = cache_root(&owner).unwrap().join("cache");
+        let _ = std::fs::remove_file(cache.join(format!("{}.bin", job.image.hash)));
+        let _ = std::fs::remove_file(cache.join(format!("{}.bin", preview.hash)));
     }
 
     #[test]

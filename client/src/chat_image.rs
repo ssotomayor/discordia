@@ -141,6 +141,19 @@ pub fn thumbnail_data_url(bytes: &[u8]) -> Result<String, String> {
     }
 }
 
+pub fn preview_data_url(source_url: &str) -> Result<Option<String>, String> {
+    let payload = source_url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,"))
+        .map(|(_, payload)| payload)
+        .ok_or("Invalid image.")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| "Invalid image.")?;
+    Ok(discordia_image_policy::create(&bytes)?
+        .map(|preview| data_url(preview.mime, &preview.bytes)))
+}
+
 #[cfg(test)]
 fn from_bytes(bytes: &[u8]) -> Result<String, String> {
     from_bytes_with_limit(bytes, MAX_BYTES)

@@ -216,6 +216,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         origin,
                         bot,
                         client_version,
+                        progressive_image_uploads,
                     } => {
                         if user.is_some() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -259,6 +260,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                             continue;
                         }
+                        ctx.state
+                            .set_progressive_image_uploads(conn_id, progressive_image_uploads);
                         let new_user = User { pubkey: pubkey.clone(), username };
                         let remembered = if bot {
                             ctx.state.remember_user(&new_user).await.map(|()| Vec::new())
@@ -387,7 +390,170 @@ pub(crate) async fn handle_connection_with_route<S>(
                             break;
                         }
                     }
-                    ClientMessage::SendMessage { channel_id, content, image, image_name, reply_to } => {
+                    ClientMessage::BeginImageUpload { upload_id, channel_id, content, preview, image_name, reply_to } => {
+                        let Some(author) = user.clone() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        if !ctx.state.supports_progressive_image_uploads(conn_id) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "progressive image uploads were not negotiated for this session".into() }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "rate limited: too many messages, slow down".into() }).await;
+                            continue;
+                        }
+                        let Some(gid) = ctx.state.channel_guild(channel_id) else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "can't post to this channel".into() }).await;
+                            continue;
+                        };
+                        if !ctx.state.is_guild_member(gid, &author.pubkey) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "you're not a member of this guild".into() }).await;
+                            continue;
+                        }
+                        if is_bot
+                            || (ctx.state.channel_read_only(channel_id)
+                                && !ctx.state.writes_when_read_only(gid, &author.pubkey, false))
+                        {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "this channel is read-only".into() }).await;
+                            continue;
+                        }
+                        let mod_exempt = ctx.state.slowmode_exempt(gid, &author.pubkey, is_bot);
+                        if !mod_exempt
+                            && let Some(wait) = ctx.state.slowmode_remaining(channel_id, &author.pubkey)
+                        {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: format!("slowmode: wait {wait}s before posting again") }).await;
+                            continue;
+                        }
+                        match ctx.state.begin_image_upload(
+                            conn_id, author, upload_id, channel_id, content.trim().to_string(),
+                            preview, image_name, reply_to,
+                        ).await {
+                            Ok(message) => {
+                                let targets = ctx.state.guild_member_pubkeys(gid);
+                                ctx.state.deliver_progressive_images(
+                                    targets,
+                                    ServerMessage::MessageCreate(message),
+                                );
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::CompleteImageUpload { upload_id, image } => {
+                        let Some(author) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id)
+                                && let Some(guild_id) = ctx.state.channel_guild(channel_id)
+                            {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
+                            }
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "rate limited: too many messages, slow down".into() }).await;
+                            continue;
+                        }
+                        if !image.starts_with("data:image/")
+                            || image.len() > crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN
+                        {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "image must be a data:image/* URL under the size limit".into() }).await;
+                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id)
+                                && let Some(guild_id) = ctx.state.channel_guild(channel_id)
+                            {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
+                            }
+                            continue;
+                        }
+                        let Some(channel_id) = ctx.state.pending_image_upload_channel(conn_id, upload_id) else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "image upload is no longer pending".into() }).await;
+                            continue;
+                        };
+                        let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
+                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
+                                let _ = ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
+                            }
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "can't post to this channel".into() }).await;
+                            continue;
+                        };
+                        let mod_exempt = ctx
+                            .state
+                            .slowmode_exempt(guild_id, &author.pubkey, is_bot);
+                        let is_member = ctx.state.is_guild_member(guild_id, &author.pubkey);
+                        let rejection = if !is_member {
+                            Some("you're not a member of this guild".to_string())
+                        } else if is_bot
+                            || (ctx.state.channel_read_only(channel_id)
+                                && !ctx.state.writes_when_read_only(guild_id, &author.pubkey, is_bot))
+                        {
+                            Some("this channel is read-only".to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(message) = rejection {
+                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
+                                if !is_member {
+                                    let _ = ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
+                                }
+                            }
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            continue;
+                        }
+                        let slowmode_reservation = if mod_exempt {
+                            None
+                        } else {
+                            match ctx.state.reserve_slowmode(channel_id, &author.pubkey) {
+                                Ok(reservation) => Some(reservation),
+                                Err(wait) => {
+                                    if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
+                                        let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                        ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
+                                        let _ = ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
+                                    }
+                                    let _ = send(&mut ws_tx, &ServerMessage::Error { message: format!("slowmode: wait {wait}s before posting again") }).await;
+                                    continue;
+                                }
+                            }
+                        };
+                        match ctx.state.complete_image_upload(conn_id, &author.pubkey, upload_id, image).await {
+                            Ok(message) => {
+                                if let Some(reservation) = slowmode_reservation {
+                                    reservation.commit();
+                                }
+                                let guild_id = ctx.state.channel_guild(message.channel_id);
+                                let targets = guild_id.map(|guild_id| ctx.state.guild_member_pubkeys(guild_id)).unwrap_or_default();
+                                ctx.state.deliver(targets, ServerMessage::MessageCreate(message.clone()));
+                                if !is_bot
+                                    && let Some(guild_id) = guild_id
+                                    && let Some(member) = ctx.state.award_xp(
+                                        guild_id,
+                                        Some(message.channel_id),
+                                        &message.author.pubkey,
+                                        crate::protocol::XpAction::Message,
+                                    ).await
+                                {
+                                    let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                    ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                                }
+                            }
+                            Err(message) => {
+                                drop(slowmode_reservation);
+                                if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id)
+                                    && let Some(guild_id) = ctx.state.channel_guild(channel_id)
+                                {
+                                    let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                    ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
+                                }
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SendMessage { channel_id, content, image, image_preview, image_name, reply_to } => {
                         let Some(author) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -410,6 +576,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }).await;
                                 continue;
                             }
+                        if let Some(preview) = &image_preview
+                            && (!preview.starts_with("data:image/")
+                                || preview.len() > discordia_image_policy::MAX_OUTPUT_BYTES.div_ceil(3) * 4 + 128)
+                        {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "image preview must be a bounded data:image/* URL".into(),
+                            }).await;
+                            continue;
+                        }
                         if content.len() > crate::protocol::MAX_MESSAGE_BYTES || (content.is_empty() && image.is_none()) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "message must be 1..=2000 chars (or include an image)".into(),
@@ -444,12 +619,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }).await;
                                 continue;
                             }
-                            let mod_exempt = {
-                                let perms = ctx.state.effective_permissions(gid, &author.pubkey);
-                                is_bot
-                                    || perms.contains(&Permission::ManageMessages)
-                                    || perms.contains(&Permission::ManageChannels)
-                            };
+                            let mod_exempt =
+                                ctx.state.slowmode_exempt(gid, &author.pubkey, is_bot);
                             if !mod_exempt
                                 && let Err(wait) = ctx.state.slowmode_check(channel_id, &author.pubkey) {
                                     let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -457,7 +628,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     }).await;
                                     continue;
                                 }
-                            match ctx.state.push_image_message(channel_id, author, content, image, image_name, reply_to).await {
+                            match ctx.state.push_image_message(channel_id, author, content, image, image_preview, image_name, reply_to).await {
                                 Ok(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
@@ -2719,6 +2890,18 @@ pub(crate) async fn handle_connection_with_route<S>(
     dog.abort();
     watch.finish(&who);
     tracing::debug!(%who, "gateway socket loop ended");
+    for (channel_id, message_id) in ctx.state.cancel_image_uploads_for_connection(conn_id) {
+        if let Some(guild_id) = ctx.state.channel_guild(channel_id) {
+            let targets = ctx.state.guild_member_pubkeys(guild_id);
+            ctx.state.deliver_progressive_images(
+                targets,
+                ServerMessage::MessageDelete {
+                    channel_id,
+                    message_id,
+                },
+            );
+        }
+    }
     ctx.state
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
@@ -2878,8 +3061,11 @@ const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Each attempt is a Schnorr verification, so an unbounded retry is CPU we hand
 /// to anyone who can open a socket.
 const MAX_IDENTIFY_ATTEMPTS: u32 = 5;
-// A configured 10 MB chat image must fit alongside its base64 encoding and JSON envelope.
-pub const MAX_FRAME_BYTES: usize = crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN + 16_384;
+// A 10 MB original and its bounded base64 preview must fit in one SendMessage.
+const MAX_CHAT_IMAGE_PREVIEW_DATA_LEN: usize =
+    discordia_image_policy::MAX_OUTPUT_BYTES.div_ceil(3) * 4 + 128;
+pub const MAX_FRAME_BYTES: usize =
+    crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN + MAX_CHAT_IMAGE_PREVIEW_DATA_LEN + 16_384;
 
 /// The socket enforces the cap and the handler enforces the image size, so a
 /// cap under it would kill the connection before anything could explain why.
@@ -3281,7 +3467,7 @@ mod preview_admission_tests {
 const MAX_SOUND_DATA_LEN: usize = crate::protocol::MAX_SOUND_BYTES.div_ceil(3) * 4 + 64;
 /// Four full-size images, so a client asking for message pictures four at a time
 /// is never cut off, and 64 of them cannot be asked for in one frame.
-const MAX_BLOB_RESPONSE_BYTES: usize = MAX_FRAME_BYTES - 16_384;
+const MAX_BLOB_RESPONSE_BYTES: usize = crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN + 1024;
 
 fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     let targets = state.guild_member_pubkeys(guild_id);

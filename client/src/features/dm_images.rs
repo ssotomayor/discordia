@@ -176,6 +176,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             if let Some(src) = source() {
                 super::image_attachment::ImageAttachment {
                     source:src,
+                      zoomable:true,
                     onclick: move |_| {
 
                         let view={let s=state.peek();s.dm_images.get(&message_id).and_then(|image|image.data.clone().map(|data|{

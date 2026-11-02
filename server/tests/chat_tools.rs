@@ -516,6 +516,7 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
                 String::new(),
                 Some(url.clone()),
                 None,
+                None,
                 None
             )
             .await
@@ -546,6 +547,7 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
             Some(url),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -572,6 +574,7 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
                 owner.clone(),
                 String::new(),
                 Some(too_large),
+                None,
                 None,
                 None
             )

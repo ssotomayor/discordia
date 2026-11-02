@@ -352,6 +352,7 @@ pub struct AppState {
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
     pub server_image_previews: bool,
+    pub server_progressive_image_uploads: bool,
     pub guild_file_policies: BTreeMap<Id, crate::protocol::FilePolicy>,
     pub guild_stickers: BTreeMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub voice_states: Vec<VoiceState>,
@@ -612,6 +613,7 @@ impl AppState {
             file_upload_result: None,
             server_chat_tools: false,
             server_image_previews: false,
+            server_progressive_image_uploads: false,
             guild_file_policies: BTreeMap::new(),
             guild_stickers: BTreeMap::new(),
             voice_states: Vec::new(),
@@ -910,6 +912,7 @@ impl AppState {
         self.file_upload_result = None;
         self.server_chat_tools = false;
         self.server_image_previews = false;
+        self.server_progressive_image_uploads = false;
         self.guild_file_policies.clear();
         self.guild_stickers.clear();
         self.server_origin = None;
@@ -1648,6 +1651,32 @@ impl AppState {
         let held = self.messages.entry(channel_id).or_default();
         let index = held.partition_point(|m| m.created_at <= message.created_at);
         held.insert(index, message);
+        true
+    }
+
+    pub fn complete_pending_image(&mut self, message: &Message) -> bool {
+        if message
+            .image_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.upload_pending)
+        {
+            return false;
+        }
+        let Some(existing) = self
+            .messages
+            .get_mut(&message.channel_id)
+            .and_then(|messages| messages.iter_mut().find(|item| item.id == message.id))
+        else {
+            return false;
+        };
+        if !existing
+            .image_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.upload_pending)
+        {
+            return false;
+        }
+        *existing = message.clone();
         true
     }
 
@@ -2763,6 +2792,37 @@ mod tests {
         assert!(s.insert_message(cid, at(id, cid, 100)));
         assert!(!s.insert_message(cid, at(id, cid, 100)));
         assert_eq!(s.messages[&cid].len(), 1);
+    }
+
+    #[test]
+    fn a_completed_progressive_image_replaces_its_placeholder_in_place() {
+        let mut state = AppState::empty();
+        let channel_id = Id::new_v4();
+        let id = Id::new_v4();
+        let mut pending = at(id, channel_id, 100);
+        pending.image = Some("media:preview.png".into());
+        pending.image_metadata = Some(crate::protocol::ImageMetadata {
+            name: Some("original.png".into()),
+            width: None,
+            height: None,
+            preview: Some("media:preview.png".into()),
+            upload_pending: true,
+        });
+        state.insert_message(channel_id, pending);
+
+        let mut completed = at(id, channel_id, 100);
+        completed.image = Some("media:original.png".into());
+        completed.image_metadata = Some(crate::protocol::ImageMetadata {
+            name: Some("original.png".into()),
+            width: Some(800),
+            height: Some(600),
+            preview: Some("media:preview.png".into()),
+            upload_pending: false,
+        });
+
+        assert!(state.complete_pending_image(&completed));
+        assert_eq!(state.messages[&channel_id].len(), 1);
+        assert_eq!(state.messages[&channel_id][0], completed);
     }
 
     /// Out of order is normal: relays answer in whatever order they like.

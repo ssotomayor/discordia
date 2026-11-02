@@ -685,6 +685,7 @@ where
         origin,
         bot: false,
         client_version: crate::version::VERSION.to_string(),
+        progressive_image_uploads: true,
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), "identify").await?;
@@ -1374,6 +1375,7 @@ fn apply(
         ServerMessage::Ready {
             chat_tools,
             image_previews,
+            progressive_image_uploads,
             user,
             guilds,
             channels,
@@ -1402,6 +1404,7 @@ fn apply(
             s.default_guild = default_guild;
             s.server_chat_tools = chat_tools;
             s.server_image_previews = image_previews;
+            s.server_progressive_image_uploads = progressive_image_uploads;
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
@@ -1567,6 +1570,9 @@ fn apply(
             }
         }
         ServerMessage::MessageCreate(m) => {
+            if s.complete_pending_image(&m) {
+                return;
+            }
             let cid = m.channel_id;
             let is_dm = !s.channels.iter().any(|c| c.id == cid);
             if is_dm && s.dm_of(cid).is_none() {
@@ -2709,6 +2715,7 @@ mod tests {
                     ServerMessage::Ready {
                         chat_tools: false,
                         image_previews: false,
+                        progressive_image_uploads: false,
                         user,
                         guilds: vec![],
                         channels: vec![],

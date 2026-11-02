@@ -91,6 +91,7 @@ async fn send_image(bot: &mut Bot, channel_id: Id, image: &str) -> Result<(), St
         channel_id,
         content: "look".into(),
         image: Some(image.to_string()),
+        image_preview: None,
         reply_to: None,
     })
     .await

@@ -1033,6 +1033,20 @@ impl Store {
                 out.insert(name.to_string());
             }
         }
+        for r in sqlx::query("SELECT image_metadata FROM messages WHERE image_metadata IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let raw: String = r.get(0);
+            if let Ok(metadata) = serde_json::from_str::<crate::protocol::ImageMetadata>(&raw)
+                && let Some(name) = metadata
+                    .preview
+                    .as_deref()
+                    .and_then(|url| url.strip_prefix("media:"))
+            {
+                out.insert(name.to_owned());
+            }
+        }
         for r in sqlx::query("SELECT image FROM guild_emojis")
             .fetch_all(&self.pool)
             .await?

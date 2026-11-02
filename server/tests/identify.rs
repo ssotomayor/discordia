@@ -122,6 +122,7 @@ async fn raw_identify(url: &str, identity: &BotIdentity, signed_for: &str, sent:
         origin: sent.to_string(),
         bot: false,
         client_version: String::new(),
+        progressive_image_uploads: false,
     };
     ws.send(WsMessage::Text(serde_json::to_string(&identify).unwrap()))
         .await

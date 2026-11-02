@@ -269,6 +269,7 @@ impl Bot {
             origin,
             bot,
             client_version: concat!("bot-sdk/", env!("CARGO_PKG_VERSION")).to_string(),
+            progressive_image_uploads: false,
         };
         let mut bot = Bot {
             write,
@@ -305,6 +306,7 @@ impl Bot {
             channel_id,
             content: content.to_string(),
             image: None,
+            image_preview: None,
             reply_to: None,
         })
         .await
@@ -321,6 +323,7 @@ impl Bot {
             channel_id,
             content: content.to_string(),
             image: None,
+            image_preview: None,
             reply_to: Some(reply_to),
         })
         .await

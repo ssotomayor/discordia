@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -72,6 +72,44 @@ struct Conn {
     ip: Option<std::net::IpAddr>,
     host: Option<String>,
     route: crate::connection_routes::RouteSource,
+    progressive_image_uploads: bool,
+}
+
+#[derive(Clone)]
+struct PendingImageUpload {
+    author: User,
+    channel_id: Id,
+    content: String,
+    image_name: Option<String>,
+    reply_to: Option<Id>,
+    preview: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub(crate) struct SlowmodeReservation<'a> {
+    state: &'a AppState,
+    key: (Id, String),
+    active: bool,
+}
+
+impl SlowmodeReservation<'_> {
+    pub(crate) fn commit(mut self) {
+        if self.active {
+            self.state
+                .last_post
+                .insert(self.key.clone(), std::time::Instant::now());
+            self.state.pending_slowmode.remove(&self.key);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for SlowmodeReservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.state.pending_slowmode.remove(&self.key);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +175,7 @@ pub struct AppState {
     pub invite_by_guild: DashMap<Id, String>,
     pub bans: DashMap<Id, std::collections::HashSet<String>>,
     pub last_post: DashMap<(Id, String), std::time::Instant>,
+    pending_slowmode: DashSet<(Id, String)>,
     pub recent_joins: DashMap<Id, Vec<std::time::Instant>>,
     pub xp: DashMap<Id, DashMap<String, u64>>,
     /// Memory only, and deliberately: losing it across a restart grants one
@@ -149,6 +188,7 @@ pub struct AppState {
     relayed_conns: std::sync::atomic::AtomicUsize,
     limits: std::sync::OnceLock<crate::admission::Limits>,
     conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
+    pending_image_uploads: DashMap<(u64, Id), PendingImageUpload>,
     session_revisions: DashMap<String, u64>,
     next_conn_id: AtomicU64,
     upload_budget: DashMap<String, (std::time::Instant, u64)>,
@@ -190,6 +230,7 @@ impl AppState {
             invite_by_guild: DashMap::new(),
             bans: DashMap::new(),
             last_post: DashMap::new(),
+            pending_slowmode: DashSet::new(),
             recent_joins: DashMap::new(),
             xp: DashMap::new(),
             xp_cooldown: DashMap::new(),
@@ -202,6 +243,7 @@ impl AppState {
             relayed_conns: Default::default(),
             limits: Default::default(),
             conn_ids_by_pubkey: DashMap::new(),
+            pending_image_uploads: DashMap::new(),
             session_revisions: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
             upload_budget: DashMap::new(),
@@ -462,6 +504,7 @@ impl AppState {
                 ip,
                 host: None,
                 route: crate::connection_routes::RouteSource::Socket(ip),
+                progressive_image_uploads: false,
             },
         );
         Ok((id, rx, close))
@@ -476,6 +519,18 @@ impl AppState {
         if let Some(mut conn) = self.conns.get_mut(&conn_id) {
             conn.host = host;
         }
+    }
+
+    pub(crate) fn set_progressive_image_uploads(&self, conn_id: u64, enabled: bool) {
+        if let Some(mut conn) = self.conns.get_mut(&conn_id) {
+            conn.progressive_image_uploads = enabled;
+        }
+    }
+
+    pub(crate) fn supports_progressive_image_uploads(&self, conn_id: u64) -> bool {
+        self.conns
+            .get(&conn_id)
+            .is_some_and(|conn| conn.progressive_image_uploads)
     }
 
     pub(crate) fn connection_voice_address(
@@ -637,6 +692,26 @@ impl AppState {
         ids.dedup();
         for id in ids {
             self.route(id, &msg);
+        }
+    }
+
+    pub fn deliver_progressive_images(&self, to: Vec<String>, msg: ServerMessage) {
+        let mut ids = Vec::new();
+        for pubkey in &to {
+            if let Some(sessions) = self.conn_ids_by_pubkey.get(pubkey) {
+                ids.extend(sessions.iter().copied());
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if self
+                .conns
+                .get(&id)
+                .is_some_and(|conn| conn.progressive_image_uploads)
+            {
+                self.route(id, &msg);
+            }
         }
     }
 
@@ -1408,6 +1483,7 @@ impl AppState {
         Ok(ServerMessage::Ready {
             chat_tools: true,
             image_previews: true,
+            progressive_image_uploads: true,
             user: user.clone(),
             guilds,
             channels,
@@ -2735,7 +2811,14 @@ impl AppState {
     pub async fn sweep_media(&self) -> crate::media::SweepReport {
         let _write = self.durable_writes.lock().await;
         match self.store.referenced_media().await {
-            Ok(referenced) => self.media.sweep(&referenced, MEDIA_GRACE),
+            Ok(mut referenced) => {
+                for pending in self.pending_image_uploads.iter() {
+                    if let Some(name) = pending.preview.strip_prefix("media:") {
+                        referenced.insert(name.to_owned());
+                    }
+                }
+                self.media.sweep(&referenced, MEDIA_GRACE)
+            }
             Err(e) => {
                 tracing::error!(error = %e, "media sweep skipped: could not read references");
                 crate::media::SweepReport::default()
@@ -2877,24 +2960,70 @@ impl AppState {
         None
     }
 
-    pub fn slowmode_check(&self, channel_id: Id, pubkey: &str) -> Result<(), u64> {
-        let secs = self
-            .channels
+    fn slowmode_secs(&self, channel_id: Id) -> u64 {
+        self.channels
             .get(&channel_id)
-            .map(|c| c.slowmode_secs)
-            .unwrap_or(0);
-        if secs == 0 {
-            return Ok(());
-        }
+            .map(|channel| channel.slowmode_secs as u64)
+            .unwrap_or(0)
+    }
+
+    pub fn slowmode_exempt(&self, guild_id: Id, pubkey: &str, is_bot: bool) -> bool {
+        let permissions = self.effective_permissions(guild_id, pubkey);
+        is_bot
+            || permissions.contains(&Permission::ManageMessages)
+            || permissions.contains(&Permission::ManageChannels)
+    }
+
+    fn slowmode_wait(&self, key: &(Id, String), secs: u64) -> Option<u64> {
         let now = std::time::Instant::now();
-        let key = (channel_id, pubkey.to_string());
-        if let Some(last) = self.last_post.get(&key) {
+        self.last_post.get(key).and_then(|last| {
             let elapsed = now.duration_since(*last).as_secs();
-            if elapsed < secs as u64 {
-                return Err(secs as u64 - elapsed);
-            }
+            (elapsed < secs).then_some(secs - elapsed)
+        })
+    }
+
+    pub fn slowmode_remaining(&self, channel_id: Id, pubkey: &str) -> Option<u64> {
+        let secs = self.slowmode_secs(channel_id);
+        if secs == 0 {
+            return None;
         }
-        self.last_post.insert(key, now);
+        let key = (channel_id, pubkey.to_string());
+        if self.pending_slowmode.contains(&key) {
+            return Some(secs);
+        }
+        self.slowmode_wait(&key, secs)
+    }
+
+    pub(crate) fn reserve_slowmode(
+        &self,
+        channel_id: Id,
+        pubkey: &str,
+    ) -> Result<SlowmodeReservation<'_>, u64> {
+        let key = (channel_id, pubkey.to_string());
+        let secs = self.slowmode_secs(channel_id);
+        if secs == 0 {
+            return Ok(SlowmodeReservation {
+                state: self,
+                key,
+                active: false,
+            });
+        }
+        if !self.pending_slowmode.insert(key.clone()) {
+            return Err(secs);
+        }
+        if let Some(wait) = self.slowmode_wait(&key, secs) {
+            self.pending_slowmode.remove(&key);
+            return Err(wait);
+        }
+        Ok(SlowmodeReservation {
+            state: self,
+            key,
+            active: true,
+        })
+    }
+
+    pub fn slowmode_check(&self, channel_id: Id, pubkey: &str) -> Result<(), u64> {
+        self.reserve_slowmode(channel_id, pubkey)?.commit();
         Ok(())
     }
 
@@ -3140,7 +3269,7 @@ impl AppState {
         image: Option<String>,
         reply_to: Option<Id>,
     ) -> Result<Message, String> {
-        self.push_image_message(channel_id, author, content, image, None, reply_to)
+        self.push_image_message(channel_id, author, content, image, None, None, reply_to)
             .await
     }
 
@@ -3150,6 +3279,7 @@ impl AppState {
         author: User,
         content: String,
         image: Option<String>,
+        image_preview: Option<String>,
         image_name: Option<String>,
         reply_to: Option<Id>,
     ) -> Result<Message, String> {
@@ -3178,18 +3308,49 @@ impl AppState {
                 if img.len() > limit.div_ceil(3) * 4 + 128 {
                     return Err(error());
                 }
-                self.charge_upload(&author.pubkey, img.len() as u64)?;
-                let stored = self.media.store_chat_image(&img, limit).map_err(|e| {
-                    if e == crate::media::StoreError::ImageTooLarge {
-                        error()
-                    } else {
-                        e.to_string()
+                if let Some(preview) = image_preview.as_deref() {
+                    if preview.len()
+                        > discordia_image_policy::MAX_OUTPUT_BYTES.div_ceil(3) * 4 + 128
+                    {
+                        return Err("image preview is too large".into());
                     }
-                })?;
-                let metadata = crate::media::image_metadata(&img, image_name.as_deref());
+                    crate::media::validate_chat_preview(preview)
+                        .map_err(|_| "image preview must be a valid static image up to 640×480")?;
+                }
+                self.charge_upload(
+                    &author.pubkey,
+                    (img.len() as u64)
+                        .saturating_add(image_preview.as_ref().map_or(0, |p| p.len() as u64)),
+                )?;
+                let (stored, preview_address) = match image_preview.as_deref() {
+                    Some(preview) => self
+                        .media
+                        .store_chat_image_pair(&img, preview, limit)
+                        .map(|(original, preview)| (original, Some(preview)))
+                        .map_err(|e| {
+                            if e == crate::media::StoreError::ImageTooLarge {
+                                error()
+                            } else {
+                                e.to_string()
+                            }
+                        })?,
+                    None => (
+                        self.media.store_chat_image(&img, limit).map_err(|e| {
+                            if e == crate::media::StoreError::ImageTooLarge {
+                                error()
+                            } else {
+                                e.to_string()
+                            }
+                        })?,
+                        None,
+                    ),
+                };
+                let mut metadata = crate::media::image_metadata(&img, image_name.as_deref());
+                metadata.preview = preview_address;
                 (Some(stored), Some(metadata))
             }
-            None => (None, None),
+            None if image_preview.is_none() => (None, None),
+            None => return Err("image preview requires an original image".into()),
         };
         let reply_ref = match reply_to {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
@@ -3204,6 +3365,189 @@ impl AppState {
             reply_ref,
         )
         .await
+    }
+
+    pub async fn begin_image_upload(
+        &self,
+        conn_id: u64,
+        author: User,
+        upload_id: Id,
+        channel_id: Id,
+        content: String,
+        preview: String,
+        image_name: Option<String>,
+        reply_to: Option<Id>,
+    ) -> Result<Message, String> {
+        let author = self.attributed_author(channel_id, author);
+        let guild_id = self
+            .channels
+            .get(&channel_id)
+            .filter(|channel| matches!(channel.kind, crate::protocol::ChannelKind::Text))
+            .map(|channel| channel.guild_id)
+            .ok_or("can't post to this channel")?;
+        if content.len() > crate::protocol::MAX_MESSAGE_BYTES {
+            return Err("message must be at most 2000 chars".into());
+        }
+        if preview.len() > discordia_image_policy::MAX_OUTPUT_BYTES.div_ceil(3) * 4 + 128 {
+            return Err("image preview is too large".into());
+        }
+        crate::media::validate_chat_preview(&preview)
+            .map_err(|_| "image preview must be a valid static image up to 640×480")?;
+        if self
+            .pending_image_uploads
+            .contains_key(&(conn_id, upload_id))
+            || self
+                .store
+                .message_author(channel_id, upload_id)
+                .await
+                .map_err(|error| format!("store error: {error}"))?
+                .is_some()
+        {
+            return Err("image upload id is already in use".into());
+        }
+        if self
+            .pending_image_uploads
+            .iter()
+            .filter(|entry| entry.key().0 == conn_id)
+            .count()
+            >= 4
+        {
+            return Err("too many pending image uploads".into());
+        }
+        self.charge_upload(&author.pubkey, preview.len() as u64)?;
+        let preview_address = self
+            .media
+            .store_chat_image(&preview, discordia_image_policy::MAX_OUTPUT_BYTES)
+            .map_err(|error| error.to_string())?;
+        let created_at = chrono::Utc::now();
+        let reply_ref = match reply_to {
+            Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
+            None => None,
+        };
+        let mut metadata = crate::media::image_metadata(&preview, image_name.as_deref());
+        metadata.width = None;
+        metadata.height = None;
+        metadata.preview = Some(preview_address.clone());
+        metadata.upload_pending = true;
+        let message = Message {
+            image_metadata: Some(metadata),
+            attachment: None,
+            pinned: false,
+            id: upload_id,
+            channel_id,
+            author: author.clone(),
+            author_bot: self.is_installed_bot(channel_id, &author.pubkey),
+            content: content.clone(),
+            image: Some(preview_address.clone()),
+            reactions: Vec::new(),
+            reply_to: reply_ref,
+            created_at,
+            edited_at: None,
+        };
+        self.pending_image_uploads.insert(
+            (conn_id, upload_id),
+            PendingImageUpload {
+                author,
+                channel_id,
+                content,
+                image_name,
+                reply_to,
+                preview: preview_address,
+                created_at,
+            },
+        );
+        Ok(message)
+    }
+
+    pub async fn complete_image_upload(
+        &self,
+        conn_id: u64,
+        by_pubkey: &str,
+        upload_id: Id,
+        image: String,
+    ) -> Result<Message, String> {
+        let pending = self
+            .pending_image_uploads
+            .get(&(conn_id, upload_id))
+            .map(|entry| entry.value().clone())
+            .ok_or("image upload is no longer pending")?;
+        if pending.author.pubkey != by_pubkey {
+            return Err("image upload belongs to another sender".into());
+        }
+        let guild_id = self
+            .channels
+            .get(&pending.channel_id)
+            .map(|channel| channel.guild_id)
+            .ok_or("can't post to this channel")?;
+        let policy = self
+            .store
+            .file_policy(guild_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let limit = (policy.max_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+        if image.len() > limit.div_ceil(3) * 4 + 128 {
+            return Err(format!(
+                "image too large: this community's size limit is {} KB",
+                limit / 1000
+            ));
+        }
+        self.charge_upload(by_pubkey, image.len() as u64)?;
+        let preview = self
+            .media
+            .inline(&pending.preview)
+            .ok_or("image preview expired during upload")?;
+        let (stored, preview_address) = self
+            .media
+            .store_chat_image_pair(&image, &preview, limit)
+            .map_err(|error| error.to_string())?;
+        let mut metadata = crate::media::image_metadata(&image, pending.image_name.as_deref());
+        metadata.preview = Some(preview_address);
+        let reply_ref = match pending.reply_to {
+            Some(id) => self
+                .store
+                .reply_ref(pending.channel_id, id)
+                .await
+                .unwrap_or(None),
+            None => None,
+        };
+        let message = self
+            .append_message_with_id(
+                upload_id,
+                pending.created_at,
+                pending.channel_id,
+                pending.author,
+                pending.content,
+                Some(stored),
+                Some(metadata),
+                reply_ref,
+            )
+            .await?;
+        self.pending_image_uploads.remove(&(conn_id, upload_id));
+        Ok(message)
+    }
+
+    pub fn cancel_image_upload(&self, conn_id: u64, upload_id: Id) -> Option<(Id, Id)> {
+        self.pending_image_uploads
+            .remove(&(conn_id, upload_id))
+            .map(|(_, pending)| (pending.channel_id, upload_id))
+    }
+
+    pub fn pending_image_upload_channel(&self, conn_id: u64, upload_id: Id) -> Option<Id> {
+        self.pending_image_uploads
+            .get(&(conn_id, upload_id))
+            .map(|pending| pending.channel_id)
+    }
+
+    pub fn cancel_image_uploads_for_connection(&self, conn_id: u64) -> Vec<(Id, Id)> {
+        let ids = self
+            .pending_image_uploads
+            .iter()
+            .filter(|entry| entry.key().0 == conn_id)
+            .map(|entry| entry.key().1)
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter_map(|id| self.cancel_image_upload(conn_id, id))
+            .collect()
     }
 
     /// One rule for every picture a client may hand the server. A data URL is
@@ -3385,11 +3729,35 @@ impl AppState {
         image_metadata: Option<crate::protocol::ImageMetadata>,
         reply_to: Option<ReplyRef>,
     ) -> Result<Message, String> {
+        self.append_message_with_id(
+            Uuid::new_v4(),
+            chrono::Utc::now(),
+            channel_id,
+            author,
+            content,
+            image,
+            image_metadata,
+            reply_to,
+        )
+        .await
+    }
+
+    async fn append_message_with_id(
+        &self,
+        id: Id,
+        created_at: chrono::DateTime<chrono::Utc>,
+        channel_id: Id,
+        author: User,
+        content: String,
+        image: Option<String>,
+        image_metadata: Option<crate::protocol::ImageMetadata>,
+        reply_to: Option<ReplyRef>,
+    ) -> Result<Message, String> {
         let message = Message {
             image_metadata,
             attachment: None,
             pinned: false,
-            id: Uuid::new_v4(),
+            id,
             channel_id,
             author_bot: self.is_installed_bot(channel_id, &author.pubkey),
             edited_at: None,
@@ -3398,7 +3766,7 @@ impl AppState {
             image,
             reactions: Vec::new(),
             reply_to,
-            created_at: chrono::Utc::now(),
+            created_at,
         };
         durable(self.store.insert_message(&message).await, "message insert")?;
         Ok(message)
@@ -3914,6 +4282,7 @@ impl AppState {
         ServerMessage::Ready {
             chat_tools: false,
             image_previews: false,
+            progressive_image_uploads: false,
             user: bot.clone(),
             guilds,
             channels,
@@ -4091,6 +4460,54 @@ fn guild_initials(name: &str) -> String {
 mod cooldown_tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn slowmode_reservation_only_consumes_the_window_after_commit() {
+        let directory = std::env::temp_dir().join(format!("discordia-slowmode-{}", Id::new_v4()));
+        let store = crate::store::Store::open_in(&directory).await.unwrap();
+        let media = crate::media::MediaStore::open(
+            directory.join("media"),
+            crate::media::DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
+        let state = AppState::load_or_seed(store, media, Default::default())
+            .await
+            .unwrap();
+        let channel_id = Id::new_v4();
+        state.channels.insert(
+            channel_id,
+            Channel {
+                id: channel_id,
+                guild_id: Id::new_v4(),
+                name: "images".into(),
+                kind: crate::protocol::ChannelKind::Text,
+                topic: None,
+                read_only: false,
+                slowmode_secs: 60,
+                position: 0,
+                access: None,
+                divider: Default::default(),
+                markdown: false,
+            },
+        );
+
+        let abandoned = state.reserve_slowmode(channel_id, "alice").unwrap();
+        assert_eq!(state.slowmode_remaining(channel_id, "alice"), Some(60));
+        assert!(matches!(
+            state.reserve_slowmode(channel_id, "alice"),
+            Err(60)
+        ));
+        drop(abandoned);
+        assert_eq!(state.slowmode_remaining(channel_id, "alice"), None);
+
+        state
+            .reserve_slowmode(channel_id, "alice")
+            .unwrap()
+            .commit();
+        assert_eq!(state.slowmode_remaining(channel_id, "alice"), Some(60));
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn hidden_voice_state_does_not_leak_watched_streams() {
