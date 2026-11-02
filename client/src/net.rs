@@ -1953,9 +1953,11 @@ fn apply(
             guild_id,
             user_pubkey,
         } => {
+            if s.removal_holds_key(guild_id, &user_pubkey) {
+                s.pending_rekey = true;
+            }
             s.members
                 .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
-            s.pending_rekey = true;
         }
         ServerMessage::GuildInvite { guild_id, code, .. } => {
             s.invites.insert(guild_id, code);
