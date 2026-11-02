@@ -14,6 +14,7 @@ const html = (mobile) => `<style>${css}</style><body class="${mobile ? "dxf-plat
 <div class="${cls('dxf-home-brand')}"><div class="dxf-logo ${cls('dxf-home-logo')}">${logo}</div><span class="dxf-wordmark">Discordia</span></div>
 <span class="${cls('dxf-home-relays')}"><span style="width:7px;height:7px;background:var(--up);border-radius:50%"></span><span class="text-xs">4/4</span></span>
 <div class="${cls('dxf-home-spacer')}"></div><div class="${cls('dxf-home-tools')}">
+<button class="${cls('dxf-home-agents')}" aria-label="Agents"><span>${icon('BOT')}</span><span class="dxf-home-agents-label">Agents</span></button>
 <button class="${cls('dxf-home-social')}" aria-expanded="true" aria-label="Social 3"><span>${icon('USERS')}</span><span class="dxf-home-social-label">Social</span><span>3</span></button>
 ${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dxf-home-account')}"><div class="dxf-avatar w-8 h-8 border rounded-md flex items-center justify-center"><img alt="Account" style="width:100%;height:100%;object-fit:cover" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Crect width='32' height='32' fill='red'/%3E%3C/svg%3E"></div><div class="${cls('dxf-home-account-details')}">Nombre de usuario</div></button>` : `<button class="${cls('dxf-home-account')}"><div class="dxf-avatar w-8 h-8 border rounded-md flex items-center justify-center"><img alt="Account" style="width:100%;height:100%;object-fit:cover" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Crect width='32' height='32' fill='red'/%3E%3C/svg%3E"></div><div class="${cls('dxf-home-account-details')}">Nombre de usuario</div></button>${button('dxf-home-settings', icon('GEAR'))}`}
 </div></div></div><p style="padding:16px">Inicio</p>
@@ -30,7 +31,7 @@ ${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dx
       await page.setContent(html(true));
       const result = await page.evaluate(() => {
         const box = sel => { const r = document.querySelector(sel).getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height,cx:r.x+r.width/2,cy:r.y+r.height/2}; };
-        return { home:box('.dxf-home-settings'), server:box('.server-settings'), homeRoot:box('.dxf-home-bar'), serverRoot:box('.dxf-workspace-mobile'), homeLogo:box('.dxf-home-logo'), serverLogo:box('.dxf-workspace-logo'), icon:box('.dxf-home-settings svg'), social:box('.dxf-home-social'), relays:box('.dxf-home-relays'), overflow:document.documentElement.scrollWidth > innerWidth };
+        return { home:box('.dxf-home-settings'), server:box('.server-settings'), homeRoot:box('.dxf-home-bar'), serverRoot:box('.dxf-workspace-mobile'), homeLogo:box('.dxf-home-logo'), serverLogo:box('.dxf-workspace-logo'), icon:box('.dxf-home-settings svg'), social:box('.dxf-home-social'), agents:box('.dxf-home-agents'), relays:box('.dxf-home-relays'), overflow:document.documentElement.scrollWidth > innerWidth };
       });
       assert.equal(result.overflow, false, `overflow ${width}`);
       assert.equal(result.home.w,44); assert.equal(result.home.h,44);
@@ -39,7 +40,8 @@ ${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dx
       assert.equal(result.homeLogo.w,result.serverLogo.w);
       assert.equal(result.homeLogo.h,result.serverLogo.h);
       assert.equal(result.home.cx,result.icon.cx); assert.equal(result.home.cy,result.icon.cy);
-      assert.ok(result.relays.x+result.relays.w <= result.social.x, `overlap ${width}`);
+      assert.ok(result.relays.x+result.relays.w <= result.agents.x, `overlap ${width}`);
+      assert.ok(result.agents.x+result.agents.w <= result.social.x, `agents ${width}`);
       assert.equal(await page.getByRole('button', {name: 'Social 3', exact:true}).count(), 1);
       const avatar = await page.locator('.dxf-home-account').boundingBox();
       const exit = await page.locator('.dxf-workspace-tools > button').last().boundingBox();
@@ -49,11 +51,13 @@ ${mobile ? `${button('dxf-home-settings', icon('GEAR'))}<button class="${cls('dx
       const picture = await page.locator('.dxf-home-account img').boundingBox();
       assert.equal(picture.width, 42); assert.equal(picture.height, 42);
       const order = await page.locator('.dxf-home-tools > button').evaluateAll(nodes => nodes.map(n => n.className.split(' ')[0]));
-      assert.deepEqual(order, ['dxf-home-social','dxf-home-settings','dxf-home-account']);
+      assert.deepEqual(order, ['dxf-home-agents','dxf-home-social','dxf-home-settings','dxf-home-account']);
       console.log(JSON.stringify({width,settingsX:result.home.cx,settingsY:result.home.cy,logo:result.homeLogo.w,icon:result.icon.w,overflow:result.overflow}));
     }
     await page.setViewportSize({width:1280,height:700});
     await page.setContent(html(false));
+    await page.keyboard.press('Tab');
+    assert.equal(await page.locator(':focus').getAttribute('aria-label'), 'Agents');
     await page.keyboard.press('Tab');
     assert.equal(await page.locator(':focus').getAttribute('aria-label'), 'Social 3');
     await page.keyboard.press('Tab');

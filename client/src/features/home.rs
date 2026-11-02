@@ -297,7 +297,7 @@ fn TopBar(
                             class: "shrink-0 flex items-center",
                             dangerous_inner_html: crate::features::icons::BOT,
                         }
-                        span { class: "dxf-home-social-label", {crate::i18n::text("Agents", &[])} }
+                        span { class: "dxf-home-agents-label", {crate::i18n::text("Agents", &[])} }
                     }
                     button {
                         class: "dxf-home-social flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
