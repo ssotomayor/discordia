@@ -167,5 +167,7 @@ pub fn validate_preview(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+pub mod bounds;
+
 #[cfg(test)]
 mod tests;

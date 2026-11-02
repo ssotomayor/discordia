@@ -487,7 +487,7 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
     assert_eq!(policy.max_sticker_bytes, 2_097_152);
     assert_eq!(policy.retention_days, 7);
     let mut image = vec![0; 10_000_000];
-    image[..6].copy_from_slice(b"GIF89a");
+    image[..10].copy_from_slice(b"GIF89a\x01\x00\x01\x00");
     let url = format!(
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&image)
@@ -646,7 +646,7 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
     );
 
     let mut sticker_data = vec![0; 3_000_000];
-    sticker_data[..6].copy_from_slice(b"GIF89a");
+    sticker_data[..10].copy_from_slice(b"GIF89a\x01\x00\x01\x00");
     let sticker_url = format!(
         "data:image/gif;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&sticker_data)

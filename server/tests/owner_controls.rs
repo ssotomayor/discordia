@@ -1610,7 +1610,7 @@ async fn guild_branding() {
             name: None,
             description: Some("The prettiest guild".into()),
             icon_image: None,
-            banner: Some("data:image/png;base64,iVBORw0KGgo=".into()),
+            banner: Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".into()),
         })
         .await
         .unwrap();
