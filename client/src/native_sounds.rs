@@ -624,12 +624,14 @@ fn tones(sound: Sound) -> &'static [Tone] {
             tone(0.06, 360.0, 0.11, 0.10, Square),
         ],
         &[
-            tone(0.0, 660.0, 0.06, 0.07, Sine),
-            tone(0.06, 990.0, 0.10, 0.07, Sine),
+            tone(0.0, 587.0, 0.055, 0.06, Triangle),
+            tone(0.065, 784.0, 0.055, 0.055, Triangle),
+            tone(0.13, 1175.0, 0.16, 0.05, Sine),
         ],
         &[
-            tone(0.0, 990.0, 0.06, 0.06, Sine),
-            tone(0.06, 660.0, 0.10, 0.06, Sine),
+            tone(0.0, 740.0, 0.08, 0.05, Sine),
+            tone(0.11, 554.0, 0.08, 0.05, Triangle),
+            tone(0.22, 370.0, 0.12, 0.05, Sine),
         ],
     ];
     BANK.get(sound.0).copied().unwrap_or(&[])
