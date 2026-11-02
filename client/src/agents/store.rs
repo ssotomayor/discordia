@@ -16,17 +16,29 @@ pub enum Preset {
     Groq,
     Ollama,
     Custom,
+    /// A coding agent on this computer over ACP (#457): desktop, creator only.
+    Acp,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 6] = [
+    pub const ALL: [Preset; 7] = [
         Preset::Anthropic,
         Preset::OpenAi,
         Preset::OpenRouter,
         Preset::Groq,
         Preset::Ollama,
         Preset::Custom,
+        Preset::Acp,
     ];
+
+    /// A server runs no coding agent, and a phone has nothing to start one with.
+    pub fn offered(on_device: bool) -> Vec<Preset> {
+        let acp = on_device && !cfg!(any(target_os = "android", target_os = "ios"));
+        Self::ALL
+            .into_iter()
+            .filter(|p| *p != Preset::Acp || acp)
+            .collect()
+    }
 
     pub fn id(self) -> &'static str {
         match self {
@@ -36,6 +48,7 @@ impl Preset {
             Preset::Groq => "groq",
             Preset::Ollama => "ollama",
             Preset::Custom => "custom",
+            Preset::Acp => "acp",
         }
     }
 
@@ -50,7 +63,7 @@ impl Preset {
             Preset::OpenRouter => "https://openrouter.ai/api/v1",
             Preset::Groq => "https://api.groq.com/openai/v1",
             Preset::Ollama => "http://127.0.0.1:11434/v1",
-            Preset::Custom => "",
+            Preset::Custom | Preset::Acp => "",
         }
     }
 
@@ -62,7 +75,7 @@ impl Preset {
     }
 
     pub fn needs_key(self) -> bool {
-        !matches!(self, Preset::Ollama | Preset::Custom)
+        !matches!(self, Preset::Ollama | Preset::Custom | Preset::Acp)
     }
 
     pub fn default_model(self) -> &'static str {
@@ -85,6 +98,7 @@ impl Preset {
             Preset::OpenAi => "OpenAI".into(),
             Preset::OpenRouter => "OpenRouter".into(),
             Preset::Groq => "Groq".into(),
+            Preset::Acp => "a coding agent on its creator's computer".into(),
             Preset::Ollama | Preset::Custom => url::Url::parse(base_url)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_string))
@@ -140,6 +154,9 @@ pub struct AgentEntry {
     /// Other keys it answers in DMs; its creator always.
     #[serde(default)]
     pub dm_allow: Vec<String>,
+    /// What starts the coding agent, for `Preset::Acp`: a program and its arguments.
+    #[serde(default)]
+    pub acp_command: String,
 }
 
 fn yes() -> bool {
@@ -163,15 +180,27 @@ impl AgentEntry {
             enabled: true,
             answer_dms: false,
             dm_allow: Vec::new(),
+            acp_command: String::new(),
         }
     }
 
     pub fn model_config(&self, key: ApiKey) -> ModelConfig {
+        // A coding agent names itself by the program that starts it.
+        let model = match self.preset {
+            Preset::Acp => self
+                .acp_command
+                .split_whitespace()
+                .next()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "agent".into()),
+            _ => self.model.trim().to_string(),
+        };
         ModelConfig {
             provider: self.preset.provider(),
             provider_label: self.preset.disclosed(&self.base_url),
             base_url: self.base_url.trim().to_string(),
-            model: self.model.trim().to_string(),
+            model,
             api_key: key,
             max_output_tokens: 4096,
         }
@@ -188,6 +217,7 @@ impl AgentEntry {
                 ..Limits::default()
             },
             manifest_version: self.manifest_version,
+            only_from: None,
         }
     }
 
@@ -212,7 +242,7 @@ impl AgentEntry {
         let preset = Preset::ALL
             .into_iter()
             .find(|p| {
-                *p != Preset::Custom
+                !matches!(p, Preset::Custom | Preset::Acp)
                     && p.base_url() == s.base_url
                     && (p.provider() == Provider::Anthropic) == anthropic
             })
@@ -235,6 +265,7 @@ impl AgentEntry {
             enabled: true,
             answer_dms: false,
             dm_allow: Vec::new(),
+            acp_command: String::new(),
         }
     }
 
@@ -264,6 +295,13 @@ impl AgentEntry {
     pub fn problem(&self, has_key: bool) -> Option<String> {
         if self.name.trim().is_empty() {
             return Some(crate::i18n::text("Give it a name.", &[]));
+        }
+        if self.preset == Preset::Acp {
+            return self
+                .acp_command
+                .trim()
+                .is_empty()
+                .then(|| crate::i18n::text("Name the command that starts the agent.", &[]));
         }
         if self.model.trim().is_empty() {
             return Some(crate::i18n::text("Choose a model.", &[]));
@@ -384,6 +422,15 @@ pub fn forget_in(dir: &Path, owner: &str, agent: &str) {
     }
 }
 
+/// An empty folder of its own for a coding agent to start in.
+pub fn work_dir(owner: &str, agent: &str) -> PathBuf {
+    let name = if agent.is_empty() { "draft" } else { agent };
+    crate::identity::config_dir()
+        .join("agents")
+        .join(owner)
+        .join(format!("{name}-work"))
+}
+
 pub fn load(owner: &str) -> Vec<AgentEntry> {
     load_in(&crate::identity::config_dir(), owner)
 }
@@ -493,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_server_agent_edits_in_the_same_form_and_comes_back_unchanged() {
-        for preset in Preset::ALL {
+        for preset in Preset::offered(false) {
             let mut e = AgentEntry::draft();
             e.name = "Helper".into();
             e.preset = preset;
@@ -515,6 +562,26 @@ mod tests {
             assert_eq!(back.preset, preset, "{preset:?}");
             assert_eq!(back.server_spec(vec![guild]), view.spec);
         }
+    }
+
+    #[test]
+    fn a_coding_agent_needs_only_its_command_and_never_reaches_a_server() {
+        assert!(!Preset::offered(false).contains(&Preset::Acp));
+        let mut e = AgentEntry::draft();
+        e.name = "Coder".into();
+        e.preset = Preset::Acp;
+        e.base_url = String::new();
+        e.model = String::new();
+        assert!(e.problem(false).is_some(), "a command is required");
+        e.acp_command = "/usr/local/bin/claude-code-acp --flag".into();
+        assert!(e.problem(false).is_none(), "no key, model or address");
+        let m = e.config(ApiKey::new("")).manifest();
+        let agent = m.agent.unwrap();
+        assert_eq!(
+            agent.model, "claude-code-acp",
+            "a file name, never a local path"
+        );
+        assert!(agent.provider.contains("creator's computer"));
     }
 
     #[test]

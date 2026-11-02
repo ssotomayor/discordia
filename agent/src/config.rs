@@ -107,6 +107,9 @@ pub struct AgentConfig {
     pub limits: Limits,
     /// Bump with any change to what the manifest asks for or discloses.
     pub manifest_version: u64,
+    /// Answer this key only. A coding agent on its creator's computer is set
+    /// to its creator, or any member could drive a shell there (#457).
+    pub only_from: Option<String>,
 }
 
 pub(crate) const ASK: &str = "ask";
@@ -156,6 +159,7 @@ mod tests {
             model: ModelConfig::anthropic("claude-opus-5-5", ApiKey::new("sk-secret-123")),
             limits: Limits::default(),
             manifest_version: 1,
+            only_from: None,
         }
     }
 

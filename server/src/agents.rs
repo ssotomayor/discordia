@@ -47,6 +47,7 @@ impl ServerAgent {
                 ..Limits::default()
             },
             manifest_version: self.version,
+            only_from: None,
         }
     }
 

@@ -6,8 +6,7 @@ use std::time::Instant;
 
 use chrono::Utc;
 use discordia_agent::{
-    AgentConfig, Harness, HarnessError, Http, Ledger, Prompt, Reply, Role, Status, Turn,
-    system_prompt,
+    AgentConfig, Harness, HarnessError, Ledger, Prompt, Reply, Role, Status, Turn, system_prompt,
 };
 use secp256k1::SecretKey;
 use tokio::task::JoinSet;
@@ -24,9 +23,10 @@ const WRAP_JITTER_SECS: i64 = 2 * 24 * 3600;
 
 /// One relay pool for the session (trap 33), on the creator's own DM relays,
 /// answering only `allowed`. Runs until the task is dropped.
-pub async fn answer_dms(
+pub async fn answer_dms<H: Harness + Clone>(
     secret: SecretKey,
     config: AgentConfig,
+    harness: H,
     allowed: HashMap<String, String>,
     relays: Vec<String>,
     report: impl Fn(Status) + Send + 'static,
@@ -61,7 +61,6 @@ pub async fn answer_dms(
         }],
     );
 
-    let harness = Http::new(config.model.clone());
     let mut ledger = Ledger::new(config.limits.clone());
     let mut history: HashMap<String, VecDeque<Turn>> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();

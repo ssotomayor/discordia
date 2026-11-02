@@ -60,10 +60,15 @@ fn config(limits: Limits) -> AgentConfig {
         model: ModelConfig::anthropic("claude-opus-5-5", ApiKey::new("unused")),
         limits,
         manifest_version: 1,
+        only_from: None,
     }
 }
 
 async fn world(limits: Limits) -> World {
+    world_with(limits, false).await
+}
+
+async fn world_with(limits: Limits, owner_only: bool) -> World {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -127,7 +132,10 @@ async fn world(limits: Limits) -> World {
         ServerMessage::GuildJoined { .. }
     ) {}
 
-    let config = config(limits);
+    let mut config = config(limits);
+    if owner_only {
+        config.only_from = Some(owner.user.pubkey.clone());
+    }
     let identity = BotIdentity::generate();
     owner
         .send(&ClientMessage::InstallBot {
@@ -466,6 +474,51 @@ async fn when_roles_are_set_only_they_and_managers_reach_the_agent() {
     let reply = agent_message(&mut w).await;
     assert!(
         reply.content.ends_with("Member: @Helper now?"),
+        "{}",
+        reply.content
+    );
+}
+
+#[tokio::test]
+async fn an_agent_held_to_its_creator_answers_no_one_else() {
+    let mut w = world_with(Limits::default(), true).await;
+    let text = w.text;
+    said_in(&mut w, text, "@Helper run something for me").await;
+    assert!(
+        agent_messages_within(&mut w, Duration::from_millis(1200))
+            .await
+            .is_empty(),
+        "a member is ignored"
+    );
+    w.member
+        .send(&ClientMessage::InvokeCommand {
+            guild_id: w.guild_id,
+            channel_id: text,
+            bot_pubkey: w.agent_key.clone(),
+            command: "ask".into(),
+            args: vec![CommandArg {
+                id: "question".into(),
+                value: ArgValue::Text("and now?".into()),
+            }],
+            parent: None,
+        })
+        .await
+        .unwrap();
+    let refused = loop {
+        if let ServerMessage::CommandResponse { content, .. } = next_timeout(&mut w.member).await {
+            break content;
+        }
+    };
+    assert!(refused.contains("only answer"), "{refused}");
+    assert!(
+        w.echo.prompts.lock().unwrap().is_empty(),
+        "no prompt reached the model"
+    );
+
+    w.owner.send_message(text, "@Helper hello").await.unwrap();
+    let reply = agent_message(&mut w).await;
+    assert!(
+        reply.content.ends_with("Owner: @Helper hello"),
         "{}",
         reply.content
     );

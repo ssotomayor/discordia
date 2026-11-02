@@ -28,6 +28,7 @@ fn preset_label(p: Preset) -> String {
         Preset::Groq => "Groq".into(),
         Preset::Ollama => crate::i18n::text("Ollama (this computer)", &[]),
         Preset::Custom => crate::i18n::text("Other (OpenAI-compatible)", &[]),
+        Preset::Acp => crate::i18n::text("Coding agent on this computer (ACP)", &[]),
     }
 }
 
@@ -297,6 +298,7 @@ fn AgentFields(
     let mut error = error;
     let mut models = use_signal(Vec::<String>::new);
     let f = form.read().clone();
+    let presets = Preset::offered(owner.is_some());
     let load_models = move |_| {
         let owner = owner.clone();
         spawn(async move {
@@ -364,11 +366,22 @@ fn AgentFields(
                             }
                         }
                     },
-                    for p in Preset::ALL {
+                    for p in presets.iter().copied() {
                         option { key: "{p.id()}", value: p.id(), selected: p == f.preset, {preset_label(p)} }
                     }
                 }
             }
+            if f.preset == Preset::Acp {
+                div {
+                    div { class: LABEL, {crate::i18n::text("Command", &[])} }
+                    input {
+                        class: "{INPUT} font-mono",
+                        placeholder: "/usr/local/bin/claude-code-acp",
+                        value: "{f.acp_command}",
+                        oninput: move |e| form.write().acp_command = e.value(),
+                    }
+                }
+            } else {
             div {
                 div { class: LABEL, {crate::i18n::text("Model", &[])} }
                 div { class: "flex gap-1.5",
@@ -386,6 +399,13 @@ fn AgentFields(
                     }
                 }
             }
+            }
+        }
+        if f.preset == Preset::Acp {
+            div { class: "rounded border border-[var(--danger)]/40 p-2 text-[11px] text-[var(--danger)] space-y-1",
+                p { {crate::i18n::text("This starts a coding agent on this computer, in an empty folder of its own. It is given no file or terminal access by Discordia and every permission it asks for is refused, but it can still read what its own program can.", &[])} }
+                p { {crate::i18n::text("Only you can trigger it: everyone else is ignored, in guilds and in direct messages. Use the program's full path; apps opened from the dock don't see your shell's PATH.", &[])} }
+            }
         }
         if f.preset.editable_address() {
             div {
@@ -398,6 +418,7 @@ fn AgentFields(
                 }
             }
         }
+        if f.preset != Preset::Acp {
         div {
             div { class: LABEL, {crate::i18n::text("API key", &[])} }
             input {
@@ -408,6 +429,7 @@ fn AgentFields(
                 value: "{api_key}",
                 oninput: move |e| api_key.set(e.value()),
             }
+        }
         }
         div { class: "grid grid-cols-2 gap-3",
             div {
@@ -457,6 +479,7 @@ fn TryIt(
     let mut reply = use_signal(|| None::<String>);
     let run = move |_| {
         let (owner, me) = (owner.clone(), identity.display_name.clone());
+        let owner_key = owner.clone().unwrap_or_default();
         let question = input.peek().trim().to_string();
         if question.is_empty() {
             return;
@@ -483,11 +506,16 @@ fn TryIt(
                             text: format!("{me}: {question}"),
                         }],
                     };
-                    Http::new(config.model.clone())
-                        .reply(prompt)
-                        .await
-                        .map(|r| r.text)
-                        .map_err(|e| e.to_string())
+                    let reply = if draft.preset == Preset::Acp {
+                        let dir = store::work_dir(&owner_key, &draft.pubkey);
+                        match discordia_agent::Acp::new(&draft.acp_command, dir) {
+                            Ok(acp) => acp.reply(prompt).await,
+                            Err(e) => Err(discordia_agent::HarnessError::Network(e)),
+                        }
+                    } else {
+                        Http::new(config.model.clone()).reply(prompt).await
+                    };
+                    reply.map(|r| r.text).map_err(|e| e.to_string())
                 }
                 Err(e) => Err(e),
             };

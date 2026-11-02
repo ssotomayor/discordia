@@ -153,6 +153,16 @@ impl<H: Harness> Agent<H> {
             }
             ServerMessage::CommandInvoked(inv) if inv.command == ASK => {
                 let question = inv.text("question").unwrap_or("").trim().to_string();
+                if self
+                    .config
+                    .only_from
+                    .as_ref()
+                    .is_some_and(|o| *o != inv.invoker.pubkey)
+                {
+                    return bot
+                        .respond(&inv, "I only answer the person who runs me.")
+                        .await;
+                }
                 if question.is_empty() {
                     return bot.respond(&inv, "Ask me something.").await;
                 }
@@ -199,6 +209,11 @@ impl<H: Harness> Agent<H> {
     fn triggered(&self, msg: &Message) -> bool {
         msg.author.pubkey != self.me
             && !msg.author_bot
+            && self
+                .config
+                .only_from
+                .as_ref()
+                .is_none_or(|o| *o == msg.author.pubkey)
             && !msg.content.trim().is_empty()
             && (msg
                 .reply_to

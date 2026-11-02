@@ -306,6 +306,9 @@ async fn serve(
                         )
                     })
                     .collect();
+                if entry.preset == super::Preset::Acp {
+                    allowed.clear();
+                }
                 allowed.insert(owner.clone(), setup.owner_name.clone());
                 let report = {
                     let (tx, key) = (status_tx.clone(), key.clone());
@@ -313,13 +316,35 @@ async fn serve(
                         let _ = tx.send((key.clone(), status));
                     }
                 };
-                let task = tokio::spawn(super::dms::answer_dms(
-                    secret,
-                    config,
-                    allowed,
-                    setup.relays.clone(),
-                    report,
-                ));
+                let task = if entry.preset == super::Preset::Acp {
+                    match discordia_agent::Acp::new(
+                        &entry.acp_command,
+                        store::work_dir(&owner, &entry.pubkey),
+                    ) {
+                        Ok(acp) => tokio::spawn(super::dms::answer_dms(
+                            secret,
+                            config,
+                            acp,
+                            allowed,
+                            setup.relays.clone(),
+                            report,
+                        )),
+                        Err(e) => {
+                            runs.write().insert(key.clone(), RunState::Stopped(e));
+                            continue;
+                        }
+                    }
+                } else {
+                    let http = Http::new(config.model.clone());
+                    tokio::spawn(super::dms::answer_dms(
+                        secret,
+                        config,
+                        http,
+                        allowed,
+                        setup.relays.clone(),
+                        report,
+                    ))
+                };
                 runs.write()
                     .insert(key.clone(), RunState::Agent(Status::Connecting));
                 running.insert(
@@ -331,20 +356,42 @@ async fn serve(
                 );
                 continue;
             }
-            let harness = Http::new(config.model.clone());
             let report = {
                 let (tx, key) = (status_tx.clone(), key.clone());
                 move |status| {
                     let _ = tx.send((key.clone(), status));
                 }
             };
-            let task = tokio::spawn(discordia_agent::run_forever(
-                url.clone(),
-                identity,
-                config,
-                harness,
-                report,
-            ));
+            // A coding agent on this computer answers its creator alone (#457).
+            let task = if entry.preset == super::Preset::Acp {
+                let mut config = config;
+                config.only_from = Some(owner.clone());
+                match discordia_agent::Acp::new(
+                    &entry.acp_command,
+                    store::work_dir(&owner, &entry.pubkey),
+                ) {
+                    Ok(acp) => tokio::spawn(discordia_agent::run_forever(
+                        url.clone(),
+                        identity,
+                        config,
+                        acp,
+                        report,
+                    )),
+                    Err(e) => {
+                        runs.write().insert(key.clone(), RunState::Stopped(e));
+                        continue;
+                    }
+                }
+            } else {
+                let http = Http::new(config.model.clone());
+                tokio::spawn(discordia_agent::run_forever(
+                    url.clone(),
+                    identity,
+                    config,
+                    http,
+                    report,
+                ))
+            };
             runs.write()
                 .insert(key.clone(), RunState::Agent(Status::Connecting));
             running.insert(
