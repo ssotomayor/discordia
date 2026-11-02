@@ -71,7 +71,7 @@
 .dxf-platform-mobile .dxf-mic-volume-row output { grid-row: 2; grid-column: 2; }
 .dxf-platform-mobile .dxf-mic-test-actions { justify-content: flex-start; }
 .dxf-platform-mobile .dxf-mic-private-note { flex-basis: 100%; min-width: 0; }
-.dxf-platform-mobile .dxf-emoji-popover { max-height: 45dvh; max-width: calc(100vw - 32px); overflow-y: auto; }
+.dxf-platform-mobile .dxf-emoji-popover { max-height: 45dvh; max-width: calc(100vw - 32px); }
 .dxf-platform-mobile .dxf-emoji-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; max-width: 100%; }
 .dxf-platform-mobile .dxf-emoji-grid button { width: 44px; height: 44px; }
 .dxf-platform-mobile .dxf-desktop-hint { display: none; }

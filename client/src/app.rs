@@ -468,6 +468,11 @@ button:active:not(:disabled) { transform: scale(0.985); }
 
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
+.dxf-emoji-popover { display: flex; flex-direction: column; }
+.dxf-emoji-scroll { min-height: 0; max-height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; }
+.dxf-emoji-heading { position: sticky; top: 0; z-index: 1; padding: 0 4px 4px; background-color: var(--panel-solid); color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; }
+.dxf-emoji-cell { width: 40px; height: 40px; font-size: 28px; line-height: 1; }
+.dxf-emoji-cell img { max-width: 32px; max-height: 32px; object-fit: contain; }
 
 .dxf-composer { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 10rem; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; outline: none; cursor: text; }
 .dxf-composer::-webkit-scrollbar { display: none; }

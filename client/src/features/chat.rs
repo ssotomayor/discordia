@@ -2180,6 +2180,177 @@ fn recent_picks(
         .collect()
 }
 
+/// Whether `name` answers a picker search: `:fi` and `fi` both find `fire`.
+fn emoji_matches(query: &str, name: &str) -> bool {
+    let query = query.trim().trim_matches(':').to_lowercase();
+    query.is_empty() || name.to_lowercase().contains(&query)
+}
+
+#[component]
+fn ComposerEmojiPicker(
+    composer_id: String,
+    channel_id: Id,
+    is_dm: bool,
+    open: Signal<bool>,
+) -> Element {
+    let state = use_app_state();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut open = open;
+    let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
+    let mut query = use_signal(String::new);
+    let pick_id = composer_id.clone();
+    let pick = use_callback(move |pick: ComposerPick| {
+        insert_pick(&pick_id, &pick, false, false);
+        note_recent_emoji(settings, &pick);
+        open.set(false);
+    });
+
+    let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
+    let q = query();
+    let searching = !q.trim().trim_matches(':').is_empty();
+    let recent = if searching {
+        Vec::new()
+    } else {
+        recent_picks(&settings.read().recent_emoji, &guild_emojis, &emoji_urls)
+    };
+    let guild_shown: Vec<GuildEmoji> = guild_emojis
+        .into_iter()
+        .filter(|e| emoji_matches(&q, &e.shortcode))
+        .collect();
+    let unicode_shown: Vec<(&'static str, &'static str)> = EMOJIS
+        .iter()
+        .copied()
+        .filter(|(_, name)| emoji_matches(&q, name))
+        .collect();
+    let first = guild_shown
+        .first()
+        .map(|e| ComposerPick::Custom {
+            code: e.shortcode.clone(),
+            url: emoji_urls.get(&e.image).cloned().unwrap_or_default(),
+        })
+        .or_else(|| {
+            unicode_shown
+                .first()
+                .map(|&(u, _)| ComposerPick::Unicode(u))
+        });
+    let nothing = first.is_none();
+    let escape_id = composer_id.clone();
+
+    rsx! {
+        div { class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+            if let Some(target) = emoji_menu() {
+                EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
+            } else {
+                input {
+                    class: "w-full shrink-0 mb-2 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
+                    aria_label: crate::i18n::text("Search emoji…", &[]),
+                    placeholder: crate::i18n::text("Search emoji…", &[]),
+                    value: "{query}",
+                    // The soft keyboard would cover the grid the search is meant to narrow.
+                    onmounted: move |e| async move {
+                        if !cfg!(target_os = "android") {
+                            let _ = e.set_focus(true).await;
+                        }
+                    },
+                    oninput: move |e| query.set(e.value()),
+                    onkeydown: move |e: KeyboardEvent| match e.key() {
+                        Key::Enter => {
+                            e.prevent_default();
+                            if let Some(p) = first.clone() {
+                                pick.call(p);
+                            }
+                        }
+                        Key::Escape => {
+                            e.prevent_default();
+                            e.stop_propagation();
+                            open.set(false);
+                            composer_call(&escape_id, "focus", &[]);
+                        }
+                        _ => {}
+                    },
+                }
+                div { class: "dxf-emoji-scroll",
+                    onmousedown: move |e| e.prevent_default(),
+                    if !recent.is_empty() {
+                        div { class: "dxf-emoji-heading", {crate::i18n::text("Recently used", &[])} }
+                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                            for (p, title) in recent.into_iter() {
+                                button {
+                                    key: "{title}",
+                                    r#type: "button",
+                                    class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
+                                    title: "{title}",
+                                    onclick: {
+                                        let p = p.clone();
+                                        move |_| pick.call(p.clone())
+                                    },
+                                    match &p {
+                                        ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! { img { src: "{url}" } },
+                                        ComposerPick::Unicode(e) => rsx! { "{e}" },
+                                        _ => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !guild_shown.is_empty() {
+                        div { class: "dxf-emoji-heading",
+                            if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
+                        }
+                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                            for e in guild_shown.into_iter() {
+                                {
+                                    let code = e.shortcode.clone();
+                                    let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
+                                    let target = EmojiMenuTarget { shortcode: e.shortcode.clone(), image: e.image.clone(), guild_id: e.guild_id, url: url.clone() };
+                                    let custom = ComposerPick::Custom { code: code.clone(), url: url.clone() };
+                                    rsx! {
+                                        button {
+                                            key: "{e.shortcode}",
+                                            r#type: "button",
+                                            class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
+                                            title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
+                                            onclick: move |_| pick.call(custom.clone()),
+                                            oncontextmenu: move |ev: MouseEvent| {
+                                                ev.prevent_default();
+                                                emoji_menu.set(Some(target.clone()));
+                                            },
+                                            if url.is_empty() {
+                                                span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                            } else {
+                                                img { src: "{url}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !unicode_shown.is_empty() {
+                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5",
+                            for (emoji, name) in unicode_shown.into_iter() {
+                                button {
+                                    key: "{name}",
+                                    r#type: "button",
+                                    class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
+                                    title: ":{name}:",
+                                    onclick: move |_| pick.call(ComposerPick::Unicode(emoji)),
+                                    "{emoji}"
+                                }
+                            }
+                        }
+                    }
+                    if searching && nothing {
+                        div { class: "px-1 py-2 text-[11px] text-[var(--text-dim)]",
+                            {crate::i18n::text("No emoji match your search.", &[])}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn insert_pick(id: &str, pick: &ComposerPick, replace_token: bool, space: bool) {
     let tail = if space { " " } else { "" };
     match pick {
@@ -2473,18 +2644,7 @@ fn Composer(
         .find(|channel| channel.id == channel_id)
         .map(|channel| channel.guild_id)
         .filter(|_| !is_dm && state.read().server_chat_tools);
-    let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
     use_saved_emoji_pictures();
-    let (guild_emojis, emoji_urls) = if show_emoji() {
-        guild_emojis_of(&state.read(), channel_id)
-    } else {
-        Default::default()
-    };
-    let recent = if show_emoji() {
-        recent_picks(&settings.read().recent_emoji, &guild_emojis, &emoji_urls)
-    } else {
-        Vec::new()
-    };
     let suggestions = caret_token()
         .as_deref()
         .map(|t| suggestions_now(&state.read(), channel_id, t))
@@ -2894,107 +3054,7 @@ fn Composer(
             }
 
             if show_emoji() {
-                div {
-                    class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
-                    if let Some(target) = emoji_menu() {
-                        EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
-                    } else {
-                    if !recent.is_empty() {
-                        div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
-                            {crate::i18n::text("Recently used", &[])}
-                        }
-                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
-                            onmousedown: move |e| e.prevent_default(),
-                            for (pick, title) in recent.iter().cloned() {
-                                {
-                                    let id = composer_id.clone();
-                                    let face = pick.clone();
-                                    rsx! {
-                                        button {
-                                            key: "{title}",
-                                            r#type: "button",
-                                            class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                            title: "{title}",
-                                            onclick: move |_| {
-                                                insert_pick(&id, &pick, false, false);
-                                                note_recent_emoji(settings, &pick);
-                                                show_emoji.set(false);
-                                            },
-                                            match face {
-                                                ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! {
-                                                    img { src: "{url}", style: "height:1.2em;width:auto;" }
-                                                },
-                                                ComposerPick::Unicode(e) => rsx! { "{e}" },
-                                                _ => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !guild_emojis.is_empty() {
-                        div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
-                            if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
-                        }
-                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
-                            onmousedown: move |e| e.prevent_default(),
-                            for e in guild_emojis.iter().cloned() {
-                                {
-                                    let code = e.shortcode.clone();
-                                    let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
-                                    let id = composer_id.clone();
-                                    let target = EmojiMenuTarget { shortcode: e.shortcode.clone(), image: e.image.clone(), guild_id: e.guild_id, url: url.clone() };
-                                    rsx! {
-                                        button {
-                                            key: "{e.shortcode}",
-                                            r#type: "button",
-                                            class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                            title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
-                                            onclick: move |_| {
-                                                let pick = ComposerPick::Custom { code: code.clone(), url: url.clone() };
-                                                insert_pick(&id, &pick, false, false);
-                                                note_recent_emoji(settings, &pick);
-                                                show_emoji.set(false);
-                                            },
-                                            oncontextmenu: move |ev: MouseEvent| {
-                                                ev.prevent_default();
-                                                emoji_menu.set(Some(target.clone()));
-                                            },
-                                            if url.is_empty() {
-                                                span { class: "text-[8px] text-[var(--text-dim)]", "…" }
-                                            } else {
-                                                img { src: "{url}", style: "height:1.2em;width:auto;" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5",
-                        onmousedown: move |e| e.prevent_default(),
-                        for (emoji, name) in EMOJIS.iter().copied() {
-                            {
-                                let id = composer_id.clone();
-                                rsx! {
-                                    button {
-                                        r#type: "button",
-                                        class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                        title: ":{name}:",
-                                        onclick: move |_| {
-                                            insert_pick(&id, &ComposerPick::Unicode(emoji), false, false);
-                                            note_recent_emoji(settings, &ComposerPick::Unicode(emoji));
-                                            show_emoji.set(false);
-                                        },
-                                        "{emoji}"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    }
-                }
+                ComposerEmojiPicker { composer_id: composer_id.clone(), channel_id, is_dm, open: show_emoji }
             }
 
             if !suggestions.is_empty() {
@@ -3315,6 +3375,15 @@ mod composer_tests {
                 (ComposerPick::Unicode(unicode), format!(":{name}:")),
             ]
         );
+    }
+
+    #[test]
+    fn a_picker_search_ignores_colons_and_case() {
+        assert!(emoji_matches("", "fire"));
+        assert!(emoji_matches(" :Fi", "fire"));
+        assert!(emoji_matches("ire:", "fire"));
+        assert!(emoji_matches("lp", "LPcoin"));
+        assert!(!emoji_matches("rocket", "fire"));
     }
 
     #[test]
