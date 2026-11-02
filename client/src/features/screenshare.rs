@@ -3489,6 +3489,7 @@ mod js_escaping_tests {
             speaking: false,
             screen_sharing: false,
             screen_watching: Vec::new(),
+            camera_watching: Vec::new(),
         };
         state.voice_states.push(peer);
         assert!(super::screen_connection_target(&state).is_some());

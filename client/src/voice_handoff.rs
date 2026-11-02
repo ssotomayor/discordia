@@ -157,6 +157,7 @@ mod tests {
                 camera_on: true,
                 screen_sharing: true,
                 screen_watching: vec![],
+                camera_watching: Vec::new(),
             });
             state.voice.phase = VoicePhase::Connected;
             state.voice.channel_id = Some(channel);
