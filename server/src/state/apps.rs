@@ -433,6 +433,7 @@ mod tests {
             permissions: perms,
             intents: vec![Intent::GuildMessages],
             commands: Vec::new(),
+            agent: None,
             activity: Some(ActivityManifest {
                 sha256: "a".repeat(64),
                 capabilities: caps,

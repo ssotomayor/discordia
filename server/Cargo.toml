@@ -24,6 +24,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 discordia-bot = { path = "../bot-sdk" }
+discordia-agent = { path = "../agent" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 discordia-rendezvous = { path = "../rendezvous" }
 tokio-tungstenite = { workspace = true }

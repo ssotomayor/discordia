@@ -36,6 +36,7 @@ fn manifest() -> AppManifest {
         permissions: Vec::new(),
         intents: Vec::new(),
         commands: Vec::new(),
+        agent: None,
         activity: Some(ActivityManifest {
             sha256: hex::encode(Sha256::digest(BUNDLE.as_bytes())),
             capabilities: vec![ActivityCapability::Instance],

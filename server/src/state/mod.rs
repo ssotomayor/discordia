@@ -2933,7 +2933,7 @@ impl AppState {
             return Err("this channel is read-only".into());
         }
         let content = content.trim();
-        if content.len() > 2000 {
+        if content.len() > crate::protocol::MAX_MESSAGE_BYTES {
             return Err("message must be at most 2000 chars".into());
         }
         let author = self

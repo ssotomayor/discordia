@@ -82,10 +82,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (server crates)
-        run: cargo clippy -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-rendezvous --all-targets -- -D warnings
+        run: cargo clippy -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous --all-targets -- -D warnings
 
       - name: Tests (protocol + server + bot SDK + rendezvous)
-        run: cargo test -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-rendezvous
+        run: cargo test -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous
 
   audit:
     name: dependency advisories

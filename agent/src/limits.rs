@@ -1,0 +1,151 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
+
+use chrono::NaiveDate;
+
+use crate::config::Limits;
+
+const HOUR: Duration = Duration::from_secs(3600);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Refusal {
+    MemberRate,
+    DailyBudget,
+    Busy,
+}
+
+impl Refusal {
+    pub(crate) fn notice(self) -> &'static str {
+        match self {
+            Self::MemberRate => "You've asked me a lot this hour. Try again later.",
+            Self::DailyBudget => "I've used up today's budget. I'll be back tomorrow (UTC).",
+            Self::Busy => "I'm answering a few others right now. Ask again in a moment.",
+        }
+    }
+}
+
+/// Decides before any provider call. `notify` is true once per member and
+/// reason until they are let through again, so refusals cannot flood a channel.
+pub(crate) struct Ledger {
+    limits: Limits,
+    asked: HashMap<String, VecDeque<Instant>>,
+    noticed: HashSet<(String, Refusal)>,
+    day: Option<NaiveDate>,
+    spent: u64,
+    in_flight: usize,
+}
+
+impl Ledger {
+    pub(crate) fn new(limits: Limits) -> Self {
+        Self {
+            limits,
+            asked: HashMap::new(),
+            noticed: HashSet::new(),
+            day: None,
+            spent: 0,
+            in_flight: 0,
+        }
+    }
+
+    fn roll(&mut self, today: NaiveDate) {
+        if self.day != Some(today) {
+            self.day = Some(today);
+            self.spent = 0;
+            self.noticed.retain(|(_, r)| *r != Refusal::DailyBudget);
+        }
+    }
+
+    pub(crate) fn admit(
+        &mut self,
+        member: &str,
+        now: Instant,
+        today: NaiveDate,
+    ) -> Result<(), (Refusal, bool)> {
+        self.roll(today);
+        let times = self.asked.entry(member.to_string()).or_default();
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= HOUR)
+        {
+            times.pop_front();
+        }
+        let refusal = if self.spent >= self.limits.daily_tokens {
+            Some(Refusal::DailyBudget)
+        } else if times.len() >= self.limits.per_member_per_hour as usize {
+            Some(Refusal::MemberRate)
+        } else if self.in_flight >= self.limits.in_flight {
+            Some(Refusal::Busy)
+        } else {
+            None
+        };
+        match refusal {
+            Some(r) => Err((r, self.noticed.insert((member.to_string(), r)))),
+            None => {
+                times.push_back(now);
+                self.in_flight += 1;
+                self.noticed.retain(|(m, _)| m != member);
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn finish(&mut self, tokens: u64, today: NaiveDate) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        self.roll(today);
+        self.spent = self.spent.saturating_add(tokens);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn day(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, d).unwrap()
+    }
+
+    fn limits() -> Limits {
+        Limits {
+            per_member_per_hour: 2,
+            daily_tokens: 100,
+            in_flight: 2,
+            ..Limits::default()
+        }
+    }
+
+    #[test]
+    fn a_member_is_held_to_the_hourly_count_and_told_once() {
+        let mut l = Ledger::new(limits());
+        let t = Instant::now();
+        assert!(l.admit("a", t, day(1)).is_ok());
+        l.finish(1, day(1));
+        assert!(l.admit("a", t, day(1)).is_ok());
+        l.finish(1, day(1));
+        assert_eq!(l.admit("a", t, day(1)), Err((Refusal::MemberRate, true)));
+        assert_eq!(l.admit("a", t, day(1)), Err((Refusal::MemberRate, false)));
+        assert!(l.admit("b", t, day(1)).is_ok(), "others are unaffected");
+        l.finish(1, day(1));
+        assert!(l.admit("a", t + HOUR, day(1)).is_ok(), "an hour later");
+    }
+
+    #[test]
+    fn the_daily_budget_resets_with_the_date() {
+        let mut l = Ledger::new(limits());
+        let t = Instant::now();
+        l.admit("a", t, day(1)).unwrap();
+        l.finish(150, day(1));
+        assert_eq!(l.admit("b", t, day(1)), Err((Refusal::DailyBudget, true)));
+        assert!(l.admit("b", t, day(2)).is_ok());
+    }
+
+    #[test]
+    fn too_many_at_once_is_busy() {
+        let mut l = Ledger::new(limits());
+        let t = Instant::now();
+        l.admit("a", t, day(1)).unwrap();
+        l.admit("b", t, day(1)).unwrap();
+        assert_eq!(l.admit("c", t, day(1)), Err((Refusal::Busy, true)));
+        l.finish(0, day(1));
+        assert!(l.admit("c", t, day(1)).is_ok());
+    }
+}

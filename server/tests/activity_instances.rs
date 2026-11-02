@@ -335,6 +335,7 @@ async fn an_apps_bot_is_the_backend_of_its_own_activity() {
         permissions: Vec::new(),
         intents: vec![Intent::GuildMessages],
         commands: Vec::new(),
+        agent: None,
         activity: Some(ActivityManifest {
             sha256: sha.clone(),
             capabilities: vec![ActivityCapability::Instance],
@@ -506,6 +507,7 @@ async fn an_activity_only_app_plays_without_a_seat_among_the_members() {
         permissions: Vec::new(),
         intents: Vec::new(),
         commands: Vec::new(),
+        agent: None,
         activity: Some(ActivityManifest {
             sha256: hex::encode(sha2::Sha256::digest(page)),
             capabilities: vec![ActivityCapability::Instance],

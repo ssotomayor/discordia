@@ -445,6 +445,7 @@ async fn every_kind_of_blob_reference_is_found() {
         permissions: Vec::new(),
         intents: Vec::new(),
         commands: Vec::new(),
+        agent: None,
         activity: Some(discordia_server::protocol::ActivityManifest {
             sha256: sha,
             capabilities: Vec::new(),

@@ -1613,9 +1613,11 @@ impl AppState {
                 self.advance_read_mark(channel_id, at);
             } else {
                 self.channel_unread.insert(channel_id);
-                if self.self_user.as_ref().is_some_and(|u| {
-                    crate::features::chat::mentions_user(&message.content, &u.username)
-                }) {
+                if self
+                    .self_user
+                    .as_ref()
+                    .is_some_and(|u| crate::protocol::mentions_name(&message.content, &u.username))
+                {
                     *self.channel_mentions.entry(channel_id).or_insert(0) += 1;
                 }
             }
