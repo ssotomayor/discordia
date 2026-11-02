@@ -2215,6 +2215,7 @@ fn ComposerEmojiPicker(
     channel_id: Id,
     is_dm: bool,
     open: Signal<bool>,
+    dismiss: String,
 ) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -2260,7 +2261,7 @@ fn ComposerEmojiPicker(
     let escape_id = composer_id.clone();
 
     rsx! {
-        div { class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+        div { "data-dismiss": "{dismiss}", class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
             if let Some(target) = emoji_menu() {
                 EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
             } else {
@@ -2296,7 +2297,7 @@ fn ComposerEmojiPicker(
                     onmousedown: move |e| e.prevent_default(),
                     if !recent.is_empty() {
                         div { class: "dxf-emoji-heading", {crate::i18n::text("Recently used", &[])} }
-                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
                             for (p, title) in recent.into_iter() {
                                 button {
                                     key: "{title}",
@@ -2320,7 +2321,7 @@ fn ComposerEmojiPicker(
                         div { class: "dxf-emoji-heading",
                             if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
                         }
-                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
                             for e in guild_shown.into_iter() {
                                 {
                                     let code = e.shortcode.clone();
@@ -2350,7 +2351,7 @@ fn ComposerEmojiPicker(
                         }
                     }
                     if !unicode_shown.is_empty() {
-                        div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5",
+                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5",
                             for (emoji, name) in unicode_shown.into_iter() {
                                 button {
                                     key: "{name}",
@@ -2364,8 +2365,10 @@ fn ComposerEmojiPicker(
                         }
                     }
                     if searching && nothing {
-                        div { class: "px-1 py-2 text-[11px] text-[var(--text-dim)]",
-                            {crate::i18n::text("No emoji match your search.", &[])}
+                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8",
+                            div { class: "px-1 py-2 text-[11px] text-[var(--text-dim)]", style: "grid-column: 1 / -1;",
+                                {crate::i18n::text("No emoji match your search.", &[])}
+                            }
                         }
                     }
                 }
@@ -2582,6 +2585,8 @@ fn Composer(
     let mut show_emoji = use_signal(|| false);
     let mut show_stickers = use_signal(|| false);
     let mut show_attach = use_signal(|| false);
+    let emoji_dismiss = super::dismiss::use_dismiss(show_emoji);
+    let attach_dismiss = super::dismiss::use_dismiss(show_attach);
     let mut pending_file = use_signal::<Option<(String, String)>>(|| None);
     let mut file_request = use_signal(|| None::<Id>);
     let mut caret_token = use_signal(|| None::<String>);
@@ -3077,7 +3082,7 @@ fn Composer(
             }
 
             if show_emoji() {
-                ComposerEmojiPicker { composer_id: composer_id.clone(), channel_id, is_dm, open: show_emoji }
+                ComposerEmojiPicker { composer_id: composer_id.clone(), channel_id, is_dm, open: show_emoji, dismiss: emoji_dismiss.clone() }
             }
 
             if !suggestions.is_empty() {
@@ -3200,12 +3205,12 @@ fn Composer(
                             },
                             title: crate::i18n::text("Attach", &[]),
                             aria_expanded: show_attach(),
+                            "data-dismiss": "{attach_dismiss}",
                             onclick: move |_| { show_stickers.set(false); show_attach.toggle(); },
                             span { class: "block w-4 h-4", dangerous_inner_html: super::icons::PLUS }
                         }
                         if show_attach() {
-                            div { class: "fixed inset-0 z-20", onclick: move |_| show_attach.set(false) }
-                            div { style: "width: 9rem;", class: "dxf-pop-in absolute bottom-full left-0 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30 text-xs",
+                            div { style: "width: 9rem;", "data-dismiss": "{attach_dismiss}", class: "dxf-pop-in absolute bottom-full left-0 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30 text-xs",
                                 button {
                                     r#type: "button",
                                     class: "w-full flex items-center gap-2 px-2 h-8 rounded text-left text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)] cursor-pointer",
@@ -3259,6 +3264,7 @@ fn Composer(
                             "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                         },
                         title: crate::i18n::text("Emoji", &[]),
+                        "data-dismiss": "{emoji_dismiss}",
                         // As with the suggestions: a button that takes focus takes the caret's place with it.
                         onmousedown: move |e| e.prevent_default(),
                         onclick: move |_| { show_stickers.set(false); show_emoji.toggle(); },

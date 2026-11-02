@@ -278,6 +278,7 @@ pub(super) fn StickerPicker(
         .get(&guild_id)
         .cloned()
         .unwrap_or_default();
+    let dismiss = super::dismiss::use_dismiss(open);
     let max_sticker_bytes = state
         .read()
         .guild_file_policies
@@ -285,15 +286,17 @@ pub(super) fn StickerPicker(
         .map(|p| p.max_sticker_bytes as usize)
         .unwrap_or(crate::protocol::DEFAULT_GUILD_STICKER_BYTES as usize);
     rsx! {
-        ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(),
-            on_click: move |_| {
-                open.toggle();
-                if open() { on_open.call(()); }
+        div { style: "display: contents;", "data-dismiss": "{dismiss}",
+            ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(),
+                on_click: move |_| {
+                    open.toggle();
+                    if open() { on_open.call(()); }
+                }
             }
         }
         if open() {
-            div { class: "fixed inset-0 z-20", onclick: move |_| open.set(false) }
             div {
+                "data-dismiss": "{dismiss}",
                 class: "dxf-pop-in absolute bottom-full right-3 mb-2 z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
                 style: "width: min(30rem, calc(100% - 1.5rem)); max-height: 70vh;",
                 div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",
