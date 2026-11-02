@@ -1161,6 +1161,16 @@ impl AppState {
             .map(|c| c.guild_id)
     }
 
+    /// Only a person in the call's guild can have held its media key: a bot
+    /// never joins a call, and a key is relayed only within one (trap 29).
+    pub fn removal_holds_key(&self, guild_id: Id, pubkey: &str) -> bool {
+        let bot = self
+            .members
+            .iter()
+            .any(|m| m.guild_id == guild_id && m.user.pubkey == pubkey && m.bot);
+        !bot && self.voice_guild().is_none_or(|g| g == guild_id)
+    }
+
     pub fn roles_of(&self, guild_id: Id) -> &[Role] {
         self.roles
             .get(&guild_id)
@@ -3577,6 +3587,22 @@ mod tests {
             status: status.map(Into::into),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn only_a_person_leaving_the_calls_guild_changes_the_media_key() {
+        let mut s = AppState::empty();
+        let (call_guild, other_guild) = (Id::new_v4(), Id::new_v4());
+        s.voice.channel_id = Some(text_channel(&mut s, call_guild));
+        let mut agent = member("agent", true);
+        agent.guild_id = call_guild;
+        agent.bot = true;
+        let mut person = member("person", true);
+        person.guild_id = call_guild;
+        s.members.extend([agent, person]);
+        assert!(!s.removal_holds_key(call_guild, "agent"));
+        assert!(s.removal_holds_key(call_guild, "person"));
+        assert!(!s.removal_holds_key(other_guild, "person"));
     }
 
     /// The key in use is global to the process; a key kept for a call we left
