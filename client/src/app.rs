@@ -468,6 +468,11 @@ button:active:not(:disabled) { transform: scale(0.985); }
 
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
+/* Stops 2px short of the avatar below, which the message row and avatar each push down 2px. */
+.dxf-reply-gutter { position: relative; align-self: stretch; }
+.dxf-reply-spine { position: absolute; left: 17px; right: -10px; top: 50%; bottom: -2px; border-left: 2px solid var(--border-strong); border-top: 2px solid var(--border-strong); border-top-left-radius: 6px; pointer-events: none; }
+.dxf-reply-quote { color: var(--text-muted); }
+.dxf-reply-quote:hover .dxf-reply-excerpt { color: var(--text); }
 .dxf-emoji-popover { display: flex; flex-direction: column; }
 /* Fixed in both axes: a search narrows the list, not the dialog. */
 .dxf-emoji-scroll { min-height: 0; height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
