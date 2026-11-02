@@ -1221,6 +1221,7 @@ fn handle_rpc(
                             channel_id,
                             content,
                             image: None,
+                            image_preview: None,
                             reply_to: None,
                         })
                         .is_err()

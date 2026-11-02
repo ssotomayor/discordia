@@ -37,7 +37,21 @@ pub fn image_metadata(url: &str, original_name: Option<&str>) -> crate::protocol
         name,
         width: dimensions.map(|d| d.0),
         height: dimensions.map(|d| d.1),
+        preview: None,
+        upload_pending: false,
     }
+}
+
+pub fn validate_chat_preview(data_url: &str) -> Result<(), StoreError> {
+    let (bytes, ext) = decode(
+        data_url,
+        Kind::Image,
+        discordia_image_policy::MAX_OUTPUT_BYTES,
+    )?;
+    if !matches!(ext, "jpg" | "png") {
+        return Err(StoreError::Unsupported);
+    }
+    discordia_image_policy::validate_preview(&bytes).map_err(|_| StoreError::Unsupported)
 }
 
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -134,6 +148,98 @@ impl MediaStore {
             Kind::Image,
             max_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES),
         )
+    }
+
+    pub fn store_chat_image_pair(
+        &self,
+        original: &str,
+        preview: &str,
+        max_original_bytes: usize,
+    ) -> Result<(String, String), StoreError> {
+        let (original_bytes, original_ext) = decode(
+            original,
+            Kind::Image,
+            max_original_bytes.min(crate::protocol::MAX_GUILD_UPLOAD_BYTES),
+        )?;
+        let (preview_bytes, preview_ext) = decode(
+            preview,
+            Kind::Image,
+            discordia_image_policy::MAX_OUTPUT_BYTES,
+        )?;
+        if !matches!(preview_ext, "jpg" | "png") {
+            return Err(StoreError::Unsupported);
+        }
+        discordia_image_policy::validate_preview(&preview_bytes)
+            .map_err(|_| StoreError::Unsupported)?;
+
+        let original_name = format!(
+            "{}.{}",
+            hex::encode(Sha256::digest(&original_bytes)),
+            original_ext
+        );
+        let preview_name = format!(
+            "{}.{}",
+            hex::encode(Sha256::digest(&preview_bytes)),
+            preview_ext
+        );
+        let _write = self.writes.lock().map_err(|_| StoreError::Io)?;
+        let mut pending: Vec<(PathBuf, &[u8])> = Vec::new();
+        for (name, bytes) in [
+            (original_name.as_str(), original_bytes.as_slice()),
+            (preview_name.as_str(), preview_bytes.as_slice()),
+        ] {
+            let path = self.dir.join(name);
+            if !path.exists() && !pending.iter().any(|(other, _)| other == &path) {
+                pending.push((path, bytes));
+            }
+        }
+        let incoming = pending.iter().fold(0u64, |total, (_, bytes)| {
+            total.saturating_add(bytes.len() as u64)
+        });
+        self.evict_previews(incoming, 0);
+        if self.used_bytes().saturating_add(incoming) > self.max_bytes {
+            return Err(StoreError::Full);
+        }
+
+        let temporary = pending
+            .iter()
+            .map(|(path, _)| {
+                path.file_name().map(|name| {
+                    self.dir.join(format!(
+                        ".{}.{}.tmp",
+                        name.to_string_lossy(),
+                        uuid::Uuid::new_v4()
+                    ))
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(StoreError::Io)?;
+        for ((_, bytes), temp_path) in pending.iter().zip(&temporary) {
+            if std::fs::write(temp_path, bytes).is_err() {
+                for temp_path in &temporary {
+                    let _ = std::fs::remove_file(temp_path);
+                }
+                return Err(StoreError::Io);
+            }
+        }
+        let mut created: Vec<PathBuf> = Vec::new();
+        for ((path, _), temp_path) in pending.iter().zip(&temporary) {
+            if std::fs::rename(temp_path, path).is_err() {
+                for path in &created {
+                    let _ = std::fs::remove_file(path);
+                }
+                for temp_path in &temporary {
+                    let _ = std::fs::remove_file(temp_path);
+                }
+                return Err(StoreError::Io);
+            }
+            created.push(path.clone());
+        }
+        self.used.fetch_add(incoming, Ordering::Relaxed);
+        Ok((
+            format!("{SENTINEL}{original_name}"),
+            format!("{SENTINEL}{preview_name}"),
+        ))
     }
 
     pub fn store_sound_data_url(&self, data_url: &str) -> Result<String, StoreError> {

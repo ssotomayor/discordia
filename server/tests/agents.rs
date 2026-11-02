@@ -259,6 +259,7 @@ async fn only_a_mention_or_a_reply_to_the_agent_wakes_it() {
             channel_id: w.text,
             content: "and a follow-up".into(),
             image: None,
+            image_preview: None,
             image_name: None,
             reply_to: Some(answer.id),
         })

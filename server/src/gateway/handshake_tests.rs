@@ -104,6 +104,7 @@ async fn identified_socket_survives_the_handshake_deadline() {
         origin: "localhost:9000".into(),
         bot: false,
         client_version: String::new(),
+        progressive_image_uploads: false,
     };
     incoming
         .send(WsMessage::Text(serde_json::to_string(&frame).unwrap()))

@@ -467,6 +467,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
             channel_id: category.id,
             content: "hello".into(),
             image: None,
+            image_preview: None,
             reply_to: None,
         })
         .await

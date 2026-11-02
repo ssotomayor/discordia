@@ -11,8 +11,10 @@ type Reader = Pin<Box<dyn Stream<Item = Result<Message, Error>> + Send>>;
 type Command = (Message, oneshot::Sender<Result<(), String>>);
 const QUEUED_FRAMES: usize = 128;
 const MAX_FRAME_BYTES: usize = discordia_server::gateway::MAX_FRAME_BYTES;
-// A valid media response can exceed 8 MiB; leave room for the following update too.
-const QUEUED_BYTES: usize = 2 * MAX_FRAME_BYTES;
+// A full image+preview send frame may be larger; keep room for one normal media
+// response alongside it without doubling the largest new frame's memory bound.
+const QUEUED_BYTES: usize =
+    MAX_FRAME_BYTES + discordia_server::protocol::MAX_GUILD_UPLOAD_DATA_LEN + 16_384;
 
 pub(super) struct Transport(tokio::task::JoinHandle<()>);
 
@@ -266,9 +268,10 @@ mod tests {
     #[tokio::test]
     async fn queued_legal_frames_still_have_a_bounded_byte_budget() {
         let sink = futures_util::sink::drain::<Message>();
+        let normal_frame_bytes = discordia_server::protocol::MAX_GUILD_UPLOAD_DATA_LEN + 16_384;
         let reader = futures_util::stream::iter([
             Ok(Message::Binary(vec![0; MAX_FRAME_BYTES])),
-            Ok(Message::Binary(vec![0; MAX_FRAME_BYTES])),
+            Ok(Message::Binary(vec![0; normal_frame_bytes])),
             Ok(Message::Text("overflow".into())),
         ]);
         let (_writer, mut ui, mut transport) = start(sink, reader);
@@ -276,9 +279,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        for _ in 0..2 {
-            assert_eq!(ui.next().await.unwrap().unwrap().len(), MAX_FRAME_BYTES);
-        }
+        assert_eq!(ui.next().await.unwrap().unwrap().len(), MAX_FRAME_BYTES);
+        assert_eq!(ui.next().await.unwrap().unwrap().len(), normal_frame_bytes);
         assert!(
             ui.next()
                 .await

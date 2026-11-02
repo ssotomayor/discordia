@@ -580,6 +580,7 @@ async fn a_stalled_token_service_does_not_stall_the_socket() {
         channel_id: text,
         content: "still here".into(),
         image: None,
+        image_preview: None,
         reply_to: None,
     })
     .await

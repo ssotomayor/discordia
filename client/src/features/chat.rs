@@ -124,6 +124,7 @@ const PASTE_JS: &str = r#"
 #[derive(Clone)]
 struct PendingImage {
     url: String,
+    preview: Option<String>,
     name: Option<String>,
 }
 
@@ -156,18 +157,22 @@ fn load_attachment(
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|name| name.to_string_lossy().into_owned());
-        let result = tokio::task::spawn_blocking(move || match path {
-            Some(path) => crate::chat_image::read_file_with_limit(&path, max_bytes),
-            None => crate::chat_image::read_clipboard(max_bytes),
+        let result = tokio::task::spawn_blocking(move || {
+            let url = match path {
+                Some(path) => crate::chat_image::read_file_with_limit(&path, max_bytes)?,
+                None => crate::chat_image::read_clipboard(max_bytes)?,
+            };
+            let preview = crate::chat_image::preview_data_url(&url).ok().flatten();
+            Ok::<_, String>((url, preview))
         })
         .await;
         if *generation.peek() != request {
             return;
         }
         match result.unwrap_or_else(|e| Err(format!("Couldn't load that image: {e}"))) {
-            Ok(url) => {
+            Ok((url, preview)) => {
                 error.set(None);
-                pending.set(Some(PendingImage { url, name }));
+                pending.set(Some(PendingImage { url, preview, name }));
             }
             Err(message) => error.set(Some(message)),
         }
@@ -203,17 +208,19 @@ fn pick_image(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
         let result = tokio::task::spawn_blocking(move || {
-            crate::chat_image::read_file_with_limit(&file, max_bytes)
+            let url = crate::chat_image::read_file_with_limit(&file, max_bytes)?;
+            let preview = crate::chat_image::preview_data_url(&url).ok().flatten();
+            Ok::<_, String>((url, preview))
         })
         .await;
         if *generation.peek() != request {
             return;
         }
         match result.unwrap_or_else(|error| Err(error.to_string())) {
-            Ok(url) => {
+            Ok((url, preview)) => {
                 error.set(None);
                 pending_file.set(None);
-                pending.set(Some(PendingImage { url, name }));
+                pending.set(Some(PendingImage { url, preview, name }));
             }
             Err(message) => error.set(Some(message)),
         }
@@ -1085,7 +1092,11 @@ pub(super) fn MessageRow(
                     super::chat_tools::FileAttachment { attachment }
                 }
                 if let Some(address) = message.image.as_ref() {
-                    ChatImage { address: address.clone() }
+                    ChatImage {
+                        address: address.clone(),
+                        preview: message.image_metadata.as_ref().and_then(|metadata| metadata.preview.clone()),
+                        upload_pending: message.image_metadata.as_ref().is_some_and(|metadata| metadata.upload_pending),
+                    }
                 }
                 if state.read().dm_images.contains_key(&message_id) {
                     super::dm_images::EncryptedImage { channel_id, message_id }
@@ -1499,26 +1510,36 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
 }
 
 #[component]
-fn ChatImage(address: String) -> Element {
+fn ChatImage(address: String, preview: Option<String>, upload_pending: bool) -> Element {
     let mut state = use_app_state();
-    let resolved = use_memo(use_reactive((&address,), move |(address,)| {
-        let s = state.read();
-        let previews = crate::image_assets::preview_density()?;
-        let data = if previews && s.server_image_previews {
-            match address.strip_prefix("media:") {
-                Some(name) => s.emoji_images.get_shared(&format!("preview-v2:{name}")),
-                None => s.media_src_shared(&address),
+    let resolved = use_memo(use_reactive(
+        (&address, &preview),
+        move |(address, preview)| {
+            let s = state.read();
+            let previews = crate::image_assets::preview_density()?;
+            let data = if previews {
+                if let Some(preview) = preview.as_deref() {
+                    s.media_src_shared(preview)
+                } else if s.server_image_previews {
+                    match address.strip_prefix("media:") {
+                        Some(name) => s.emoji_images.get_shared(&format!("preview-v2:{name}")),
+                        None => s.media_src_shared(&address),
+                    }
+                } else {
+                    s.media_src_shared(&address)
+                }
+            } else {
+                s.media_src_shared(&address)
             }
-        } else {
-            s.media_src_shared(&address)
-        }
-        .filter(|data| !data.is_empty())?;
-        Some(crate::image_assets::chat_source(data))
-    }));
+            .filter(|data| !data.is_empty())?;
+            Some(crate::image_assets::chat_source(data))
+        },
+    ));
     rsx! {
         if let Some(src) = resolved() {
             super::image_attachment::ImageAttachment {
                 source:src,
+                zoomable: !upload_pending,
                 onclick: move |_| {
 
                     if let Some(source)=resolved(){
@@ -1658,7 +1679,7 @@ mod image_tests {
                 });
                 use_context_provider(|| state);
                 *export.borrow_mut() = Some(state);
-                rsx! { ChatImage { address: "media:missing.png".to_owned() } }
+                rsx! { ChatImage { address: "media:missing.png".to_owned(), preview: None, upload_pending: false } }
             },
             export.clone(),
         );
@@ -2544,6 +2565,10 @@ fn Composer(
             .as_ref()
             .and_then(|image| image.name.clone());
         let image = pending_image.peek().as_ref().map(|image| image.url.clone());
+        let image_preview = pending_image
+            .peek()
+            .as_ref()
+            .and_then(|image| image.preview.clone());
         let file = pending_file();
         if content.is_empty() && image.is_none() && file.is_none() {
             return false;
@@ -2594,6 +2619,7 @@ fn Composer(
                     peer,
                     server,
                     data_url,
+                    preview_data_url: image_preview,
                     text: content,
                     reply_to,
                     queued,
@@ -2733,13 +2759,29 @@ fn Composer(
                 });
                 return false;
             }
-            gateway_submit.send(ClientMessage::SendMessage {
-                image_name,
-                channel_id,
-                content,
-                image,
-                reply_to,
-            });
+            if state.read().server_progressive_image_uploads
+                && let (Some(image), Some(preview)) = (image.clone(), image_preview.clone())
+            {
+                let upload_id = crate::protocol::Id::new_v4();
+                gateway_submit.send(ClientMessage::BeginImageUpload {
+                    upload_id,
+                    channel_id,
+                    content,
+                    preview,
+                    image_name,
+                    reply_to,
+                });
+                gateway_submit.send(ClientMessage::CompleteImageUpload { upload_id, image });
+            } else {
+                gateway_submit.send(ClientMessage::SendMessage {
+                    image_name,
+                    channel_id,
+                    content,
+                    image,
+                    image_preview,
+                    reply_to,
+                });
+            }
         }
         finish()
     };

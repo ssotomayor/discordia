@@ -1119,6 +1119,10 @@ pub struct ImageMetadata {
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default)]
+    pub upload_pending: bool,
 }
 
 const fn default_avatar_bytes() -> u64 {
@@ -2303,6 +2307,8 @@ pub enum ClientMessage {
         /// on it. It exists to be counted in a log.
         #[serde(default)]
         client_version: String,
+        #[serde(default)]
+        progressive_image_uploads: bool,
     },
     FetchMessages {
         channel_id: Id,
@@ -2362,7 +2368,23 @@ pub enum ClientMessage {
         #[serde(default)]
         image: Option<String>,
         #[serde(default)]
+        image_preview: Option<String>,
+        #[serde(default)]
         reply_to: Option<Id>,
+    },
+    BeginImageUpload {
+        upload_id: Id,
+        channel_id: Id,
+        content: String,
+        preview: String,
+        #[serde(default)]
+        image_name: Option<String>,
+        #[serde(default)]
+        reply_to: Option<Id>,
+    },
+    CompleteImageUpload {
+        upload_id: Id,
+        image: String,
     },
     CreateGuild {
         name: String,
@@ -2905,6 +2927,8 @@ pub enum ServerMessage {
         chat_tools: bool,
         #[serde(default)]
         image_previews: bool,
+        #[serde(default)]
+        progressive_image_uploads: bool,
         user: User,
         guilds: Vec<Guild>,
         channels: Vec<Channel>,
@@ -3262,17 +3286,20 @@ mod identify_wire_tests {
             super::ServerMessage::Ready {
                 chat_tools: false,
                 image_previews: false,
+                progressive_image_uploads: false,
                 ..
             }
         ));
         frame["d"]["chat_tools"] = serde_json::json!(true);
         frame["d"]["image_previews"] = serde_json::json!(true);
+        frame["d"]["progressive_image_uploads"] = serde_json::json!(true);
         let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             current,
             super::ServerMessage::Ready {
                 chat_tools: true,
                 image_previews: true,
+                progressive_image_uploads: true,
                 ..
             }
         ));
@@ -3340,6 +3367,7 @@ mod identify_wire_tests {
             origin: String::new(),
             bot: false,
             client_version: "v0.1.0-pre.223".into(),
+            progressive_image_uploads: true,
         })
         .unwrap();
         assert!(json.contains("v0.1.0-pre.223"), "not on the wire: {json}");

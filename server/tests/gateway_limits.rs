@@ -53,6 +53,7 @@ fn bad_identify() -> String {
         origin: "127.0.0.1:1".into(),
         bot: false,
         client_version: String::new(),
+        progressive_image_uploads: false,
     })
     .expect("serialize")
 }
@@ -83,6 +84,7 @@ async fn identified(url: &str) -> Socket {
         origin,
         bot: false,
         client_version: String::new(),
+        progressive_image_uploads: true,
     };
     ws.send(WsMessage::Text(serde_json::to_string(&identify).unwrap()))
         .await
@@ -378,7 +380,7 @@ async fn an_upgrade_carrying_an_origin_header_is_refused() {
 }
 
 #[tokio::test]
-async fn a_ten_mb_image_message_reaches_the_handler() {
+async fn a_ten_mb_image_with_maximum_preview_reaches_the_handler() {
     use base64::Engine as _;
     let (url, _handle) = spawn_gateway().await;
     let mut ws = identified(&url).await;
@@ -387,10 +389,16 @@ async fn a_ten_mb_image_message_reaches_the_handler() {
         base64::engine::general_purpose::STANDARD
             .encode(vec![0; discordia_server::protocol::MAX_GUILD_UPLOAD_BYTES])
     );
+    let preview = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD
+            .encode(vec![0; discordia_image_policy::MAX_OUTPUT_BYTES])
+    );
     let message = ClientMessage::SendMessage {
         channel_id: discordia_server::protocol::Id::new_v4(),
         content: String::new(),
         image: Some(image),
+        image_preview: Some(preview),
         image_name: None,
         reply_to: None,
     };

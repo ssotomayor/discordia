@@ -90,6 +90,7 @@ async fn state_survives_restart_and_media_is_offloaded() {
                 channel_id: text_channel,
                 content: "with an image".into(),
                 image: Some(TINY_PNG.into()),
+                image_preview: None,
                 reply_to: None,
             })
             .await
@@ -406,6 +407,7 @@ async fn every_kind_of_blob_reference_is_found() {
             channel_id,
             content: "picture".into(),
             image: Some(TINY_PNG.into()),
+            image_preview: None,
             reply_to: None,
         })
         .await
