@@ -100,7 +100,12 @@ impl Preset {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerRef {
     SelfHost,
-    Dial { url: String, label: String },
+    Dial {
+        url: String,
+        label: String,
+    },
+    /// Its direct messages, over relays: a run, never stored in `servers`.
+    Dms,
 }
 
 impl ServerRef {
@@ -108,6 +113,7 @@ impl ServerRef {
         match self {
             ServerRef::SelfHost => crate::i18n::text("Your hosted server", &[]),
             ServerRef::Dial { label, .. } => label.clone(),
+            ServerRef::Dms => crate::i18n::text("Direct messages", &[]),
         }
     }
 }
@@ -128,6 +134,12 @@ pub struct AgentEntry {
     pub servers: Vec<ServerRef>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Answers its creator's DMs over their relays (#458).
+    #[serde(default)]
+    pub answer_dms: bool,
+    /// Other keys it answers in DMs; its creator always.
+    #[serde(default)]
+    pub dm_allow: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -149,6 +161,8 @@ impl AgentEntry {
             manifest_version: 1,
             servers: Vec::new(),
             enabled: true,
+            answer_dms: false,
+            dm_allow: Vec::new(),
         }
     }
 
@@ -219,6 +233,8 @@ impl AgentEntry {
             manifest_version: 1,
             servers: Vec::new(),
             enabled: true,
+            answer_dms: false,
+            dm_allow: Vec::new(),
         }
     }
 

@@ -43,6 +43,7 @@ enum Cmd {
     Sync {
         agents: Vec<AgentEntry>,
         self_host: Option<String>,
+        dms: DmSetup,
     },
     /// Its keys changed on disk: drop what is cached and restart its runs.
     Rekeyed(String),
@@ -61,7 +62,19 @@ impl Agents {
     }
 }
 
-pub fn use_agents(owner: String, state: Signal<AppState>) -> Agents {
+/// What a DM run needs from the account: its relays and who its creator is.
+#[derive(Clone, PartialEq)]
+struct DmSetup {
+    relays: Vec<String>,
+    owner_name: String,
+}
+
+pub fn use_agents(
+    owner: String,
+    owner_name: String,
+    state: Signal<AppState>,
+    settings: Signal<crate::settings::ClientSettings>,
+) -> Agents {
     let list = use_signal({
         let owner = owner.clone();
         move || store::load(&owner)
@@ -79,11 +92,26 @@ pub fn use_agents(owner: String, state: Signal<AppState>) -> Agents {
     });
     // A hosted server's loopback address changes with each launch.
     let self_host = use_memo(move || state.read().host_info.as_ref().map(|h| h.local_url.clone()));
+    let relays = use_memo(move || {
+        let saved = settings.read().dm_relays.clone();
+        if saved.is_empty() {
+            crate::nostr::relay::DEFAULT_RELAYS
+                .iter()
+                .map(|r| r.to_string())
+                .collect()
+        } else {
+            saved
+        }
+    });
     let tx = agents.tx.clone();
     use_effect(move || {
         let _ = tx.send(Cmd::Sync {
             agents: list(),
             self_host: self_host(),
+            dms: DmSetup {
+                relays: relays(),
+                owner_name: owner_name.clone(),
+            },
         });
     });
     agents
@@ -109,6 +137,13 @@ fn label_of(url: &str) -> String {
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_else(|| url.chars().take(40).collect())
+}
+
+fn dm_secret(identity_b58: &str) -> Result<secp256k1::SecretKey, String> {
+    let bytes = bs58::decode(identity_b58.trim())
+        .into_vec()
+        .map_err(|e| e.to_string())?;
+    secp256k1::SecretKey::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -146,8 +181,12 @@ pub(crate) fn desired(agents: &[AgentEntry], self_host: Option<&str>) -> Vec<(Ru
                     None => continue,
                 },
                 ServerRef::Dial { url, .. } => url.clone(),
+                ServerRef::Dms => continue,
             };
             out.push(((e.pubkey.clone(), server.clone()), url));
+        }
+        if e.answer_dms {
+            out.push(((e.pubkey.clone(), ServerRef::Dms), String::new()));
         }
     }
     out
@@ -161,12 +200,12 @@ async fn serve(
     let (status_tx, mut status_rx) = unbounded_channel::<(RunKey, Status)>();
     let mut running: HashMap<RunKey, Running> = HashMap::new();
     let mut secrets: HashMap<String, Arc<Secrets>> = HashMap::new();
-    let mut wanted: (Vec<AgentEntry>, Option<String>) = (Vec::new(), None);
+    let mut wanted: (Vec<AgentEntry>, Option<String>, Option<DmSetup>) = (Vec::new(), None, None);
     loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
                 None => return,
-                Some(Cmd::Sync { agents, self_host }) => wanted = (agents, self_host),
+                Some(Cmd::Sync { agents, self_host, dms }) => wanted = (agents, self_host, Some(dms)),
                 Some(Cmd::Rekeyed(agent)) => {
                     secrets.remove(&agent);
                     running.retain(|(a, _), _| *a != agent);
@@ -179,7 +218,7 @@ async fn serve(
                 continue;
             }
         }
-        let (agents, self_host) = &wanted;
+        let (agents, self_host, dm_setup) = &wanted;
         let want = desired(agents, self_host.as_deref());
         let by_key: HashMap<&RunKey, (&String, &AgentEntry)> = want
             .iter()
@@ -245,6 +284,53 @@ async fn serve(
                 }
             };
             let config = entry.config(ApiKey::new(keys.api_key.as_str()));
+            if key.1 == ServerRef::Dms {
+                let Some(setup) = dm_setup.clone() else {
+                    continue;
+                };
+                let secret = match dm_secret(&keys.identity) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        runs.write().insert(key.clone(), RunState::Stopped(e));
+                        continue;
+                    }
+                };
+                let mut allowed: HashMap<String, String> = entry
+                    .dm_allow
+                    .iter()
+                    .map(|k| {
+                        (
+                            k.clone(),
+                            crate::identity::truncate_pubkey(&crate::identity::npub_of(k))
+                                .to_string(),
+                        )
+                    })
+                    .collect();
+                allowed.insert(owner.clone(), setup.owner_name.clone());
+                let report = {
+                    let (tx, key) = (status_tx.clone(), key.clone());
+                    move |status| {
+                        let _ = tx.send((key.clone(), status));
+                    }
+                };
+                let task = tokio::spawn(super::dms::answer_dms(
+                    secret,
+                    config,
+                    allowed,
+                    setup.relays.clone(),
+                    report,
+                ));
+                runs.write()
+                    .insert(key.clone(), RunState::Agent(Status::Connecting));
+                running.insert(
+                    key.clone(),
+                    Running {
+                        _task: AbortOnDrop(task),
+                        fingerprint: format!("{}\n{:?}", fingerprint(url, entry), setup.relays),
+                    },
+                );
+                continue;
+            }
             let harness = Http::new(config.model.clone());
             let report = {
                 let (tx, key) = (status_tx.clone(), key.clone());

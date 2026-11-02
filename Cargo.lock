@@ -2448,6 +2448,7 @@ dependencies = [
  "bech32",
  "bip39",
  "block2",
+ "bs58",
  "chacha20 0.9.1",
  "chacha20poly1305",
  "chrono",

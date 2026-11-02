@@ -9,7 +9,7 @@ use crate::config::Limits;
 const HOUR: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     MemberRate,
     DailyBudget,
     GuildBudget,
@@ -17,7 +17,7 @@ pub(crate) enum Refusal {
 }
 
 impl Refusal {
-    pub(crate) fn notice(self) -> &'static str {
+    pub fn notice(self) -> &'static str {
         match self {
             Self::MemberRate => "You've asked me a lot this hour. Try again later.",
             Self::DailyBudget => "I've used up today's budget. I'll be back tomorrow (UTC).",
@@ -31,7 +31,7 @@ impl Refusal {
 
 /// Decides before any provider call. `notify` is true once per member and
 /// reason until they are let through again, so refusals cannot flood a channel.
-pub(crate) struct Ledger {
+pub struct Ledger {
     limits: Limits,
     asked: HashMap<String, VecDeque<Instant>>,
     noticed: HashSet<(String, Refusal)>,
@@ -42,7 +42,7 @@ pub(crate) struct Ledger {
 }
 
 impl Ledger {
-    pub(crate) fn new(limits: Limits) -> Self {
+    pub fn new(limits: Limits) -> Self {
         Self {
             limits,
             asked: HashMap::new(),
@@ -64,7 +64,7 @@ impl Ledger {
         }
     }
 
-    pub(crate) fn admit(
+    pub fn admit(
         &mut self,
         member: &str,
         guild: Option<Id>,
@@ -110,7 +110,7 @@ impl Ledger {
         }
     }
 
-    pub(crate) fn finish(&mut self, tokens: u64, guild: Option<Id>, today: NaiveDate) {
+    pub fn finish(&mut self, tokens: u64, guild: Option<Id>, today: NaiveDate) {
         self.in_flight = self.in_flight.saturating_sub(1);
         self.roll(today);
         self.spent = self.spent.saturating_add(tokens);

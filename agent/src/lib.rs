@@ -12,5 +12,6 @@ mod supervise;
 pub use config::{AgentConfig, ApiKey, Limits, ModelConfig, Provider};
 pub use context::system_prompt;
 pub use harness::{Harness, HarnessError, Http, Prompt, Reply, Role, Turn};
+pub use limits::{Ledger, Refusal};
 pub use runner::run;
 pub use supervise::{Status, run_forever};

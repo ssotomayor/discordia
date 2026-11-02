@@ -53,6 +53,7 @@ symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "o
 discordia-protocol = { workspace = true }
 discordia-bot = { path = "../bot-sdk" }
 discordia-agent = { path = "../agent" }
+bs58 = { workspace = true }
 discordia-server = { workspace = true }
 dioxus-grid-layout = { path = "../grid-layout" }
 

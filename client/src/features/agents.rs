@@ -531,6 +531,9 @@ fn AgentEditor(
     let mut busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut confirm_delete = use_signal(|| false);
+    let mut dm_raw = use_signal(|| entry.dm_allow.join("\n"));
+    let nostr = try_use_context::<crate::nostr::service::NostrTx>();
+    let mut state = use_app_state();
 
     let f = form.read().clone();
     let runs = agents.runs.read().clone();
@@ -547,6 +550,11 @@ fn AgentEditor(
             let agents = agents.clone();
             spawn(async move {
                 let mut next = form.peek().clone();
+                next.dm_allow = dm_raw
+                    .peek()
+                    .lines()
+                    .filter_map(|l| crate::identity::pubkey_from_input(l.trim()).ok())
+                    .collect();
                 let typed = api_key.peek().trim().to_string();
                 if let Some(problem) = next.problem(!typed.is_empty() || !is_new) {
                     error.set(Some(problem));
@@ -671,11 +679,50 @@ fn AgentEditor(
     rsx! {
         div { class: "space-y-3",
             AgentFields { form, api_key, busy, error, key_placeholder, owner: Some(agents.owner.clone()) }
+            div { class: "space-y-1.5",
+                label { class: "flex items-center gap-2 text-xs text-[var(--text)]",
+                    input {
+                        r#type: "checkbox",
+                        checked: f.answer_dms,
+                        onchange: move |e| form.write().answer_dms = e.checked(),
+                    }
+                    {crate::i18n::text("Answer my direct messages", &[])}
+                }
+                if f.answer_dms {
+                    div {
+                        div { class: LABEL, {crate::i18n::text("Others it answers, one key per line", &[])} }
+                        textarea {
+                            class: "{INPUT} h-14 resize-y font-mono",
+                            placeholder: "npub1…",
+                            value: "{dm_raw}",
+                            oninput: move |e| dm_raw.set(e.value()),
+                        }
+                        div { class: "text-[10px] text-[var(--text-dim)]",
+                            {crate::i18n::text("It ignores everyone else. It reads and answers over your DM relays while this app is open.", &[])}
+                        }
+                    }
+                }
+            }
             div { class: "flex items-center gap-2",
                 button { class: BUTTON, disabled: busy(), onclick: save,
                     if is_new { {crate::i18n::text("Create", &[])} } else { {crate::i18n::text("Save", &[])} }
                 }
                 if !is_new {
+                    if saved.as_ref().is_some_and(|s| s.answer_dms) {
+                        button {
+                            class: BUTTON,
+                            onclick: {
+                                let (nostr, peer) = (nostr.clone(), f.pubkey.clone());
+                                move |_| {
+                                    if let Some(n) = &nostr {
+                                        n.send(crate::nostr::service::NostrCmd::Open { peer: peer.clone() });
+                                    }
+                                    state.write().agents_open = false;
+                                }
+                            },
+                            {crate::i18n::text("Message it", &[])}
+                        }
+                    }
                     if saved.as_ref().is_some_and(|s| s.enabled) {
                         button { class: BUTTON, onclick: { let mut set = set_enabled.clone(); move |_| set(false) }, {crate::i18n::text("Pause", &[])} }
                     } else {
@@ -698,9 +745,28 @@ fn AgentEditor(
             if !is_new {
                 div { class: "pt-2 border-t border-[var(--border)]",
                     div { class: LABEL, {crate::i18n::text("Where it runs", &[])} }
-                    if f.servers.is_empty() {
+                    if f.servers.is_empty() && !f.answer_dms {
                         div { class: "text-[11px] text-[var(--text-dim)]",
                             {crate::i18n::text("Nowhere yet. Open a guild's Integrations to add it there.", &[])}
+                        }
+                    }
+                    if saved.as_ref().is_some_and(|s| s.answer_dms) {
+                        div { class: "flex items-center gap-2 py-1",
+                            span {
+                                class: "w-2 h-2 rounded-full shrink-0",
+                                style: dot(match runs.get(&(f.pubkey.clone(), ServerRef::Dms)) {
+                                    Some(RunState::Agent(Status::Online)) => Light::On,
+                                    Some(RunState::Agent(_)) => Light::Busy,
+                                    Some(RunState::Stopped(_)) => Light::Failed,
+                                    None => Light::Off,
+                                }),
+                            }
+                            div { class: "flex-1 min-w-0",
+                                div { class: "text-xs text-[var(--text)] truncate", {ServerRef::Dms.label()} }
+                                div { class: "text-[10px] text-[var(--text-dim)] truncate",
+                                    {describe(runs.get(&(f.pubkey.clone(), ServerRef::Dms)))}
+                                }
+                            }
                         }
                     }
                     for server in f.servers.iter().cloned() {

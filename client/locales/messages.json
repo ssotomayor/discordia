@@ -2098,5 +2098,9 @@
   "Anyone may use it": ["Cualquiera puede usarla", "Qualquer um pode usar", "任何人都可使用", "誰でも使える"],
   "People who manage the guild always may.": ["Quienes administran la guild siempre pueden.", "Quem gerencia a guild sempre pode.", "管理公会的人始终可以。", "ギルドを管理する人はいつでも使えます。"],
   "{0} sends what it reads to {1}": ["{0} envía lo que lee a {1}", "{0} envia o que lê para {1}", "{0} 会把读取的内容发送给 {1}", "{0} は読んだ内容を {1} に送ります"],
-  "AI reads here: {0}": ["Una IA lee acá: {0}", "Uma IA lê aqui: {0}", "AI 在此读取：{0}", "AI が読んでいます：{0}"]
+  "AI reads here: {0}": ["Una IA lee acá: {0}", "Uma IA lê aqui: {0}", "AI 在此读取：{0}", "AI が読んでいます：{0}"],
+  "Answer my direct messages": ["Responder mis mensajes directos", "Responder minhas mensagens diretas", "回复我的私信", "自分のダイレクトメッセージに答える"],
+  "Others it answers, one key per line": ["Otros a quienes responde, una clave por línea", "Outros a quem responde, uma chave por linha", "它也回复的其他人，每行一个密钥", "ほかに答える相手（1 行に 1 つのキー）"],
+  "It ignores everyone else. It reads and answers over your DM relays while this app is open.": ["Ignora a todos los demás. Lee y responde por tus relays de mensajes directos mientras esta app está abierta.", "Ignora todos os outros. Lê e responde pelos seus relays de mensagens diretas enquanto este app está aberto.", "它会忽略其他所有人。此应用打开期间，它通过你的私信中继读取并回复。", "それ以外の人は無視します。このアプリを開いている間、あなたの DM リレーで読んで返信します。"],
+  "Message it": ["Escribirle", "Enviar mensagem", "发私信", "メッセージを送る"]
 }
