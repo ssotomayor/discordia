@@ -371,10 +371,7 @@ pub fn ConnectForm(
                                         label { class: LABEL, {crate::i18n::text("Publish on", &[])} }
                                         div { class: "relative",
                                             select {
-                                                // The native arrow is the one part of a select that no
-                                                // stylesheet reaches, so it is replaced rather than styled.
-                                                class: "w-full appearance-none rounded-[10px] border border-[var(--edge-strong)] pl-3.5 pr-9 py-2 font-mono text-[12.5px] focus:outline-none focus:border-[var(--accent)] transition-colors",
-                                                style: "color: var(--text); background: var(--panel2);",
+                                                class: "w-full rounded-[10px] border border-[var(--edge-strong)] bg-[var(--panel2)] text-[var(--text)] pl-3.5 py-2 font-mono text-[12.5px] focus:outline-none focus:border-[var(--accent)]",
                                                 onchange: move |e| {
                                                     let mut next = settings.read().clone();
                                                     next.publish_rendezvous = Some(e.value());
@@ -386,13 +383,9 @@ pub fn ConnectForm(
                                                         key: "{url}",
                                                         value: "{url}",
                                                         selected: url == publish_target,
-                                                        style: "color: var(--text); background: var(--panel-solid);",
                                                         {crate::settings::rendezvous_label(&url)}
                                                     }
                                                 }
-                                            }
-                                            span { class: "absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--text-dim)] pointer-events-none",
-                                                "\u{25bc}"
                                             }
                                         }
                                     }
@@ -750,10 +743,9 @@ pub(crate) fn BlobServerField() -> Element {
                 {crate::i18n::text("Your saved emoji's pictures upload here so a DM can link them. Off: only small pictures fit inside the message; large ones go as text.", &[])}
             }
             div { class: "flex items-center gap-1 mt-1.5",
-                div { class: "flex-1 min-w-0 relative",
+                div { class: "flex-1 min-w-0",
                     select {
-                        class: "w-full appearance-none rounded border border-[var(--border)] pl-2 py-1 font-mono text-[11px] focus:outline-none focus:border-[var(--accent)] transition-colors",
-                        style: "color: var(--text); background: var(--panel2); padding-right: 1.5rem;",
+                        class: "w-full rounded border border-[var(--border)] bg-[var(--panel2)] text-[var(--text)] pl-2 py-1 font-mono text-[11px] focus:outline-none focus:border-[var(--accent)]",
                         onchange: move |e| {
                             let value = e.value();
                             let mut next = settings.read().clone();
@@ -766,21 +758,14 @@ pub(crate) fn BlobServerField() -> Element {
                                 key: "{url}",
                                 value: "{url}",
                                 selected: current.as_deref() == Some(url.as_str()),
-                                style: "color: var(--text); background: var(--panel-solid);",
                                 "{blob_host(&url)}"
                             }
                         }
                         option {
                             value: BLOB_OFF,
                             selected: current.is_none(),
-                            style: "color: var(--text); background: var(--panel-solid);",
                             {crate::i18n::text("Off — inside the message", &[])}
                         }
-                    }
-                    span {
-                        class: "absolute top-1/2 -translate-y-1/2 text-[8px] text-[var(--text-dim)] pointer-events-none",
-                        style: "right: 0.5rem;",
-                        "▼"
                     }
                 }
                 if let Some(url) = removable {

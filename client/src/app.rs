@@ -277,24 +277,79 @@ input::placeholder { color: var(--text-dim); }
 
 /* The tick is a background image: WebKit draws ::before on an input, Firefox
    does not. Its ink is .dxf-cta's, so a checked box reads as that button. */
-input[type='checkbox'] {
+input:is([type='checkbox'], [type='radio']) {
   appearance: none; -webkit-appearance: none; flex-shrink: 0;
   width: 16px; height: 16px; margin: 0; border-radius: 5px; cursor: pointer;
   border: 1.5px solid var(--border-strong); background-color: var(--panel2);
   background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
   vertical-align: middle;
 }
-input[type='checkbox']:hover:not(:disabled) { border-color: var(--accent); }
-input[type='checkbox']:checked {
+input[type='radio'] { border-radius: 50%; }
+input:is([type='checkbox'], [type='radio']):hover:not(:disabled) { border-color: var(--accent); }
+input:is([type='checkbox'], [type='radio']):checked {
   border-color: var(--accent);
-  background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='%231a1206' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\"),
-                    linear-gradient(135deg, var(--accent-strong), var(--accent));
   animation: dxf-check-pop 0.16s var(--ease);
 }
-input[type='checkbox']:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input[type='checkbox']:disabled { opacity: 0.45; cursor: not-allowed; }
+input[type='checkbox']:checked {
+  background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='%231a1206' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\"),
+                    linear-gradient(135deg, var(--accent-strong), var(--accent));
+}
+input[type='radio']:checked {
+  background-image: radial-gradient(circle, #1a1206 0 2.5px, transparent 3px),
+                    linear-gradient(135deg, var(--accent-strong), var(--accent));
+}
+input:is([type='checkbox'], [type='radio']):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input:is([type='checkbox'], [type='radio']):disabled { opacity: 0.45; cursor: not-allowed; }
 @keyframes dxf-check-pop { from { transform: scale(0.82); } }
-@media (prefers-reduced-motion: reduce) { input[type='checkbox']:checked { animation: none; } }
+@media (prefers-reduced-motion: reduce) { input:is([type='checkbox'], [type='radio']):checked { animation: none; } }
+
+/* An open list is drawn by the system from color-scheme, not from our variables:
+   without it Windows painted a white list under the theme's light text. */
+:root { color-scheme: dark; }
+select:not([multiple]) {
+  --dxf-chevron: var(--text-muted);
+  appearance: none; -webkit-appearance: none;
+  padding-right: 28px; text-overflow: ellipsis; cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--dxf-chevron) 50%),
+    linear-gradient(135deg, var(--dxf-chevron) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px; background-repeat: no-repeat;
+}
+select:not([multiple]):hover:not(:disabled) {
+  --dxf-chevron: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+}
+select:not([multiple]):focus { --dxf-chevron: var(--accent); border-color: var(--accent); }
+select:not([multiple]):focus-visible { box-shadow: 0 0 0 3px var(--accent-soft); }
+select:disabled { opacity: 0.55; cursor: not-allowed; }
+option, optgroup { background-color: var(--panel-solid); color: var(--text); }
+option:disabled { color: var(--text-dim); }
+
+/* WebKit keeps the system menu; Chromium (WebView2) lets us draw the list. Touch
+   screens keep the platform's own picker. */
+@supports (appearance: base-select) {
+  @media (pointer: fine) {
+    select:not([multiple]), ::picker(select) { appearance: base-select; }
+    select:not([multiple])::picker-icon { display: none; }
+    ::picker(select) {
+      margin-block: 4px; padding: 4px; max-height: min(320px, 60vh); overflow-y: auto;
+      background-color: var(--panel-solid); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 10px;
+      box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.6);
+    }
+    select:not([multiple]) option {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; border-radius: 6px; cursor: pointer;
+      background-color: transparent; font-weight: 400;
+    }
+    select:not([multiple]) option:is(:hover, :focus-visible):not(:disabled) {
+      background-color: var(--accent-soft); outline: none;
+    }
+    select:not([multiple]) option:checked { color: var(--accent); font-weight: 600; }
+    select:not([multiple]) option::checkmark { color: var(--accent); }
+  }
+}
 
 .dxf-cta {
   background-image: linear-gradient(100deg, var(--accent-strong), var(--accent));
@@ -657,7 +712,8 @@ pub const THEMES: &[ThemeDef] = &[
                --border:rgba(180,120,60,.22); --border-strong:rgba(120,80,40,.42); \
                --text:#2a2320; --text-muted:#6b615a; --text-dim:#a99e92; \
                --accent:#e8730a; --accent-soft:rgba(232,115,10,.12); --accent-strong:#c65f00; \
-               --up:#2f9e6a; --success:#2f9e6a; --violet:#8b5cf6; --amber:#c77d1a; --warn:#c77d1a; --danger:#c0392b;",
+               --up:#2f9e6a; --success:#2f9e6a; --violet:#8b5cf6; --amber:#c77d1a; --warn:#c77d1a; --danger:#c0392b; \
+               color-scheme:light;",
     },
     ThemeDef {
         id: "github",
