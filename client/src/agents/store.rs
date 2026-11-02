@@ -239,6 +239,8 @@ impl AgentEntry {
             per_member_per_hour: self.per_member_per_hour,
             daily_tokens: self.daily_tokens,
             guilds,
+            offered: false,
+            guild_daily_tokens: 0,
         }
     }
 

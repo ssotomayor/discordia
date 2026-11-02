@@ -136,6 +136,8 @@ fn spec(w: &World, guilds: Vec<Id>) -> ServerAgentSpec {
         per_member_per_hour: 20,
         daily_tokens: 100_000,
         guilds,
+        offered: false,
+        guild_daily_tokens: 0,
     }
 }
 

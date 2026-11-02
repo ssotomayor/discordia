@@ -1578,6 +1578,40 @@ pub struct ServerAgentSpec {
     /// Guilds it is installed in; only ones the operator manages.
     #[serde(default)]
     pub guilds: Vec<Id>,
+    /// Other guilds' admins may install it too, each under `guild_daily_tokens`.
+    #[serde(default)]
+    pub offered: bool,
+    /// Tokens a day any one guild may spend; 0 leaves only the agent's own cap.
+    #[serde(default)]
+    pub guild_daily_tokens: u64,
+}
+
+/// Which apps a guild's admins may install on this server (#455). The
+/// operator's own installs and offered server agents are never refused by it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppsPolicy {
+    #[default]
+    Open,
+    Approved,
+    Off,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerAppInstall {
+    pub guild_name: String,
+    pub install: BotInstall,
+}
+
+/// A server agent a guild's admin may install, as they are shown it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfferedAgent {
+    pub pubkey: String,
+    pub name: String,
+    pub provider_label: String,
+    pub model: String,
+    #[serde(default)]
+    pub guild_daily_tokens: u64,
 }
 
 /// What an operator is shown of a server agent: never its keys.
@@ -1636,6 +1670,8 @@ pub fn validate_server_agent(raw: ServerAgentSpec) -> Result<ServerAgentSpec, St
         per_member_per_hour: raw.per_member_per_hour,
         daily_tokens: raw.daily_tokens,
         guilds,
+        offered: raw.offered,
+        guild_daily_tokens: raw.guild_daily_tokens,
     })
 }
 
@@ -2422,6 +2458,24 @@ pub enum ClientMessage {
     DeleteServerAgent {
         pubkey: String,
     },
+    /// Operator only. Answered by `ServerApps`.
+    FetchServerApps,
+    /// Operator only.
+    SetAppsPolicy {
+        policy: AppsPolicy,
+    },
+    /// Operator only. What `AppsPolicy::Approved` lets guilds install.
+    SetAppApproved {
+        pubkey: String,
+        approved: bool,
+    },
+    /// Operator only. A ban also removes the app from every guild.
+    SetAppBanned {
+        pubkey: String,
+        banned: bool,
+    },
+    /// Answered by `OfferedAgents`.
+    FetchOfferedAgents,
     InstallBot {
         guild_id: Id,
         bot_pubkey: String,
@@ -2992,6 +3046,16 @@ pub enum ServerMessage {
     /// Only ever sent to operators.
     ServerAgents {
         agents: Vec<ServerAgentView>,
+    },
+    /// Only ever sent to operators: every app in every guild, and the rules.
+    ServerApps {
+        policy: AppsPolicy,
+        approved: Vec<String>,
+        banned: Vec<String>,
+        installs: Vec<ServerAppInstall>,
+    },
+    OfferedAgents {
+        agents: Vec<OfferedAgent>,
     },
     GuildIntegrations {
         guild_id: Id,

@@ -11,6 +11,7 @@ pub mod media;
 pub mod quic;
 pub mod rendezvous;
 pub mod sanitize;
+pub mod server_apps;
 pub mod sfu_proxy;
 pub mod state;
 pub mod store;

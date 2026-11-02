@@ -53,6 +53,14 @@ pub struct PeerRoutes {
     pub received: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerApps {
+    pub policy: crate::protocol::AppsPolicy,
+    pub approved: Vec<String>,
+    pub banned: Vec<String>,
+    pub installs: Vec<crate::protocol::ServerAppInstall>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -577,6 +585,10 @@ pub struct AppState {
     pub is_operator: bool,
     /// The connected server's own agents; only ever sent to an operator.
     pub server_agents: Vec<crate::protocol::ServerAgentView>,
+    /// The operator's rules and every install, when they asked (#455).
+    pub server_apps: Option<ServerApps>,
+    /// Server agents a guild's admin may install.
+    pub offered_agents: Vec<crate::protocol::OfferedAgent>,
     /// The connected server's, from Ready and `DefaultGuild`.
     pub default_guild: Option<Id>,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
@@ -759,6 +771,8 @@ impl AppState {
             gateway_failure: None,
             is_operator: false,
             server_agents: Vec::new(),
+            server_apps: None,
+            offered_agents: Vec::new(),
             default_guild: None,
             audit_logs: HashMap::new(),
         }
@@ -943,6 +957,8 @@ impl AppState {
         self.audit_logs.clear();
         self.is_operator = false;
         self.server_agents.clear();
+        self.server_apps = None;
+        self.offered_agents.clear();
         self.default_guild = None;
         self.emoji_images.clear();
         self.evict_inactive_dm_images(self.selected_channel);

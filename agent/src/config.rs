@@ -78,6 +78,8 @@ pub struct Limits {
     pub per_member_per_hour: u32,
     /// Input plus output, as the provider reports it, per UTC day.
     pub daily_tokens: u64,
+    /// The most any one guild may spend of that each day.
+    pub guild_daily_tokens: Option<u64>,
     pub in_flight: usize,
     pub context_messages: u32,
     /// An estimate (a token is about four bytes), not the provider's count.
@@ -89,6 +91,7 @@ impl Default for Limits {
         Self {
             per_member_per_hour: 20,
             daily_tokens: 200_000,
+            guild_daily_tokens: None,
             in_flight: 4,
             context_messages: 30,
             context_tokens: 8_000,

@@ -1764,6 +1764,22 @@ fn apply(
         ServerMessage::ServerAgents { agents } => {
             s.server_agents = agents;
         }
+        ServerMessage::ServerApps {
+            policy,
+            approved,
+            banned,
+            installs,
+        } => {
+            s.server_apps = Some(crate::state::ServerApps {
+                policy,
+                approved,
+                banned,
+                installs,
+            });
+        }
+        ServerMessage::OfferedAgents { agents } => {
+            s.offered_agents = agents;
+        }
         // Sent only to an app's bot.
         ServerMessage::BundleWanted { .. } => {}
         ServerMessage::AppManifestEvent { bot_pubkey, event } => {

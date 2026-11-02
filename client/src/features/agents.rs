@@ -10,7 +10,9 @@ use zeroize::Zeroizing;
 
 use crate::agents::service::RunKey;
 use crate::agents::{AgentEntry, Agents, Preset, RunState, Secrets, ServerRef, store};
-use crate::protocol::{AppManifest, ClientMessage, Id, Permission, ServerAgentView};
+use crate::protocol::{
+    AppManifest, AppsPolicy, ClientMessage, Id, Permission, ServerAgentSpec, ServerAgentView,
+};
 use crate::state::{ConnectionStatus, SessionMode, use_app_state, use_gateway};
 
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors";
@@ -86,6 +88,8 @@ enum Pick {
     Device(String),
     /// A server agent by key; empty for a new one.
     Server(String),
+    /// The operator's rules for every guild's apps.
+    Apps,
 }
 
 /// Mounted at Home's root and a server's: the server half speaks to that server's gateway.
@@ -194,6 +198,11 @@ pub fn AgentsDialog() -> Element {
                                     onclick: move |_| selected.set(Some(Pick::Server(String::new()))),
                                     {crate::i18n::text("New server agent", &[])}
                                 }
+                                button {
+                                    class: "{BUTTON} w-full",
+                                    onclick: move |_| selected.set(Some(Pick::Apps)),
+                                    {crate::i18n::text("Apps on this server", &[])}
+                                }
                             }
                         }
                     }
@@ -230,6 +239,7 @@ pub fn AgentsDialog() -> Element {
                                     }
                                 }
                             }
+                            Some(Pick::Apps) => rsx! { ServerAppsPanel {} },
                             None => rsx! {
                                 div { class: "text-xs text-[var(--text-dim)] space-y-2",
                                     p { {crate::i18n::text("An agent is an app whose replies come from an AI model you choose. It answers when someone mentions it, replies to it, or uses /ask.", &[])} }
@@ -740,6 +750,8 @@ fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -
             .map(|v| v.spec.guilds.clone())
             .unwrap_or_default()
     });
+    let mut offered = use_signal(|| view.as_ref().is_some_and(|v| v.spec.offered));
+    let mut guild_tokens = use_signal(|| view.as_ref().map_or(0, |v| v.spec.guild_daily_tokens));
     let mut api_key = use_signal(String::new);
     let busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
@@ -766,7 +778,11 @@ fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -
             error.set(None);
             gateway.send(ClientMessage::SaveServerAgent {
                 pubkey: pubkey.clone(),
-                spec: entry.server_spec(guilds.peek().clone()),
+                spec: ServerAgentSpec {
+                    offered: *offered.peek(),
+                    guild_daily_tokens: *guild_tokens.peek(),
+                    ..entry.server_spec(guilds.peek().clone())
+                },
                 api_key: (!typed.is_empty()).then_some(typed),
             });
             api_key.set(String::new());
@@ -833,6 +849,29 @@ fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -
                             },
                         }
                         "{name}"
+                    }
+                }
+            }
+            div { class: "space-y-1.5",
+                label { class: "flex items-center gap-2 text-xs text-[var(--text)]",
+                    input {
+                        r#type: "checkbox",
+                        checked: offered(),
+                        onchange: move |e| offered.set(e.checked()),
+                    }
+                    {crate::i18n::text("Offer it to other guilds' admins", &[])}
+                }
+                if offered() {
+                    div {
+                        div { class: LABEL, {crate::i18n::text("Tokens per guild per day (0 for no limit)", &[])} }
+                        input {
+                            class: INPUT,
+                            r#type: "number",
+                            min: "0",
+                            step: "1000",
+                            value: "{guild_tokens}",
+                            oninput: move |e| if let Ok(n) = e.value().parse::<u64>() { guild_tokens.set(n) },
+                        }
                     }
                 }
             }
@@ -956,6 +995,243 @@ pub fn MyAgentsSection(guild_id: Id) -> Element {
                             }
                         }
                     },
+                }
+            }
+        }
+    }
+}
+
+/// The operator's levers over every guild's apps (#455, trap 39).
+#[component]
+fn ServerAppsPanel() -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut approve_input = use_signal(String::new);
+    let mut ban_input = use_signal(String::new);
+    {
+        let gateway = gateway.clone();
+        use_hook(move || gateway.send(ClientMessage::FetchServerApps));
+    }
+    let Some(apps) = state.read().server_apps.clone() else {
+        return rsx! {
+            div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Loading…", &[])} }
+        };
+    };
+    let set_policy = {
+        let gateway = gateway.clone();
+        move |policy: AppsPolicy| gateway.send(ClientMessage::SetAppsPolicy { policy })
+    };
+    let approve = {
+        let gateway = gateway.clone();
+        move |pubkey: String, approved: bool| {
+            gateway.send(ClientMessage::SetAppApproved { pubkey, approved })
+        }
+    };
+    let ban = {
+        let gateway = gateway.clone();
+        move |pubkey: String, banned: bool| {
+            gateway.send(ClientMessage::SetAppBanned { pubkey, banned })
+        }
+    };
+    let choices = [
+        (
+            AppsPolicy::Open,
+            crate::i18n::text("Guild admins install any app", &[]),
+        ),
+        (
+            AppsPolicy::Approved,
+            crate::i18n::text("Only apps I approve", &[]),
+        ),
+        (AppsPolicy::Off, crate::i18n::text("No apps", &[])),
+    ];
+    rsx! {
+        div { class: "space-y-4",
+            div {
+                div { class: LABEL, {crate::i18n::text("Who may install apps", &[])} }
+                for (policy, label) in choices {
+                    label { key: "{label}", class: "flex items-center gap-2 py-0.5 text-xs text-[var(--text)]",
+                        input {
+                            r#type: "radio",
+                            name: "dxf-apps-policy",
+                            checked: apps.policy == policy,
+                            onchange: { let set = set_policy.clone(); move |_| set(policy) },
+                        }
+                        "{label}"
+                    }
+                }
+                div { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                    {crate::i18n::text("Your own installs and the agents you offer are never blocked. Changing this removes nothing already installed.", &[])}
+                }
+            }
+            div {
+                div { class: LABEL, {crate::i18n::text("Approved apps", &[])} }
+                for key in apps.approved.iter().cloned() {
+                    div { key: "a-{key}", class: "flex items-center gap-2 py-0.5",
+                        span { class: "flex-1 font-mono text-[10px] text-[var(--text)] truncate", "{key}" }
+                        button {
+                            class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--danger)]",
+                            onclick: { let approve = approve.clone(); let k = key.clone(); move |_| approve(k.clone(), false) },
+                            {crate::i18n::text("Remove", &[])}
+                        }
+                    }
+                }
+                div { class: "flex gap-1.5 mt-1",
+                    input {
+                        class: "{INPUT} font-mono",
+                        placeholder: crate::i18n::text("App key (npub or hex)", &[]),
+                        value: "{approve_input}",
+                        oninput: move |e| approve_input.set(e.value()),
+                    }
+                    button {
+                        class: BUTTON,
+                        onclick: { let approve = approve.clone(); move |_| {
+                            let raw = approve_input.peek().clone();
+                            if let Ok(key) = crate::identity::pubkey_from_input(&raw) {
+                                approve(key, true);
+                                approve_input.set(String::new());
+                            }
+                        } },
+                        {crate::i18n::text("Approve", &[])}
+                    }
+                }
+            }
+            div {
+                div { class: LABEL, {crate::i18n::text("Banned apps", &[])} }
+                for key in apps.banned.iter().cloned() {
+                    div { key: "b-{key}", class: "flex items-center gap-2 py-0.5",
+                        span { class: "flex-1 font-mono text-[10px] text-[var(--text)] truncate", "{key}" }
+                        button {
+                            class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)]",
+                            onclick: { let ban = ban.clone(); let k = key.clone(); move |_| ban(k.clone(), false) },
+                            {crate::i18n::text("Lift ban", &[])}
+                        }
+                    }
+                }
+                div { class: "flex gap-1.5 mt-1",
+                    input {
+                        class: "{INPUT} font-mono",
+                        placeholder: crate::i18n::text("App key (npub or hex)", &[]),
+                        value: "{ban_input}",
+                        oninput: move |e| ban_input.set(e.value()),
+                    }
+                    button {
+                        class: "{BUTTON} text-[var(--danger)]",
+                        onclick: { let ban = ban.clone(); move |_| {
+                            let raw = ban_input.peek().clone();
+                            if let Ok(key) = crate::identity::pubkey_from_input(&raw) {
+                                ban(key, true);
+                                ban_input.set(String::new());
+                            }
+                        } },
+                        {crate::i18n::text("Ban", &[])}
+                    }
+                }
+                div { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                    {crate::i18n::text("A ban removes the app from every guild on this server and stops it being installed again.", &[])}
+                }
+            }
+            div {
+                div { class: LABEL, {crate::i18n::text("Installed in every guild", &[])} }
+                if apps.installs.is_empty() {
+                    div { class: "text-[11px] text-[var(--text-dim)]", {crate::i18n::text("No guild has installed an app.", &[])} }
+                }
+                for item in apps.installs.iter().cloned() {
+                    div { key: "{item.install.guild_id}-{item.install.bot_pubkey}", class: "flex items-center gap-2 py-0.5",
+                        div { class: "flex-1 min-w-0",
+                            div { class: "text-xs text-[var(--text)] truncate",
+                                "{item.install.name}"
+                                if item.install.app.as_ref().is_some_and(|a| a.agent.is_some()) {
+                                    span { class: "ml-1.5 text-[9px] font-bold uppercase text-[var(--warn)]", {crate::i18n::text("AI", &[])} }
+                                }
+                            }
+                            div { class: "text-[10px] text-[var(--text-dim)] truncate", "{item.guild_name}" }
+                        }
+                        button {
+                            class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--danger)]",
+                            onclick: { let ban = ban.clone(); let k = item.install.bot_pubkey.clone(); move |_| ban(k.clone(), true) },
+                            {crate::i18n::text("Ban", &[])}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// In a guild's Integrations: server agents the operator offers to every guild.
+#[component]
+pub fn OfferedAgentsSection(guild_id: Id) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut looked_up = use_signal(|| None::<String>);
+    {
+        let gateway = gateway.clone();
+        use_hook(move || gateway.send(ClientMessage::FetchOfferedAgents));
+    }
+    let consent = use_memo(move || {
+        let key = looked_up()?;
+        let json = state
+            .read()
+            .app_manifest_events
+            .get(&key)
+            .cloned()
+            .flatten()?;
+        let manifest = super::integrations::read_manifest(&json, &key).ok()?;
+        Some((key, manifest, json))
+    });
+    let installed: HashSet<String> = state
+        .read()
+        .integrations
+        .get(&guild_id)
+        .map(|bots| bots.iter().map(|b| b.bot_pubkey.clone()).collect())
+        .unwrap_or_default();
+    let offered = state.read().offered_agents.clone();
+    if offered.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        div {
+            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
+                {crate::i18n::text("Offered by this server", &[])}
+            }
+            for a in offered.iter().cloned() {
+                div { key: "{a.pubkey}", class: "flex items-center gap-2 py-1",
+                    div { class: "flex-1 min-w-0",
+                        div { class: "text-xs text-[var(--text)] truncate", "{a.name}" }
+                        div { class: "text-[10px] text-[var(--text-dim)] truncate",
+                            if a.guild_daily_tokens > 0 {
+                                {crate::i18n::text("{0} · {1} tokens a day for this guild", &[a.model.clone(), a.guild_daily_tokens.to_string()])}
+                            } else {
+                                "{a.model}"
+                            }
+                        }
+                    }
+                    if installed.contains(&a.pubkey) {
+                        span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::text("Installed", &[])} }
+                    } else {
+                        button {
+                            class: BUTTON,
+                            onclick: {
+                                let (gateway, key) = (gateway.clone(), a.pubkey.clone());
+                                move |_| {
+                                    gateway.send(ClientMessage::FetchAppManifest { bot_pubkey: key.clone() });
+                                    looked_up.set(Some(key.clone()));
+                                }
+                            },
+                            {crate::i18n::text("Add here", &[])}
+                        }
+                    }
+                }
+            }
+            if let Some((bot_pubkey, manifest, event)) = consent() {
+                if !installed.contains(&bot_pubkey) {
+                    super::integrations::AppConsent {
+                        guild_id,
+                        bot_pubkey,
+                        manifest,
+                        event,
+                        on_done: move |_| looked_up.set(None),
+                    }
                 }
             }
         }

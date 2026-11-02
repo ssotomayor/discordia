@@ -1219,6 +1219,45 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         }
                     }
+                    ClientMessage::FetchServerApps => {
+                        let Some(u) = user.as_ref() else { continue };
+                        let reply = if ctx.state.operators.contains(&u.pubkey) {
+                            crate::server_apps::snapshot(&ctx.state)
+                        } else {
+                            ServerMessage::Error { message: "only this server's operator sees every guild's apps".into() }
+                        };
+                        let _ = send(&mut ws_tx, &reply).await;
+                    }
+                    ClientMessage::FetchOfferedAgents => {
+                        if user.is_none() {
+                            continue;
+                        }
+                        let _ = send(&mut ws_tx, &crate::server_apps::offered(&ctx.state)).await;
+                    }
+                    command @ (ClientMessage::SetAppsPolicy { .. }
+                    | ClientMessage::SetAppApproved { .. }
+                    | ClientMessage::SetAppBanned { .. }) => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        let result = match command {
+                            ClientMessage::SetAppsPolicy { policy } => {
+                                crate::server_apps::set_policy(&ctx, &u.pubkey, policy).await
+                            }
+                            ClientMessage::SetAppApproved { pubkey, approved } => {
+                                crate::server_apps::set_approved(&ctx, &u.pubkey, &pubkey, approved).await
+                            }
+                            ClientMessage::SetAppBanned { pubkey, banned } => {
+                                crate::server_apps::set_banned(&ctx, &u.pubkey, &pubkey, banned).await
+                            }
+                            _ => Ok(()),
+                        };
+                        if let Err(message) = result {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                        }
+                    }
                     ClientMessage::UninstallBot { guild_id, bot_pubkey } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {

@@ -119,6 +119,7 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                     }
                     super::agents::MyAgentsSection { guild_id }
+                    super::agents::OfferedAgentsSection { guild_id }
                     InstallForm { guild_id }
                     BlocklistsSection { guild_id }
                 }

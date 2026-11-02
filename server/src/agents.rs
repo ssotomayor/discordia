@@ -43,6 +43,7 @@ impl ServerAgent {
             limits: Limits {
                 per_member_per_hour: s.per_member_per_hour,
                 daily_tokens: s.daily_tokens,
+                guild_daily_tokens: (s.guild_daily_tokens > 0).then_some(s.guild_daily_tokens),
                 ..Limits::default()
             },
             manifest_version: self.version,
@@ -344,7 +345,17 @@ pub async fn save(
             Err(e) => failures.push(e),
         }
     }
-    for guild_id in have.difference(&want) {
+    // Only guilds the operator chose before: an admin's own install of an offered agent stays.
+    let chosen_before: HashSet<Id> = previous
+        .as_ref()
+        .map(|p| p.spec.guilds.iter().copied().collect())
+        .unwrap_or_default();
+    let dropped: Vec<Id> = chosen_before
+        .difference(&want)
+        .filter(|g| have.contains(g))
+        .copied()
+        .collect();
+    for guild_id in &dropped {
         match state.uninstall_bot(*guild_id, &pubkey, by).await {
             Ok(seat) => {
                 crate::gateway::connection::announce_uninstall(ctx, *guild_id, &pubkey, seat)
@@ -355,6 +366,7 @@ pub async fn save(
 
     state.agent_host.restart(state, &pubkey);
     share(state);
+    crate::server_apps::share(state);
     if failures.is_empty() {
         Ok(pubkey)
     } else {
@@ -387,6 +399,7 @@ pub async fn delete(ctx: &Arc<AppContext>, by: &str, pubkey: &str) -> Result<(),
         .map_err(|e| format!("couldn't delete the agent: {e}"))?;
     state.server_agents.remove(pubkey);
     share(state);
+    crate::server_apps::share(state);
     Ok(())
 }
 

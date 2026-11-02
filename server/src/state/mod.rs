@@ -120,6 +120,9 @@ pub struct AppState {
     /// Agents the operator runs in this process, by key (#454).
     pub server_agents: DashMap<String, crate::agents::ServerAgent>,
     pub agent_host: std::sync::Arc<crate::agents::AgentHost>,
+    pub apps_policy: std::sync::Mutex<crate::protocol::AppsPolicy>,
+    /// Keys the operator approved or banned (#455).
+    pub app_rules: DashMap<String, crate::server_apps::AppRule>,
     activity_instances: instances::Instances,
     /// The curators each guild follows, and the newest list each curator signed.
     followed_blocklists: DashMap<Id, Vec<String>>,
@@ -173,6 +176,8 @@ impl AppState {
             app_manifests: DashMap::new(),
             server_agents: DashMap::new(),
             agent_host: Default::default(),
+            apps_policy: Default::default(),
+            app_rules: DashMap::new(),
             activity_instances: Default::default(),
             followed_blocklists: DashMap::new(),
             app_blocklists: DashMap::new(),
@@ -295,6 +300,16 @@ impl AppState {
         }
         for (bot, version, event) in state.store.app_manifests().await? {
             state.app_manifests.insert(bot, (version, event));
+        }
+        if let Some(policy) = state.store.apps_policy().await?
+            && let Ok(policy) = serde_json::from_str(&policy)
+        {
+            *state.apps_policy.lock().unwrap_or_else(|e| e.into_inner()) = policy;
+        }
+        for (pubkey, rule) in state.store.app_rules().await? {
+            if let Some(rule) = crate::server_apps::AppRule::from_stored(&rule) {
+                state.app_rules.insert(pubkey, rule);
+            }
         }
         for (pubkey, spec, secret, api_key, version) in state.store.server_agents().await? {
             match serde_json::from_str(&spec) {
@@ -3717,6 +3732,7 @@ impl AppState {
         }
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        crate::server_apps::may_install(self, bot_pubkey, by_pubkey)?;
         if let Some(curator) = self.blocked_by(guild_id, bot_pubkey) {
             return Err(format!(
                 "that app is on a blocklist this guild follows (curated by {})",
@@ -3793,6 +3809,25 @@ impl AppState {
     ) -> Result<crate::store::Seat, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        self.remove_install(guild_id, bot_pubkey).await
+    }
+
+    /// The operator's server-wide ban: no guild permission is asked for.
+    pub async fn evict_app(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+    ) -> Result<crate::store::Seat, String> {
+        let _write = self.durable_writes.lock().await;
+        self.remove_install(guild_id, bot_pubkey).await
+    }
+
+    /// Callers hold `durable_writes`.
+    async fn remove_install(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+    ) -> Result<crate::store::Seat, String> {
         // A person leaves only through kick or ban, which hold the moderation guard.
         self.bot_install(guild_id, bot_pubkey)
             .ok_or("that bot isn't installed here")?;
