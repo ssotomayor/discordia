@@ -266,7 +266,6 @@ pub fn SettingsDialog() -> Element {
                             span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Camera", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                                style: "color: var(--text); background: var(--panel-solid);",
                                 aria_label: crate::i18n::text("Camera", &[]),
                                 value: selected_camera_id.clone().unwrap_or_default(),
                                 onchange: move |e| {
@@ -314,7 +313,6 @@ pub fn SettingsDialog() -> Element {
                             span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Screen share", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                                style: "color: var(--text); background: var(--panel-solid);",
                                 aria_label: crate::i18n::text("Screen share", &[]),
                                 value: "{screenshare_quality}",
                                 onchange: move |e| {

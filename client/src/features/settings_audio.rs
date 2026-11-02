@@ -14,7 +14,6 @@ pub(super) fn OutputDevice(disabled: bool) -> Element {
                             span { class: "dxf-device-label", {crate::i18n::text("Audio output", &[])} }
                             select {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
-                                style: "color: var(--text); background: var(--panel-solid);",
                                 disabled,
                                 id: "audio-output", aria_label: crate::i18n::text("Audio output", &[]),
                                 value: selected_output_device.clone().unwrap_or_default(),
