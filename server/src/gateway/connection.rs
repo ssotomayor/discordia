@@ -425,10 +425,16 @@ pub(crate) async fn handle_connection_with_route<S>(
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: format!("slowmode: wait {wait}s before posting again") }).await;
                             continue;
                         }
-                        match ctx.state.begin_image_upload(
-                            conn_id, author, upload_id, channel_id, content.trim().to_string(),
-                            preview, image_name, reply_to,
-                        ).await {
+                        match ctx.state.begin_image_upload(crate::state::BeginImageUploadInput {
+                            conn_id,
+                            author,
+                            upload_id,
+                            channel_id,
+                            content: content.trim().to_string(),
+                            preview,
+                            image_name,
+                            reply_to,
+                        }).await {
                             Ok(message) => {
                                 let targets = ctx.state.guild_member_pubkeys(gid);
                                 ctx.state.deliver_progressive_images(
@@ -474,7 +480,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         };
                         let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
                             if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
-                                let _ = ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
+                                ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
                             }
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "can't post to this channel".into() }).await;
                             continue;
@@ -498,7 +504,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
                                 if !is_member {
-                                    let _ = ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
+                                    ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
                                 }
                             }
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
@@ -513,7 +519,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
                                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                                         ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
-                                        let _ = ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
+                                        ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
                                     }
                                     let _ = send(&mut ws_tx, &ServerMessage::Error { message: format!("slowmode: wait {wait}s before posting again") }).await;
                                     continue;
@@ -628,7 +634,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     }).await;
                                     continue;
                                 }
-                            match ctx.state.push_image_message(channel_id, author, content, image, image_preview, image_name, reply_to).await {
+                            match ctx.state.push_image_message(crate::state::ImageMessageInput {
+                                channel_id,
+                                author,
+                                content,
+                                image,
+                                image_preview,
+                                image_name,
+                                reply_to,
+                            }).await {
                                 Ok(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);

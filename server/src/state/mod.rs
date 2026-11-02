@@ -86,6 +86,40 @@ struct PendingImageUpload {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Inputs needed to persist an image message, including an optional preview.
+pub struct ImageMessageInput {
+    pub channel_id: Id,
+    pub author: User,
+    pub content: String,
+    pub image: Option<String>,
+    pub image_preview: Option<String>,
+    pub image_name: Option<String>,
+    pub reply_to: Option<Id>,
+}
+
+/// Inputs for the provisional message created before a progressive image upload completes.
+pub struct BeginImageUploadInput {
+    pub conn_id: u64,
+    pub author: User,
+    pub upload_id: Id,
+    pub channel_id: Id,
+    pub content: String,
+    pub preview: String,
+    pub image_name: Option<String>,
+    pub reply_to: Option<Id>,
+}
+
+struct MessageToAppend {
+    id: Id,
+    created_at: chrono::DateTime<chrono::Utc>,
+    channel_id: Id,
+    author: User,
+    content: String,
+    image: Option<String>,
+    image_metadata: Option<crate::protocol::ImageMetadata>,
+    reply_to: Option<ReplyRef>,
+}
+
 pub(crate) struct SlowmodeReservation<'a> {
     state: &'a AppState,
     key: (Id, String),
@@ -3269,20 +3303,28 @@ impl AppState {
         image: Option<String>,
         reply_to: Option<Id>,
     ) -> Result<Message, String> {
-        self.push_image_message(channel_id, author, content, image, None, None, reply_to)
-            .await
+        self.push_image_message(ImageMessageInput {
+            channel_id,
+            author,
+            content,
+            image,
+            image_preview: None,
+            image_name: None,
+            reply_to,
+        })
+        .await
     }
 
-    pub async fn push_image_message(
-        &self,
-        channel_id: Id,
-        author: User,
-        content: String,
-        image: Option<String>,
-        image_preview: Option<String>,
-        image_name: Option<String>,
-        reply_to: Option<Id>,
-    ) -> Result<Message, String> {
+    pub async fn push_image_message(&self, input: ImageMessageInput) -> Result<Message, String> {
+        let ImageMessageInput {
+            channel_id,
+            author,
+            content,
+            image,
+            image_preview,
+            image_name,
+            reply_to,
+        } = input;
         let author = self.attributed_author(channel_id, author);
         let guild_id = self
             .channels
@@ -3369,17 +3411,20 @@ impl AppState {
 
     pub async fn begin_image_upload(
         &self,
-        conn_id: u64,
-        author: User,
-        upload_id: Id,
-        channel_id: Id,
-        content: String,
-        preview: String,
-        image_name: Option<String>,
-        reply_to: Option<Id>,
+        input: BeginImageUploadInput,
     ) -> Result<Message, String> {
+        let BeginImageUploadInput {
+            conn_id,
+            author,
+            upload_id,
+            channel_id,
+            content,
+            preview,
+            image_name,
+            reply_to,
+        } = input;
         let author = self.attributed_author(channel_id, author);
-        let guild_id = self
+        let _guild_id = self
             .channels
             .get(&channel_id)
             .filter(|channel| matches!(channel.kind, crate::protocol::ChannelKind::Text))
@@ -3511,16 +3556,16 @@ impl AppState {
             None => None,
         };
         let message = self
-            .append_message_with_id(
-                upload_id,
-                pending.created_at,
-                pending.channel_id,
-                pending.author,
-                pending.content,
-                Some(stored),
-                Some(metadata),
-                reply_ref,
-            )
+            .append_message_with_id(MessageToAppend {
+                id: upload_id,
+                created_at: pending.created_at,
+                channel_id: pending.channel_id,
+                author: pending.author,
+                content: pending.content,
+                image: Some(stored),
+                image_metadata: Some(metadata),
+                reply_to: reply_ref,
+            })
             .await?;
         self.pending_image_uploads.remove(&(conn_id, upload_id));
         Ok(message)
@@ -3729,30 +3774,30 @@ impl AppState {
         image_metadata: Option<crate::protocol::ImageMetadata>,
         reply_to: Option<ReplyRef>,
     ) -> Result<Message, String> {
-        self.append_message_with_id(
-            Uuid::new_v4(),
-            chrono::Utc::now(),
+        self.append_message_with_id(MessageToAppend {
+            id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
             channel_id,
             author,
             content,
             image,
             image_metadata,
             reply_to,
-        )
+        })
         .await
     }
 
-    async fn append_message_with_id(
-        &self,
-        id: Id,
-        created_at: chrono::DateTime<chrono::Utc>,
-        channel_id: Id,
-        author: User,
-        content: String,
-        image: Option<String>,
-        image_metadata: Option<crate::protocol::ImageMetadata>,
-        reply_to: Option<ReplyRef>,
-    ) -> Result<Message, String> {
+    async fn append_message_with_id(&self, input: MessageToAppend) -> Result<Message, String> {
+        let MessageToAppend {
+            id,
+            created_at,
+            channel_id,
+            author,
+            content,
+            image,
+            image_metadata,
+            reply_to,
+        } = input;
         let message = Message {
             image_metadata,
             attachment: None,

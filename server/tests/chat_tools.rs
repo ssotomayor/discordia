@@ -3,7 +3,7 @@ use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
 use discordia_server::protocol::{
     ClientMessage, FilePolicy, Id, MessageSearch, ServerMessage, User,
 };
-use discordia_server::state::AppState;
+use discordia_server::state::{AppState, ImageMessageInput};
 use discordia_server::store::Store;
 
 async fn fixture() -> (AppState, User, Id, Id) {
@@ -510,15 +510,15 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
         .unwrap();
     assert!(
         state
-            .push_image_message(
+            .push_image_message(ImageMessageInput {
                 channel_id,
-                owner.clone(),
-                String::new(),
-                Some(url.clone()),
-                None,
-                None,
-                None
-            )
+                author: owner.clone(),
+                content: String::new(),
+                image: Some(url.clone()),
+                image_preview: None,
+                image_name: None,
+                reply_to: None,
+            })
             .await
             .is_err()
     );
@@ -540,15 +540,15 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
         .await
         .unwrap();
     let message = state
-        .push_image_message(
+        .push_image_message(ImageMessageInput {
             channel_id,
-            owner.clone(),
-            String::new(),
-            Some(url),
-            None,
-            None,
-            None,
-        )
+            author: owner.clone(),
+            content: String::new(),
+            image: Some(url),
+            image_preview: None,
+            image_name: None,
+            reply_to: None,
+        })
         .await
         .unwrap();
     let address = message.image.unwrap();
@@ -569,15 +569,15 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
     );
     assert!(
         state
-            .push_image_message(
+            .push_image_message(ImageMessageInput {
                 channel_id,
-                owner.clone(),
-                String::new(),
-                Some(too_large),
-                None,
-                None,
-                None
-            )
+                author: owner.clone(),
+                content: String::new(),
+                image: Some(too_large),
+                image_preview: None,
+                image_name: None,
+                reply_to: None,
+            })
             .await
             .is_err()
     );
