@@ -1819,8 +1819,13 @@ fn MessageContent(content: String, channel_id: Id, message_id: Id) -> Element {
         .cloned()
         .unwrap_or_default();
     let mentions = spaced_mentions(&state.read(), &content, channel_id);
-    rsx! {
+    let gif = crate::giphy::message_gif(&content);
+    let link = rsx! {
         super::markup::Markup { content, markdown, guild_id, extra, mentions }
+    };
+    match gif {
+        Some(id) => rsx! { super::gif_picker::GifEmbed { id, link } },
+        None => link,
     }
 }
 
@@ -2558,6 +2563,7 @@ fn Composer(
     let mut attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
     let mut show_stickers = use_signal(|| false);
+    let mut show_gif = use_signal(|| false);
     let mut show_attach = use_signal(|| false);
     let mut pending_file = use_signal::<Option<(String, String)>>(|| None);
     let mut file_request = use_signal(|| None::<Id>);
@@ -2567,6 +2573,7 @@ fn Composer(
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
     let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
+    let nostr_gif = nostr_submit.clone();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let identity = use_context::<crate::identity::Identity>();
     let composer_id = format!("dxf-composer-{channel_id}");
@@ -2696,6 +2703,7 @@ fn Composer(
         pending_file.set(None);
         show_emoji.set(false);
         show_stickers.set(false);
+        show_gif.set(false);
         if reply_to.is_some() {
             state.write().replying_to = None;
         }
@@ -2947,6 +2955,46 @@ fn Composer(
         finish()
     };
 
+    // Sent on its own, so a half-written draft stays where it is.
+    let send_gif = {
+        let gateway = gateway.clone();
+        let nostr = nostr_gif;
+        move |url: String| {
+            let reply_to = replying_to.peek().as_ref().map(|r| r.message_id);
+            let dm_peer = state
+                .read()
+                .dm_of(channel_id)
+                .map(|d| d.other_pubkey.clone());
+            if let Some(peer) = dm_peer {
+                let reply_event =
+                    reply_to.and_then(|id| state.read().nostr_event_ids.get(&id).cloned());
+                let queue = dm_send_queue(channel_id);
+                let nostr = nostr.clone();
+                dioxus::core::spawn_forever(async move {
+                    let _turn = queue.lock().await;
+                    send_dm(state, &nostr, channel_id, peer, url, reply_event, None);
+                });
+            } else {
+                if state.peek().status != crate::state::ConnectionStatus::Ready {
+                    state.write().error_toast =
+                        Some("The server is reconnecting. Try the GIF again.".into());
+                    return;
+                }
+                gateway.send(ClientMessage::SendMessage {
+                    image_name: None,
+                    channel_id,
+                    content: url,
+                    image: None,
+                    image_preview: None,
+                    reply_to,
+                });
+            }
+            if reply_to.is_some() {
+                state.write().replying_to = None;
+            }
+        }
+    };
+
     let gateway_typing = gateway.clone();
     let notify_typing = move || {
         let now = std::time::Instant::now();
@@ -3177,7 +3225,7 @@ fn Composer(
                             },
                             title: crate::i18n::text("Attach", &[]),
                             aria_expanded: show_attach(),
-                            onclick: move |_| { show_stickers.set(false); show_attach.toggle(); },
+                            onclick: move |_| { show_stickers.set(false); show_gif.set(false); show_attach.toggle(); },
                             span { class: "block w-4 h-4", dangerous_inner_html: super::icons::PLUS }
                         }
                         if show_attach() {
@@ -3238,8 +3286,16 @@ fn Composer(
                         title: crate::i18n::text("Emoji", &[]),
                         // As with the suggestions: a button that takes focus takes the caret's place with it.
                         onmousedown: move |e| e.prevent_default(),
-                        onclick: move |_| { show_stickers.set(false); show_emoji.toggle(); },
+                        onclick: move |_| { show_stickers.set(false); show_gif.set(false); show_emoji.toggle(); },
                         span { class: "block w-4 h-4", dangerous_inner_html: super::icons::SMILE }
+                    }
+
+                    if crate::giphy::available() {
+                        super::gif_picker::GifPicker {
+                            open: show_gif,
+                            on_open: move |_| { show_emoji.set(false); show_stickers.set(false); show_attach.set(false); },
+                            on_pick: send_gif.clone(),
+                        }
                     }
 
                     if !is_dm && state.read().server_chat_tools {
@@ -3248,7 +3304,7 @@ fn Composer(
                                 channel_id,
                                 guild_id,
                                 open: show_stickers,
-                                on_open: move |_| { show_emoji.set(false); show_attach.set(false); },
+                                on_open: move |_| { show_emoji.set(false); show_gif.set(false); show_attach.set(false); },
                             }
                         }
                     }

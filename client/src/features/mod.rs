@@ -17,6 +17,7 @@ pub mod dm_call;
 mod dm_images;
 pub(crate) mod dm_menu;
 mod dm_requests;
+mod gif_picker;
 pub mod globe;
 mod globe_geometry;
 mod guild_hub;

@@ -468,6 +468,14 @@ button:active:not(:disabled) { transform: scale(0.985); }
 
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
+/* Sized up front, like the emoji picker: results arriving must not resize it. */
+.dxf-gif-popover { width: min(26rem, calc(100vw - 2rem)); height: min(28rem, 60vh); }
+.dxf-gif-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.dxf-gif-grid { columns: 2; column-gap: 4px; }
+.dxf-gif-cell { display: block; width: 100%; margin-bottom: 4px; break-inside: avoid; background-color: var(--panel2); }
+.dxf-gif-cell img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* A fixed height, so a GIF loading after the chat is measured never moves it. */
+.dxf-gif-embed { display: block; height: 200px; max-width: 100%; object-fit: contain; object-position: left center; }
 .dxf-emoji-popover { display: flex; flex-direction: column; }
 .dxf-emoji-scroll { min-height: 0; max-height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; }
 .dxf-emoji-heading { position: sticky; top: 0; z-index: 1; padding: 0 4px 4px; background-color: var(--panel-solid); color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; }

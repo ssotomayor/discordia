@@ -86,6 +86,7 @@ peer's IP, and a proxy makes every host the same peer.
 | `DISCORDIA_RENDEZVOUS_URL` | `ws://rendezvous.discordia.world:7700` | presets the rendezvous; plain `ws://` because the rendezvous is never behind TLS |
 | `DISCORDIA_DM_ICE_SERVERS` | `[{"urls":["stun:stun.cloudflare.com:3478"]}]` | JSON list of STUN/TURN servers for private DM calls; each entry accepts `urls`, `username`, `password`. Credentials stay local and are never sent through Nostr |
 | `DISCORDIA_DM_RELAY_ONLY` | off | `1` requires a configured TURN server and excludes direct media connections |
+| `GIPHY_API_KEY` | the build's | GIF picker key. Read at compile time (CI secret `GIPHY_API_KEY`) and overridden at run time; unset in both hides the GIF button. Searches go from the client to GIPHY; readers fetch the GIF from GIPHY too |
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |

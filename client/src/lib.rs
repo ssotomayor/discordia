@@ -40,6 +40,7 @@ pub use app::livekit_bundle_js;
 #[doc(hidden)]
 pub use features::screenshare::SCREEN_JS;
 mod file_dialog;
+mod giphy;
 mod host;
 mod i18n;
 mod identity;
