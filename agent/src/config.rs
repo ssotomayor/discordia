@@ -78,6 +78,8 @@ pub struct Limits {
     pub per_member_per_hour: u32,
     /// Input plus output, as the provider reports it, per UTC day.
     pub daily_tokens: u64,
+    /// The most any one guild may spend of that each day.
+    pub guild_daily_tokens: Option<u64>,
     pub in_flight: usize,
     pub context_messages: u32,
     /// An estimate (a token is about four bytes), not the provider's count.
@@ -89,6 +91,7 @@ impl Default for Limits {
         Self {
             per_member_per_hour: 20,
             daily_tokens: 200_000,
+            guild_daily_tokens: None,
             in_flight: 4,
             context_messages: 30,
             context_tokens: 8_000,
@@ -104,6 +107,9 @@ pub struct AgentConfig {
     pub limits: Limits,
     /// Bump with any change to what the manifest asks for or discloses.
     pub manifest_version: u64,
+    /// Answer this key only. A coding agent on its creator's computer is set
+    /// to its creator, or any member could drive a shell there (#457).
+    pub only_from: Option<String>,
 }
 
 pub(crate) const ASK: &str = "ask";
@@ -153,6 +159,7 @@ mod tests {
             model: ModelConfig::anthropic("claude-opus-5-5", ApiKey::new("sk-secret-123")),
             limits: Limits::default(),
             manifest_version: 1,
+            only_from: None,
         }
     }
 

@@ -348,6 +348,14 @@ pub struct Member {
     /// whole host. Only an installed app's row carries one, copied from its install.
     #[serde(default)]
     pub look: GuildLook,
+    /// An installed app's self-declared disclosure, copied from the manifest
+    /// its install pinned, so every member sees it is an LLM and where text goes.
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
+    /// An app's channel scope here (`AppAccess::channels`), so members can
+    /// tell which channels an agent reads. `None` is every one it can see.
+    #[serde(default)]
+    pub reads: Option<Vec<Id>>,
 }
 
 /// Each `None` shows the profile's own.
@@ -1367,6 +1375,29 @@ pub struct BotInstall {
     pub pending: Option<AppManifest>,
     #[serde(default)]
     pub look: GuildLook,
+    #[serde(default)]
+    pub access: AppAccess,
+}
+
+/// Where an installed app may read and who may use it, as its guild set
+/// (#456). The default limits nothing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppAccess {
+    /// The only channels it hears and may read; `None` is every one it can see.
+    #[serde(default)]
+    pub channels: Option<Vec<Id>>,
+    /// Only members with one of these roles reach it; `None` is everyone.
+    /// Whoever manages the guild always does.
+    #[serde(default)]
+    pub roles: Option<Vec<Id>>,
+}
+
+impl AppAccess {
+    pub fn reads(&self, channel_id: Id) -> bool {
+        self.channels
+            .as_ref()
+            .is_none_or(|c| c.contains(&channel_id))
+    }
 }
 
 /// NIP-89's handler kind, so a relay already knows to keep only the latest.
@@ -1548,6 +1579,127 @@ pub struct AppManifest {
 pub struct AgentInfo {
     pub provider: String,
     pub model: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProvider {
+    Anthropic,
+    OpenAiCompatible,
+}
+
+/// An agent the operator runs in the server process (#454). The API key is
+/// never part of it: it travels once, write-only, beside it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerAgentSpec {
+    pub name: String,
+    #[serde(default)]
+    pub prompt: String,
+    pub provider: AgentProvider,
+    /// What members are told their messages go to.
+    pub provider_label: String,
+    pub base_url: String,
+    pub model: String,
+    pub per_member_per_hour: u32,
+    pub daily_tokens: u64,
+    /// Guilds it is installed in; only ones the operator manages.
+    #[serde(default)]
+    pub guilds: Vec<Id>,
+    /// Other guilds' admins may install it too, each under `guild_daily_tokens`.
+    #[serde(default)]
+    pub offered: bool,
+    /// Tokens a day any one guild may spend; 0 leaves only the agent's own cap.
+    #[serde(default)]
+    pub guild_daily_tokens: u64,
+}
+
+/// Which apps a guild's admins may install on this server (#455). The
+/// operator's own installs and offered server agents are never refused by it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppsPolicy {
+    #[default]
+    Open,
+    Approved,
+    Off,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerAppInstall {
+    pub guild_name: String,
+    pub install: BotInstall,
+}
+
+/// A server agent a guild's admin may install, as they are shown it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfferedAgent {
+    pub pubkey: String,
+    pub name: String,
+    pub provider_label: String,
+    pub model: String,
+    #[serde(default)]
+    pub guild_daily_tokens: u64,
+}
+
+/// What an operator is shown of a server agent: never its keys.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerAgentView {
+    pub pubkey: String,
+    pub spec: ServerAgentSpec,
+    /// The API key's last four characters, so the operator can tell which one is saved.
+    #[serde(default)]
+    pub key_hint: String,
+    #[serde(default)]
+    pub online: bool,
+    #[serde(default)]
+    pub status: String,
+}
+
+pub const MAX_SERVER_AGENTS: usize = 16;
+pub const MAX_AGENT_PROMPT: usize = 8_000;
+pub const MAX_AGENT_URL: usize = 512;
+
+/// Refused whole: the operator is editing it, so an error beats a silent trim.
+pub fn validate_server_agent(raw: ServerAgentSpec) -> Result<ServerAgentSpec, String> {
+    let name = sanitize_line(raw.name.trim(), MAX_APP_NAME);
+    if name.is_empty() {
+        return Err("an agent needs a name".into());
+    }
+    if raw.prompt.chars().count() > MAX_AGENT_PROMPT {
+        return Err(format!(
+            "instructions are over {MAX_AGENT_PROMPT} characters"
+        ));
+    }
+    let provider_label = sanitize_line(raw.provider_label.trim(), MAX_AGENT_LABEL);
+    let model = sanitize_line(raw.model.trim(), MAX_AGENT_LABEL);
+    if provider_label.is_empty() || model.is_empty() {
+        return Err("an agent names its provider and model".into());
+    }
+    let base_url = raw.base_url.trim().to_string();
+    if base_url.len() > MAX_AGENT_URL
+        || !(base_url.starts_with("https://") || base_url.starts_with("http://"))
+    {
+        return Err("the provider address must be an http or https URL".into());
+    }
+    if raw.per_member_per_hour == 0 || raw.daily_tokens == 0 {
+        return Err("an agent's limits must be above zero".into());
+    }
+    let mut guilds = raw.guilds;
+    guilds.sort_unstable();
+    guilds.dedup();
+    Ok(ServerAgentSpec {
+        name,
+        prompt: raw.prompt,
+        provider: raw.provider,
+        provider_label,
+        base_url,
+        model,
+        per_member_per_hour: raw.per_member_per_hour,
+        daily_tokens: raw.daily_tokens,
+        guilds,
+        offered: raw.offered,
+        guild_daily_tokens: raw.guild_daily_tokens,
+    })
 }
 
 impl AppManifest {
@@ -2318,6 +2470,45 @@ pub enum ClientMessage {
         #[serde(default)]
         accent: Option<String>,
     },
+    /// Operator only. Answered by `ServerAgents`.
+    FetchServerAgents,
+    /// Operator only. Without `pubkey` it creates one. `api_key` is written
+    /// and never read back; `None` keeps the saved one.
+    SaveServerAgent {
+        #[serde(default)]
+        pubkey: Option<String>,
+        spec: ServerAgentSpec,
+        #[serde(default)]
+        api_key: Option<String>,
+    },
+    /// Operator only. Uninstalls it everywhere and forgets its keys.
+    DeleteServerAgent {
+        pubkey: String,
+    },
+    /// Manage guild. Answered by `GuildIntegrations`.
+    SetAppAccess {
+        guild_id: Id,
+        bot_pubkey: String,
+        access: AppAccess,
+    },
+    /// Operator only. Answered by `ServerApps`.
+    FetchServerApps,
+    /// Operator only.
+    SetAppsPolicy {
+        policy: AppsPolicy,
+    },
+    /// Operator only. What `AppsPolicy::Approved` lets guilds install.
+    SetAppApproved {
+        pubkey: String,
+        approved: bool,
+    },
+    /// Operator only. A ban also removes the app from every guild.
+    SetAppBanned {
+        pubkey: String,
+        banned: bool,
+    },
+    /// Answered by `OfferedAgents`.
+    FetchOfferedAgents,
     InstallBot {
         guild_id: Id,
         bot_pubkey: String,
@@ -2884,6 +3075,20 @@ pub enum ServerMessage {
     DefaultGuild {
         #[serde(default)]
         guild_id: Option<Id>,
+    },
+    /// Only ever sent to operators.
+    ServerAgents {
+        agents: Vec<ServerAgentView>,
+    },
+    /// Only ever sent to operators: every app in every guild, and the rules.
+    ServerApps {
+        policy: AppsPolicy,
+        approved: Vec<String>,
+        banned: Vec<String>,
+        installs: Vec<ServerAppInstall>,
+    },
+    OfferedAgents {
+        agents: Vec<OfferedAgent>,
     },
     GuildIntegrations {
         guild_id: Id,

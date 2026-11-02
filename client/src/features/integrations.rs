@@ -118,6 +118,8 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                             }
                         }
                     }
+                    super::agents::MyAgentsSection { guild_id }
+                    super::agents::OfferedAgentsSection { guild_id }
                     InstallForm { guild_id }
                     BlocklistsSection { guild_id }
                 }
@@ -184,6 +186,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                 }
             }
             AppLookRow { guild_id, bot: bot.clone() }
+            super::agents::AppAccessRow { guild_id, bot: bot.clone() }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
                 BundleRow { guild_id, bot_pubkey: bot.bot_pubkey.clone(), activity }
             }
@@ -474,7 +477,7 @@ fn InstallForm(guild_id: Id) -> Element {
 }
 
 #[component]
-fn AppConsent(
+pub(crate) fn AppConsent(
     guild_id: Id,
     bot_pubkey: String,
     manifest: AppManifest,
@@ -540,6 +543,11 @@ fn AppConsent(
                 div { class: "text-[10px] text-[var(--text-dim)]",
                     {crate::i18n::text("Buttons: ", &[])}
                     {manifest.commands.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", ")}
+                }
+            }
+            if let Some(agent) = &manifest.agent {
+                div { class: "text-[11px] text-[var(--warn)]",
+                    {crate::i18n::text("An AI agent: what it reads is sent to {0} ({1}) by whoever runs it.", &[agent.provider.clone(), agent.model.clone()])}
                 }
             }
             if privileged {

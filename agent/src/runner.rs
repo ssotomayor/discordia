@@ -44,6 +44,7 @@ struct Waiting {
 
 struct Done {
     channel_id: Id,
+    guild: Option<Id>,
     answer: Answer,
     result: Result<Reply, HarnessError>,
 }
@@ -65,6 +66,7 @@ pub async fn run<H: Harness>(
         waiting: HashMap::new(),
         tasks: JoinSet::new(),
         running: HashMap::new(),
+        guild_of: HashMap::new(),
     };
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -84,7 +86,7 @@ pub async fn run<H: Harness>(
                     }
                     Err(e) => {
                         agent.running.remove(&e.id());
-                        agent.ledger.finish(0, Utc::now().date_naive());
+                        agent.ledger.finish(0, None, Utc::now().date_naive());
                         tracing::error!(error = %e, "agent reply task failed");
                     }
                 }
@@ -105,6 +107,8 @@ struct Agent<H> {
     tasks: JoinSet<Done>,
     /// Channel and whether the answer is public, per running task.
     running: HashMap<tokio::task::Id, (Id, bool)>,
+    /// Which guild each channel is in, for that guild's share of the budget.
+    guild_of: HashMap<Id, Id>,
 }
 
 impl<H: Harness> Agent<H> {
@@ -115,15 +119,31 @@ impl<H: Harness> Agent<H> {
         event: ServerMessage,
     ) -> Result<(), BotError> {
         match event {
-            ServerMessage::Ready { user, members, .. } => {
+            ServerMessage::Ready {
+                user,
+                members,
+                channels,
+                ..
+            } => {
                 self.me = user.pubkey;
                 self.names.insert(user.username);
                 self.learn(&members);
+                self.guild_of
+                    .extend(channels.iter().map(|c| (c.id, c.guild_id)));
                 bot.register_manifest(identity, &self.config.manifest())
                     .await?;
                 bot.register_commands(self.config.commands()).await?;
             }
-            ServerMessage::GuildJoined { members, .. } => self.learn(&members),
+            ServerMessage::GuildJoined {
+                members, channels, ..
+            } => {
+                self.learn(&members);
+                self.guild_of
+                    .extend(channels.iter().map(|c| (c.id, c.guild_id)));
+            }
+            ServerMessage::ChannelCreate(c) | ServerMessage::ChannelUpdate(c) => {
+                self.guild_of.insert(c.id, c.guild_id);
+            }
             ServerMessage::MemberJoin(m) | ServerMessage::MemberUpdate(m) => {
                 self.learn(std::slice::from_ref(&m))
             }
@@ -133,6 +153,16 @@ impl<H: Harness> Agent<H> {
             }
             ServerMessage::CommandInvoked(inv) if inv.command == ASK => {
                 let question = inv.text("question").unwrap_or("").trim().to_string();
+                if self
+                    .config
+                    .only_from
+                    .as_ref()
+                    .is_some_and(|o| *o != inv.invoker.pubkey)
+                {
+                    return bot
+                        .respond(&inv, "I only answer the person who runs me.")
+                        .await;
+                }
                 if question.is_empty() {
                     return bot.respond(&inv, "Ask me something.").await;
                 }
@@ -179,6 +209,11 @@ impl<H: Harness> Agent<H> {
     fn triggered(&self, msg: &Message) -> bool {
         msg.author.pubkey != self.me
             && !msg.author_bot
+            && self
+                .config
+                .only_from
+                .as_ref()
+                .is_none_or(|o| *o == msg.author.pubkey)
             && !msg.content.trim().is_empty()
             && (msg
                 .reply_to
@@ -195,10 +230,12 @@ impl<H: Harness> Agent<H> {
     ) -> Result<(), BotError> {
         let channel_id = trigger.channel_id;
         let today = Utc::now().date_naive();
-        if let Err((refusal, notify)) =
-            self.ledger
-                .admit(&trigger.author.pubkey, Instant::now(), today)
-        {
+        if let Err((refusal, notify)) = self.ledger.admit(
+            &trigger.author.pubkey,
+            self.guild_of.get(&channel_id).copied(),
+            Instant::now(),
+            today,
+        ) {
             // A command press waits on an answer; a mention may go unanswered.
             if notify || !answer.public() {
                 self.say(bot, channel_id, &answer, refusal.notice()).await?;
@@ -230,12 +267,14 @@ impl<H: Harness> Agent<H> {
         };
         let harness = self.harness.clone();
         let channel_id = w.trigger.channel_id;
+        let guild = self.guild_of.get(&channel_id).copied();
         let public = w.answer.public();
         let answer = w.answer;
         let handle = self.tasks.spawn(async move {
             let result = harness.reply(prompt).await;
             Done {
                 channel_id,
+                guild,
                 answer,
                 result,
             }
@@ -280,7 +319,8 @@ impl<H: Harness> Agent<H> {
             Ok(r) => r.tokens,
             Err(e) => e.tokens(),
         };
-        self.ledger.finish(tokens, Utc::now().date_naive());
+        self.ledger
+            .finish(tokens, done.guild, Utc::now().date_naive());
         let text = match done.result {
             Ok(r) => r.text,
             Err(HarnessError::Refused { .. }) => "I can't help with that one.".to_string(),

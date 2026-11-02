@@ -70,6 +70,7 @@ pub trait Harness: Send + Sync + 'static {
     fn reply(&self, prompt: Prompt) -> impl Future<Output = Result<Reply, HarnessError>> + Send;
 }
 
+#[derive(Clone)]
 pub struct Http {
     client: reqwest::Client,
     config: ModelConfig,
@@ -87,14 +88,29 @@ impl Http {
         Self { client, config }
     }
 
-    async fn post(
-        &self,
-        url: String,
-        request: reqwest::RequestBuilder,
-        body: Value,
-    ) -> Result<Value, HarnessError> {
-        let response = request
-            .json(&body)
+    fn url(&self, path: &str) -> String {
+        let base = self.config.base_url.trim_end_matches('/');
+        match self.config.provider {
+            Provider::Anthropic => format!("{base}/v1/{path}"),
+            Provider::OpenAiCompatible => format!("{base}/{path}"),
+        }
+    }
+
+    fn authed(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let key = self.config.api_key.expose();
+        match self.config.provider {
+            Provider::Anthropic => request
+                .header("x-api-key", key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+            // A local server (Ollama) takes no key; an empty bearer is refused by some.
+            Provider::OpenAiCompatible if key.is_empty() => request,
+            Provider::OpenAiCompatible => request.bearer_auth(key),
+        }
+    }
+
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<Value, HarnessError> {
+        let response = self
+            .authed(request)
             .send()
             .await
             .map_err(|e| HarnessError::Network(e.without_url().to_string()))?;
@@ -109,37 +125,53 @@ impl Http {
         response
             .json::<Value>()
             .await
-            .map_err(|e| HarnessError::Decode(format!("{url}: {}", e.without_url())))
+            .map_err(|e| HarnessError::Decode(e.without_url().to_string()))
+    }
+
+    /// The models this key may use, for a picker. Both provider kinds answer
+    /// `{"data": [{"id": …}]}`.
+    pub async fn models(&self) -> Result<Vec<String>, HarnessError> {
+        let request = self
+            .client
+            .get(self.url("models"))
+            .query(&[("limit", "100")]);
+        Ok(parse_models(self.send(request).await?))
     }
 }
 
 impl Harness for Http {
     async fn reply(&self, prompt: Prompt) -> Result<Reply, HarnessError> {
-        let base = self.config.base_url.trim_end_matches('/');
-        let key = self.config.api_key.expose();
         match self.config.provider {
             Provider::Anthropic => {
-                let url = format!("{base}/v1/messages");
                 let request = self
                     .client
-                    .post(&url)
-                    .header("x-api-key", key)
-                    .header("anthropic-version", ANTHROPIC_VERSION);
-                let body = anthropic_body(&self.config, &prompt);
-                parse_anthropic(self.post(url, request, body).await?)
+                    .post(self.url("messages"))
+                    .json(&anthropic_body(&self.config, &prompt));
+                parse_anthropic(self.send(request).await?)
             }
             Provider::OpenAiCompatible => {
-                let url = format!("{base}/chat/completions");
-                let mut request = self.client.post(&url);
-                // A local server (Ollama) takes no key; an empty bearer is refused by some.
-                if !key.is_empty() {
-                    request = request.bearer_auth(key);
-                }
-                let body = openai_body(&self.config, &prompt);
-                parse_openai(self.post(url, request, body).await?)
+                let request = self
+                    .client
+                    .post(self.url("chat/completions"))
+                    .json(&openai_body(&self.config, &prompt));
+                parse_openai(self.send(request).await?)
             }
         }
     }
+}
+
+fn parse_models(v: Value) -> Vec<String> {
+    let mut ids: Vec<String> = v["data"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 const ANTHROPIC_VERSION: &str = "2026-10-21";
@@ -309,6 +341,32 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["content"], "Ana: hi @Helper");
         assert_eq!(body["messages"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn model_lists_read_ids_from_either_provider() {
+        let ids = parse_models(json!({
+            "data": [{ "id": "b-model" }, { "id": "a-model" }, { "id": "a-model" }, { "name": "x" }]
+        }));
+        assert_eq!(ids, vec!["a-model", "b-model"]);
+        assert!(parse_models(json!({ "error": "nope" })).is_empty());
+    }
+
+    #[test]
+    fn each_provider_has_its_own_paths() {
+        let a = Http::new(ModelConfig::anthropic("m", ApiKey::new("k")));
+        assert_eq!(a.url("messages"), "https://api.anthropic.com/v1/messages");
+        let o = Http::new(ModelConfig::openai_compatible(
+            "Ollama",
+            "http://127.0.0.1:11434/v1/",
+            "m",
+            ApiKey::new(""),
+        ));
+        assert_eq!(
+            o.url("chat/completions"),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+        assert_eq!(o.url("models"), "http://127.0.0.1:11434/v1/models");
     }
 
     #[test]

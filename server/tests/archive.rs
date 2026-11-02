@@ -343,6 +343,8 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 roles: vec![],
                 xp: 0,
                 look: Default::default(),
+                agent: None,
+                reads: None,
             },
             Member {
                 user: User {
@@ -355,6 +357,8 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 roles: vec![],
                 xp: 0,
                 look: Default::default(),
+                agent: None,
+                reads: None,
             },
         ],
         bans: vec![hex_key('c'), "\u{202E}".into()],
@@ -373,6 +377,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 banner: None,
                 bio: Some(" ".into()),
             },
+            access: Default::default(),
         }],
         messages: vec![(
             chan,

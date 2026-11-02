@@ -598,6 +598,7 @@ pub async fn start_self_host(
     });
 
     let gateway = discordia_server::serve_router(listener, router);
+    shutdown.start_agents(gateway.addr);
     let local_url = format!("ws://127.0.0.1:{}", gateway_addr.port());
 
     let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();

@@ -1,6 +1,7 @@
 mod accent_palette;
 pub mod account;
 pub mod activities;
+pub mod agents;
 pub mod appearance;
 mod bookmarks;
 pub mod bot_commands;

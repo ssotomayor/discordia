@@ -53,6 +53,14 @@ pub struct PeerRoutes {
     pub received: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerApps {
+    pub policy: crate::protocol::AppsPolicy,
+    pub approved: Vec<String>,
+    pub banned: Vec<String>,
+    pub installs: Vec<crate::protocol::ServerAppInstall>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -446,6 +454,8 @@ pub struct AppState {
     /// Opened from the title bar, rendered by the voice panel that owns the
     /// device signals — the flag is the only thing the two need to share.
     pub audio_settings: bool,
+    /// Account-level, so it survives moving between Home and a server.
+    pub agents_open: bool,
     /// The "where does my data go" panel, opened from the transport chip.
     pub topology_open: bool,
     /// The voice channel whose access dialog is open.
@@ -573,6 +583,12 @@ pub struct AppState {
     pub voice_invite_on_ready: Option<PendingVoiceInvite>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
+    /// The connected server's own agents; only ever sent to an operator.
+    pub server_agents: Vec<crate::protocol::ServerAgentView>,
+    /// The operator's rules and every install, when they asked (#455).
+    pub server_apps: Option<ServerApps>,
+    /// Server agents a guild's admin may install.
+    pub offered_agents: Vec<crate::protocol::OfferedAgent>,
     /// The connected server's, from Ready and `DefaultGuild`.
     pub default_guild: Option<Id>,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
@@ -654,6 +670,7 @@ impl AppState {
             guild_dialog: None,
             rules_prompt: None,
             audio_settings: false,
+            agents_open: false,
             topology_open: false,
             channel_access_open: None,
             typing: HashMap::new(),
@@ -753,6 +770,9 @@ impl AppState {
             voice_invite_on_ready: None,
             gateway_failure: None,
             is_operator: false,
+            server_agents: Vec::new(),
+            server_apps: None,
+            offered_agents: Vec::new(),
             default_guild: None,
             audit_logs: HashMap::new(),
         }
@@ -936,6 +956,9 @@ impl AppState {
         self.invites.clear();
         self.audit_logs.clear();
         self.is_operator = false;
+        self.server_agents.clear();
+        self.server_apps = None;
+        self.offered_agents.clear();
         self.default_guild = None;
         self.emoji_images.clear();
         self.evict_inactive_dm_images(self.selected_channel);
@@ -2517,6 +2540,8 @@ mod tests {
             roles: Vec::new(),
             xp: 0,
             look,
+            agent: None,
+            reads: None,
         };
         let dressed = crate::protocol::GuildLook {
             avatar: Some("data:image/png;base64,ours".into()),
@@ -3481,6 +3506,8 @@ mod tests {
             roles: Vec::new(),
             xp: 0,
             look: Default::default(),
+            agent: None,
+            reads: None,
         }
     }
 

@@ -83,8 +83,14 @@ impl AppState {
         if !self.is_guild_member(guild_id, &invoker.pubkey) {
             return Err("you're not a member of this guild".into());
         }
-        if self.bot_install(guild_id, bot_pubkey).is_none() {
-            return Err("that bot isn't installed here".into());
+        let install = self
+            .bot_install(guild_id, bot_pubkey)
+            .ok_or("that bot isn't installed here")?;
+        if !install.access.reads(channel_id) {
+            return Err("this guild doesn't let that app be used in this channel".into());
+        }
+        if !invoker_is_bot && !self.may_use_app(&install, &invoker.pubkey) {
+            return Err("you don't have a role this guild lets use that app".into());
         }
         let channel = self
             .channel(channel_id)

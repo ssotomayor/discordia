@@ -7,7 +7,7 @@ description = "Runs an LLM agent as a discordia app: triggers, context, limits a
 [dependencies]
 discordia-bot = { path = "../bot-sdk" }
 discordia-protocol = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "process", "io-util", "fs"] }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

@@ -63,6 +63,7 @@ pub struct LoadedState {
 }
 
 const DEFAULT_GUILD_KEY: &str = "default_guild";
+const APPS_POLICY_KEY: &str = "apps_policy";
 
 #[derive(Clone)]
 pub struct Store {
@@ -206,6 +207,8 @@ impl Store {
         let ddl = [
             "CREATE TABLE IF NOT EXISTS guild_file_policies (guild_id TEXT PRIMARY KEY, policy TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS server_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS server_agents (pubkey TEXT PRIMARY KEY, spec TEXT NOT NULL, secret TEXT NOT NULL, api_key TEXT NOT NULL, version INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS app_rules (pubkey TEXT PRIMARY KEY, rule TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS default_guild_offers (guild_id TEXT NOT NULL, pubkey TEXT NOT NULL, PRIMARY KEY (guild_id, pubkey))",
             "CREATE TABLE IF NOT EXISTS guild_stickers (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL, image TEXT NOT NULL, added_by TEXT NOT NULL, created_ms INTEGER NOT NULL, UNIQUE(guild_id, shortcode))",
             "CREATE TABLE IF NOT EXISTS users (
@@ -318,6 +321,7 @@ impl Store {
             "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
             "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
             "ALTER TABLE bot_installs ADD COLUMN look TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN access TEXT",
             "ALTER TABLE profiles ADD COLUMN hide_guild_owner INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN hide_operator INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
@@ -516,7 +520,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look FROM bot_installs")
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look, access FROM bot_installs")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -538,6 +542,10 @@ impl Store {
                     .unwrap_or_default(),
                 look: r
                     .get::<Option<String>, _>(8)
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
+                access: r
+                    .get::<Option<String>, _>(9)
                     .and_then(|j| serde_json::from_str(&j).ok())
                     .unwrap_or_default(),
             });
@@ -1104,12 +1112,12 @@ impl Store {
         i: &BotInstall,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look, access)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(guild_id, bot_pubkey) DO UPDATE SET name=excluded.name,
                permissions=excluded.permissions, intents=excluded.intents,
                app=excluded.app, pending=excluded.pending, may_call=excluded.may_call,
-               look=excluded.look",
+               look=excluded.look, access=excluded.access",
         )
         .bind(i.guild_id.to_string())
         .bind(&i.bot_pubkey)
@@ -1120,6 +1128,7 @@ impl Store {
         .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .bind(serde_json::to_string(&i.may_call).unwrap_or_else(|_| "[]".into()))
         .bind(serde_json::to_string(&i.look).ok())
+        .bind(serde_json::to_string(&i.access).ok())
         .execute(executor)
         .await?;
         Ok(())
@@ -1175,6 +1184,91 @@ impl Store {
         .bind(serde_json::to_string(&list.blocked).unwrap_or_else(|_| "[]".into()))
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn apps_policy(&self) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT value FROM server_settings WHERE key = ?")
+            .bind(APPS_POLICY_KEY)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>(0)))
+    }
+
+    pub async fn set_apps_policy(&self, policy: &str) -> Result<()> {
+        sqlx::query("INSERT INTO server_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(APPS_POLICY_KEY)
+            .bind(policy)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// `(pubkey, "approved" | "banned")`: a key is one or the other, never both.
+    pub async fn app_rules(&self) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT pubkey, rule FROM app_rules")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    pub async fn set_app_rule(&self, pubkey: &str, rule: Option<&str>) -> Result<()> {
+        match rule {
+            Some(rule) => sqlx::query("INSERT INTO app_rules(pubkey, rule) VALUES (?, ?) ON CONFLICT(pubkey) DO UPDATE SET rule = excluded.rule")
+                .bind(pubkey).bind(rule).execute(&self.pool).await?,
+            None => sqlx::query("DELETE FROM app_rules WHERE pubkey = ?")
+                .bind(pubkey).execute(&self.pool).await?,
+        };
+        Ok(())
+    }
+
+    /// Rows of `(pubkey, spec json, secret, api key, manifest version)`.
+    pub async fn server_agents(&self) -> Result<Vec<(String, String, String, String, u64)>> {
+        let rows = sqlx::query("SELECT pubkey, spec, secret, api_key, version FROM server_agents")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get(0),
+                    r.get(1),
+                    r.get(2),
+                    r.get(3),
+                    r.get::<i64, _>(4) as u64,
+                )
+            })
+            .collect())
+    }
+
+    pub async fn save_server_agent(
+        &self,
+        pubkey: &str,
+        spec: &str,
+        secret: &str,
+        api_key: &str,
+        version: u64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO server_agents(pubkey, spec, secret, api_key, version) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(pubkey) DO UPDATE SET spec = excluded.spec, secret = excluded.secret,
+             api_key = excluded.api_key, version = excluded.version",
+        )
+        .bind(pubkey)
+        .bind(spec)
+        .bind(secret)
+        .bind(api_key)
+        .bind(version as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_server_agent(&self, pubkey: &str) -> Result<()> {
+        sqlx::query("DELETE FROM server_agents WHERE pubkey = ?")
+            .bind(pubkey)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

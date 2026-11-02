@@ -642,6 +642,7 @@ pub fn WorkspaceView(
                 }
             }
             crate::features::settings_dialog::SettingsDialog {}
+            crate::features::agents::AgentsDialog {}
             crate::features::soundboard::SoundboardPanel {}
             crate::features::voice_menu::VoiceMenuHost {}
             crate::features::channel_access::ChannelAccessHost {}
@@ -687,6 +688,13 @@ pub fn WorkspaceView(
                         LayoutButton { layout, settings, edit_mode }
                     }
                     crate::features::appearance::AppearanceButton {}
+                    button {
+                        class: "dxf-workspace-agents w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                        title: crate::i18n::text("Agents", &[]),
+                        aria_label: crate::i18n::text("Agents", &[]),
+                        onclick: move |_| state.clone().write().agents_open = true,
+                        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::BOT }
+                    }
                     button {
                         class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
                         title: crate::i18n::text("Settings", &[]),

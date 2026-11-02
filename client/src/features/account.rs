@@ -131,6 +131,12 @@ pub fn AccountView(
         }
     }));
     provide_context(nostr.clone());
+    provide_context(crate::agents::use_agents(
+        identity.pubkey.clone(),
+        identity.display_name.clone(),
+        state,
+        settings,
+    ));
     let name_nostr = nostr.clone();
     use_effect(use_reactive((&identity.display_name,), move |(name,)| {
         name_nostr.send(crate::nostr::service::NostrCmd::PublishName(name));

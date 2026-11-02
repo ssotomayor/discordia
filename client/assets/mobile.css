@@ -149,6 +149,7 @@
 .dxf-platform-mobile .dxf-home-tools .dxf-home-social { width: auto; padding: 0 8px; gap: 6px; }
 .dxf-platform-mobile .dxf-home-tools .dxf-home-social[aria-expanded="true"] { color: var(--accent); background-color: var(--accent-soft); border-color: var(--accent); }
 .dxf-platform-mobile .dxf-home-tools .dxf-home-settings { position: static; }
+.dxf-platform-mobile .dxf-home-agents-label { display: none; }
 .dxf-platform-mobile :is(.dxf-home-tools, .dxf-workspace-tools) button > span:has(svg) {
   display: flex; align-items: center; justify-content: center; flex: 0 0 19px; width: 19px; height: 19px;
 }

@@ -1,4 +1,5 @@
 pub mod admission;
+pub mod agents;
 pub mod archive;
 pub mod auth;
 pub mod connection_routes;
@@ -10,6 +11,7 @@ pub mod media;
 pub mod quic;
 pub mod rendezvous;
 pub mod sanitize;
+pub mod server_apps;
 pub mod sfu_proxy;
 pub mod state;
 pub mod store;
@@ -57,7 +59,20 @@ impl GatewayShutdown {
     /// watching yet, or a socket accepted a moment later reads a channel that
     /// still says the server is running.
     pub fn close_all(&self) {
+        self.1.agent_host.stop_all();
         self.0.send_replace(true);
+    }
+
+    /// Server agents dial the gateway, so they start once it listens.
+    pub fn start_agents(&self, gateway: SocketAddr) {
+        match agents::loopback_gateway(gateway) {
+            Some(url) => self.1.agent_host.start(&self.1, url),
+            None if !self.1.server_agents.is_empty() => tracing::warn!(
+                %gateway,
+                "server agents not started: the plain gateway is bound to neither loopback nor every address"
+            ),
+            None => {}
+        }
     }
 }
 
@@ -197,8 +212,10 @@ pub async fn spawn_on(
         cfg.identities.extend(local_identities(addr.port()));
     }
     let admission = cfg.admission.clone();
-    let router = build_router(cfg).await?;
-    Ok(serve_router_with(listener, router, &admission))
+    let (router, gateway) = build_gateway(cfg).await?;
+    let handle = serve_router_with(listener, router, &admission);
+    gateway.start_agents(handle.addr);
+    Ok(handle)
 }
 
 pub async fn build_router(cfg: ServerConfig) -> std::io::Result<axum::Router> {

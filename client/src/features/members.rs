@@ -841,6 +841,13 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                             {crate::i18n::text("Bot", &[])}
                         }
                     }
+                    if let Some(agent) = &member.agent {
+                        span {
+                            class: "dxf-pop px-1 py-px rounded bg-[var(--warn)]/15 text-[var(--warn)] text-[8px] font-bold uppercase tracking-wider",
+                            title: crate::i18n::text("AI agent: what it reads is sent to {0} ({1})", &[agent.provider.clone(), agent.model.clone()]),
+                            {crate::i18n::text("AI", &[])}
+                        }
+                    }
                 }
                 if let Some((sub, is_activity)) = subtitle() {
                     span {
@@ -1283,6 +1290,8 @@ mod tests {
             roles: Vec::new(),
             xp: 0,
             look: Default::default(),
+            agent: None,
+            reads: None,
         }
     }
 
@@ -1352,6 +1361,8 @@ mod tests {
         let at = |pk: &str, xp: u64| Member {
             xp,
             look: Default::default(),
+            agent: None,
+            reads: None,
             ..member(pk, gid, true)
         };
         let sorted = vec![at("a", 500), at("b", 100), at("c", 20), at("d", 3)];
