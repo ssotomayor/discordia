@@ -40,7 +40,9 @@ pub fn selected_media_route(stats: &[RtcStats]) -> Option<MediaRoute> {
         }
         _ => None,
     });
-    if pair.state != Some(livekit::webrtc::stats::IceCandidatePairState::Succeeded) {
+    // libwebrtc marks the selected pair in-progress for every consent ping it sends, so
+    // only a failed pair is lost: requiring succeeded showed "unknown" every few seconds.
+    if pair.state == Some(livekit::webrtc::stats::IceCandidatePairState::Failed) {
         return None;
     }
     let local = stats.iter().find_map(|s| match s {
@@ -148,6 +150,23 @@ mod tests {
             pair.candidate_pair.state = Some(livekit::webrtc::stats::IceCandidatePairState::Failed);
         }
         assert!(selected_media_route(&stats).is_none());
+    }
+
+    #[test]
+    fn a_consent_ping_in_flight_keeps_the_route() {
+        let mut stats: Vec<RtcStats> = serde_json::from_value(serde_json::json!([
+            {"type":"transport", "selectedCandidatePairId":"selected"},
+            {"type":"candidate-pair", "id":"selected", "remoteCandidateId":"remote", "state":"in-progress"},
+            {"type":"remote-candidate", "id":"remote", "address":"203.0.113.9", "port":7882, "protocol":"udp", "candidateType":"host"},
+            {"type":"inbound-rtp"}
+        ])).unwrap();
+        let (send, receive) = selected_media_routes(&stats, &[]);
+        assert_eq!(send.unwrap().label(), "IPv4 · UDP");
+        assert_eq!(receive.unwrap().endpoint, "203.0.113.9:7882");
+        if let RtcStats::CandidatePair(pair) = &mut stats[1] {
+            pair.candidate_pair.state = Some(livekit::webrtc::stats::IceCandidatePairState::Failed);
+        }
+        assert_eq!(selected_media_routes(&stats, &[]), (None, None));
     }
 
     #[test]
