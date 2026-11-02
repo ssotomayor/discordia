@@ -958,6 +958,7 @@
   "Done": ["Listo", "Concluído", "完成", "完了"],
   "Dock to the bottom": ["Acoplar abajo", "Encaixar embaixo", "停靠到底部", "下にドッキング"],
   "Dock to the left": ["Acoplar a la izquierda", "Encaixar à esquerda", "停靠到左侧", "左にドッキング"],
+  "Dock to the right": ["Acoplar a la derecha", "Encaixar à direita", "停靠到右侧", "右にドッキング"],
   "Dock to the top": ["Acoplar arriba", "Encaixar em cima", "停靠到顶部", "上にドッキング"],
   "Done rearranging": ["Terminar organización", "Concluir organização", "完成重新排列", "再配置が完了しました"],
   "Dots": ["Puntos", "Pontos", "点", "ドット"],

@@ -1170,6 +1170,40 @@ impl AppState {
         changed
     }
 
+    pub fn update_camera_watching(&self, pubkey: &str, cameras: Vec<String>) -> Option<VoiceState> {
+        let channel = self.voice_states.get(pubkey)?.channel_id?;
+        let active: Vec<_> = self
+            .voice_states
+            .iter()
+            .filter(|state| state.camera_on && state.channel_id == Some(channel))
+            .map(|state| state.user_pubkey.clone())
+            .collect();
+        let mut cameras: Vec<_> = cameras
+            .into_iter()
+            .filter(|key| key != pubkey && active.contains(key))
+            .collect();
+        cameras.sort();
+        cameras.dedup();
+        let mut entry = self.voice_states.get_mut(pubkey)?;
+        if entry.channel_id != Some(channel) || entry.camera_watching == cameras {
+            return None;
+        }
+        entry.camera_watching = cameras;
+        Some(entry.clone())
+    }
+
+    pub fn clear_camera_watchers(&self, camera: &str) -> Vec<VoiceState> {
+        let mut changed = Vec::new();
+        for mut entry in self.voice_states.iter_mut() {
+            let previous = entry.camera_watching.len();
+            entry.camera_watching.retain(|key| key != camera);
+            if entry.camera_watching.len() != previous {
+                changed.push(entry.clone());
+            }
+        }
+        changed
+    }
+
     pub fn voice_states_in(&self, guild_id: Id) -> Vec<VoiceState> {
         self.voice_states
             .iter()
@@ -3939,6 +3973,7 @@ impl AppState {
             speaking: false,
             screen_sharing: false,
             screen_watching: Vec::new(),
+            camera_watching: Vec::new(),
             camera_on: false,
         };
         if channel_id.is_some() {
@@ -4097,6 +4132,7 @@ impl AppState {
             camera_on: false,
             screen_sharing: false,
             screen_watching: Vec::new(),
+            camera_watching: Vec::new(),
             ..prev
         })
     }
@@ -4359,6 +4395,7 @@ pub fn masked_voice_state(vs: VoiceState) -> VoiceState {
         camera_on: false,
         screen_sharing: false,
         screen_watching: Vec::new(),
+        camera_watching: Vec::new(),
         ..vs
     }
 }
@@ -4567,6 +4604,7 @@ mod cooldown_tests {
             camera_on: false,
             screen_sharing: false,
             screen_watching: vec!["private-sharer".into()],
+            camera_watching: Vec::new(),
         };
         let masked = masked_voice_state(state);
         assert!(masked.channel_id.is_none());

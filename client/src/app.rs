@@ -476,8 +476,15 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-gif-cell img { display: block; width: 100%; height: 100%; object-fit: cover; }
 /* A fixed height, so a GIF loading after the chat is measured never moves it. */
 .dxf-gif-embed { display: block; height: 200px; max-width: 100%; object-fit: contain; object-position: left center; }
+/* Stops 2px short of the avatar below, which the message row and avatar each push down 2px. */
+.dxf-reply-gutter { position: relative; align-self: stretch; }
+.dxf-reply-spine { position: absolute; left: 17px; right: -10px; top: 50%; bottom: -2px; border-left: 2px solid var(--border-strong); border-top: 2px solid var(--border-strong); border-top-left-radius: 6px; pointer-events: none; }
+.dxf-reply-quote { color: var(--text-muted); }
+.dxf-reply-quote:hover .dxf-reply-excerpt { color: var(--text); }
 .dxf-emoji-popover { display: flex; flex-direction: column; }
-.dxf-emoji-scroll { min-height: 0; max-height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; }
+/* Fixed in both axes: a search narrows the list, not the dialog. */
+.dxf-emoji-scroll { min-height: 0; height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.dxf-emoji-cols { grid-template-columns: repeat(8, 40px); }
 .dxf-emoji-heading { position: sticky; top: 0; z-index: 1; padding: 0 4px 4px; background-color: var(--panel-solid); color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; }
 .dxf-emoji-cell { width: 40px; height: 40px; font-size: 28px; line-height: 1; }
 .dxf-emoji-cell img { max-width: 32px; max-height: 32px; object-fit: contain; }
@@ -586,6 +593,8 @@ button:active:not(:disabled) { transform: scale(0.985); }
   border: 1px solid var(--border-strong); box-shadow: 0 6px 18px rgba(0,0,0,.45);
   opacity: 0; transition: opacity 0.12s var(--ease);
 }
+/* Placed 18px right of the pointer; against the window's right edge that is off-screen. */
+.dxf-guilds-frame[data-dock=right] .dxf-tip { translate: calc(-100% - 36px) 0; }
 .dxf-tip-host:hover .dxf-tip { opacity: 1; transition-delay: 2s; }
 /* Server rail strips explain a state, not a picture, so they answer sooner. */
 .dxf-tip-host.dxf-tip-quick:hover .dxf-tip { transition-delay: .4s; }

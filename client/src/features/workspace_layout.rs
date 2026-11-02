@@ -3,7 +3,7 @@ use dioxus_grid_layout::{FloatRect, GridPosition, LayoutStore};
 
 use super::stream_layout::Arrangement;
 
-/// The rail's thickness in pixels, across a left dock or along a top/bottom one.
+/// The rail's thickness in pixels, across a side dock or along a top/bottom one.
 pub(crate) const RAIL_DEFAULT: u16 = 64;
 /// Narrower clips the "+ server" button.
 pub(super) const RAIL_MIN: u16 = 60;
@@ -15,8 +15,15 @@ pub(super) type Size = (f64, f64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Dock {
     Left,
+    Right,
     Top,
     Bottom,
+}
+
+impl Dock {
+    fn is_side(self) -> bool {
+        matches!(self, Dock::Left | Dock::Right)
+    }
 }
 
 pub(super) fn use_arrangement(
@@ -158,8 +165,14 @@ fn resolved(base: &Arrangement) -> Vec<(String, FloatRect)> {
 pub(super) fn dock_of(rail: FloatRect) -> Option<Dock> {
     let near = |a: f64, b: f64| (a - b).abs() <= 1e-6;
     let inside = |extent: f64| extent.is_finite() && extent > 0.0 && extent < 1.0;
-    if near(rail.x, 0.0) && near(rail.y, 0.0) && near(rail.h, 1.0) && inside(rail.w) {
-        Some(Dock::Left)
+    if near(rail.y, 0.0) && near(rail.h, 1.0) && inside(rail.w) {
+        if near(rail.x, 0.0) {
+            Some(Dock::Left)
+        } else if near(rail.x + rail.w, 1.0) {
+            Some(Dock::Right)
+        } else {
+            None
+        }
     } else if near(rail.x, 0.0) && near(rail.w, 1.0) && inside(rail.h) {
         if near(rail.y, 0.0) {
             Some(Dock::Top)
@@ -177,7 +190,7 @@ pub(super) fn dock_of(rail: FloatRect) -> Option<Dock> {
 fn rail_thickness(base: &Arrangement, (width, height): Size, gap: f64) -> Option<f64> {
     let rail = resolved(base).into_iter().find(|(id, _)| id == "guilds")?.1;
     match dock_of(rail)? {
-        Dock::Left => Some(rail.w * width - gap),
+        Dock::Left | Dock::Right => Some(rail.w * width - gap),
         Dock::Top | Dock::Bottom => Some(rail.h * height - gap),
     }
 }
@@ -193,12 +206,12 @@ pub(super) fn compact_rail(
     let resolved = resolved(base);
     let (_, rail) = resolved.iter().find(|(id, _)| id == "guilds")?;
     let dock = dock_of(*rail)?;
-    let length = if dock == Dock::Left { width } else { height };
+    let length = if dock.is_side() { width } else { height };
     if !length.is_finite() || length < 2.0 * (thickness + gap) {
         return None;
     }
     let target = (thickness + gap) / length;
-    let old = if dock == Dock::Left { rail.w } else { rail.h };
+    let old = if dock.is_side() { rail.w } else { rail.h };
     if (old - target).abs() * length < 0.1 {
         return None;
     }
@@ -209,9 +222,9 @@ pub(super) fn compact_rail(
             target + (x - old) * (1.0 - target) / (1.0 - old)
         }
     };
-    // A bottom rail is a top rail seen from the other end.
+    // A bottom or right rail is a top or left one seen from the other end.
     let along = |start: f64, extent: f64| match dock {
-        Dock::Bottom => {
+        Dock::Bottom | Dock::Right => {
             let begin = 1.0 - project(1.0 - start);
             let end = 1.0 - project(1.0 - start - extent);
             (begin, end - begin)
@@ -225,7 +238,7 @@ pub(super) fn compact_rail(
         resolved
             .into_iter()
             .map(|(id, rect)| {
-                let rect = if dock == Dock::Left {
+                let rect = if dock.is_side() {
                     let (x, w) = along(rect.x, rect.w);
                     FloatRect::new(x, rect.y, w, rect.h)
                 } else {
@@ -248,7 +261,7 @@ pub(super) fn dock_rail(
     thickness: f64,
 ) -> Option<Vec<(String, FloatRect)>> {
     let resolved = resolved(base);
-    let length = if dock == Dock::Left { width } else { height };
+    let length = if dock.is_side() { width } else { height };
     if !length.is_finite() || length < 2.0 * (thickness + gap) {
         return None;
     }
@@ -257,6 +270,10 @@ pub(super) fn dock_rail(
         Dock::Left => (
             FloatRect::new(0.0, 0.0, t, 1.0),
             FloatRect::new(t, 0.0, 1.0 - t, 1.0),
+        ),
+        Dock::Right => (
+            FloatRect::new(1.0 - t, 0.0, t, 1.0),
+            FloatRect::new(0.0, 0.0, 1.0 - t, 1.0),
         ),
         Dock::Top => (
             FloatRect::new(0.0, 0.0, 1.0, t),
@@ -368,6 +385,8 @@ mod tests {
         assert!((rail_thickness(&left, size, 8.0).unwrap() - 80.0).abs() < 1e-9);
         let bottom = with_rail(FloatRect::new(0.0, 1.0 - 78.0 / 1000.0, 1.0, 78.0 / 1000.0));
         assert!((rail_thickness(&bottom, size, 8.0).unwrap() - 70.0).abs() < 1e-9);
+        let right = with_rail(FloatRect::new(1.0 - 98.0 / 2000.0, 0.0, 98.0 / 2000.0, 1.0));
+        assert!((rail_thickness(&right, size, 8.0).unwrap() - 90.0).abs() < 1e-9);
         let floating = with_rail(FloatRect::new(0.3, 0.2, 0.1, 0.5));
         assert_eq!(rail_thickness(&floating, size, 8.0), None);
     }

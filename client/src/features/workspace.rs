@@ -455,6 +455,12 @@ pub fn WorkspaceView(
         edit_mode,
         GRID_GAP,
     );
+    let rail_right = use_memo(move || {
+        layout
+            .get_free("guilds")
+            .and_then(super::workspace_layout::dock_of)
+            == Some(super::workspace_layout::Dock::Right)
+    });
 
     // Media rooms survive an unmount; the gateway must finish its close
     // handshake before quitting can destroy the transport.
@@ -752,6 +758,7 @@ pub fn WorkspaceView(
                                 // A size container, so the rail lays itself out as a row
                                 // whenever it is wider than tall.
                                 div { class: "dxf-guilds-frame relative w-full h-full",
+                                    "data-dock": if rail_right() { "right" },
                                     GuildsSidebar {}
                                     if edit_mode() {
                                         RailDock { layout, settings, size: workspace_size }
@@ -819,6 +826,7 @@ fn RailDock(
             div { class: "dxf-rail-dock-buttons flex flex-col gap-1 p-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel-solid)] shadow-lg",
                 for (side, label, icon) in [
                     (Dock::Left, "Dock to the left", DOCK_LEFT_SVG),
+                    (Dock::Right, "Dock to the right", DOCK_RIGHT_SVG),
                     (Dock::Top, "Dock to the top", DOCK_TOP_SVG),
                     (Dock::Bottom, "Dock to the bottom", DOCK_BOTTOM_SVG),
                 ] {
@@ -837,6 +845,7 @@ fn RailDock(
 }
 
 const DOCK_LEFT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="3.5" height="11" rx="1" fill="currentColor"/></svg>"##;
+const DOCK_RIGHT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="11" y="2.5" width="3.5" height="11" rx="1" fill="currentColor"/></svg>"##;
 const DOCK_TOP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="13" height="3.5" rx="1" fill="currentColor"/></svg>"##;
 const DOCK_BOTTOM_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="10" width="13" height="3.5" rx="1" fill="currentColor"/></svg>"##;
 
@@ -876,6 +885,7 @@ pub(crate) fn ErrorToast() -> Element {
 #[component]
 fn VoiceSounds() -> Element {
     let state = use_app_state();
+    let gateway = use_gateway();
     let phase = use_memo(move || state.read().voice.phase);
     let mut last_phase = use_signal(|| VoicePhase::Idle);
 
@@ -913,6 +923,55 @@ fn VoiceSounds() -> Element {
         } else if stopped {
             sfx("watch-stop");
         }
+    });
+
+    let camera_viewing = use_memo(move || active_camera_watches(&state.read()));
+    let mut last_camera_viewing = use_signal(|| active_camera_watches(&state.peek()));
+    use_effect(move || {
+        let now = camera_viewing();
+        let prev = last_camera_viewing.peek().clone();
+        if now == prev {
+            return;
+        }
+        let started = now.iter().any(|pk| !prev.contains(pk));
+        let stopped = prev.iter().any(|pk| !now.contains(pk));
+        last_camera_viewing.set(now);
+        if started {
+            sfx("camera-watch-start");
+        }
+        if stopped {
+            sfx("camera-watch-stop");
+        }
+    });
+
+    let camera_watch_report = use_memo(move || {
+        let s = state.read();
+        (
+            s.status == ConnectionStatus::Ready && s.voice.phase == VoicePhase::Connected,
+            s.voice_session_epoch,
+            s.voice.channel_id,
+            active_camera_watches(&s).into_iter().collect::<Vec<_>>(),
+        )
+    });
+    let mut last_camera_report = use_signal(|| None::<(u64, Id, Vec<String>)>);
+    use_effect(move || {
+        let (ready, epoch, channel, cameras) = camera_watch_report();
+        if !ready {
+            last_camera_report.set(None);
+            return;
+        }
+        let Some(channel) = channel else {
+            last_camera_report.set(None);
+            return;
+        };
+        let next = (epoch, channel, cameras);
+        if last_camera_report.peek().as_ref() == Some(&next) {
+            return;
+        }
+        gateway.send(crate::protocol::ClientMessage::SetCameraWatching {
+            cameras: next.2.clone(),
+        });
+        last_camera_report.set(Some(next));
     });
 
     let status = use_memo(move || state.read().status);
@@ -1012,6 +1071,24 @@ fn VoiceSounds() -> Element {
     });
 
     rsx! { Fragment {} }
+}
+
+fn active_camera_watches(state: &crate::state::AppState) -> std::collections::BTreeSet<String> {
+    let Some(channel) = state.voice.channel_id else {
+        return std::collections::BTreeSet::new();
+    };
+    state
+        .cameras_watching
+        .iter()
+        .filter(|pubkey| {
+            state.voice_states.iter().any(|voice| {
+                voice.user_pubkey == **pubkey
+                    && voice.camera_on
+                    && voice.channel_id == Some(channel)
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[component]
@@ -1659,6 +1736,46 @@ mod rail_layout_tests {
             let chat = of(&held, "chat");
             assert!(chat.y >= 0.0 && chat.y + chat.h <= 1.0 + 1e-6);
         }
+    }
+
+    #[test]
+    fn docking_right_mirrors_the_left_and_holds_its_width() {
+        let base = stream_layout::Arrangement {
+            cells: default_layout(),
+            free: default_free_layout(),
+        };
+        let size = (1920.0, 1080.0);
+        let right =
+            workspace_layout::dock_rail(&base, workspace_layout::Dock::Right, size, GRID_GAP, RAIL)
+                .unwrap();
+        let rail = of(&right, "guilds");
+        assert_eq!(
+            workspace_layout::dock_of(rail),
+            Some(workspace_layout::Dock::Right)
+        );
+        assert!((rail.w * size.0 - GRID_GAP - RAIL).abs() < 1e-6);
+        let (channels, chat, members) = (
+            of(&right, "channels"),
+            of(&right, "chat"),
+            of(&right, "members"),
+        );
+        assert!(channels.x.abs() < 1e-6);
+        assert!((channels.x + channels.w - chat.x).abs() < 1e-6);
+        assert!((members.x + members.w - rail.x).abs() < 1e-6);
+
+        let wider = stream_layout::Arrangement {
+            cells: default_layout(),
+            free: right,
+        };
+        let held =
+            workspace_layout::compact_rail(&wider, (2560.0, 1080.0), GRID_GAP, RAIL).unwrap();
+        let rail = of(&held, "guilds");
+        assert!((rail.w * 2560.0 - GRID_GAP - RAIL).abs() < 1e-6);
+        assert_eq!(
+            workspace_layout::dock_of(rail),
+            Some(workspace_layout::Dock::Right)
+        );
+        assert!((of(&held, "members").x + of(&held, "members").w - rail.x).abs() < 1e-6);
     }
 
     #[test]

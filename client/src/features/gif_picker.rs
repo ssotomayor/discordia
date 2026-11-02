@@ -21,6 +21,7 @@ pub(super) fn GifPicker(
     let mut query = use_signal(String::new);
     let mut results = use_signal(|| Results::Loading);
     let mut generation = use_signal(|| 0u64);
+    let dismiss = super::dismiss::use_dismiss(open);
 
     use_effect(move || {
         if !open() {
@@ -58,6 +59,7 @@ pub(super) fn GifPicker(
             title: crate::i18n::text("GIFs", &[]),
             aria_label: crate::i18n::text("GIFs", &[]),
             aria_pressed: open(),
+            "data-dismiss": "{dismiss}",
             onmousedown: move |e| e.prevent_default(),
             onclick: move |_| {
                 open.toggle();
@@ -68,8 +70,7 @@ pub(super) fn GifPicker(
             span { class: "block w-4 h-4", dangerous_inner_html: super::icons::GIF }
         }
         if open() {
-            div { class: "fixed inset-0 z-20", onclick: move |_| open.set(false) }
-            div { class: "dxf-gif-popover dxf-pop-in absolute bottom-full right-3 mb-2 z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
+            div { "data-dismiss": "{dismiss}", class: "dxf-gif-popover dxf-pop-in absolute bottom-full right-3 mb-2 z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
                 input {
                     class: "m-2 shrink-0 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
                     aria_label: crate::i18n::text("Search GIPHY…", &[]),

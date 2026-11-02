@@ -2632,6 +2632,7 @@ mod tests {
             camera_on: false,
             screen_sharing: true,
             screen_watching: vec!["sharer".into()],
+            camera_watching: Vec::new(),
         };
         let viewer = VoiceState {
             user_pubkey: "viewer".into(),
