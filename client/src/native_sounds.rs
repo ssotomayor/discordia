@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 
-const NAMES: [&str; 23] = [
+const NAMES: [&str; 27] = [
     "disconnect",
     "watch-start",
     "watch-stop",
@@ -30,6 +30,10 @@ const NAMES: [&str; 23] = [
     "undeafen",
     "viewer-join",
     "viewer-leave",
+    "camera-watch-start",
+    "camera-watch-stop",
+    "camera-viewer-join",
+    "camera-viewer-leave",
 ];
 
 const DND: u32 = 1 << 31;
@@ -58,7 +62,22 @@ struct Sound(usize);
 
 impl Sound {
     fn allowed(self, policy: u32) -> bool {
-        let passive = matches!(self.0, 3 | 4 | 7 | 8 | 11 | 12 | 15 | 21 | 22);
+        let passive = matches!(
+            NAMES.get(self.0).copied(),
+            Some(
+                "notify"
+                    | "dm"
+                    | "peer-join"
+                    | "peer-leave"
+                    | "peer-stream-start"
+                    | "peer-stream-stop"
+                    | "call-incoming"
+                    | "viewer-join"
+                    | "viewer-leave"
+                    | "camera-viewer-join"
+                    | "camera-viewer-leave"
+            )
+        );
         !(passive && policy & DND != 0)
     }
 }
@@ -632,6 +651,27 @@ fn tones(sound: Sound) -> &'static [Tone] {
             tone(0.0, 740.0, 0.08, 0.05, Sine),
             tone(0.11, 554.0, 0.08, 0.05, Triangle),
             tone(0.22, 370.0, 0.12, 0.05, Sine),
+        ],
+        &[
+            tone(0.0, 360.0, 0.05, 0.055, Square),
+            tone(0.08, 720.0, 0.05, 0.055, Triangle),
+            tone(0.16, 1080.0, 0.14, 0.05, Sine),
+        ],
+        &[
+            tone(0.0, 1080.0, 0.05, 0.05, Sine),
+            tone(0.10, 660.0, 0.06, 0.05, Saw),
+            tone(0.22, 360.0, 0.14, 0.05, Square),
+        ],
+        &[
+            tone(0.0, 523.0, 0.07, 0.045, Sine),
+            tone(0.07, 1046.0, 0.07, 0.045, Triangle),
+            tone(0.18, 1568.0, 0.16, 0.04, Sine),
+        ],
+        &[
+            tone(0.0, 587.0, 0.05, 0.04, Square),
+            tone(0.10, 440.0, 0.05, 0.04, Square),
+            tone(0.20, 311.0, 0.05, 0.04, Triangle),
+            tone(0.30, 220.0, 0.08, 0.04, Sine),
         ],
     ];
     BANK.get(sound.0).copied().unwrap_or(&[])

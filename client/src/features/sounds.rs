@@ -31,6 +31,7 @@ mod tests {
             camera_on: false,
             screen_sharing: false,
             screen_watching: vec!["me".into()],
+            camera_watching: Vec::new(),
         });
         let alice = ViewerSnapshot::from_state(&state);
         assert_eq!(alice.changes_from(&empty), (true, false));
@@ -118,6 +119,49 @@ impl ViewerSnapshot {
     }
 }
 
+#[derive(Default, Clone, PartialEq)]
+struct CameraViewerSnapshot {
+    stream: Option<(crate::protocol::Id, u64, String)>,
+    viewers: std::collections::BTreeSet<String>,
+}
+
+impl CameraViewerSnapshot {
+    fn from_state(state: &crate::state::AppState) -> Self {
+        if !state.camera_on
+            || state.status != crate::state::ConnectionStatus::Ready
+            || state.voice.phase != crate::state::VoicePhase::Connected
+        {
+            return Self::default();
+        }
+        let (Some(channel), Some(me)) = (state.voice.channel_id, state.self_user.as_ref()) else {
+            return Self::default();
+        };
+        Self {
+            stream: Some((channel, state.voice_session_epoch, me.pubkey.clone())),
+            viewers: state
+                .voice_states
+                .iter()
+                .filter(|vs| {
+                    vs.channel_id == Some(channel)
+                        && vs.user_pubkey != me.pubkey
+                        && vs.camera_watching.contains(&me.pubkey)
+                })
+                .map(|vs| vs.user_pubkey.clone())
+                .collect(),
+        }
+    }
+
+    fn changes_from(&self, previous: &Self) -> (bool, bool) {
+        if self.stream.is_none() || self.stream != previous.stream {
+            return (false, false);
+        }
+        (
+            self.viewers.difference(&previous.viewers).next().is_some(),
+            previous.viewers.difference(&self.viewers).next().is_some(),
+        )
+    }
+}
+
 // Home also receives DMs while offline, so it needs the same notification listener as the workspace.
 #[component]
 pub fn MessageSounds() -> Element {
@@ -155,6 +199,20 @@ pub fn MessageSounds() -> Element {
         }
         if left {
             sfx("viewer-leave");
+        }
+    });
+    let camera_viewers = use_memo(move || CameraViewerSnapshot::from_state(&state.read()));
+    let mut previous_camera_viewers =
+        use_signal(|| CameraViewerSnapshot::from_state(&state.peek()));
+    use_effect(move || {
+        let now = camera_viewers();
+        let (joined, left) = now.changes_from(&previous_camera_viewers.peek());
+        previous_camera_viewers.set(now);
+        if joined {
+            sfx("camera-viewer-join");
+        }
+        if left {
+            sfx("camera-viewer-leave");
         }
     });
     let output = use_memo(move || {

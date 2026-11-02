@@ -1184,6 +1184,8 @@ pub struct VoiceState {
     pub screen_sharing: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screen_watching: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub camera_watching: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2854,6 +2856,9 @@ pub enum ClientMessage {
     },
     SetScreenWatching {
         sharers: Vec<String>,
+    },
+    SetCameraWatching {
+        cameras: Vec<String>,
     },
     JoinVoice {
         channel_id: Id,

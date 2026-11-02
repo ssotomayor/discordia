@@ -156,6 +156,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                 if matches!(client_msg, ClientMessage::LeaveVoice | ClientMessage::SetVoiceMute { .. }
                     | ClientMessage::SetSpeaking { .. } | ClientMessage::SetCamera { .. }
                     | ClientMessage::SetScreenShare { .. } | ClientMessage::SetScreenWatching { .. }
+                    | ClientMessage::SetCameraWatching { .. }
                     | ClientMessage::ShareMediaKey { .. } | ClientMessage::VoiceConnectionReport { .. }
                     | ClientMessage::ConnectionRouteReport { .. })
                     && user.as_ref().is_none_or(|u| !ctx.state.voice_owned_by(&u.pubkey, conn_id)) {
@@ -1253,6 +1254,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             Ok((previous, joined, target_conn)) => {
                                 let guild_id = joined.guild_id;
                                 let was_sharing = previous.screen_sharing;
+                                let was_camera_on = previous.camera_on;
                                 let came_from = previous.channel_id;
                                 let left = crate::protocol::VoiceState {
                                     channel_id: None,
@@ -1260,6 +1262,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     camera_on: false,
                                     screen_sharing: false,
                                     screen_watching: Vec::new(),
+                                    camera_watching: Vec::new(),
                                     ..previous
                                 };
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -1268,6 +1271,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 evict_from_call(&ctx, &user_pubkey, from_channel_id);
                                 if was_sharing {
                                     broadcast_screen_state(&ctx.state, guild_id, from_channel_id);
+                                }
+                                if was_camera_on {
+                                    broadcast_camera_state(&ctx.state, from_channel_id);
                                 }
                                 let ctx = ctx.clone();
                                 let by = u.pubkey.clone();
@@ -1909,6 +1915,16 @@ pub(crate) async fn handle_connection_with_route<S>(
                             send_voice_state(&ctx.state, targets, vs.channel_id, vs);
                         }
                     }
+                    ClientMessage::SetCameraWatching { cameras } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() || cameras.len() > 64 {
+                            continue;
+                        }
+                        if let Some(vs) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_camera_watching(&u.pubkey, cameras)) {
+                            let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
+                            send_voice_state(&ctx.state, targets, vs.channel_id, vs);
+                        }
+                    }
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
                         if !signals.allow() {
@@ -1960,6 +1976,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                             .get(&u.pubkey)
                             .map(|v| (v.guild_id, v.channel_id, v.muted, v.deafened));
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
+                        let was_camera = ctx
+                            .state
+                            .voice_states
+                            .get(&u.pubkey)
+                            .map(|voice| (voice.channel_id, voice.camera_on));
                         let new_state =
                             ctx.state.set_voice_channel_owned(conn_id, &u.pubkey, guild_id, channel_id, preferences);
                         // A move is a leave and then a join, for everyone including the
@@ -1978,6 +1999,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 camera_on: false,
                                 screen_sharing: false,
                                 screen_watching: Vec::new(),
+                                camera_watching: Vec::new(),
                             };
                             let targets = ctx.state.guild_member_pubkeys(old_guild);
                             send_voice_state(&ctx.state, targets, Some(old_channel), left);
@@ -1991,6 +2013,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                         send_voice_state(&ctx.state, targets, stayed, new_state);
                         if let Some((gid, cid)) = was_sharing {
                             broadcast_screen_state(&ctx.state, gid, cid);
+                        }
+                        if let Some((Some(channel), true)) = was_camera {
+                            broadcast_camera_state(&ctx.state, channel);
                         }
                         // Minting may wait on a rendezvous. Off this loop, so a slow
                         // one costs this join and not every frame on the socket.
@@ -2069,6 +2094,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                         if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
                             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
                             send_voice_state(&ctx.state, targets, previous.channel_id, cleared);
+                            if let Some(channel) = previous.channel_id {
+                                broadcast_camera_state(&ctx.state, channel);
+                            }
                         }
                         if let Some(channel) = was_in {
                             evict_from_call(&ctx, &u.pubkey, channel);
@@ -2136,8 +2164,12 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         }
                         if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_camera(&u.pubkey, on)) {
+                            let channel = state.channel_id;
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             send_voice_state(&ctx.state, targets, state.channel_id, state);
+                            if !on && let Some(channel) = channel {
+                                broadcast_camera_state(&ctx.state, channel);
+                            }
                         }
                     }
                     ClientMessage::CreateRole { guild_id, name, color, permissions } => {
@@ -2944,6 +2976,7 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
             if previous.screen_sharing {
                 broadcast_screen_state(&ctx.state, previous.guild_id, channel);
             }
+            broadcast_camera_state(&ctx.state, channel);
         }
     }
     // A key may hold several sockets, and only the last one going says
@@ -3706,6 +3739,34 @@ fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_
             sharers: state.screen_sharers_in(channel_id),
         },
     );
+}
+
+fn broadcast_camera_state(state: &crate::state::AppState, channel_id: Id) {
+    let watched: Vec<_> = state
+        .voice_states
+        .iter()
+        .filter(|vs| vs.channel_id == Some(channel_id))
+        .flat_map(|vs| vs.camera_watching.clone())
+        .collect();
+    let stopped: Vec<_> = watched
+        .into_iter()
+        .filter(|pk| {
+            !state
+                .voice_states
+                .get(pk)
+                .is_some_and(|vs| vs.camera_on && vs.channel_id == Some(channel_id))
+        })
+        .collect();
+    for pk in stopped {
+        for vs in state.clear_camera_watchers(&pk) {
+            send_voice_state(
+                state,
+                state.guild_member_pubkeys(vs.guild_id),
+                vs.channel_id,
+                vs,
+            );
+        }
+    }
 }
 
 /// A reaction is a short unicode string, cut rather than refused, or

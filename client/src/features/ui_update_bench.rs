@@ -82,6 +82,7 @@ fn benchmark_view(export: Export) -> Element {
             camera_on: false,
             screen_sharing: false,
             screen_watching: vec![],
+            camera_watching: Vec::new(),
         });
         s.activities.insert(
             "member-000".into(),

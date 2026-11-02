@@ -2476,6 +2476,7 @@ mod tests {
                         camera_on: false,
                         screen_sharing: false,
                         screen_watching: Vec::new(),
+                        camera_watching: Vec::new(),
                     });
                 let (tx, _messages) = unbounded_channel();
                 let (voice_tx, mut native) = unbounded_channel();
@@ -2568,6 +2569,7 @@ mod tests {
                         camera_on: false,
                         screen_sharing: false,
                         screen_watching: Vec::new(),
+                        camera_watching: Vec::new(),
                     };
                     apply(
                         &mut state,

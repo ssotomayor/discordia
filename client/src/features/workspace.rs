@@ -876,6 +876,7 @@ pub(crate) fn ErrorToast() -> Element {
 #[component]
 fn VoiceSounds() -> Element {
     let state = use_app_state();
+    let gateway = use_gateway();
     let phase = use_memo(move || state.read().voice.phase);
     let mut last_phase = use_signal(|| VoicePhase::Idle);
 
@@ -913,6 +914,55 @@ fn VoiceSounds() -> Element {
         } else if stopped {
             sfx("watch-stop");
         }
+    });
+
+    let camera_viewing = use_memo(move || active_camera_watches(&state.read()));
+    let mut last_camera_viewing = use_signal(|| active_camera_watches(&state.peek()));
+    use_effect(move || {
+        let now = camera_viewing();
+        let prev = last_camera_viewing.peek().clone();
+        if now == prev {
+            return;
+        }
+        let started = now.iter().any(|pk| !prev.contains(pk));
+        let stopped = prev.iter().any(|pk| !now.contains(pk));
+        last_camera_viewing.set(now);
+        if started {
+            sfx("camera-watch-start");
+        }
+        if stopped {
+            sfx("camera-watch-stop");
+        }
+    });
+
+    let camera_watch_report = use_memo(move || {
+        let s = state.read();
+        (
+            s.status == ConnectionStatus::Ready && s.voice.phase == VoicePhase::Connected,
+            s.voice_session_epoch,
+            s.voice.channel_id,
+            active_camera_watches(&s).into_iter().collect::<Vec<_>>(),
+        )
+    });
+    let mut last_camera_report = use_signal(|| None::<(u64, Id, Vec<String>)>);
+    use_effect(move || {
+        let (ready, epoch, channel, cameras) = camera_watch_report();
+        if !ready {
+            last_camera_report.set(None);
+            return;
+        }
+        let Some(channel) = channel else {
+            last_camera_report.set(None);
+            return;
+        };
+        let next = (epoch, channel, cameras);
+        if last_camera_report.peek().as_ref() == Some(&next) {
+            return;
+        }
+        gateway.send(crate::protocol::ClientMessage::SetCameraWatching {
+            cameras: next.2.clone(),
+        });
+        last_camera_report.set(Some(next));
     });
 
     let status = use_memo(move || state.read().status);
@@ -1012,6 +1062,24 @@ fn VoiceSounds() -> Element {
     });
 
     rsx! { Fragment {} }
+}
+
+fn active_camera_watches(state: &crate::state::AppState) -> std::collections::BTreeSet<String> {
+    let Some(channel) = state.voice.channel_id else {
+        return std::collections::BTreeSet::new();
+    };
+    state
+        .cameras_watching
+        .iter()
+        .filter(|pubkey| {
+            state.voice_states.iter().any(|voice| {
+                voice.user_pubkey == **pubkey
+                    && voice.camera_on
+                    && voice.channel_id == Some(channel)
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[component]

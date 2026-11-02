@@ -178,6 +178,7 @@ mod tests {
                     camera_on: false,
                     screen_sharing: false,
                     screen_watching: Vec::new(),
+                    camera_watching: Vec::new(),
                 });
                 state
             });
