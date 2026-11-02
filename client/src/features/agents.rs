@@ -105,6 +105,8 @@ pub fn AgentsDialog() -> Element {
         let s = state.read();
         s.is_operator && s.status == ConnectionStatus::Ready
     });
+    let outdated = use_memo(move || operator() && !state.read().server_runs_agents);
+    let operator = use_memo(move || operator() && !outdated());
     use_effect(move || {
         if open() && operator() {
             gateway.send(ClientMessage::FetchServerAgents);
@@ -147,7 +149,7 @@ pub fn AgentsDialog() -> Element {
                 div { class: "flex-1 min-h-0 flex",
                     div { class: "w-52 shrink-0 border-r border-[var(--border)] flex flex-col",
                         div { class: "flex-1 overflow-y-auto p-2 space-y-1",
-                            if operator() {
+                            if operator() || outdated() {
                                 div { class: "{LABEL} px-2 pt-1", {crate::i18n::text("On this device", &[])} }
                             }
                             for e in list.iter() {
@@ -164,6 +166,10 @@ pub fn AgentsDialog() -> Element {
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] truncate pl-4", "{e.model}" }
                                 }
+                            }
+                            if outdated() {
+                                div { class: "{LABEL} px-2 pt-3", {crate::i18n::text("On this server", &[])} }
+                                p { class: "px-2 text-[10px] text-[var(--text-dim)]", {crate::i18n::text("This server runs an older Discordia. Update it to run agents inside it and to set which apps guilds may install.", &[])} }
                             }
                             if operator() {
                                 div { class: "{LABEL} px-2 pt-3", {crate::i18n::text("On this server", &[])} }

@@ -1374,6 +1374,7 @@ fn apply(
         ServerMessage::Ready {
             chat_tools,
             image_previews,
+            agents,
             user,
             guilds,
             channels,
@@ -1402,6 +1403,7 @@ fn apply(
             s.default_guild = default_guild;
             s.server_chat_tools = chat_tools;
             s.server_image_previews = image_previews;
+            s.server_runs_agents = agents;
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
@@ -2709,6 +2711,7 @@ mod tests {
                     ServerMessage::Ready {
                         chat_tools: false,
                         image_previews: false,
+                        agents: false,
                         user,
                         guilds: vec![],
                         channels: vec![],

@@ -2905,6 +2905,9 @@ pub enum ServerMessage {
         chat_tools: bool,
         #[serde(default)]
         image_previews: bool,
+        /// Agents, app access and the operator's app rules (#454–#456); an older server drops those frames.
+        #[serde(default)]
+        agents: bool,
         user: User,
         guilds: Vec<Guild>,
         channels: Vec<Channel>,
@@ -3262,17 +3265,20 @@ mod identify_wire_tests {
             super::ServerMessage::Ready {
                 chat_tools: false,
                 image_previews: false,
+                agents: false,
                 ..
             }
         ));
         frame["d"]["chat_tools"] = serde_json::json!(true);
         frame["d"]["image_previews"] = serde_json::json!(true);
+        frame["d"]["agents"] = serde_json::json!(true);
         let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             current,
             super::ServerMessage::Ready {
                 chat_tools: true,
                 image_previews: true,
+                agents: true,
                 ..
             }
         ));

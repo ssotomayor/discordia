@@ -1408,6 +1408,7 @@ impl AppState {
         Ok(ServerMessage::Ready {
             chat_tools: true,
             image_previews: true,
+            agents: true,
             user: user.clone(),
             guilds,
             channels,
@@ -3914,6 +3915,7 @@ impl AppState {
         ServerMessage::Ready {
             chat_tools: false,
             image_previews: false,
+            agents: false,
             user: bot.clone(),
             guilds,
             channels,

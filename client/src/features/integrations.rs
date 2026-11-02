@@ -119,7 +119,9 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                     }
                     super::agents::MyAgentsSection { guild_id }
-                    super::agents::OfferedAgentsSection { guild_id }
+                    if state.read().server_runs_agents {
+                        super::agents::OfferedAgentsSection { guild_id }
+                    }
                     InstallForm { guild_id }
                     BlocklistsSection { guild_id }
                 }
@@ -135,6 +137,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
     let approve_pk = bot.bot_pubkey.clone();
     let approve_gw = gateway.clone();
     let blocked = blocked_by(&use_app_state().read(), guild_id, &bot.bot_pubkey);
+    let runs_agents = use_app_state().read().server_runs_agents;
     let update = match (&bot.app, &bot.pending) {
         (Some(pinned), Some(next)) => Some((next.version, asks_more(pinned, next))),
         _ => None,
@@ -186,7 +189,9 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                 }
             }
             AppLookRow { guild_id, bot: bot.clone() }
-            super::agents::AppAccessRow { guild_id, bot: bot.clone() }
+            if runs_agents {
+                super::agents::AppAccessRow { guild_id, bot: bot.clone() }
+            }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
                 BundleRow { guild_id, bot_pubkey: bot.bot_pubkey.clone(), activity }
             }
