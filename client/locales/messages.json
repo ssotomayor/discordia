@@ -7,6 +7,7 @@
   "No GIFs found.": ["No se encontraron GIF.", "Nenhum GIF encontrado.", "未找到 GIF。", "GIFが見つかりません。"],
   "Powered by GIPHY": ["Con la tecnología de GIPHY", "Com tecnologia GIPHY", "由 GIPHY 提供支持", "Powered by GIPHY"],
   "Search GIPHY…": ["Buscar en GIPHY…", "Pesquisar no GIPHY…", "搜索 GIPHY…", "GIPHYを検索…"],
+  "Start an activity": ["Iniciar una actividad", "Iniciar uma atividade", "开始活动", "アクティビティを始める"],
   "The server is reconnecting. Try the GIF again.": ["El servidor se está reconectando. Vuelve a probar el GIF.", "O servidor está reconectando. Tente o GIF novamente.", "服务器正在重新连接。请重试该 GIF。", "サーバーに再接続しています。もう一度GIFをお試しください。"],
   "Uploading encrypted image…": ["Subiendo imagen cifrada…", "Enviando imagem criptografada…", "正在上传加密图片…", "暗号化した画像をアップロード中…"],
   "Loading encrypted image…": ["Cargando imagen cifrada…", "Carregando imagem criptografada…", "正在加载加密图片…", "暗号化した画像を読み込み中…"],

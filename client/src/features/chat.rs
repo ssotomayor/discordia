@@ -501,6 +501,7 @@ pub fn ChatView() -> Element {
                     div { class: "flex-1" }
                     crate::features::agents::AgentNotice {}
                     crate::features::activities::OpenActivities {}
+                    crate::features::activities::ActivityButton {}
                 }
                 if !is_dm && state.read().server_chat_tools {
                     for channel_id in selected_channel.into_iter() {

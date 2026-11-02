@@ -18,8 +18,8 @@ pub(super) fn BookmarksButton() -> Element {
         rsx! {
             button {
                 r#type: "button",
-                class: "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)]",
-                title: crate::i18n::text("Saved messages", &[]),
+                class: "relative w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)]",
+                "data-tip": crate::i18n::text("Saved messages", &[]),
                 aria_label: crate::i18n::text("Saved messages", &[]),
                 onclick: move |_| open.set(true),
                 span { dangerous_inner_html: super::icons::BOOKMARK }

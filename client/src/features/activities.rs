@@ -787,6 +787,12 @@ pub fn ActivityHost(
         }
     });
 
+    // Opened from the chat header, which cannot see this session's window.
+    use_effect(move || {
+        if picker_open() && launched.peek().is_some() && activity_window::is_open(WINDOW_KEY) {
+            activity_window::focus(WINDOW_KEY);
+        }
+    });
     let list_gw = gateway.clone();
     use_effect(move || {
         if picker_open()
@@ -808,16 +814,6 @@ pub fn ActivityHost(
           div { class: "fixed bottom-3 left-3 z-40 flex flex-col items-start gap-1.5",
             for instance in running.iter().filter(|i| Some(i.id) != my_instance).cloned() {
                 InstanceCard { key: "{instance.id}", instance }
-            }
-            button {
-                class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                onclick: move |_| {
-                    if launched.peek().is_some() && activity_window::is_open(WINDOW_KEY) {
-                        activity_window::focus(WINDOW_KEY);
-                    }
-                    picker_open.set(!picker_open());
-                },
-                {crate::i18n::text("Activities", &[])}
             }
         }
         }
@@ -933,6 +929,39 @@ fn InstanceCard(instance: ActivityInstance) -> Element {
     }
 }
 
+/// The workspace's activity picker, opened from the chat header on desktop.
+#[derive(Clone, Copy)]
+pub struct ActivityPicker {
+    pub open: Signal<bool>,
+    pub mobile: Signal<bool>,
+}
+
+#[component]
+pub fn ActivityButton() -> Element {
+    let Some(ActivityPicker { mut open, mobile }) = try_consume_context::<ActivityPicker>() else {
+        return rsx! {};
+    };
+    if mobile() {
+        return rsx! {};
+    }
+    let tip = crate::i18n::text("Start an activity", &[]);
+    rsx! {
+        button {
+            r#type: "button",
+            class: if open() {
+                "relative w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+            } else {
+                "relative w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+            },
+            "data-tip": "{tip}",
+            aria_label: "{tip}",
+            aria_pressed: open(),
+            onclick: move |_| open.toggle(),
+            span { class: "block w-4 h-4", dangerous_inner_html: super::icons::DICE }
+        }
+    }
+}
+
 /// The chat header's list of what is running in the guild: a card can be
 /// missed, or gone with a channel switch, and this stays until the game ends.
 #[component]
@@ -989,11 +1018,11 @@ pub fn OpenActivities() -> Element {
             button {
                 r#type: "button",
                 class: if open() {
-                    "h-8 px-2.5 flex items-center gap-2 shrink-0 rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[11px] text-[var(--accent)] transition-colors"
+                    "relative h-8 px-2.5 flex items-center gap-2 shrink-0 rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[11px] text-[var(--accent)] transition-colors"
                 } else {
-                    "h-8 px-2.5 flex items-center gap-2 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                    "relative h-8 px-2.5 flex items-center gap-2 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                 },
-                title: crate::i18n::text("Activities running in this community", &[]),
+                "data-tip": crate::i18n::text("Activities running in this community", &[]),
                 aria_pressed: open(),
                 "data-dismiss": "{dismiss}",
                 onclick: move |_| open.set(!open()),

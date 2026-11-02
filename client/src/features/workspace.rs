@@ -503,6 +503,10 @@ pub fn WorkspaceView(
     let status = state.read().status;
     let activities_open = use_signal(|| false);
     let mut is_mobile = use_signal(|| cfg!(any(target_os = "android", target_os = "ios")));
+    use_context_provider(|| crate::features::activities::ActivityPicker {
+        open: activities_open,
+        mobile: is_mobile,
+    });
 
     use_effect(move || {
         let mut eval = document::eval(

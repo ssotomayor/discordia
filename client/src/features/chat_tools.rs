@@ -287,7 +287,7 @@ pub(super) fn StickerPicker(
         .unwrap_or(crate::protocol::DEFAULT_GUILD_STICKER_BYTES as usize);
     rsx! {
         div { style: "display: contents;", "data-dismiss": "{dismiss}",
-            ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(),
+            ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(), tip_side: "top",
                 on_click: move |_| {
                     open.toggle();
                     if open() { on_open.call(()); }
@@ -390,16 +390,19 @@ fn ToolButton(
     #[props(into)] title: String,
     active: bool,
     on_click: EventHandler<()>,
+    #[props(default)] tip_side: Option<&'static str>,
 ) -> Element {
     rsx! {
         button {
             r#type: "button",
             class: if active {
-                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+                "relative w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
             } else {
-                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                "relative w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
             },
-            title,
+            "data-tip": "{title}",
+            "data-tip-side": tip_side,
+            aria_label: "{title}",
             aria_pressed: active,
             onclick: move |_| on_click.call(()),
             span { class: "block w-4 h-4", dangerous_inner_html: icon }
