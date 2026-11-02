@@ -35,6 +35,12 @@ pub fn prepare_permit() -> Result<tokio::sync::OwnedSemaphorePermit, String> {
 pub struct Descriptor {
     pub url: String,
     pub mime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
     key: String,
     nonce: String,
     pub hash: String,
@@ -88,6 +94,16 @@ pub fn valid_hash(hash: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+fn sanitize_image_name(raw: &str) -> Option<String> {
+    let filename = raw.rsplit(['/', '\\']).next()?.trim();
+    let cleaned: String = filename
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(255)
+        .collect();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
 impl Descriptor {
     pub fn validate(&self) -> Result<(), String> {
         if !supported_mime(&self.mime)
@@ -98,6 +114,21 @@ impl Descriptor {
             || self.key.len() != 64
             || self.nonce.len() != 24
             || hex::decode(&self.nonce).is_err()
+        {
+            return Err("Invalid encrypted image metadata.".into());
+        }
+        if self
+            .name
+            .as_ref()
+            .is_some_and(|name| sanitize_image_name(name).as_deref() != Some(name.as_str()))
+            || self.width.is_some() != self.height.is_some()
+            || self.width.zip(self.height).is_some_and(|(width, height)| {
+                width == 0
+                    || height == 0
+                    || width > 8192
+                    || height > 8192
+                    || u64::from(width) * u64::from(height) > 16_000_000
+            })
         {
             return Err("Invalid encrypted image metadata.".into());
         }
@@ -131,6 +162,15 @@ impl Descriptor {
             ("size", &self.size.to_string()),
         ] {
             tags.push(vec![tag.into(), value.into()]);
+        }
+        if let Some(name) = self.name.as_deref() {
+            tags.push(vec!["file-name".into(), name.into()]);
+        }
+        if let Some(width) = self.width {
+            tags.push(vec!["image-width".into(), width.to_string()]);
+        }
+        if let Some(height) = self.height {
+            tags.push(vec!["image-height".into(), height.to_string()]);
         }
         if let Some(preview) = self.preview.as_deref() {
             for (tag, value) in [
@@ -172,6 +212,9 @@ impl Descriptor {
             "x",
             "ox",
             "size",
+            "file-name",
+            "image-width",
+            "image-height",
             "p",
             "preview-file-type",
             "preview-encryption-algorithm",
@@ -213,6 +256,17 @@ impl Descriptor {
                 .transpose()
                 .map_err(|_| "Invalid image size.")?
                 .unwrap_or(0),
+            name: rumor.tag("file-name").map(str::to_owned),
+            width: rumor
+                .tag("image-width")
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| "Invalid image width.")?,
+            height: rumor
+                .tag("image-height")
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| "Invalid image height.")?,
             preview: None,
         };
         let preview_tags = [
@@ -238,6 +292,9 @@ impl Descriptor {
             descriptor.preview = Some(Box::new(Self {
                 url: get("preview-url")?.into(),
                 mime: get("preview-file-type")?.into(),
+                name: None,
+                width: None,
+                height: None,
                 key: hex::encode(decode_field(get("preview-decryption-key")?, 32)?.as_slice()),
                 nonce: hex::encode(decode_field(get("preview-decryption-nonce")?, 12)?.as_slice()),
                 hash: get("preview-x")?.to_ascii_lowercase(),
@@ -339,6 +396,11 @@ pub fn encrypt(data_url: &str) -> Result<(Descriptor, Vec<u8>), String> {
         return Err("Unsupported image type.".into());
     }
     crate::chat_image::from_bytes_with_limit(&bytes, MAX_BYTES)?;
+    let format = image::guess_format(&bytes).map_err(|_| "Invalid image.")?;
+    let (width, height) =
+        image::ImageReader::with_format(std::io::Cursor::new(bytes.as_slice()), format)
+            .into_dimensions()
+            .map_err(|_| "Could not read image dimensions.")?;
     let mut key = Zeroizing::new([0u8; 32]);
     let mut nonce = [0u8; 12];
     rand::rngs::OsRng.fill_bytes(key.as_mut());
@@ -352,6 +414,9 @@ pub fn encrypt(data_url: &str) -> Result<(Descriptor, Vec<u8>), String> {
         Descriptor {
             url: String::new(),
             mime,
+            name: None,
+            width: Some(width),
+            height: Some(height),
             key: hex::encode(key.as_ref()),
             nonce: hex::encode(nonce),
             hash: blossom::sha256_hex(&ciphertext),
@@ -975,15 +1040,26 @@ async fn read_pending_blob(path: &std::path::Path, expected: usize) -> Result<Ve
         .map_err(|_| "Could not read pending image.".into())
 }
 
-pub fn prepare(
-    secret: &secp256k1::SecretKey,
-    peer: String,
-    server: String,
-    data: &str,
-    preview_data_url: Option<&str>,
-    text: String,
-    reply_to: Option<String>,
-) -> Result<Job, String> {
+pub(super) struct PrepareImage {
+    pub(super) peer: String,
+    pub(super) server: String,
+    pub(super) data: String,
+    pub(super) file_name: Option<String>,
+    pub(super) preview_data_url: Option<String>,
+    pub(super) text: String,
+    pub(super) reply_to: Option<String>,
+}
+
+pub(super) fn prepare(secret: &secp256k1::SecretKey, input: PrepareImage) -> Result<Job, String> {
+    let PrepareImage {
+        peer,
+        server,
+        data,
+        file_name,
+        preview_data_url,
+        text,
+        reply_to,
+    } = input;
     if !valid_hash(&peer) || text.len() > 8000 {
         return Err("Invalid image recipient or caption.".into());
     }
@@ -992,14 +1068,15 @@ pub fn prepare(
     )
     .map_err(|_| "Invalid image recipient.")?;
     public_url(&server)?;
-    let (mut image, bytes) = encrypt(data)?;
+    let (mut image, bytes) = encrypt(&data)?;
+    image.name = file_name.as_deref().and_then(sanitize_image_name);
     let preview_bytes = if let Some(preview) = preview_data_url {
-        let (mime, raw) = blossom::split_data_url(preview).ok_or("Invalid image preview.")?;
+        let (mime, raw) = blossom::split_data_url(&preview).ok_or("Invalid image preview.")?;
         if !matches!(mime.as_str(), "image/jpeg" | "image/png") {
             return Err("Image previews must be static JPEG or PNG files.".into());
         }
         discordia_image_policy::validate_preview(&raw)?;
-        let (descriptor, ciphertext) = encrypt(preview)?;
+        let (descriptor, ciphertext) = encrypt(&preview)?;
         image.preview = Some(Box::new(descriptor));
         Some(ciphertext)
     } else {
@@ -1045,7 +1122,7 @@ pub fn prepare(
                 &cache.join(format!("{}.bin", preview.hash)),
                 preview_bytes,
             );
-        } else if let Some((_mime, raw)) = blossom::split_data_url(data)
+        } else if let Some((_mime, raw)) = blossom::split_data_url(&data)
             && let Ok(thumb_url) = crate::chat_image::thumbnail_data_url(&raw)
             && let Ok(thumb_enc) = job.image.encrypt_thumb(thumb_url.as_bytes())
         {
@@ -1264,6 +1341,7 @@ mod tests {
     #[test]
     fn authenticated_roundtrip_and_tampering() {
         let (image, bytes) = encrypt(PNG).unwrap();
+        assert_eq!((image.width, image.height), (Some(1), Some(1)));
         assert_eq!(image.decrypt(&bytes).unwrap(), PNG);
         let (other, other_bytes) = encrypt(PNG).unwrap();
         assert_ne!(image.key, other.key);
@@ -1315,6 +1393,7 @@ mod tests {
         let stranger = secp256k1::SecretKey::from_slice(&[5; 32]).unwrap();
         let (owner, peer) = (event::xonly_hex(&sender), event::xonly_hex(&receiver));
         let (mut image, bytes) = encrypt(PNG).unwrap();
+        image.name = Some("private-photo.png".into());
         image.url = format!("https://example.com/{}.bin", image.hash);
         let (mut preview, preview_bytes) = encrypt(PNG).unwrap();
         preview.url = format!("https://example.com/{}.preview", preview.hash);
@@ -1325,6 +1404,7 @@ mod tests {
             let raw = serde_json::to_string(wrap).unwrap();
             assert!(!raw.contains(&image.url));
             assert!(!raw.contains(&image.key));
+            assert!(!raw.contains("private-photo.png"));
             assert!(super::super::nip59::unwrap(&stranger, wrap).is_err());
         }
         for (secret, wrap, account) in [(&sender, &ours, &owner), (&receiver, &theirs, &peer)] {
@@ -1332,10 +1412,10 @@ mod tests {
             let message = super::super::nip17::open_rumor(account, &opened).unwrap();
             assert_eq!(message.author, owner);
             assert_eq!(message.reply_to.as_deref(), Some("a".repeat(64).as_str()));
-            assert_eq!(
-                Descriptor::parse(&opened).unwrap().decrypt(&bytes).unwrap(),
-                PNG
-            );
+            let received = Descriptor::parse(&opened).unwrap();
+            assert_eq!(received.name.as_deref(), Some("private-photo.png"));
+            assert_eq!((received.width, received.height), (Some(1), Some(1)));
+            assert_eq!(received.decrypt(&bytes).unwrap(), PNG);
             assert_eq!(
                 Descriptor::parse(&opened)
                     .unwrap()
@@ -1356,6 +1436,21 @@ mod tests {
                 .unwrap(),
             PNG
         );
+        let mut old_message = rumor.clone();
+        old_message.tags.retain(|tag| {
+            !matches!(
+                tag[0].as_str(),
+                "file-name" | "image-width" | "image-height"
+            )
+        });
+        let old_descriptor = Descriptor::parse(&old_message).unwrap();
+        assert_eq!(old_descriptor.name, None);
+        assert_eq!((old_descriptor.width, old_descriptor.height), (None, None));
+        let mut incomplete_dimensions = rumor.clone();
+        incomplete_dimensions
+            .tags
+            .retain(|tag| tag[0] != "image-height");
+        assert!(Descriptor::parse(&incomplete_dimensions).is_err());
         let mut ambiguous = rumor;
         ambiguous
             .tags
@@ -1441,12 +1536,15 @@ mod tests {
         let owner = event::xonly_hex(&secret);
         let job = prepare(
             &secret,
-            peer_hex,
-            "https://nostr.download".into(),
-            PNG,
-            None,
-            "caption".into(),
-            None,
+            PrepareImage {
+                peer: peer_hex,
+                server: "https://nostr.download".into(),
+                data: PNG.into(),
+                file_name: None,
+                preview_data_url: None,
+                text: "caption".into(),
+                reply_to: None,
+            },
         )
         .unwrap();
         let cache_file = cache_root(&owner)
@@ -1479,12 +1577,15 @@ mod tests {
         let owner = event::xonly_hex(&secret);
         let job = prepare(
             &secret,
-            event::xonly_hex(&peer),
-            "https://nostr.download".into(),
-            PNG,
-            Some(PNG),
-            String::new(),
-            None,
+            PrepareImage {
+                peer: event::xonly_hex(&peer),
+                server: "https://nostr.download".into(),
+                data: PNG.into(),
+                file_name: None,
+                preview_data_url: Some(PNG.into()),
+                text: String::new(),
+                reply_to: None,
+            },
         )
         .unwrap();
         let preview = job.image.preview.as_deref().unwrap();

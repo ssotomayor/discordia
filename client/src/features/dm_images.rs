@@ -171,6 +171,9 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
         return rsx! {};
     };
     let account = identity.pubkey.clone();
+    let details_name = descriptor.name.clone();
+    let details_width = descriptor.width;
+    let details_height = descriptor.height;
     if status == Status::Ready {
         return rsx! {
             if let Some(src) = source() {
@@ -186,6 +189,11 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                         if let Some(view)=view {state.write().image_viewer=Some(view);}
                     },
                 }
+            }
+            EncryptedImageDetails {
+                name: details_name,
+                width: details_width,
+                height: details_height,
             }
         };
     }
@@ -224,6 +232,31 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                     onclick: move |_| nostr.send(NostrCmd::CancelImage { message_id }),
                     {crate::i18n::text("Cancel", &[])}
                 }
+            }
+        }
+        EncryptedImageDetails {
+            name: details_name,
+            width: details_width,
+            height: details_height,
+        }
+    }
+}
+
+#[component]
+fn EncryptedImageDetails(name: Option<String>, width: Option<u32>, height: Option<u32>) -> Element {
+    let dimensions = width.zip(height);
+    if name.is_none() && dimensions.is_none() {
+        return rsx! {};
+    }
+    rsx! {
+        div {
+            class: "mt-1 text-[10px] text-[var(--text-dim)]",
+            style: "max-width:20rem;overflow-wrap:anywhere;",
+            if let Some(name) = name {
+                span { "{name}" }
+            }
+            if let Some((width, height)) = dimensions {
+                span { {crate::i18n::text(" · {0} × {1} px", &[(width).to_string(), (height).to_string()])} }
             }
         }
     }

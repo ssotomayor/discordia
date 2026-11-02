@@ -37,6 +37,7 @@ pub enum NostrCmd {
         peer: String,
         server: String,
         data_url: String,
+        file_name: Option<String>,
         preview_data_url: Option<String>,
         text: String,
         reply_to: Option<String>,
@@ -372,13 +373,24 @@ pub fn spawn_nostr(
                     }
                 }
                 cmd = rx.recv() => match cmd {
-                    Some(NostrCmd::Image { peer, server, data_url, preview_data_url, text, reply_to, queued, permit }) => {
+                    Some(NostrCmd::Image { peer, server, data_url, file_name, preview_data_url, text, reply_to, queued, permit }) => {
                         let _permit = permit;
                         if images.jobs.len() >= super::dm_image::MAX_JOBS || outbox.len() + (images.jobs.len() + 1) * 2 > 128 || state.peek().mutes.contains(&peer) {
                             let _ = queued.send(Err("Image queue is full or this contact is blocked. Your draft was kept.".into()));
                             continue;
                         }
-                        let prepared = tokio::task::spawn_blocking(move || super::dm_image::prepare(&secret, peer, server, &data_url, preview_data_url.as_deref(), text, reply_to)).await;
+                        let prepared = tokio::task::spawn_blocking(move || super::dm_image::prepare(
+                            &secret,
+                            super::dm_image::PrepareImage {
+                                peer,
+                                server,
+                                data: data_url,
+                                file_name,
+                                preview_data_url,
+                                text,
+                                reply_to,
+                            },
+                        )).await;
                         match prepared {
                             Ok(Ok(job)) => {
                                 show_image_job(&job, &our_pubkey, &mut state);

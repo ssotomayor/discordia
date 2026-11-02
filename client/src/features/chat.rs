@@ -2619,6 +2619,7 @@ fn Composer(
                     peer,
                     server,
                     data_url,
+                    file_name: image_name,
                     preview_data_url: image_preview,
                     text: content,
                     reply_to,
