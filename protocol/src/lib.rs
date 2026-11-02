@@ -178,6 +178,8 @@ pub fn mentions_name(content: &str, name: &str) -> bool {
     })
 }
 
+pub const MAX_BIO_CHARS: usize = 280;
+
 /// A bio, a description and a set of rules are written in a `textarea`, so the
 /// newline is the one control character they are allowed to keep.
 pub fn sanitize_paragraph(raw: &str, max_chars: usize) -> String {
@@ -1592,6 +1594,19 @@ pub enum AgentProvider {
     OpenAiCompatible,
 }
 
+/// An agent's own picture, banner and bio, the profile every guild shows
+/// unless it dresses the app itself (`SetAppLook`). A picture is a `data:`
+/// URL or a `media:` address the server already holds.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentLook {
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+}
+
 /// An agent the operator runs in the server process (#454). The API key is
 /// never part of it: it travels once, write-only, beside it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2502,6 +2517,9 @@ pub enum ClientMessage {
         spec: ServerAgentSpec,
         #[serde(default)]
         api_key: Option<String>,
+        /// Written to the agent's profile; `None` leaves it as it is.
+        #[serde(default)]
+        look: Option<AgentLook>,
     },
     /// Operator only. Uninstalls it everywhere and forgets its keys.
     DeleteServerAgent {

@@ -5,12 +5,13 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use discordia_bot::{Bot, BotError, BotIdentity};
 use discordia_protocol::{
-    ClientMessage, Id, Invocation, MAX_COMMAND_REPLY, MAX_MESSAGE_BYTES, Member, Message,
-    ServerMessage, mentions_name,
+    ClientMessage, Id, Invocation, MAX_BIO_CHARS, MAX_COMMAND_REPLY, MAX_MESSAGE_BYTES, Member,
+    Message, Profile, ServerMessage, mentions_name, sanitize_paragraph,
 };
+use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 
-use crate::config::{ASK, AgentConfig};
+use crate::config::{ASK, AgentConfig, Look};
 use crate::context;
 use crate::harness::{Harness, HarnessError, Prompt, Reply};
 use crate::limits::Ledger;
@@ -96,6 +97,26 @@ pub async fn run<H: Harness>(
     }
 }
 
+/// Every connect would otherwise re-upload the pictures and broadcast a
+/// profile to the whole server.
+fn wears(held: Option<&Profile>, look: &Look) -> bool {
+    let same_picture = |held: Option<&String>, want: Option<&Vec<u8>>| match (held, want) {
+        (None, None) => true,
+        (Some(address), Some(bytes)) => {
+            let name = format!("media:{}.", hex::encode(Sha256::digest(bytes)));
+            address.starts_with(&name)
+        }
+        _ => false,
+    };
+    let bio = |b: Option<&String>| {
+        b.map(|b| sanitize_paragraph(b, MAX_BIO_CHARS))
+            .filter(|b| !b.is_empty())
+    };
+    same_picture(held.and_then(|p| p.avatar.as_ref()), look.avatar.as_ref())
+        && same_picture(held.and_then(|p| p.banner.as_ref()), look.banner.as_ref())
+        && bio(held.and_then(|p| p.bio.as_ref())) == bio(look.bio.as_ref())
+}
+
 struct Agent<H> {
     config: AgentConfig,
     harness: Arc<H>,
@@ -123,8 +144,28 @@ impl<H: Harness> Agent<H> {
                 user,
                 members,
                 channels,
+                profiles,
                 ..
             } => {
+                if let Some(look) = &self.config.look {
+                    let held = profiles.iter().find(|p| p.pubkey == user.pubkey);
+                    if !wears(held, look) {
+                        match bot
+                            .set_profile(
+                                look.avatar.as_deref(),
+                                look.banner.as_deref(),
+                                look.bio.as_deref(),
+                            )
+                            .await
+                        {
+                            // A picture of another kind must not keep the agent offline.
+                            Err(BotError::Image(e)) => {
+                                tracing::warn!(error = %e, "agent picture not sent")
+                            }
+                            other => other?,
+                        }
+                    }
+                }
                 self.me = user.pubkey;
                 self.names.insert(user.username);
                 self.learn(&members);
@@ -359,5 +400,46 @@ impl<H: Harness> Agent<H> {
                 None => Ok(()),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held(avatar: Option<&[u8]>, bio: Option<&str>) -> Profile {
+        Profile {
+            pubkey: "k".into(),
+            avatar: avatar.map(|b| format!("media:{}.png", hex::encode(Sha256::digest(b)))),
+            banner: None,
+            bio: bio.map(str::to_string),
+            status: None,
+            custom_status: None,
+            hide_guild_owner: false,
+            hide_operator: false,
+            operator: false,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_look_already_worn_is_not_sent_again() {
+        let look = Look {
+            avatar: Some(b"png".to_vec()),
+            banner: None,
+            bio: Some("  Helps.  ".into()),
+        };
+        assert!(wears(Some(&held(Some(b"png"), Some("Helps."))), &look));
+        assert!(!wears(Some(&held(Some(b"gif"), Some("Helps."))), &look));
+        assert!(!wears(Some(&held(Some(b"png"), None)), &look));
+        assert!(!wears(None, &look));
+    }
+
+    #[test]
+    fn clearing_the_look_clears_what_the_server_holds() {
+        let bare = Look::default();
+        assert!(wears(None, &bare));
+        assert!(wears(Some(&held(None, Some(""))), &bare));
+        assert!(!wears(Some(&held(Some(b"png"), None)), &bare));
     }
 }

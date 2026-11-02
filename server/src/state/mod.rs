@@ -4334,7 +4334,8 @@ impl AppState {
             members,
             voice_states: Vec::new(),
             catalog: Vec::new(),
-            profiles: Vec::new(),
+            // Its own only: an agent compares it against the look it means to wear.
+            profiles: self.profiles_of(&std::collections::HashSet::from([bot.pubkey.as_str()])),
             // Roles never apply to a bot connection, and operators are never
             // bots: sending either would leak a guild's structure to it.
             roles: Vec::new(),

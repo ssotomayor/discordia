@@ -132,6 +132,19 @@ impl ServerRef {
     }
 }
 
+/// Pictures are named by the SHA-256 of their bytes under
+/// `agents/<owner>/pictures/`, so the list stays small and a run restarts
+/// only when one changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedLook {
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub bio: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentEntry {
     pub pubkey: String,
@@ -157,6 +170,8 @@ pub struct AgentEntry {
     /// What starts the coding agent, for `Preset::Acp`: a program and its arguments.
     #[serde(default)]
     pub acp_command: String,
+    #[serde(default)]
+    pub look: SavedLook,
 }
 
 fn yes() -> bool {
@@ -181,6 +196,7 @@ impl AgentEntry {
             answer_dms: false,
             dm_allow: Vec::new(),
             acp_command: String::new(),
+            look: SavedLook::default(),
         }
     }
 
@@ -218,6 +234,7 @@ impl AgentEntry {
             },
             manifest_version: self.manifest_version,
             only_from: None,
+            look: None,
         }
     }
 
@@ -266,6 +283,7 @@ impl AgentEntry {
             answer_dms: false,
             dm_allow: Vec::new(),
             acp_command: String::new(),
+            look: SavedLook::default(),
         }
     }
 
@@ -357,6 +375,62 @@ fn safe(key: &str) -> Result<(), String> {
         .ok_or_else(|| "not a key".to_string())
 }
 
+fn pictures_dir(dir: &Path, owner: &str) -> PathBuf {
+    dir.join("agents").join(owner).join("pictures")
+}
+
+/// Returns the name the picture is kept under.
+pub fn put_picture_in(dir: &Path, owner: &str, bytes: &[u8]) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    safe(owner)?;
+    let name = hex::encode(Sha256::digest(bytes));
+    let path = pictures_dir(dir, owner).join(&name);
+    if !path.exists() {
+        std::fs::create_dir_all(pictures_dir(dir, owner)).map_err(|e| e.to_string())?;
+        let partial = path.with_extension("partial");
+        std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
+        std::fs::rename(&partial, &path).map_err(|e| e.to_string())?;
+    }
+    Ok(name)
+}
+
+pub fn picture_in(dir: &Path, owner: &str, name: &str) -> Option<Vec<u8>> {
+    safe(owner).ok()?;
+    safe(name).ok()?;
+    std::fs::read(pictures_dir(dir, owner).join(name)).ok()
+}
+
+/// Deletes every picture no agent in `agents` wears.
+pub fn prune_pictures_in(dir: &Path, owner: &str, agents: &[AgentEntry]) {
+    if safe(owner).is_err() {
+        return;
+    }
+    let worn: std::collections::HashSet<&str> = agents
+        .iter()
+        .flat_map(|a| [a.look.avatar.as_deref(), a.look.banner.as_deref()])
+        .flatten()
+        .collect();
+    let Ok(dir) = std::fs::read_dir(pictures_dir(dir, owner)) else {
+        return;
+    };
+    for file in dir.flatten() {
+        let name = file.file_name();
+        if !worn.contains(name.to_string_lossy().as_ref()) {
+            let _ = std::fs::remove_file(file.path());
+        }
+    }
+}
+
+/// Blocking: what the agent wears, read from disk. A missing file is no picture.
+pub fn look_in(dir: &Path, owner: &str, entry: &AgentEntry) -> discordia_agent::Look {
+    let read = |name: &Option<String>| name.as_deref().and_then(|n| picture_in(dir, owner, n));
+    discordia_agent::Look {
+        avatar: read(&entry.look.avatar),
+        banner: read(&entry.look.banner),
+        bio: Some(entry.look.bio.trim().to_string()).filter(|b| !b.is_empty()),
+    }
+}
+
 pub fn load_in(dir: &Path, owner: &str) -> Vec<AgentEntry> {
     if safe(owner).is_err() {
         return Vec::new();
@@ -431,6 +505,22 @@ pub fn work_dir(owner: &str, agent: &str) -> PathBuf {
         .join(format!("{name}-work"))
 }
 
+pub fn put_picture(owner: &str, bytes: &[u8]) -> Result<String, String> {
+    put_picture_in(&crate::identity::config_dir(), owner, bytes)
+}
+
+pub fn picture(owner: &str, name: &str) -> Option<Vec<u8>> {
+    picture_in(&crate::identity::config_dir(), owner, name)
+}
+
+pub fn prune_pictures(owner: &str, agents: &[AgentEntry]) {
+    prune_pictures_in(&crate::identity::config_dir(), owner, agents)
+}
+
+pub fn look(owner: &str, entry: &AgentEntry) -> discordia_agent::Look {
+    look_in(&crate::identity::config_dir(), owner, entry)
+}
+
 pub fn load(owner: &str) -> Vec<AgentEntry> {
     load_in(&crate::identity::config_dir(), owner)
 }
@@ -493,6 +583,29 @@ mod tests {
         let raw = std::fs::read_to_string(list_path(&d, OWNER)).unwrap();
         assert!(!raw.contains("api_key"));
         assert!(load_in(&d, "../escape").is_empty());
+    }
+
+    #[test]
+    fn pictures_are_kept_by_hash_read_back_and_pruned_once_unworn() {
+        let d = dir("pictures");
+        let name = put_picture_in(&d, OWNER, b"png bytes").unwrap();
+        assert_eq!(put_picture_in(&d, OWNER, b"png bytes").unwrap(), name);
+        let mut worn = entry();
+        worn.look = SavedLook {
+            avatar: Some(name.clone()),
+            banner: Some("f".repeat(64)),
+            bio: "  Helps.  ".into(),
+        };
+        let look = look_in(&d, OWNER, &worn);
+        assert_eq!(look.avatar.as_deref(), Some(&b"png bytes"[..]));
+        assert_eq!(look.banner, None, "a missing file is no picture");
+        assert_eq!(look.bio.as_deref(), Some("Helps."));
+        assert!(picture_in(&d, OWNER, "../escape").is_none());
+
+        prune_pictures_in(&d, OWNER, std::slice::from_ref(&worn));
+        assert!(picture_in(&d, OWNER, &name).is_some());
+        prune_pictures_in(&d, OWNER, &[entry()]);
+        assert!(picture_in(&d, OWNER, &name).is_none());
     }
 
     #[test]

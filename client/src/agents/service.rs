@@ -362,9 +362,15 @@ async fn serve(
                     let _ = tx.send((key.clone(), status));
                 }
             };
+            let mut config = config;
+            config.look = {
+                let (owner, entry) = (owner.clone(), (*entry).clone());
+                tokio::task::spawn_blocking(move || store::look(&owner, &entry))
+                    .await
+                    .ok()
+            };
             // A coding agent on this computer answers its creator alone (#457).
             let task = if entry.preset == super::Preset::Acp {
-                let mut config = config;
                 config.only_from = Some(owner.clone());
                 match discordia_agent::Acp::new(
                     &entry.acp_command,

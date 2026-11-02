@@ -10,8 +10,8 @@ use discordia_bot::BotIdentity;
 
 use crate::AppContext;
 use crate::protocol::{
-    AgentProvider, Id, MAX_SERVER_AGENTS, ServerAgentSpec, ServerAgentView, ServerMessage,
-    validate_server_agent,
+    AgentLook, AgentProvider, Id, MAX_BIO_CHARS, MAX_SERVER_AGENTS, Profile, ServerAgentSpec,
+    ServerAgentView, ServerMessage, sanitize_paragraph, validate_server_agent,
 };
 use crate::state::AppState;
 
@@ -48,6 +48,7 @@ impl ServerAgent {
             },
             manifest_version: self.version,
             only_from: None,
+            look: None,
         }
     }
 
@@ -232,6 +233,7 @@ pub async fn save(
     pubkey: Option<String>,
     spec: ServerAgentSpec,
     api_key: Option<String>,
+    look: Option<AgentLook>,
 ) -> Result<String, String> {
     let state = &ctx.state;
     require_operator(state, by)?;
@@ -272,6 +274,27 @@ pub async fn save(
         }
         (None, None) => String::new(),
     };
+    // Before anything is written: a picture the server refuses refuses the save.
+    let profile = look
+        .map(|look| -> Result<Profile, String> {
+            let picture = |img: Option<String>, what: &str| {
+                img.map(|i| state.image_reference(by, &i))
+                    .transpose()
+                    .map_err(|e| format!("{what}: {e}"))
+            };
+            Ok(Profile {
+                pubkey: pubkey.clone(),
+                avatar: picture(look.avatar, "picture")?,
+                banner: picture(look.banner, "banner")?,
+                bio: look
+                    .bio
+                    .map(|b| sanitize_paragraph(&b, MAX_BIO_CHARS))
+                    .filter(|b| !b.is_empty()),
+                updated_at: chrono::Utc::now().timestamp_millis(),
+                ..Profile::default()
+            })
+        })
+        .transpose()?;
     let version = match &previous {
         Some(p) if shown(&p.spec) == shown(&spec) => p.version,
         Some(p) => p.version + 1,
@@ -307,6 +330,15 @@ pub async fn save(
 
     // One guild refusing must not leave the rest, or the agent, half done.
     let mut failures = Vec::new();
+    if let Some(profile) = profile {
+        match state.set_profile(profile).await {
+            Ok(crate::state::ProfileWrite::Saved(p)) => {
+                state.broadcast(ServerMessage::ProfileUpdate(p))
+            }
+            Ok(crate::state::ProfileWrite::Stale(_)) => {}
+            Err(e) => failures.push(e),
+        }
+    }
     let want: HashSet<Id> = agent.spec.guilds.iter().copied().collect();
     let have: HashSet<Id> = state
         .bot_guilds(&pubkey)
