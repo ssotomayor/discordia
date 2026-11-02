@@ -578,6 +578,8 @@ button:active:not(:disabled) { transform: scale(0.985); }
   border: 1px solid var(--border-strong); box-shadow: 0 6px 18px rgba(0,0,0,.45);
   opacity: 0; transition: opacity 0.12s var(--ease);
 }
+/* Placed 18px right of the pointer; against the window's right edge that is off-screen. */
+.dxf-guilds-frame[data-dock=right] .dxf-tip { translate: calc(-100% - 36px) 0; }
 .dxf-tip-host:hover .dxf-tip { opacity: 1; transition-delay: 2s; }
 /* Server rail strips explain a state, not a picture, so they answer sooner. */
 .dxf-tip-host.dxf-tip-quick:hover .dxf-tip { transition-delay: .4s; }
