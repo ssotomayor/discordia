@@ -982,6 +982,7 @@ pub fn OpenActivities() -> Element {
         .collect();
     drop(s);
     let count = rows.len();
+    let dismiss = super::dismiss::use_dismiss(open);
 
     rsx! {
         if count > 0 {
@@ -994,6 +995,7 @@ pub fn OpenActivities() -> Element {
                 },
                 title: crate::i18n::text("Activities running in this community", &[]),
                 aria_pressed: open(),
+                "data-dismiss": "{dismiss}",
                 onclick: move |_| open.set(!open()),
                 span { class: "w-2 h-2 rounded-full bg-[var(--accent)]" }
                 {crate::i18n::text("Activities", &[])}
@@ -1003,9 +1005,9 @@ pub fn OpenActivities() -> Element {
             }
         }
         if open() {
-            div { class: "fixed inset-0 z-20", onclick: move |_| open.set(false) }
             // Anchored to the chat pane like `ChatTools`' panels (trap 22).
             div {
+                "data-dismiss": "{dismiss}",
                 class: "dxf-pop-in absolute z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
                 style: "top: 3.25rem; right: 0.75rem; width: min(24rem, calc(100% - 1.5rem)); max-height: 70%;",
                 div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",

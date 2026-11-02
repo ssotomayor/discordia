@@ -469,7 +469,9 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 .dxf-emoji-popover { display: flex; flex-direction: column; }
-.dxf-emoji-scroll { min-height: 0; max-height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; }
+/* Fixed in both axes: a search narrows the list, not the dialog. */
+.dxf-emoji-scroll { min-height: 0; height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.dxf-emoji-cols { grid-template-columns: repeat(8, 40px); }
 .dxf-emoji-heading { position: sticky; top: 0; z-index: 1; padding: 0 4px 4px; background-color: var(--panel-solid); color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; }
 .dxf-emoji-cell { width: 40px; height: 40px; font-size: 28px; line-height: 1; }
 .dxf-emoji-cell img { max-width: 32px; max-height: 32px; object-fit: contain; }

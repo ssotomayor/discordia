@@ -1016,9 +1016,11 @@ pub(crate) fn TopicEmojiPicker(
             })
             .collect()
     };
+    let dismiss = super::dismiss::use_dismiss(open);
     rsx! {
         button {
             r#type: "button",
+            "data-dismiss": "{dismiss}",
             class: if open() {
                 "w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-base leading-none transition-colors"
             } else {
@@ -1033,6 +1035,7 @@ pub(crate) fn TopicEmojiPicker(
         }
         if open() {
             div {
+                "data-dismiss": "{dismiss}",
                 class: "dxf-pop-in absolute top-full mt-1 z-30 p-2 flex flex-col gap-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg overflow-y-auto",
                 style: if anchor_left {
                     "left: 0; width: 18rem; max-height: 18rem;"
