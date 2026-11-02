@@ -1,4 +1,13 @@
 {
+  "Couldn't reach GIPHY.": ["No se pudo conectar con GIPHY.", "Não foi possível acessar o GIPHY.", "无法连接到 GIPHY。", "GIPHYに接続できませんでした。"],
+  "GIFs": ["GIF", "GIFs", "GIF", "GIF"],
+  "GIFs are not set up in this build.": ["Los GIF no están configurados en esta versión.", "Os GIFs não estão configurados nesta versão.", "此版本未设置 GIF。", "このビルドではGIFが設定されていません。"],
+  "GIPHY is busy. Try again in a while.": ["GIPHY está ocupado. Inténtalo más tarde.", "O GIPHY está ocupado. Tente mais tarde.", "GIPHY 繁忙，请稍后再试。", "GIPHYが混み合っています。しばらくしてからお試しください。"],
+  "GIPHY sent an unreadable answer.": ["GIPHY envió una respuesta ilegible.", "O GIPHY enviou uma resposta ilegível.", "GIPHY 返回了无法读取的响应。", "GIPHYから読み取れない応答が返されました。"],
+  "No GIFs found.": ["No se encontraron GIF.", "Nenhum GIF encontrado.", "未找到 GIF。", "GIFが見つかりません。"],
+  "Powered by GIPHY": ["Con la tecnología de GIPHY", "Com tecnologia GIPHY", "由 GIPHY 提供支持", "Powered by GIPHY"],
+  "Search GIPHY…": ["Buscar en GIPHY…", "Pesquisar no GIPHY…", "搜索 GIPHY…", "GIPHYを検索…"],
+  "The server is reconnecting. Try the GIF again.": ["El servidor se está reconectando. Vuelve a probar el GIF.", "O servidor está reconectando. Tente o GIF novamente.", "服务器正在重新连接。请重试该 GIF。", "サーバーに再接続しています。もう一度GIFをお試しください。"],
   "Uploading encrypted image…": ["Subiendo imagen cifrada…", "Enviando imagem criptografada…", "正在上传加密图片…", "暗号化した画像をアップロード中…"],
   "Loading encrypted image…": ["Cargando imagen cifrada…", "Carregando imagem criptografada…", "正在加载加密图片…", "暗号化した画像を読み込み中…"],
   "Encrypted image — accept this conversation to load it.": ["Imagen cifrada: aceptá la conversación para cargarla.", "Imagem criptografada: aceite a conversa para carregá-la.", "加密图片：接受对话后加载。", "暗号化された画像：会話を承認すると読み込めます。"],

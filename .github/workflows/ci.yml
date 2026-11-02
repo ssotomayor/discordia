@@ -14,6 +14,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   DIOXUS_CLI_VERSION: "0.7.10"
+  # Compiled into the client; it ships in every binary, so it is no secret there.
+  GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }}
   # Debug info is most of a target dir and nothing here reads it; incremental
   # artifacts only pay off across edits on one machine. Both shrink the cache.
   CARGO_INCREMENTAL: "0"
