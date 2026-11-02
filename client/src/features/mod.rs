@@ -13,6 +13,7 @@ mod chat_scroll;
 mod chat_tools;
 pub mod connect;
 pub mod discord_import;
+mod dismiss;
 pub mod dm_call;
 mod dm_images;
 pub(crate) mod dm_menu;
