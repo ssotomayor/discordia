@@ -672,8 +672,10 @@ fn composer_locked(s: &crate::state::AppState, channel_id: Id) -> bool {
         .unwrap_or(false)
 }
 
+/// A reply always heads its own group: the connector to the quote starts at its avatar.
 fn groups_with(prev: &Message, cur: &Message) -> bool {
-    prev.author.pubkey == cur.author.pubkey
+    cur.reply_to.is_none()
+        && prev.author.pubkey == cur.author.pubkey
         && (cur.created_at - prev.created_at).num_seconds().abs() < GROUP_WINDOW_SECS
 }
 
@@ -841,6 +843,13 @@ pub(super) fn MessageRow(
         .as_ref()
         .and_then(|r| r.color.clone())
         .unwrap_or_else(|| crate::identity::signature_accent(&message.author.pubkey));
+    let quoted_color = quoted.as_ref().map(|q| {
+        guild_id
+            .and_then(|gid| rank_of(&state.read(), gid, &q.author_pubkey))
+            .and_then(|r| r.color)
+            .unwrap_or_else(|| crate::identity::signature_accent(&q.author_pubkey))
+    });
+    let replied_at = message.created_at.timestamp_millis();
     let can_pin = state.read().server_chat_tools
         && guild_id.is_some_and(|gid| {
             state
@@ -957,13 +966,27 @@ pub(super) fn MessageRow(
     rsx! {
         if let Some(q) = quoted {
             div { class: "flex gap-3 -mx-4 px-4 pt-1",
-                div { class: "w-9 shrink-0" }
-                div { class: "min-w-0 flex items-center gap-1.5 text-[11px] text-[var(--text-dim)]",
-                    span { class: "shrink-0 opacity-60", "↩" }
-                    span { class: "shrink-0 font-medium text-[var(--text-muted)]",
+                div { class: "dxf-reply-gutter w-9 shrink-0", span { class: "dxf-reply-spine" } }
+                button {
+                    r#type: "button",
+                    class: "dxf-reply-quote min-w-0 flex items-center gap-1 text-[12px] text-left",
+                    title: crate::i18n::text("Jump to message", &[]),
+                    // The original is older than the reply, so one not held is not looked for.
+                    onclick: {
+                        let target = q.message_id;
+                        move |_| state.write().message_jump = Some((channel_id, target, replied_at))
+                    },
+                    crate::features::profiles::Avatar {
+                        pubkey: q.author_pubkey.clone(),
+                        name: state.read().display_name_or(&q.author_pubkey, &q.author_username),
+                        size: "w-4 h-4",
+                        text: "text-[8px]",
+                    }
+                    span { class: "shrink-0 font-semibold", style: "color: {quoted_color.clone().unwrap_or_default()};",
+                        "@"
                         {state.read().display_name_or(&q.author_pubkey, &q.author_username)}
                     }
-                    span { class: "truncate", "{q.excerpt}" }
+                    span { class: "dxf-reply-excerpt truncate text-[var(--text-muted)]", "{q.excerpt}" }
                 }
             }
         }
