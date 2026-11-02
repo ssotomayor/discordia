@@ -3,13 +3,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use discordia_agent::{
-    AgentConfig, ApiKey, Harness, HarnessError, Limits, ModelConfig, Prompt, Reply,
+    AgentConfig, ApiKey, Harness, HarnessError, Limits, Look, ModelConfig, Prompt, Reply,
 };
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::protocol::{
     AppAccess, ArgValue, ChannelKind, ClientMessage, CommandArg, Id, Intent, Member, Message,
-    Permission, ServerMessage,
+    Permission, Profile, ServerMessage,
 };
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -50,6 +50,10 @@ struct World {
     agent_key: String,
     echo: Echo,
     seat: Member,
+    /// The agent's profile, if members were sent one before it listened.
+    profile: Option<Profile>,
+    url: String,
+    secret: String,
     _agent: tokio::task::JoinHandle<()>,
 }
 
@@ -61,6 +65,7 @@ fn config(limits: Limits) -> AgentConfig {
         limits,
         manifest_version: 1,
         only_from: None,
+        look: None,
     }
 }
 
@@ -69,6 +74,10 @@ async fn world(limits: Limits) -> World {
 }
 
 async fn world_with(limits: Limits, owner_only: bool) -> World {
+    world_dressed(limits, owner_only, None).await
+}
+
+async fn world_dressed(limits: Limits, owner_only: bool, look: Option<Look>) -> World {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -133,6 +142,7 @@ async fn world_with(limits: Limits, owner_only: bool) -> World {
     ) {}
 
     let mut config = config(limits);
+    config.look = look;
     if owner_only {
         config.only_from = Some(owner.user.pubkey.clone());
     }
@@ -155,6 +165,7 @@ async fn world_with(limits: Limits, owner_only: bool) -> World {
 
     let echo = Echo::default();
     let agent_key = identity.pubkey().to_string();
+    let secret = identity.secret_base58();
     let bot = Bot::connect(&url, &identity, "Helper").await.unwrap();
     let harness = echo.clone();
     let agent = tokio::spawn(async move {
@@ -164,10 +175,12 @@ async fn world_with(limits: Limits, owner_only: bool) -> World {
     });
     // Commands are registered after Ready: once they arrive, the agent listens.
     let mut seat = None;
+    let mut profile = None;
     loop {
         match next_timeout(&mut member).await {
             ServerMessage::BotCommands(_) => break,
             ServerMessage::MemberJoin(m) if m.user.pubkey == agent_key => seat = Some(m),
+            ServerMessage::ProfileUpdate(p) if p.pubkey == agent_key => profile = Some(p),
             _ => {}
         }
     }
@@ -181,6 +194,9 @@ async fn world_with(limits: Limits, owner_only: bool) -> World {
         agent_key,
         echo,
         seat: seat.expect("members are told the agent took a seat"),
+        profile,
+        url,
+        secret,
         _agent: agent,
     }
 }
@@ -523,4 +539,42 @@ async fn an_agent_held_to_its_creator_answers_no_one_else() {
         "{}",
         reply.content
     );
+}
+
+#[tokio::test]
+async fn an_agent_wears_its_look_and_does_not_upload_it_again_on_reconnect() {
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0x60, 0xf8, 0x5f, 0x0f, 0x00, 0x02, 0x87, 0x01, 0x80, 0xeb, 0x47, 0xba, 0x92, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let look = Look {
+        avatar: Some(PNG.to_vec()),
+        banner: None,
+        bio: Some("Answers questions.".into()),
+    };
+    let mut w = world_dressed(Limits::default(), false, Some(look.clone())).await;
+    let profile = w.profile.clone().expect("the agent put on its look");
+    assert!(profile.avatar.is_some_and(|a| a.starts_with("media:")));
+    assert_eq!(profile.bio.as_deref(), Some("Answers questions."));
+
+    w._agent.abort();
+    let identity = BotIdentity::from_base58_secret(&w.secret).unwrap();
+    let mut again = config(Limits::default());
+    again.look = Some(look);
+    let bot = Bot::connect(&w.url, &identity, "Helper").await.unwrap();
+    let _again = tokio::spawn(async move {
+        let _ = discordia_agent::run(bot, &identity, again, Echo::default()).await;
+    });
+    loop {
+        match next_timeout(&mut w.member).await {
+            ServerMessage::BotCommands(_) => break,
+            ServerMessage::ProfileUpdate(p) if p.pubkey == w.agent_key => {
+                panic!("the same look was sent again: {p:?}")
+            }
+            _ => {}
+        }
+    }
 }

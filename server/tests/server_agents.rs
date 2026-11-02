@@ -5,7 +5,8 @@ use std::time::Duration;
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::protocol::{
-    AgentProvider, ChannelKind, ClientMessage, Id, ServerAgentSpec, ServerAgentView, ServerMessage,
+    AgentLook, AgentProvider, ChannelKind, ClientMessage, Id, ServerAgentSpec, ServerAgentView,
+    ServerMessage,
 };
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -163,6 +164,7 @@ async fn only_the_operator_may_run_an_agent_in_the_server() {
             pubkey: None,
             spec,
             api_key: Some(SECRET_KEY.into()),
+            look: None,
         })
         .await
         .unwrap();
@@ -185,6 +187,93 @@ async fn only_the_operator_may_run_an_agent_in_the_server() {
 }
 
 #[tokio::test]
+async fn an_agents_picture_and_bio_reach_every_member_and_a_bad_picture_saves_nothing() {
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    let mut w = world().await;
+    w.operator
+        .send(&ClientMessage::SaveServerAgent {
+            pubkey: None,
+            spec: spec(&w, vec![]),
+            api_key: Some(SECRET_KEY.into()),
+            look: Some(AgentLook {
+                avatar: Some("https://example.com/a.png".into()),
+                banner: None,
+                bio: None,
+            }),
+        })
+        .await
+        .unwrap();
+    let refused = loop {
+        if let ServerMessage::Error { message } = next_timeout(&mut w.operator).await {
+            break message;
+        }
+    };
+    assert!(refused.starts_with("picture:"), "{refused}");
+    w.operator
+        .send(&ClientMessage::FetchServerAgents)
+        .await
+        .unwrap();
+    assert!(agents_until(&mut w.operator, |_| true).await.is_empty());
+
+    w.operator
+        .send(&ClientMessage::SaveServerAgent {
+            pubkey: None,
+            spec: spec(&w, vec![]),
+            api_key: Some(SECRET_KEY.into()),
+            look: Some(AgentLook {
+                avatar: Some(PNG.into()),
+                banner: None,
+                bio: Some("  Answers questions.  ".into()),
+            }),
+        })
+        .await
+        .unwrap();
+    let agent = agents_until(&mut w.operator, |a| !a.is_empty()).await[0]
+        .pubkey
+        .clone();
+    let profile = loop {
+        if let ServerMessage::ProfileUpdate(p) = next_timeout(&mut w.member).await
+            && p.pubkey == agent
+        {
+            break p;
+        }
+    };
+    assert!(
+        profile
+            .avatar
+            .as_deref()
+            .is_some_and(|a| a.starts_with("media:")),
+        "{profile:?}"
+    );
+    assert_eq!(profile.bio.as_deref(), Some("Answers questions."));
+
+    // A save without a look leaves the profile alone.
+    w.operator
+        .send(&ClientMessage::SaveServerAgent {
+            pubkey: Some(agent.clone()),
+            spec: spec(&w, vec![]),
+            api_key: None,
+            look: None,
+        })
+        .await
+        .unwrap();
+    agents_until(&mut w.operator, |a| a.len() == 1).await;
+    w.member
+        .send(&ClientMessage::FetchServerAgents)
+        .await
+        .unwrap();
+    loop {
+        match next_timeout(&mut w.member).await {
+            ServerMessage::ProfileUpdate(p) if p.pubkey == agent => {
+                panic!("a save without a look rewrote the profile: {p:?}")
+            }
+            ServerMessage::Error { .. } => break,
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
 async fn an_operator_agent_joins_its_guild_answers_and_never_shows_its_key() {
     let mut w = world().await;
     let spec = spec(&w, vec![w.guild_id]);
@@ -193,6 +282,7 @@ async fn an_operator_agent_joins_its_guild_answers_and_never_shows_its_key() {
             pubkey: None,
             spec,
             api_key: Some(SECRET_KEY.into()),
+            look: None,
         })
         .await
         .unwrap();
@@ -239,6 +329,7 @@ async fn deleting_an_agent_takes_its_seat_and_a_restart_brings_the_rest_back() {
             pubkey: None,
             spec: kept,
             api_key: Some(SECRET_KEY.into()),
+            look: None,
         })
         .await
         .unwrap();
@@ -249,6 +340,7 @@ async fn deleting_an_agent_takes_its_seat_and_a_restart_brings_the_rest_back() {
             pubkey: None,
             spec: gone,
             api_key: Some(SECRET_KEY.into()),
+            look: None,
         })
         .await
         .unwrap();

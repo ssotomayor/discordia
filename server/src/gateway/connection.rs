@@ -857,7 +857,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 continue;
                             }
                         };
-                        let bio = bio.map(|b| crate::protocol::sanitize_paragraph(&b, 280));
+                        let bio = bio.map(|b| crate::protocol::sanitize_paragraph(&b, crate::protocol::MAX_BIO_CHARS));
                         let custom_status =
                             custom_status.map(|c| crate::protocol::sanitize_line(&c, 80));
                         let status = status.map(|s| crate::protocol::sanitize_line(&s, 32));
@@ -1384,13 +1384,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                             agents: crate::agents::views(&ctx.state),
                         }).await;
                     }
-                    ClientMessage::SaveServerAgent { pubkey, spec, api_key } => {
+                    ClientMessage::SaveServerAgent { pubkey, spec, api_key, look } => {
                         let Some(u) = user.as_ref() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match crate::agents::save(&ctx, &u.pubkey, pubkey, spec, api_key).await {
+                        match crate::agents::save(&ctx, &u.pubkey, pubkey, spec, api_key, look).await {
                             Ok(agent) => tracing::info!(%agent, by = ?u.username, "server agent saved"),
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;

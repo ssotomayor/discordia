@@ -1988,7 +1988,7 @@
   "Look in this guild": ["Apariencia en esta comunidad", "Aparência nesta comunidade", "看看这个社区", "このコミュニティを見てください"],
   "Bio on its profile card here…": ["Bio de su tarjeta de perfil aquí…", "Bio do cartão de perfil aqui…", "简介卡上的个人简介…", "プロフィールカードのプロフィールはこちら…"],
   "Picture…": ["Imagen…", "Imagem…", "图片...", "画像…"],
-  "Clear picture": ["Quitar imagen", "Remover imagem", "清晰图片", "鮮明な画像"],
+  "Clear picture": ["Quitar imagen", "Remover imagem", "移除图片", "画像を削除"],
   "Only this guild sees these. Anything left empty shows the app's own.": ["Solo esta comunidad ve estos cambios. Lo que quede vacío muestra lo de la app.", "Só esta comunidade vê estas mudanças. O que ficar vazio mostra o do app.", "只有这个社区才能看到这些。任何留空的内容都会显示应用程序自己的内容。", "このコミュニティのみがこれらを参照します。空のままにしておくと、アプリ自体が表示されます。"],
   "Use the app's own": ["Usar los de la app", "Usar os do app", "使用应用程序自己的", "アプリ独自の"],
   "Image viewer": ["Visor de imágenes", "Visualizador de imagens", "图像查看器", "画像ビューア"],
@@ -2109,5 +2109,9 @@
   "Command": ["Comando", "Comando", "命令", "コマンド"],
   "This starts a coding agent on this computer, in an empty folder of its own. It is given no file or terminal access by Discordia and every permission it asks for is refused, but it can still read what its own program can.": ["Esto inicia un agente de código en esta computadora, en una carpeta vacía propia. Discordia no le da acceso a archivos ni a la terminal y rechaza todo permiso que pida, pero igual puede leer lo que su propio programa pueda.", "Isto inicia um agente de código neste computador, numa pasta vazia só dele. O Discordia não lhe dá acesso a arquivos nem ao terminal e recusa toda permissão que ele pedir, mas ele ainda pode ler o que o próprio programa puder.", "这会在本机的一个专用空文件夹中启动编程智能体。Discordia 不给它文件或终端访问权限，并拒绝它请求的所有权限，但它仍能读取其自身程序能读取的内容。", "このコンピューターの専用の空フォルダーでコーディングエージェントを起動します。Discordia はファイルやターミナルへのアクセスを与えず、求められた権限はすべて拒否しますが、プログラム自身が読めるものは読めます。"],
   "Only you can trigger it: everyone else is ignored, in guilds and in direct messages. Use the program's full path; apps opened from the dock don't see your shell's PATH.": ["Solo vos podés activarlo: se ignora a todos los demás, en guilds y en mensajes directos. Usá la ruta completa del programa; las apps abiertas desde el dock no ven el PATH de tu shell.", "Só você pode acioná-lo: todos os outros são ignorados, em guilds e em mensagens diretas. Use o caminho completo do programa; apps abertos pelo dock não veem o PATH do seu shell.", "只有你能触发它：在公会和私信中其他人都会被忽略。请使用程序的完整路径；从程序坞打开的应用看不到你 shell 的 PATH。", "起動できるのはあなただけです。ギルドでも DM でも、ほかの人は無視されます。プログラムはフルパスで指定してください。Dock から開いたアプリはシェルの PATH を参照できません。"],
-  "Name the command that starts the agent.": ["Indicá el comando que inicia el agente.", "Informe o comando que inicia o agente.", "填写启动该智能体的命令。", "エージェントを起動するコマンドを指定してください。"]
+  "Name the command that starts the agent.": ["Indicá el comando que inicia el agente.", "Informe o comando que inicia o agente.", "填写启动该智能体的命令。", "エージェントを起動するコマンドを指定してください。"],
+  "Picture, banner and bio": ["Imagen, banner y bio", "Imagem, banner e bio", "头像、横幅和简介", "画像、バナー、自己紹介"],
+  "Bio on its profile card…": ["Bio en su tarjeta de perfil…", "Bio no cartão de perfil…", "个人资料卡上的简介…", "プロフィールカードの自己紹介…"],
+  "Every guild shows these unless it gives the agent a look of its own in Integrations.": ["Todas las comunidades muestran esto, salvo las que le den al agente un aspecto propio en Integraciones.", "Todas as comunidades mostram isto, a menos que deem ao agente uma aparência própria em Integrações.", "除非社区在“集成”中为该智能体设置了自己的外观，否则所有社区都显示这些。", "コミュニティが「統合」でエージェント独自の見た目を設定しない限り、すべてのコミュニティにこれが表示されます。"],
+  "A picture must be a PNG, JPEG, GIF or WebP.": ["La imagen debe ser PNG, JPEG, GIF o WebP.", "A imagem deve ser PNG, JPEG, GIF ou WebP.", "图片必须是 PNG、JPEG、GIF 或 WebP 格式。", "画像は PNG、JPEG、GIF、WebP のいずれかにしてください。"]
 }

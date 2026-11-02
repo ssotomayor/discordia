@@ -235,6 +235,7 @@ async fn an_offered_agent_is_installable_elsewhere_and_an_operator_save_leaves_i
             pubkey: None,
             spec: agent_spec(false),
             api_key: None,
+            look: None,
         })
         .await
         .unwrap();
@@ -257,6 +258,7 @@ async fn an_offered_agent_is_installable_elsewhere_and_an_operator_save_leaves_i
             pubkey: Some(pubkey.clone()),
             spec: agent_spec(true),
             api_key: None,
+            look: None,
         })
         .await
         .unwrap();
@@ -294,6 +296,7 @@ async fn an_offered_agent_is_installable_elsewhere_and_an_operator_save_leaves_i
             pubkey: Some(pubkey.clone()),
             spec: agent_spec(true),
             api_key: None,
+            look: None,
         })
         .await
         .unwrap();

@@ -546,6 +546,152 @@ fn TryIt(
     }
 }
 
+/// A picture is a `data:` URL just picked, or a `media:` address the server holds.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LookDraft {
+    avatar: Option<String>,
+    banner: Option<String>,
+    bio: String,
+}
+
+impl LookDraft {
+    /// Blocking: reads the device agent's pictures back from disk.
+    fn load(owner: &str, saved: &store::SavedLook) -> Self {
+        let read = |name: &Option<String>| {
+            let bytes = store::picture(owner, name.as_deref()?)?;
+            let mime = picture_mime(&bytes)?;
+            Some(crate::features::profiles::to_data_url(&bytes, mime))
+        };
+        Self {
+            avatar: read(&saved.avatar),
+            banner: read(&saved.banner),
+            bio: saved.bio.clone(),
+        }
+    }
+
+    fn wire(&self) -> crate::protocol::AgentLook {
+        crate::protocol::AgentLook {
+            avatar: self.avatar.clone(),
+            banner: self.banner.clone(),
+            bio: Some(self.bio.trim().to_string()).filter(|b| !b.is_empty()),
+        }
+    }
+}
+
+/// The kinds a bot may send as its picture (`discordia_bot::Bot::set_profile`).
+fn picture_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// Blocking: stores what was picked and answers with what the list keeps.
+fn save_look(owner: &str, draft: &LookDraft) -> Result<store::SavedLook, String> {
+    let keep = |picture: &Option<String>| -> Result<Option<String>, String> {
+        let Some(url) = picture else { return Ok(None) };
+        let bytes = crate::features::profiles::data_url_bytes(url);
+        if picture_mime(&bytes).is_none() {
+            return Err(crate::i18n::text(
+                "A picture must be a PNG, JPEG, GIF or WebP.",
+                &[],
+            ));
+        }
+        store::put_picture(owner, &bytes).map(Some)
+    };
+    Ok(store::SavedLook {
+        avatar: keep(&draft.avatar)?,
+        banner: keep(&draft.banner)?,
+        bio: draft.bio.trim().to_string(),
+    })
+}
+
+#[component]
+fn LookFields(look: Signal<LookDraft>) -> Element {
+    let state = use_app_state();
+    let mut look = look;
+    let mut note = use_signal(|| None::<String>);
+    let draft = look.read().clone();
+    let (avatar_src, banner_src) = {
+        let s = state.read();
+        let src = |p: &Option<String>| {
+            p.as_deref()
+                .and_then(|p| s.media_src(p).map(str::to_string))
+        };
+        (src(&draft.avatar), src(&draft.banner))
+    };
+    let clear = "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors";
+    rsx! {
+        div { class: "space-y-2",
+            div { class: LABEL, {crate::i18n::text("Picture, banner and bio", &[])} }
+            div { class: "flex items-center gap-2",
+                if let Some(src) = avatar_src {
+                    img { class: "w-12 h-12 rounded-md object-cover border border-[var(--border)] shrink-0", src: "{src}" }
+                } else {
+                    div { class: "w-12 h-12 rounded-md border border-dashed border-[var(--border)] shrink-0" }
+                }
+                if let Some(src) = banner_src {
+                    img { class: "flex-1 min-w-0 h-12 rounded-md object-cover border border-[var(--border)]", src: "{src}" }
+                } else {
+                    div { class: "flex-1 h-12 rounded-md border border-dashed border-[var(--border)]" }
+                }
+            }
+            div { class: "flex flex-wrap gap-2",
+                crate::features::guild_settings::ImagePickButton {
+                    label: crate::i18n::text("Picture…", &[]),
+                    shape: crate::features::image_editor::CropShape::Square,
+                    onpicked: move |(url, n): (Option<String>, Option<String>)| {
+                        note.set(n);
+                        if url.is_some() {
+                            look.write().avatar = url;
+                        }
+                    },
+                }
+                if draft.avatar.is_some() {
+                    button { class: clear, onclick: move |_| look.write().avatar = None,
+                        {crate::i18n::text("Clear picture", &[])}
+                    }
+                }
+                crate::features::guild_settings::ImagePickButton {
+                    label: crate::i18n::text("Banner…", &[]),
+                    shape: crate::features::image_editor::CropShape::Banner,
+                    onpicked: move |(url, n): (Option<String>, Option<String>)| {
+                        note.set(n);
+                        if url.is_some() {
+                            look.write().banner = url;
+                        }
+                    },
+                }
+                if draft.banner.is_some() {
+                    button { class: clear, onclick: move |_| look.write().banner = None,
+                        {crate::i18n::text("Clear banner", &[])}
+                    }
+                }
+            }
+            textarea {
+                class: "{INPUT} h-14 resize-y",
+                maxlength: crate::protocol::MAX_BIO_CHARS as i64,
+                placeholder: crate::i18n::text("Bio on its profile card…", &[]),
+                value: "{draft.bio}",
+                oninput: move |e| look.write().bio = e.value(),
+            }
+            if let Some(n) = note() {
+                div { class: "text-[10px] text-[var(--warn)]", "{n}" }
+            }
+            div { class: "text-[10px] text-[var(--text-dim)]",
+                {crate::i18n::text("Every guild shows these unless it gives the agent a look of its own in Integrations.", &[])}
+            }
+        }
+    }
+}
+
 #[component]
 fn AgentEditor(
     entry: AgentEntry,
@@ -562,6 +708,23 @@ fn AgentEditor(
     let mut dm_raw = use_signal(|| entry.dm_allow.join("\n"));
     let nostr = try_use_context::<crate::nostr::service::NostrTx>();
     let mut state = use_app_state();
+    let mut look = use_signal(|| LookDraft {
+        bio: entry.look.bio.clone(),
+        ..LookDraft::default()
+    });
+    use_hook(|| {
+        let (owner, saved) = (agents.owner.clone(), entry.look.clone());
+        spawn(async move {
+            let Ok(loaded) =
+                tokio::task::spawn_blocking(move || LookDraft::load(&owner, &saved)).await
+            else {
+                return;
+            };
+            let mut draft = look.write();
+            draft.avatar = draft.avatar.take().or(loaded.avatar);
+            draft.banner = draft.banner.take().or(loaded.banner);
+        });
+    });
 
     let f = form.read().clone();
     let runs = agents.runs.read().clone();
@@ -628,6 +791,22 @@ fn AgentEditor(
                         return;
                     }
                 }
+                let draft = look.peek().clone();
+                let owner_for_look = owner.clone();
+                match tokio::task::spawn_blocking(move || save_look(&owner_for_look, &draft)).await
+                {
+                    Ok(Ok(saved)) => next.look = saved,
+                    Ok(Err(e)) => {
+                        error.set(Some(e));
+                        busy.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        error.set(Some(e.to_string()));
+                        busy.set(false);
+                        return;
+                    }
+                }
                 let mut list = agents.list.peek().clone();
                 let previous = list.iter().find(|e| e.pubkey == next.pubkey).cloned();
                 next.manifest_version = next.next_version(previous.as_ref());
@@ -635,9 +814,13 @@ fn AgentEditor(
                     Some(slot) => *slot = next.clone(),
                     None => list.push(next.clone()),
                 }
+                let kept = list.clone();
                 if let Err(e) = agents.save(list) {
                     error.set(Some(e));
                 } else {
+                    drop(tokio::task::spawn_blocking(move || {
+                        store::prune_pictures(&owner, &kept)
+                    }));
                     if rekeyed {
                         agents.rekeyed(&next.pubkey);
                     }
@@ -661,8 +844,13 @@ fn AgentEditor(
                 return;
             }
             let owner = agents.owner.clone();
+            let kept = agents.list.peek().clone();
             spawn(async move {
-                let _ = tokio::task::spawn_blocking(move || store::forget(&owner, &pubkey)).await;
+                let _ = tokio::task::spawn_blocking(move || {
+                    store::forget(&owner, &pubkey);
+                    store::prune_pictures(&owner, &kept);
+                })
+                .await;
             });
             on_deleted.call(());
         }
@@ -707,6 +895,7 @@ fn AgentEditor(
     rsx! {
         div { class: "space-y-3",
             AgentFields { form, api_key, busy, error, key_placeholder, owner: Some(agents.owner.clone()) }
+            LookFields { look }
             div { class: "space-y-1.5",
                 label { class: "flex items-center gap-2 text-xs text-[var(--text)]",
                     input {
@@ -850,6 +1039,17 @@ fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -
     let busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut confirm_delete = use_signal(|| false);
+    // What the server holds; a save sends the look only when it moved from this.
+    let worn = use_signal(|| {
+        let s = state.peek();
+        let held = view.as_ref().and_then(|v| s.profile_of(&v.pubkey));
+        LookDraft {
+            avatar: held.and_then(|p| p.avatar.clone()),
+            banner: held.and_then(|p| p.banner.clone()),
+            bio: held.and_then(|p| p.bio.clone()).unwrap_or_default(),
+        }
+    });
+    let look = use_signal(|| worn.peek().clone());
 
     let manageable: Vec<(Id, String)> = {
         let s = state.read();
@@ -878,7 +1078,10 @@ fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -
                     ..entry.server_spec(guilds.peek().clone())
                 },
                 api_key: (!typed.is_empty()).then_some(typed),
+                look: (*look.peek() != *worn.peek()).then(|| look.peek().wire()),
             });
+            let mut worn = worn;
+            worn.set(look.peek().clone());
             api_key.set(String::new());
             if is_new {
                 on_done.call(());
@@ -924,6 +1127,7 @@ fn ServerAgentEditor(view: Option<ServerAgentView>, on_done: EventHandler<()>) -
                 }
             }
             AgentFields { form, api_key, busy, error, key_placeholder, owner: None }
+            LookFields { look }
             div {
                 div { class: LABEL, {crate::i18n::text("Guilds", &[])} }
                 if manageable.is_empty() {

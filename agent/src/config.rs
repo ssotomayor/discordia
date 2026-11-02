@@ -99,6 +99,25 @@ impl Default for Limits {
     }
 }
 
+/// What the agent puts on its profile when it connects. Pictures are the
+/// bytes of a PNG, JPEG, GIF or WebP.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Look {
+    pub avatar: Option<Vec<u8>>,
+    pub banner: Option<Vec<u8>>,
+    pub bio: Option<String>,
+}
+
+impl fmt::Debug for Look {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Look")
+            .field("avatar", &self.avatar.as_ref().map(Vec::len))
+            .field("banner", &self.banner.as_ref().map(Vec::len))
+            .field("bio", &self.bio)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
     pub name: String,
@@ -110,6 +129,8 @@ pub struct AgentConfig {
     /// Answer this key only. A coding agent on its creator's computer is set
     /// to its creator, or any member could drive a shell there (#457).
     pub only_from: Option<String>,
+    /// `None` leaves whatever profile the key already has.
+    pub look: Option<Look>,
 }
 
 pub(crate) const ASK: &str = "ask";
@@ -160,6 +181,7 @@ mod tests {
             limits: Limits::default(),
             manifest_version: 1,
             only_from: None,
+            look: None,
         }
     }
 
