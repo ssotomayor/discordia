@@ -85,6 +85,7 @@ impl Store {
                     xp,
                     look: Default::default(),
                     agent: None,
+                    reads: None,
                 }
             })
             .collect();

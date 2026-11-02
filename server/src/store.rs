@@ -321,6 +321,7 @@ impl Store {
             "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
             "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
             "ALTER TABLE bot_installs ADD COLUMN look TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN access TEXT",
             "ALTER TABLE profiles ADD COLUMN hide_guild_owner INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN hide_operator INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
@@ -519,7 +520,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look FROM bot_installs")
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look, access FROM bot_installs")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -541,6 +542,10 @@ impl Store {
                     .unwrap_or_default(),
                 look: r
                     .get::<Option<String>, _>(8)
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
+                access: r
+                    .get::<Option<String>, _>(9)
                     .and_then(|j| serde_json::from_str(&j).ok())
                     .unwrap_or_default(),
             });
@@ -1107,12 +1112,12 @@ impl Store {
         i: &BotInstall,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call, look, access)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(guild_id, bot_pubkey) DO UPDATE SET name=excluded.name,
                permissions=excluded.permissions, intents=excluded.intents,
                app=excluded.app, pending=excluded.pending, may_call=excluded.may_call,
-               look=excluded.look",
+               look=excluded.look, access=excluded.access",
         )
         .bind(i.guild_id.to_string())
         .bind(&i.bot_pubkey)
@@ -1123,6 +1128,7 @@ impl Store {
         .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .bind(serde_json::to_string(&i.may_call).unwrap_or_else(|_| "[]".into()))
         .bind(serde_json::to_string(&i.look).ok())
+        .bind(serde_json::to_string(&i.access).ok())
         .execute(executor)
         .await?;
         Ok(())

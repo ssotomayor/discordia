@@ -8,8 +8,8 @@ use discordia_agent::{
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
 use discordia_server::protocol::{
-    ArgValue, ChannelKind, ClientMessage, CommandArg, Id, Intent, Member, Message, Permission,
-    ServerMessage,
+    AppAccess, ArgValue, ChannelKind, ClientMessage, CommandArg, Id, Intent, Member, Message,
+    Permission, ServerMessage,
 };
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -43,6 +43,7 @@ impl Harness for Echo {
 
 struct World {
     _handle: discordia_server::ServerHandle,
+    owner: Bot,
     member: Bot,
     guild_id: Id,
     text: Id,
@@ -165,6 +166,7 @@ async fn world(limits: Limits) -> World {
 
     World {
         _handle: handle,
+        owner,
         member,
         guild_id,
         text,
@@ -321,4 +323,150 @@ async fn every_member_sees_that_the_app_is_an_agent_and_where_text_goes() {
         .expect("the seat carries the disclosure");
     assert_eq!(agent.provider, "Anthropic");
     assert_eq!(agent.model, "claude-opus-5-5");
+}
+
+async fn set_access(w: &mut World, access: AppAccess) {
+    w.owner
+        .send(&ClientMessage::SetAppAccess {
+            guild_id: w.guild_id,
+            bot_pubkey: w.agent_key.clone(),
+            access: access.clone(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildIntegrations { bots, .. } = next_timeout(&mut w.owner).await
+            && bots
+                .iter()
+                .any(|b| b.bot_pubkey == w.agent_key && b.access == access)
+        {
+            return;
+        }
+    }
+}
+
+async fn said_in(w: &mut World, channel_id: Id, content: &str) {
+    w.member.send_message(channel_id, content).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_scoped_agent_hears_only_its_channels_and_members_see_the_scope() {
+    let mut w = world(Limits::default()).await;
+    w.owner
+        .send(&ClientMessage::CreateChannel {
+            guild_id: w.guild_id,
+            name: "ask-the-bot".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            divider: Default::default(),
+        })
+        .await
+        .unwrap();
+    let quiet = loop {
+        if let ServerMessage::ChannelCreate(c) = next_timeout(&mut w.owner).await {
+            break c.id;
+        }
+    };
+    set_access(
+        &mut w,
+        AppAccess {
+            channels: Some(vec![quiet]),
+            roles: None,
+        },
+    )
+    .await;
+    loop {
+        if let ServerMessage::MemberJoin(m) | ServerMessage::MemberUpdate(m) =
+            next_timeout(&mut w.member).await
+            && m.user.pubkey == w.agent_key
+        {
+            assert_eq!(m.reads, Some(vec![quiet]));
+            break;
+        }
+    }
+
+    let text = w.text;
+    said_in(&mut w, text, "@Helper are you here?").await;
+    assert!(
+        agent_messages_within(&mut w, Duration::from_millis(1200))
+            .await
+            .is_empty(),
+        "outside its channels it hears nothing"
+    );
+    said_in(&mut w, quiet, "@Helper and here?").await;
+    let reply = agent_message(&mut w).await;
+    assert_eq!(reply.channel_id, quiet);
+}
+
+#[tokio::test]
+async fn when_roles_are_set_only_they_and_managers_reach_the_agent() {
+    let mut w = world(Limits::default()).await;
+    w.owner
+        .send(&ClientMessage::CreateRole {
+            guild_id: w.guild_id,
+            name: "Askers".into(),
+            color: None,
+            permissions: vec![],
+        })
+        .await
+        .unwrap();
+    let role = loop {
+        if let ServerMessage::GuildRoles { roles, .. } = next_timeout(&mut w.owner).await
+            && let Some(r) = roles.iter().find(|r| r.name == "Askers")
+        {
+            break r.id;
+        }
+    };
+    set_access(
+        &mut w,
+        AppAccess {
+            channels: None,
+            roles: Some(vec![role]),
+        },
+    )
+    .await;
+
+    let text = w.text;
+    said_in(&mut w, text, "@Helper hello?").await;
+    assert!(
+        agent_messages_within(&mut w, Duration::from_millis(1200))
+            .await
+            .is_empty(),
+        "a member without the role is not heard"
+    );
+
+    w.owner
+        .send_message(text, "@Helper owner here")
+        .await
+        .unwrap();
+    let reply = agent_message(&mut w).await;
+    assert!(
+        reply.content.ends_with("Owner: @Helper owner here"),
+        "{}",
+        reply.content
+    );
+
+    let member_key = w.member.user.pubkey.clone();
+    w.owner
+        .send(&ClientMessage::AssignRole {
+            guild_id: w.guild_id,
+            role_id: role,
+            user_pubkey: member_key,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut w.member).await
+            && m.roles.contains(&role)
+        {
+            break;
+        }
+    }
+    said_in(&mut w, text, "@Helper now?").await;
+    let reply = agent_message(&mut w).await;
+    assert!(
+        reply.content.ends_with("Member: @Helper now?"),
+        "{}",
+        reply.content
+    );
 }

@@ -1719,6 +1719,7 @@ mod tests {
                 xp: 0,
                 look: Default::default(),
                 agent: None,
+                reads: None,
             });
         }
         apply_own_name(&mut state, "me", "After", 101);

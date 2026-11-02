@@ -57,6 +57,7 @@ fn benchmark_view(export: Export) -> Element {
                 xp: 0,
                 look: Default::default(),
                 agent: None,
+                reads: None,
             });
             s.profiles.insert(
                 pk.clone(),

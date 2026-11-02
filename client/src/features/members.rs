@@ -1291,6 +1291,7 @@ mod tests {
             xp: 0,
             look: Default::default(),
             agent: None,
+            reads: None,
         }
     }
 
@@ -1361,6 +1362,7 @@ mod tests {
             xp,
             look: Default::default(),
             agent: None,
+            reads: None,
             ..member(pk, gid, true)
         };
         let sorted = vec![at("a", 500), at("b", 100), at("c", 20), at("d", 3)];

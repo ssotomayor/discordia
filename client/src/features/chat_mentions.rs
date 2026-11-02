@@ -87,6 +87,7 @@ mod tests {
             xp: 0,
             look: Default::default(),
             agent: None,
+            reads: None,
         }
     }
     fn channel(guild_id: Id) -> Channel {

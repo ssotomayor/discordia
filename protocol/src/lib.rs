@@ -352,6 +352,10 @@ pub struct Member {
     /// its install pinned, so every member sees it is an LLM and where text goes.
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+    /// An app's channel scope here (`AppAccess::channels`), so members can
+    /// tell which channels an agent reads. `None` is every one it can see.
+    #[serde(default)]
+    pub reads: Option<Vec<Id>>,
 }
 
 /// Each `None` shows the profile's own.
@@ -1371,6 +1375,29 @@ pub struct BotInstall {
     pub pending: Option<AppManifest>,
     #[serde(default)]
     pub look: GuildLook,
+    #[serde(default)]
+    pub access: AppAccess,
+}
+
+/// Where an installed app may read and who may use it, as its guild set
+/// (#456). The default limits nothing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppAccess {
+    /// The only channels it hears and may read; `None` is every one it can see.
+    #[serde(default)]
+    pub channels: Option<Vec<Id>>,
+    /// Only members with one of these roles reach it; `None` is everyone.
+    /// Whoever manages the guild always does.
+    #[serde(default)]
+    pub roles: Option<Vec<Id>>,
+}
+
+impl AppAccess {
+    pub fn reads(&self, channel_id: Id) -> bool {
+        self.channels
+            .as_ref()
+            .is_none_or(|c| c.contains(&channel_id))
+    }
 }
 
 /// NIP-89's handler kind, so a relay already knows to keep only the latest.
@@ -2457,6 +2484,12 @@ pub enum ClientMessage {
     /// Operator only. Uninstalls it everywhere and forgets its keys.
     DeleteServerAgent {
         pubkey: String,
+    },
+    /// Manage guild. Answered by `GuildIntegrations`.
+    SetAppAccess {
+        guild_id: Id,
+        bot_pubkey: String,
+        access: AppAccess,
     },
     /// Operator only. Answered by `ServerApps`.
     FetchServerApps,

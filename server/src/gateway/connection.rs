@@ -358,6 +358,12 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         }
+                        if is_bot && !ctx.state.app_reads(&u.pubkey, channel_id) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "this guild doesn't let the app read that channel".into(),
+                            }).await;
+                            continue;
+                        }
                         if is_bot && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::ReadMessageHistory) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "bot lacks the read_message_history permission here".into(),
@@ -1214,6 +1220,22 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         match crate::agents::delete(&ctx, &u.pubkey, &pubkey).await {
                             Ok(()) => tracing::info!(agent = %pubkey, by = ?u.username, "server agent deleted"),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetAppAccess { guild_id, bot_pubkey, access } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.set_app_access(guild_id, &bot_pubkey, access, &u.pubkey).await {
+                            Ok(seat) => {
+                                announce_seat(&ctx, guild_id, &bot_pubkey, seat);
+                                share_guild_apps(&ctx.state, guild_id);
+                            }
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             }
@@ -3721,7 +3743,13 @@ fn filter_for_bot(
         ServerMessage::MessageCreate(m) => {
             let gid = state.channel_guild(m.channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
-            if !install.has_intent(Intent::GuildMessages) {
+            if !install.has_intent(Intent::GuildMessages) || !install.access.reads(m.channel_id) {
+                return None;
+            }
+            // An agent spends its runner's money: only those allowed to use it reach it.
+            if install.app.as_ref().is_some_and(|a| a.agent.is_some())
+                && !state.may_use_app(&install, &m.author.pubkey)
+            {
                 return None;
             }
             let mut m = m.clone();
@@ -3733,7 +3761,8 @@ fn filter_for_bot(
         ServerMessage::ReactionUpdate { channel_id, .. } => {
             let gid = state.channel_guild(*channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
-            install.has_intent(Intent::Reactions).then(|| msg.clone())
+            (install.has_intent(Intent::Reactions) && install.access.reads(*channel_id))
+                .then(|| msg.clone())
         }
         ServerMessage::MemberJoin(member) => {
             let install = state.bot_install(member.guild_id, bot_pubkey)?;
@@ -3759,7 +3788,7 @@ fn filter_for_bot(
         } => {
             let gid = state.channel_guild(*channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
-            if !install.has_intent(Intent::GuildMessages) {
+            if !install.has_intent(Intent::GuildMessages) || !install.access.reads(*channel_id) {
                 return None;
             }
             Some(ServerMessage::MessageUpdate {
@@ -3843,6 +3872,7 @@ where
             xp: state.xp_of(guild_id, &joiner.pubkey),
             look: Default::default(),
             agent: None,
+            reads: None,
         }),
     );
     let emojis = state.emojis_of(guild_id);

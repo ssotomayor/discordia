@@ -186,6 +186,7 @@ fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Eleme
                 }
             }
             AppLookRow { guild_id, bot: bot.clone() }
+            super::agents::AppAccessRow { guild_id, bot: bot.clone() }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
                 BundleRow { guild_id, bot_pubkey: bot.bot_pubkey.clone(), activity }
             }

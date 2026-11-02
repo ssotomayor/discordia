@@ -245,6 +245,7 @@ impl AppState {
                     xp: 0,
                     look: Default::default(),
                     agent: None,
+                    reads: None,
                 },
             );
         }
@@ -291,6 +292,7 @@ impl AppState {
             {
                 m.look = i.look.clone();
                 m.agent = apps::install_agent(&i);
+                m.reads = i.access.channels.clone();
             }
             state
                 .bot_installs
@@ -1226,6 +1228,7 @@ impl AppState {
             xp: 0,
             look: Default::default(),
             agent: None,
+            reads: None,
         };
         durable(
             self.store
@@ -1968,6 +1971,7 @@ impl AppState {
                 xp: 0,
                 look: Default::default(),
                 agent: None,
+                reads: None,
             });
         member.online = true;
         durable(self.store.admit_member(&member, invite).await, "member add")?;
@@ -3789,6 +3793,10 @@ impl AppState {
                 .unwrap_or_default(),
             app: app.as_ref().map(|a| a.manifest.clone()),
             pending: None,
+            access: current
+                .as_ref()
+                .map(|i| i.access.clone())
+                .unwrap_or_default(),
             look: current.map(|i| i.look).unwrap_or_default(),
         };
         let seat = self.seat_for(&install);

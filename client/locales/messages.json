@@ -2089,5 +2089,14 @@
   "Installed in every guild": ["Instaladas en todas las guilds", "Instalados em todas as guilds", "各公会中已安装的", "全ギルドにインストール済み"],
   "No guild has installed an app.": ["Ninguna guild instaló una app.", "Nenhuma guild instalou um app.", "还没有公会安装应用。", "アプリをインストールしたギルドはありません。"],
   "Offered by this server": ["Ofrecidos por este servidor", "Oferecidos por este servidor", "此服务器提供的", "このサーバーが提供"],
-  "{0} · {1} tokens a day for this guild": ["{0} · {1} tokens por día para esta guild", "{0} · {1} tokens por dia para esta guild", "{0} · 本公会每日 {1} token", "{0} · このギルドは 1 日 {1} トークン"]
+  "{0} · {1} tokens a day for this guild": ["{0} · {1} tokens por día para esta guild", "{0} · {1} tokens por dia para esta guild", "{0} · 本公会每日 {1} token", "{0} · このギルドは 1 日 {1} トークン"],
+  "Every channel it can see, anyone may use it": ["Todos los canales que puede ver, cualquiera puede usarla", "Todos os canais que ele vê, qualquer um pode usar", "它能看到的所有频道，任何人都可使用", "見えるすべてのチャンネル、誰でも使える"],
+  "{0} channels, anyone may use it": ["{0} canales, cualquiera puede usarla", "{0} canais, qualquer um pode usar", "{0} 个频道，任何人都可使用", "{0} チャンネル、誰でも使える"],
+  "Every channel it can see, {0} roles may use it": ["Todos los canales que puede ver, {0} roles pueden usarla", "Todos os canais que ele vê, {0} cargos podem usar", "它能看到的所有频道，{0} 个身份组可使用", "見えるすべてのチャンネル、{0} ロールが使える"],
+  "{0} channels, {1} roles may use it": ["{0} canales, {1} roles pueden usarla", "{0} canais, {1} cargos podem usar", "{0} 个频道，{1} 个身份组可使用", "{0} チャンネル、{1} ロールが使える"],
+  "Every channel it can see": ["Todos los canales que puede ver", "Todos os canais que ele vê", "它能看到的所有频道", "見えるすべてのチャンネル"],
+  "Anyone may use it": ["Cualquiera puede usarla", "Qualquer um pode usar", "任何人都可使用", "誰でも使える"],
+  "People who manage the guild always may.": ["Quienes administran la guild siempre pueden.", "Quem gerencia a guild sempre pode.", "管理公会的人始终可以。", "ギルドを管理する人はいつでも使えます。"],
+  "{0} sends what it reads to {1}": ["{0} envía lo que lee a {1}", "{0} envia o que lê para {1}", "{0} 会把读取的内容发送给 {1}", "{0} は読んだ内容を {1} に送ります"],
+  "AI reads here: {0}": ["Una IA lee acá: {0}", "Uma IA lê aqui: {0}", "AI 在此读取：{0}", "AI が読んでいます：{0}"]
 }

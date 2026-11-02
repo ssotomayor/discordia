@@ -2541,6 +2541,7 @@ mod tests {
             xp: 0,
             look,
             agent: None,
+            reads: None,
         };
         let dressed = crate::protocol::GuildLook {
             avatar: Some("data:image/png;base64,ours".into()),
@@ -3506,6 +3507,7 @@ mod tests {
             xp: 0,
             look: Default::default(),
             agent: None,
+            reads: None,
         }
     }
 

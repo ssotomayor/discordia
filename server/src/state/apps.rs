@@ -160,6 +160,84 @@ impl AppState {
         Ok(seat)
     }
 
+    /// Whoever manages the guild always reaches an app; otherwise its
+    /// `AppAccess::roles`, when set, decide.
+    pub fn may_use_app(&self, install: &BotInstall, pubkey: &str) -> bool {
+        let Some(roles) = &install.access.roles else {
+            return true;
+        };
+        if self.has_permission(install.guild_id, pubkey, Permission::ManageGuild) {
+            return true;
+        }
+        self.members
+            .get(&install.guild_id)
+            .and_then(|g| {
+                g.get(pubkey)
+                    .map(|m| m.roles.iter().any(|r| roles.contains(r)))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether the app installed in this channel's guild may hear and read it.
+    pub fn app_reads(&self, bot_pubkey: &str, channel_id: Id) -> bool {
+        self.channel_guild(channel_id)
+            .and_then(|g| self.bot_install(g, bot_pubkey))
+            .is_some_and(|i| i.access.reads(channel_id))
+    }
+
+    pub async fn set_app_access(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+        access: crate::protocol::AppAccess,
+        by_pubkey: &str,
+    ) -> Result<Seat, String> {
+        let _write = self.durable_writes.lock().await;
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let mut install = self
+            .bot_install(guild_id, bot_pubkey)
+            .ok_or("that bot isn't installed here")?;
+        let channels = match access.channels {
+            None => None,
+            Some(mut list) => {
+                list.sort_unstable();
+                list.dedup();
+                if list
+                    .iter()
+                    .any(|c| self.channel_guild(*c) != Some(guild_id))
+                {
+                    return Err("a chosen channel isn't in this guild".into());
+                }
+                Some(list)
+            }
+        };
+        let roles = match access.roles {
+            None => None,
+            Some(mut list) => {
+                list.sort_unstable();
+                list.dedup();
+                let known = self
+                    .roles
+                    .get(&guild_id)
+                    .map(|r| r.iter().map(|r| r.id).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                if list.iter().any(|r| !known.contains(r)) {
+                    return Err("a chosen role isn't in this guild".into());
+                }
+                Some(list)
+            }
+        };
+        install.access = crate::protocol::AppAccess { channels, roles };
+        let seat = self.seat_for(&install);
+        durable(
+            self.store.update_bot_install(&install, &seat).await,
+            "app access",
+        )?;
+        let seat = self.apply_seat(&install, seat);
+        self.put_install(install);
+        Ok(seat)
+    }
+
     /// The member row this install should have. A person's row under the same
     /// key is never taken away; only a bot's.
     pub(super) fn seat_for(&self, install: &BotInstall) -> Seat {
@@ -168,13 +246,15 @@ impl AppState {
             .get(&install.guild_id)
             .and_then(|g| g.get(&install.bot_pubkey).map(|m| m.clone()));
         let agent = install_agent(install);
+        let reads = install.access.channels.clone();
         match (install.seated(), current) {
             (_, Some(m)) if !m.bot => Seat::Unchanged,
             (true, Some(m))
                 if m.bot
                     && m.user.username == install.name
                     && m.look == install.look
-                    && m.agent == agent =>
+                    && m.agent == agent
+                    && m.reads == reads =>
             {
                 Seat::Unchanged
             }
@@ -183,6 +263,7 @@ impl AppState {
                 m.user.username = install.name.clone();
                 m.look = install.look.clone();
                 m.agent = agent;
+                m.reads = reads;
                 Seat::Taken(m)
             }
             (true, None) => Seat::Taken(Member {
@@ -199,6 +280,7 @@ impl AppState {
                 xp: 0,
                 look: install.look.clone(),
                 agent,
+                reads,
             }),
             (false, Some(m)) if m.bot => Seat::Vacated(None),
             (false, _) => Seat::Unchanged,
@@ -465,6 +547,7 @@ mod tests {
             app,
             pending: None,
             look: GuildLook::default(),
+            access: Default::default(),
         }
     }
 

@@ -105,6 +105,7 @@ mod tests {
                 xp: 0,
                 look: Default::default(),
                 agent: None,
+                reads: None,
             });
         }
         (state, channel)

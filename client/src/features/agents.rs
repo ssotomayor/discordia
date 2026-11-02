@@ -1237,3 +1237,180 @@ pub fn OfferedAgentsSection(guild_id: Id) -> Element {
         }
     }
 }
+
+/// In an installed app's row: the channels it may read and who may use it (#456).
+#[component]
+pub fn AppAccessRow(guild_id: Id, bot: crate::protocol::BotInstall) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut open = use_signal(|| false);
+    let mut channels = use_signal(|| bot.access.channels.clone());
+    let mut roles = use_signal(|| bot.access.roles.clone());
+    let (text_channels, guild_roles) = {
+        let s = state.read();
+        let chans: Vec<(Id, String)> = s
+            .channels
+            .iter()
+            .filter(|c| c.guild_id == guild_id && c.kind == crate::protocol::ChannelKind::Text)
+            .map(|c| (c.id, c.name.clone()))
+            .collect();
+        let roles: Vec<(Id, String)> = s
+            .roles
+            .get(&guild_id)
+            .map(|r| r.iter().map(|r| (r.id, r.name.clone())).collect())
+            .unwrap_or_default();
+        (chans, roles)
+    };
+    let summary = match (&bot.access.channels, &bot.access.roles) {
+        (None, None) => crate::i18n::text("Every channel it can see, anyone may use it", &[]),
+        (Some(c), None) => {
+            crate::i18n::text("{0} channels, anyone may use it", &[c.len().to_string()])
+        }
+        (None, Some(r)) => crate::i18n::text(
+            "Every channel it can see, {0} roles may use it",
+            &[r.len().to_string()],
+        ),
+        (Some(c), Some(r)) => crate::i18n::text(
+            "{0} channels, {1} roles may use it",
+            &[c.len().to_string(), r.len().to_string()],
+        ),
+    };
+    let save = {
+        let (gateway, bot_pubkey) = (gateway.clone(), bot.bot_pubkey.clone());
+        move |_| {
+            gateway.send(ClientMessage::SetAppAccess {
+                guild_id,
+                bot_pubkey: bot_pubkey.clone(),
+                access: crate::protocol::AppAccess {
+                    channels: channels.peek().clone(),
+                    roles: roles.peek().clone(),
+                },
+            });
+            open.set(false);
+        }
+    };
+    rsx! {
+        div { class: "space-y-1.5",
+            div { class: "flex items-center gap-2",
+                div { class: "flex-1 min-w-0 text-[10px] text-[var(--text-dim)] truncate", "{summary}" }
+                button {
+                    class: "text-[10px] text-[var(--accent)] hover:underline shrink-0",
+                    onclick: move |_| {
+                        let now = open();
+                        open.set(!now)
+                    },
+                    {crate::i18n::text("Access", &[])}
+                }
+            }
+            if open() {
+                div { class: "rounded border border-[var(--border)] p-2 space-y-2",
+                    label { class: "flex items-center gap-2 text-xs text-[var(--text)]",
+                        input {
+                            r#type: "checkbox",
+                            checked: channels.read().is_none(),
+                            onchange: move |e| channels.set(if e.checked() { None } else { Some(Vec::new()) }),
+                        }
+                        {crate::i18n::text("Every channel it can see", &[])}
+                    }
+                    if channels.read().is_some() {
+                        for (id, name) in text_channels.iter().cloned() {
+                            label { key: "c-{id}", class: "flex items-center gap-2 pl-5 text-xs text-[var(--text)]",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: channels.read().as_ref().is_some_and(|c| c.contains(&id)),
+                                    onchange: move |e| {
+                                        if let Some(list) = channels.write().as_mut() {
+                                            list.retain(|x| *x != id);
+                                            if e.checked() {
+                                                list.push(id);
+                                            }
+                                        }
+                                    },
+                                }
+                                "#{name}"
+                            }
+                        }
+                    }
+                    label { class: "flex items-center gap-2 text-xs text-[var(--text)]",
+                        input {
+                            r#type: "checkbox",
+                            checked: roles.read().is_none(),
+                            onchange: move |e| roles.set(if e.checked() { None } else { Some(Vec::new()) }),
+                        }
+                        {crate::i18n::text("Anyone may use it", &[])}
+                    }
+                    if roles.read().is_some() {
+                        for (id, name) in guild_roles.iter().cloned() {
+                            label { key: "r-{id}", class: "flex items-center gap-2 pl-5 text-xs text-[var(--text)]",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: roles.read().as_ref().is_some_and(|r| r.contains(&id)),
+                                    onchange: move |e| {
+                                        if let Some(list) = roles.write().as_mut() {
+                                            list.retain(|x| *x != id);
+                                            if e.checked() {
+                                                list.push(id);
+                                            }
+                                        }
+                                    },
+                                }
+                                "{name}"
+                            }
+                        }
+                        div { class: "pl-5 text-[10px] text-[var(--text-dim)]",
+                            {crate::i18n::text("People who manage the guild always may.", &[])}
+                        }
+                    }
+                    button { class: BUTTON, onclick: save, {crate::i18n::text("Save", &[])} }
+                }
+            }
+        }
+    }
+}
+
+/// In a channel's header: which AI agents read it, so nobody is surprised.
+#[component]
+pub fn AgentNotice() -> Element {
+    let state = use_app_state();
+    let readers: Vec<(String, String)> = {
+        let s = state.read();
+        let (Some(guild), Some(channel)) = (s.selected_guild, s.selected_channel) else {
+            return rsx! {};
+        };
+        s.members
+            .iter()
+            .filter(|m| m.guild_id == guild)
+            .filter(|m| m.reads.as_ref().is_none_or(|r| r.contains(&channel)))
+            .filter_map(|m| {
+                m.agent.as_ref().map(|a| {
+                    (
+                        m.user.username.clone(),
+                        format!("{} ({})", a.provider, a.model),
+                    )
+                })
+            })
+            .collect()
+    };
+    if readers.is_empty() {
+        return rsx! {};
+    }
+    let names = readers
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detail = readers
+        .iter()
+        .map(|(n, to)| {
+            crate::i18n::text("{0} sends what it reads to {1}", &[n.clone(), to.clone()])
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    rsx! {
+        span {
+            class: "shrink-0 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-[var(--warn)]/40 text-[var(--warn)]",
+            title: "{detail}",
+            {crate::i18n::text("AI reads here: {0}", &[names])}
+        }
+    }
+}

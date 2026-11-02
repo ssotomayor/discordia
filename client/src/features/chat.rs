@@ -492,6 +492,7 @@ pub fn ChatView() -> Element {
                 }
                 if !is_dm {
                     div { class: "flex-1" }
+                    crate::features::agents::AgentNotice {}
                     crate::features::activities::OpenActivities {}
                 }
                 if !is_dm && state.read().server_chat_tools {
