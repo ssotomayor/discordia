@@ -1,6 +1,6 @@
 use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
 use discordia_server::protocol::{ChannelKind, ClientMessage, Id, Message, MessageSearch, User};
-use discordia_server::state::AppState;
+use discordia_server::state::{AppState, BeginImageUploadInput, ImageMessageInput};
 use discordia_server::store::Store;
 
 const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -30,15 +30,15 @@ async fn image_name_and_dimensions_survive_history_search_and_reopening_the_stor
     assert_eq!(state.slowmode_remaining(channel, &owner.pubkey), Some(60));
     assert!(state.slowmode_exempt(guild.id, &owner.pubkey, false));
     let sent = state
-        .push_image_message(
-            channel,
-            owner,
-            "photo".into(),
-            Some(PNG.into()),
-            None,
-            Some("C:\\private\\phot:o.png\n".into()),
-            None,
-        )
+        .push_image_message(ImageMessageInput {
+            channel_id: channel,
+            author: owner,
+            content: "photo".into(),
+            image: Some(PNG.into()),
+            image_preview: None,
+            image_name: Some("C:\\private\\phot:o.png\n".into()),
+            reply_to: None,
+        })
         .await
         .unwrap();
     assert!(sent.image.as_ref().unwrap().starts_with("media:"));
@@ -115,16 +115,16 @@ async fn sender_preview_is_stored_beside_the_unchanged_original_and_persisted() 
     let preview = encode(640, 480, [30, 20, 10, 255]);
     let upload_id = Id::new_v4();
     let provisional = state
-        .begin_image_upload(
-            77,
-            owner.clone(),
+        .begin_image_upload(BeginImageUploadInput {
+            conn_id: 77,
+            author: owner.clone(),
             upload_id,
-            channel,
-            "photo".into(),
-            preview.clone(),
-            None,
-            None,
-        )
+            channel_id: channel,
+            content: "photo".into(),
+            preview: preview.clone(),
+            image_name: None,
+            reply_to: None,
+        })
         .await
         .unwrap();
     assert_eq!(provisional.id, upload_id);
@@ -208,15 +208,15 @@ async fn preview_quota_failure_does_not_leave_an_unreferenced_original() {
         .id;
 
     let result = state
-        .push_image_message(
-            channel,
-            owner,
-            "photo".into(),
-            Some(original),
-            Some(preview),
-            None,
-            None,
-        )
+        .push_image_message(ImageMessageInput {
+            channel_id: channel,
+            author: owner,
+            content: "photo".into(),
+            image: Some(original),
+            image_preview: Some(preview),
+            image_name: None,
+            reply_to: None,
+        })
         .await;
     assert!(result.is_err());
     assert_eq!(media.used_bytes(), 0);
