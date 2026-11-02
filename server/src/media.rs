@@ -68,6 +68,7 @@ pub struct SweepReport {
 pub enum StoreError {
     Unsupported,
     ImageTooLarge,
+    ImageBounds,
     UnsupportedSound,
     UnsupportedFile,
     Full,
@@ -79,6 +80,9 @@ impl std::fmt::Display for StoreError {
         f.write_str(match self {
             StoreError::Unsupported => "unsupported image format (PNG, JPEG, GIF, WebP or AVIF)",
             StoreError::ImageTooLarge => "image too large (max 2 MiB / 2,097,152 bytes)",
+            StoreError::ImageBounds => {
+                "image too large to display (max 16384 px a side, 2000 frames)"
+            }
             StoreError::UnsupportedSound => "unsupported sound format (MP3, OGG or WAV)",
             StoreError::UnsupportedFile => "invalid file data",
             StoreError::Full => "this server's media storage is full",
@@ -633,6 +637,9 @@ fn decode(
     if !looks_like(ext, &bytes) {
         return Err(unsupported);
     }
+    if matches!(kind, Kind::Image) && discordia_image_policy::bounds::check(&bytes).is_err() {
+        return Err(StoreError::ImageBounds);
+    }
     Ok((bytes, ext))
 }
 
@@ -718,7 +725,7 @@ mod tests {
     fn chat_image_limit_does_not_expand_profile_uploads() {
         let (media, _dir) = store();
         let mut bytes = vec![0; crate::protocol::MAX_GUILD_UPLOAD_BYTES];
-        bytes[..6].copy_from_slice(b"GIF89a");
+        bytes[..10].copy_from_slice(b"GIF89a\x01\x00\x01\x00");
         let url = format!(
             "data:image/gif;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(&bytes)
@@ -739,7 +746,7 @@ mod tests {
     fn image_limit_counts_decoded_bytes_and_includes_exactly_two_mib() {
         let (media, _dir) = store();
         let mut bytes = vec![0; crate::protocol::MAX_IMAGE_BYTES];
-        bytes[..6].copy_from_slice(b"GIF89a");
+        bytes[..10].copy_from_slice(b"GIF89a\x01\x00\x01\x00");
         let url = |bytes: &[u8]| {
             format!(
                 "data:image/gif;base64,{}",
