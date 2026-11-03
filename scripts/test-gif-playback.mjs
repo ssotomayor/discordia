@@ -8,7 +8,8 @@ const gif = 'data:image/gif;base64,R0lGODlh';
 
 function fixture({ hover = false, loaded = true, remote = false, focused = true } = {}) {
   const listeners = new Map(), pageListeners = new Map(), windowListeners = new Map(), observed = new Set();
-  const attrs = new Map([['src', remote ? 'https://example.com/avatar.gif' : gif]]);
+  const remoteUrl = typeof remote === 'string' ? remote : 'https://example.com/avatar.gif';
+  const attrs = new Map([['src', remote ? remoteUrl : gif]]);
   if (hover) attrs.set('data-gif-hover', 'true');
   let intersections, mutations, posters = 0;
   const img = {
@@ -190,4 +191,56 @@ test('guild hover cannot resume an animation in an unfocused window', () => {
   f.focus(false);
   f.listeners.get('mouseenter')();
   assert.match(f.attrs.get('src'), /^data:image\/png/);
+});
+
+test('Giphy GIFs pause when a visible window loses focus and resume on focus', () => {
+  const f = fixture({ remote: 'https://media.giphy.com/media/xyz/giphy.gif' });
+  f.visible(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy.gif');
+  f.focus(false);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy_s.gif');
+  f.focus(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy.gif');
+  assert.equal(f.posters(), 0);
+});
+
+test('Giphy GIFs pause off screen and do not resume when unfocused', () => {
+  const f = fixture({ remote: 'https://media.giphy.com/media/xyz/giphy.gif' });
+  f.visible(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy.gif');
+  f.visible(false);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy_s.gif');
+  f.focus(false);
+  f.focus(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy_s.gif');
+  f.visible(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy.gif');
+  assert.equal(f.posters(), 0);
+});
+
+test('Giphy GIFs preserve query parameters in still poster', () => {
+  const f = fixture({ remote: 'https://media.giphy.com/media/xyz/giphy.gif?cid=abc&rid=giphy.gif&ct=g' });
+  f.visible(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy.gif?cid=abc&rid=giphy.gif&ct=g');
+  f.focus(false);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy_s.gif?cid=abc&rid=giphy.gif&ct=g');
+  assert.equal(f.posters(), 0);
+});
+
+test('Giphy static input resolves to animated source when visible and focused', () => {
+  const f = fixture({ remote: 'https://media.giphy.com/media/xyz/giphy_s.gif' });
+  f.visible(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy.gif');
+  f.focus(false);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/giphy_s.gif');
+});
+
+test('Giphy WebP embeds pause to still GIF on loss of focus', () => {
+  const f = fixture({ remote: 'https://media.giphy.com/media/xyz/200.webp' });
+  f.visible(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/200.webp');
+  f.focus(false);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/200_s.gif');
+  f.focus(true);
+  assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/200.webp');
 });
