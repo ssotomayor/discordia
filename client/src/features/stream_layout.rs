@@ -11,7 +11,7 @@ pub(super) fn above_chat(mut base: Arrangement, cols: u32, rows: u32) -> Arrange
         return base;
     };
     let original = *chat;
-    let top = (original.h * 3 / 4)
+    let top = (original.h * 19 / 30)
         .max(1)
         .min(original.h.saturating_sub(1));
     let streams = GridPosition::new(original.x, original.y, original.w, top);
@@ -35,11 +35,16 @@ pub(super) fn above_chat(mut base: Arrangement, cols: u32, rows: u32) -> Arrange
     base.free.retain(|(id, _)| id != "chat" && id != "streams");
     base.free.push((
         "streams".into(),
-        FloatRect::new(rect.x, rect.y, rect.w, rect.h * 0.75),
+        FloatRect::new(rect.x, rect.y, rect.w, rect.h * (19.0 / 30.0)),
     ));
     base.free.push((
         "chat".into(),
-        FloatRect::new(rect.x, rect.y + rect.h * 0.75, rect.w, rect.h * 0.25),
+        FloatRect::new(
+            rect.x,
+            rect.y + rect.h * (19.0 / 30.0),
+            rect.w,
+            rect.h * (11.0 / 30.0),
+        ),
     ));
     base
 }
@@ -80,10 +85,10 @@ mod tests {
         let streams = split.free.iter().find(|(id, _)| id == "streams").unwrap().1;
         let chat = split.free.iter().find(|(id, _)| id == "chat").unwrap().1;
         assert_eq!((streams.x, streams.y, streams.w), (0.31, 0.1, 0.5));
-        assert!((streams.h - 0.6).abs() < 1e-9);
-        assert!((chat.y - 0.7).abs() < 1e-9);
-        assert!((chat.h - 0.2).abs() < 1e-9);
-        assert_eq!(split.cells[0].1, GridPosition::new(4, 21, 6, 6));
+        assert!((streams.h - 0.8 * (19.0 / 30.0)).abs() < 1e-9);
+        assert!((chat.y - (0.1 + 0.8 * (19.0 / 30.0))).abs() < 1e-9);
+        assert!((chat.h - 0.8 * (11.0 / 30.0)).abs() < 1e-9);
+        assert_eq!(split.cells[0].1, GridPosition::new(4, 18, 6, 9));
     }
 
     #[test]
@@ -104,8 +109,8 @@ mod tests {
             );
         }
         let chat = split.free.iter().find(|(id, _)| id == "chat").unwrap().1;
-        assert_eq!(chat.y, 0.75);
-        assert_eq!(chat.h, 0.25);
+        assert!((chat.y - 19.0 / 30.0).abs() < 1e-9);
+        assert!((chat.h - 11.0 / 30.0).abs() < 1e-9);
     }
 
     #[test]

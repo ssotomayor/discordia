@@ -3159,7 +3159,7 @@ pub fn ScreenWatchWindow() -> Element {
     let grid =
         super::stream_viewer::grid_style(if selected.is_some() { 1 } else { count }, width, height);
     rsx! {
-        if count > 0 { dioxus_grid_layout::GridItem { id: "streams", x: 3, y: 0, w: 7, h: 22,
+        if count > 0 { dioxus_grid_layout::GridItem { id: "streams", x: 3, y: 0, w: 7, h: 19,
             min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
             class: if fullscreen().is_some() { "dxf-streams dxf-streams-expanded" } else { "dxf-streams" },
             div { class: "dxf-stream-panel panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
