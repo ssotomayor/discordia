@@ -174,6 +174,11 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
     };
     let locked = import_locked() || pending().is_some();
     let ready = state.read().status == ConnectionStatus::Ready;
+    let may_create = {
+        let s = state.read();
+        s.is_operator
+            || s.server_info.limits.guild_creation == crate::protocol::GuildCreation::Anyone
+    };
     let available = {
         let s = state.read();
         let query = filter().trim().to_lowercase();
@@ -238,7 +243,10 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                     div { id: "guild-panel-create", role: "tabpanel", aria_labelledby: "guild-tab-create", hidden: tab() != Tab::Create,
                         h4 { {crate::i18n::text("Your own guild", &[])} }
                         p { class: "guild-hub-description", {crate::i18n::text("Create a new space on this server. You can set its picture, channels and permissions afterwards.", &[])} }
-                        form { class: "guild-hub-form",
+                        if !may_create {
+                            p { class: "guild-hub-description", role: "note", {crate::i18n::text("Only this server's operator creates guilds here.", &[])} }
+                        }
+                        form { class: "guild-hub-form", hidden: !may_create,
                             onsubmit: {
                                 let gateway = gateway.clone();
                                 let mut begin = begin;

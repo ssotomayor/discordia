@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+use discordia_server::protocol::LaunchSource;
 use discordia_server::rendezvous::{
     self, HostKey, HostUpdate, PublishOptions, Registration, TransportAdvert,
 };
+use discordia_server::server_settings::LaunchSettings;
 
 use crate::options::ServerOptions;
 
@@ -24,37 +26,43 @@ pub fn targets(urls: &[String]) -> Result<Vec<String>, String> {
     }
 }
 
-pub fn options(opts: &ServerOptions) -> PublishOptions {
-    let line = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
-    PublishOptions {
-        publish_name: line(&opts.publish_name),
-        description: line(&opts.publish_description),
-        publish_public: opts.publish_public.unwrap_or(false),
-        location: opts.publish_location.map(|l| l.0),
+/// Whatever the flags, environment or config file set is fixed for this run;
+/// Server Settings fills in the rest.
+pub fn launch(opts: &ServerOptions, publishes: bool) -> LaunchSettings {
+    LaunchSettings {
+        name: opts.publish_name.clone().map(Some),
+        description: opts.publish_description.clone().map(Some),
+        listed_public: opts.publish_public,
+        location: opts.publish_location.map(|l| Some(l.0)),
+        media_max_bytes: opts.media_max_bytes,
+        source: LaunchSource::Config,
+        publishes,
     }
 }
 
 pub fn spawn(
     urls: Vec<String>,
-    options: PublishOptions,
+    changes: tokio::sync::watch::Receiver<PublishOptions>,
     transport: TransportAdvert,
     key: Arc<HostKey>,
 ) {
     for url in urls {
         tokio::spawn(publish(Registration {
             url,
-            options: options.clone(),
+            options: changes.borrow().clone(),
             transport: Some(transport.clone()),
             signer: key.clone(),
+            changes: Some(changes.clone()),
         }));
     }
 }
 
 /// A rendezvous down at boot is retried: `maintain` only takes over once one registration landed.
-async fn publish(registration: Registration) {
+async fn publish(mut registration: Registration) {
     let url = registration.url.clone();
     let mut attempt = 0;
     let control = loop {
+        registration.refresh();
         let registered = tokio::time::timeout(
             rendezvous::REGISTER_TIMEOUT,
             rendezvous::register(
@@ -109,12 +117,14 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_name_asks_for_a_random_code() {
+    fn only_what_was_set_is_pinned() {
         let opts = ServerOptions {
             publish_name: Some("  ".into()),
+            media_max_bytes: Some(1 << 30),
             ..ServerOptions::default()
         };
-        assert_eq!(options(&opts).publish_name, None);
-        assert!(!options(&opts).publish_public);
+        let pins = launch(&opts, true).pins();
+        assert!(pins.name && pins.media_max_bytes);
+        assert!(!pins.description && !pins.listed_public && !pins.location);
     }
 }

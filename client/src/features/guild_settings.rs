@@ -105,13 +105,17 @@ pub fn GuildSettingsDialog(
             .map(|g| matches!(g.visibility, GuildVisibility::Private))
             .unwrap_or(false)
     });
+    // What applies, not what the guild once chose: a server limit below it wins.
     let mut retention = use_signal(|| {
-        state
-            .read()
+        let s = state.read();
+        let chosen = s
             .guilds
             .iter()
             .find(|g| g.id == guild_id)
-            .and_then(|g| g.retention_days)
+            .and_then(|g| g.retention_days);
+        s.server_info
+            .limits
+            .message_retention(chosen)
             .map(|d| d.to_string())
             .unwrap_or_default()
     });
@@ -180,6 +184,12 @@ pub fn GuildSettingsDialog(
         let r = rules().trim().to_string();
         (!r.is_empty()).then_some(r)
     };
+    let retention_cap = state.read().server_info.limits.max_message_retention_days;
+    let retention_applied = state
+        .read()
+        .server_info
+        .limits
+        .message_retention(g.retention_days);
     let retention_now = retention()
         .trim()
         .parse::<u32>()
@@ -195,7 +205,7 @@ pub fn GuildSettingsDialog(
     let profile_changed =
         name_changed || desc_now != g.description || icon() != g.icon_image || banner() != g.banner;
     let visibility_changed = visibility_now != g.visibility;
-    let retention_changed = retention_now != g.retention_days;
+    let retention_changed = retention_now != retention_applied;
     let gate_changed = gate() != g.join_gate || rules_now != g.rules;
     let panic_changed = panic_mode() != g.panic_mode;
     // Compared through the same filter the server will apply, so re-ordering a
@@ -615,15 +625,21 @@ pub fn GuildSettingsDialog(
                                             class: "w-24 bg-transparent border border-[var(--edge)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
                                             r#type: "number",
                                             min: "1",
-                                            max: "3650",
-                                            placeholder: crate::i18n::text("forever", &[]),
+                                            max: retention_cap.unwrap_or(3650).to_string(),
+                                            placeholder: match retention_cap {
+                                                Some(cap) => cap.to_string(),
+                                                None => crate::i18n::text("forever", &[]),
+                                            },
                                             value: "{retention}",
                                             oninput: move |e| { saved.set(false); retention.set(e.value()); },
                                         }
                                         span { class: "text-xs text-[var(--text-muted)] flex-1", {crate::i18n::text("days", &[])} }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        {crate::i18n::text("Messages older than this are deleted (hourly sweep). Blank keeps everything forever.", &[])}
+                                        match retention_cap {
+                                            Some(cap) => rsx! { {crate::i18n::text("Messages older than this are deleted (hourly sweep). This server keeps them at most {0} days, which also applies when blank.", &[cap.to_string()])} },
+                                            None => rsx! { {crate::i18n::text("Messages older than this are deleted (hourly sweep). Blank keeps everything forever.", &[])} },
+                                        }
                                     }
                                 }
                                 if can_ban {

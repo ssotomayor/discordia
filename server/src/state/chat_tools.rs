@@ -112,6 +112,10 @@ impl AppState {
                         "file limits must be 1 byte to 10 MB; expiry must be 1 to 365 days".into(),
                     );
                 }
+                let limits = crate::server_settings::limits(self);
+                if limits.file_policy(policy.clone()) != policy {
+                    return Err("that is over what this server allows; see its limits".into());
+                }
                 durable(
                     self.store.set_file_policy(guild_id, &policy).await,
                     "file policy",
@@ -202,11 +206,7 @@ impl AppState {
             } => {
                 let gid = self.chat_send_allowed(channel_id, user, None)?;
                 let _write = self.durable_writes.lock().await;
-                let policy = self
-                    .store
-                    .file_policy(gid)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let policy = self.file_policy(gid).await?;
                 let name = file_name(&name)?;
                 let limit =
                     (policy.max_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
@@ -317,7 +317,7 @@ impl AppState {
                         "sticker name already exists or the community has 128 stickers".into(),
                     );
                 }
-                let policy = self.store.file_policy(guild_id).await.unwrap_or_default();
+                let policy = self.file_policy(guild_id).await?;
                 let limit = (policy.max_sticker_bytes as usize)
                     .min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
                 let image = self.store_upload_with_limit(&user.pubkey, &image, limit)?;

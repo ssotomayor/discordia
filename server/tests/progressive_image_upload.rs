@@ -82,7 +82,7 @@ async fn progressive_upload_updates_one_message_and_only_opted_in_sessions_see_p
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     };

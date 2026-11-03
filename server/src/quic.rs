@@ -273,7 +273,7 @@ mod tests {
             livekit: crate::livekit::LiveKitConfig::from_env(&dir),
             operators: Default::default(),
             identities: Default::default(),
-            media_max_bytes: crate::media::DEFAULT_MAX_BYTES,
+            launch: Default::default(),
             data_dir: dir,
             admission: Default::default(),
         })

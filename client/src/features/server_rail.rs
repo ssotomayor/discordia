@@ -167,10 +167,18 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
                 .collect::<Vec<_>>()
         })
     });
+    let named = use_memo(move || state.read().server_info.name.clone());
     use_effect(move || {
         let Some(guilds) = seen() else { return };
         let mut list = known.write();
         known_servers::upsert(&mut list, mode.clone(), Some(guilds));
+        if let Some(name) = named()
+            && let Some(server) = list
+                .iter_mut()
+                .find(|s| s.key() == known_servers::server_key(&mode))
+        {
+            server.name = Some(name);
+        }
         known_servers::save(&list);
     });
 

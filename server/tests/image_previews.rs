@@ -127,7 +127,7 @@ async fn gateway_negotiates_previews_and_still_serves_the_unchanged_original() {
         livekit: discordia_server::livekit::LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: discordia_server::local_identities(addr.port()),
-        media_max_bytes: DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir.clone(),
         admission: Default::default(),
     };

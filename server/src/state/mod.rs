@@ -41,7 +41,6 @@ const CONN_QUEUE_CAP: usize = 1024;
 pub const MAX_CONNECTIONS: usize = 4096;
 pub const MAX_CONNECTIONS_PER_IP: u32 = 32;
 pub const MAX_SESSIONS_PER_PUBKEY: usize = 8;
-pub const MAX_GUILDS_PER_OWNER: usize = 10;
 pub const MAX_GUILD_INSTALLS: usize = 50;
 pub const MAX_GUILD_BANS: usize = 10_000;
 pub use crate::protocol::MAX_CHANNELS_PER_GUILD;
@@ -193,6 +192,8 @@ pub struct AppState {
     pub server_agents: DashMap<String, crate::agents::ServerAgent>,
     pub agent_host: std::sync::Arc<crate::agents::AgentHost>,
     pub apps_policy: std::sync::Mutex<crate::protocol::AppsPolicy>,
+    pub server_settings: std::sync::Mutex<crate::server_settings::Settings>,
+    pub publish_options: tokio::sync::watch::Sender<crate::rendezvous::PublishOptions>,
     /// Keys the operator approved or banned (#455).
     pub app_rules: DashMap<String, crate::server_apps::AppRule>,
     activity_instances: instances::Instances,
@@ -226,7 +227,7 @@ pub struct AppState {
     session_revisions: DashMap<String, u64>,
     next_conn_id: AtomicU64,
     upload_budget: DashMap<String, (std::time::Instant, u64)>,
-    durable_writes: tokio::sync::Mutex<()>,
+    pub(crate) durable_writes: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -251,6 +252,8 @@ impl AppState {
             server_agents: DashMap::new(),
             agent_host: Default::default(),
             apps_policy: Default::default(),
+            server_settings: Default::default(),
+            publish_options: tokio::sync::watch::Sender::new(Default::default()),
             app_rules: DashMap::new(),
             activity_instances: Default::default(),
             followed_blocklists: DashMap::new(),
@@ -713,6 +716,23 @@ impl AppState {
         for id in ids {
             self.route(id, &msg);
         }
+    }
+
+    pub fn connected_pubkeys(&self) -> Vec<String> {
+        self.conn_ids_by_pubkey
+            .iter()
+            .map(|e| e.key().clone())
+            .collect()
+    }
+
+    /// The guild's file policy under the server's ceilings: what every upload is held to.
+    pub async fn file_policy(&self, guild_id: Id) -> Result<crate::protocol::FilePolicy, String> {
+        let policy = self
+            .store
+            .file_policy(guild_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(crate::server_settings::limits(self).file_policy(policy))
     }
 
     pub fn deliver(&self, to: Vec<String>, msg: ServerMessage) {
@@ -1305,15 +1325,20 @@ impl AppState {
         creator: &User,
     ) -> Result<(Guild, Vec<Channel>, Member, Vec<Role>), String> {
         let _write = self.durable_writes.lock().await;
+        let limits = crate::server_settings::limits(self);
+        if limits.guild_creation == crate::protocol::GuildCreation::Operators
+            && !self.operators.contains(&creator.pubkey)
+        {
+            return Err("only this server's operator creates guilds here".into());
+        }
         let owned = self
             .guilds
             .iter()
             .filter(|g| g.owner_pubkey == creator.pubkey)
             .count();
-        if owned >= MAX_GUILDS_PER_OWNER {
-            return Err(format!(
-                "you already own {MAX_GUILDS_PER_OWNER} guilds on this server"
-            ));
+        let cap = limits.max_guilds_per_owner as usize;
+        if owned >= cap {
+            return Err(format!("you already own {cap} guilds on this server"));
         }
         let spec = GuildTemplate::resolve(template);
         let gid = Uuid::new_v4();
@@ -1566,6 +1591,7 @@ impl AppState {
             bot_commands,
             operator: self.operators.contains(&user.pubkey),
             default_guild: self.default_guild(),
+            server: crate::server_settings::info(self),
             latest_messages,
         })
     }
@@ -2842,7 +2868,7 @@ impl AppState {
     ) -> Result<Guild, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
-        let policy = self.store.file_policy(guild_id).await.unwrap_or_default();
+        let policy = self.file_policy(guild_id).await?;
         let limit = (policy.max_avatar_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
         let icon_image = icon_image
             .map(|i| self.image_reference_with_limit(by_pubkey, &i, limit))
@@ -2903,6 +2929,13 @@ impl AppState {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let days = days.map(|d| d.clamp(1, 3650));
+        if let (Some(d), Some(cap)) = (
+            days,
+            crate::server_settings::limits(self).max_message_retention_days,
+        ) && d > cap
+        {
+            return Err(format!("this server keeps messages at most {cap} days"));
+        }
         let updated = {
             let mut guild = self
                 .guilds
@@ -3121,10 +3154,15 @@ impl AppState {
     }
 
     pub async fn sweep_retention(&self) -> u64 {
+        let limits = crate::server_settings::limits(self);
         let targets: Vec<(Id, u32)> = self
             .guilds
             .iter()
-            .filter_map(|g| g.retention_days.map(|d| (g.id, d)))
+            .filter_map(|g| {
+                limits
+                    .message_retention(g.retention_days)
+                    .map(|d| (g.id, d))
+            })
             .collect();
         let mut total = 0u64;
         for (gid, days) in targets {
@@ -3368,11 +3406,7 @@ impl AppState {
             .ok_or("can't post to this channel")?;
         let (image, image_metadata) = match image {
             Some(img) => {
-                let policy = self
-                    .store
-                    .file_policy(guild_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let policy = self.file_policy(guild_id).await?;
                 let limit =
                     (policy.max_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
                 let error = || {
@@ -3558,11 +3592,7 @@ impl AppState {
             .get(&pending.channel_id)
             .map(|channel| channel.guild_id)
             .ok_or("can't post to this channel")?;
-        let policy = self
-            .store
-            .file_policy(guild_id)
-            .await
-            .map_err(|error| error.to_string())?;
+        let policy = self.file_policy(guild_id).await?;
         let limit = (policy.max_bytes as usize).min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
         if image.len() > limit.div_ceil(3) * 4 + 128 {
             return Err(format!(
@@ -4381,6 +4411,7 @@ impl AppState {
             bot_commands: Vec::new(),
             operator: false,
             default_guild: None,
+            server: Default::default(),
             latest_messages: Default::default(),
         }
     }

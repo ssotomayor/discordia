@@ -1432,6 +1432,25 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         }
                     }
+                    ClientMessage::FetchServerSettings => {
+                        let Some(u) = user.as_ref() else { continue };
+                        let reply = if ctx.state.operators.contains(&u.pubkey) {
+                            ServerMessage::ServerSettings { view: crate::server_settings::view(&ctx.state) }
+                        } else {
+                            ServerMessage::Error { message: "only this server's operator sees its settings".into() }
+                        };
+                        let _ = send(&mut ws_tx, &reply).await;
+                    }
+                    ClientMessage::SetServerSettings { settings } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        if let Err(message) = crate::server_settings::set(&ctx, &u.pubkey, settings).await {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                        }
+                    }
                     ClientMessage::FetchServerApps => {
                         let Some(u) = user.as_ref() else { continue };
                         let reply = if ctx.state.operators.contains(&u.pubkey) {

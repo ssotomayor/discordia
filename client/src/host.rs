@@ -576,7 +576,16 @@ pub async fn start_self_host(
         operators,
         data_dir,
         identities,
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        // The host form is this machine's launch configuration, so it pins the identity.
+        launch: discordia_server::server_settings::LaunchSettings {
+            name: Some(publish.publish_name.clone()),
+            description: Some(publish.description.clone()),
+            listed_public: Some(publish.publish_public),
+            location: Some(publish.location),
+            media_max_bytes: None,
+            source: crate::protocol::LaunchSource::SelfHost,
+            publishes: rendezvous_state.is_some(),
+        },
         admission: Default::default(),
     };
     let (router, shutdown) = discordia_server::build_gateway(cfg)
@@ -609,6 +618,7 @@ pub async fn start_self_host(
                 options: publish,
                 transport,
                 signer: std::sync::Arc::new(identity.clone()),
+                changes: None,
             };
             (
                 Some(info.shortcode),

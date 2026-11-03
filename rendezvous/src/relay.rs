@@ -11,7 +11,7 @@ use crate::shortcode;
 use crate::verify;
 
 const MAX_CLAIM_ATTEMPTS: usize = 10;
-const MAX_DESCRIPTION_CHARS: usize = 140;
+use discordia_protocol::rendezvous::MAX_DESCRIPTION_CHARS;
 
 /// A LAN or loopback address reaches nobody a friend could not already reach
 /// from where they stand; a public one has to be the registrant's own.

@@ -37,7 +37,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_QUIC_PORT` | `9001` | UDP port the QUIC endpoint binds — the one to publish and open; `0` takes a random free one |
 | `DISCORDIA_RELAY_URL` | — | an iroh relay (a rendezvous's `/config` names one) that introduces friends behind NAT and carries ciphertext when a punch fails |
 | `DISCORDIA_DATA_DIR` | `./discordia-data` | SQLite, media blobs, `livekit-keys`, `quic-secret` (the key in the share string; back it up or friends re-add you) |
-| `DISCORDIA_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it |
+| `DISCORDIA_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it. ⚙ |
 | `DISCORDIA_OPERATORS` | — | comma-separated hex pubkeys who own the system guilds, the seeded Lobby among them: every owner right but transfer and leave, and delete only while another guild is the server default. `setup` requires one for a server |
 | `DISCORDIA_PUBLIC_HOSTS` | — | comma-separated `host`, `host:port` or URLs clients dial (a DNS name, a reverse proxy). Loopback and every interface IP are always accepted; a login signed for any other address is refused |
 | `DISCORDIA_TRUSTED_PROXIES` | — (trust nobody) | comma-separated IPs whose `X-Forwarded-For` names the client — the TLS proxy's address as the gateway sees it, usually `127.0.0.1`. Without it every proxied client shares the proxy's per-address socket share (32), so one client can lock out the rest; a header from any other peer is ignored. The proxy must set it: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Under Docker the proxy arrives from the bridge's gateway (the `peer_ip` in the gateway's "upgrade requested" log), and trusting it is safe only when 9000 is published on `127.0.0.1` alone, or anyone reaching 9000 directly could name any client |
@@ -47,10 +47,12 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_LIVEKIT_AUTOSPAWN` | `1` | `0` when LiveKit runs separately |
 | `DISCORDIA_ICE_SERVERS` | — | JSON list of `{urls, username, credential}` handed to every voice client; for a box behind NAT with its own TURN |
 | `DISCORDIA_PUBLISH_TO` | — | comma-separated `ws://`/`wss://` rendezvous to register on, so friends join by name or code; unset publishes nowhere. Retried with backoff while one is down |
-| `DISCORDIA_PUBLISH_NAME` | random code | the name friends type; held by a key derived from `quic-secret`, so a restored backup keeps it |
-| `DISCORDIA_PUBLISH_DESCRIPTION` | — | one line beside the name |
-| `DISCORDIA_PUBLISH_PUBLIC` | `false` | also list it in each rendezvous's `/discover`; otherwise only the name or code finds it |
-| `DISCORDIA_PUBLISH_LOCATION` | — | `lat,lon` for the globe; self-declared, rounded to a tenth of a degree |
+| `DISCORDIA_PUBLISH_NAME` | random code | the name friends type, and every member's server-list label; held by a key derived from `quic-secret`, so a restored backup keeps it. ⚙ |
+| `DISCORDIA_PUBLISH_DESCRIPTION` | — | one line beside the name. ⚙ |
+| `DISCORDIA_PUBLISH_PUBLIC` | `false` | also list it in each rendezvous's `/discover`; otherwise only the name or code finds it. ⚙ |
+| `DISCORDIA_PUBLISH_LOCATION` | — | `lat,lon` for the globe; self-declared, rounded to a tenth of a degree. ⚙ |
+
+⚙ An operator can also set it in the app's **Server Settings** (the server icon beside Agents), which applies at once — a renamed server re-registers on its rendezvous. Set by a flag, variable or the config file, it wins: the dialog shows it read-only and keeps its own value for when the setting is removed. Server Settings also holds what has no variable: the ceilings on every guild's upload sizes, file expiry and message history, who may create guilds and how many each person may own, the guild newcomers land in, and the apps policy.
 
 **Rendezvous**
 

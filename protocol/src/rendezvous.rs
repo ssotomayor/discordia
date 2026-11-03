@@ -166,6 +166,8 @@ impl GeoPoint {
 
 /// The longest server name a host may claim, counted in characters.
 pub const MAX_NAME_CHARS: usize = 64;
+/// The longest line a host may show beside its name.
+pub const MAX_DESCRIPTION_CHARS: usize = 140;
 
 /// A control frame either way. Each side holds the other to it, since a
 /// register or a name list is a few hundred bytes and both ends parse what

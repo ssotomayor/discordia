@@ -39,7 +39,7 @@ async fn spawn_with(operator: &BotIdentity) -> (String, discordia_server::Server
         livekit: LiveKitConfig::from_env(&dir),
         operators: HashSet::from([operator.pubkey().to_string()]),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     };

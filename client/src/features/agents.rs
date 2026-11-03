@@ -89,8 +89,6 @@ enum Pick {
     Device(String),
     /// A server agent by key; empty for a new one.
     Server(String),
-    /// The operator's rules for every guild's apps.
-    Apps,
 }
 
 /// Mounted at Home's root and a server's: the server half speaks to that server's gateway.
@@ -199,11 +197,6 @@ pub fn AgentsDialog() -> Element {
                                     onclick: move |_| selected.set(Some(Pick::Server(String::new()))),
                                     {crate::i18n::text("New server agent", &[])}
                                 }
-                                button {
-                                    class: "{BUTTON} w-full",
-                                    onclick: move |_| selected.set(Some(Pick::Apps)),
-                                    {crate::i18n::text("Apps on this server", &[])}
-                                }
                             }
                         }
                     }
@@ -240,7 +233,6 @@ pub fn AgentsDialog() -> Element {
                                     }
                                 }
                             }
-                            Some(Pick::Apps) => rsx! { ServerAppsPanel {} },
                             None => rsx! {
                                 div { class: "text-xs text-[var(--text-dim)] space-y-2",
                                     p { {crate::i18n::text("An agent is an app whose replies come from an AI model you choose. It answers when someone mentions it, replies to it, or uses /ask.", &[])} }
@@ -1301,7 +1293,7 @@ pub fn MyAgentsSection(guild_id: Id) -> Element {
 
 /// The operator's levers over every guild's apps (#455, trap 39).
 #[component]
-fn ServerAppsPanel() -> Element {
+pub fn ServerAppsPanel() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let mut approve_input = use_signal(String::new);

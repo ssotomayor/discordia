@@ -64,6 +64,7 @@ pub struct LoadedState {
 
 const DEFAULT_GUILD_KEY: &str = "default_guild";
 const APPS_POLICY_KEY: &str = "apps_policy";
+const SERVER_SETTINGS_KEY: &str = "server";
 
 #[derive(Clone)]
 pub struct Store {
@@ -1198,6 +1199,23 @@ impl Store {
         .bind(serde_json::to_string(&list.blocked).unwrap_or_else(|_| "[]".into()))
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn server_settings(&self) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT value FROM server_settings WHERE key = ?")
+            .bind(SERVER_SETTINGS_KEY)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>(0)))
+    }
+
+    pub async fn set_server_settings(&self, json: &str) -> Result<()> {
+        sqlx::query("INSERT INTO server_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(SERVER_SETTINGS_KEY)
+            .bind(json)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

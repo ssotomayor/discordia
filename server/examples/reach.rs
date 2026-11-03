@@ -73,7 +73,7 @@ async fn listen(coordination: Coordination) {
         livekit: discordia_server::livekit::LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     })

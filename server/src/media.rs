@@ -54,7 +54,7 @@ pub fn validate_chat_preview(data_url: &str) -> Result<(), StoreError> {
     discordia_image_policy::validate_preview(&bytes).map_err(|_| StoreError::Unsupported)
 }
 
-pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_BYTES: u64 = crate::protocol::DEFAULT_MEDIA_MAX_BYTES;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SweepReport {
@@ -97,7 +97,7 @@ impl std::fmt::Display for StoreError {
 pub struct MediaStore {
     dir: PathBuf,
     used: Arc<AtomicU64>,
-    max_bytes: u64,
+    max_bytes: Arc<AtomicU64>,
     preview_used: Arc<AtomicU64>,
     writes: Arc<std::sync::Mutex<()>>,
     preview_locks: Arc<[std::sync::Mutex<()>; 16]>,
@@ -131,11 +131,20 @@ impl MediaStore {
         Ok(MediaStore {
             dir,
             used: Arc::new(AtomicU64::new(used)),
-            max_bytes,
+            max_bytes: Arc::new(AtomicU64::new(max_bytes)),
             preview_used: Arc::new(AtomicU64::new(preview_used)),
             writes: Arc::new(std::sync::Mutex::new(())),
             preview_locks: Arc::new(std::array::from_fn(|_| std::sync::Mutex::new(()))),
         })
+    }
+
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Lowering it under what is held refuses new uploads; nothing is deleted.
+    pub fn set_max_bytes(&self, max_bytes: u64) {
+        self.max_bytes.store(max_bytes, Ordering::Relaxed);
     }
 
     pub fn used_bytes(&self) -> u64 {
@@ -201,7 +210,7 @@ impl MediaStore {
             total.saturating_add(bytes.len() as u64)
         });
         self.evict_previews(incoming, 0);
-        if self.used_bytes().saturating_add(incoming) > self.max_bytes {
+        if self.used_bytes().saturating_add(incoming) > self.max_bytes() {
             return Err(StoreError::Full);
         }
 
@@ -285,7 +294,7 @@ impl MediaStore {
         }
         let len = bytes.len() as u64;
         self.evict_previews(len, 0);
-        if self.used_bytes().saturating_add(len) > self.max_bytes {
+        if self.used_bytes().saturating_add(len) > self.max_bytes() {
             return Err(StoreError::Full);
         }
         static TMP: AtomicU64 = AtomicU64::new(0);
@@ -467,8 +476,8 @@ fn preview_owner(name: &str) -> Option<(u8, &str)> {
 
 impl MediaStore {
     fn evict_previews(&self, incoming: u64, preview_incoming: u64) {
-        let limit = (self.max_bytes / 8).min(128 * 1024 * 1024);
-        if self.used_bytes().saturating_add(incoming) <= self.max_bytes
+        let limit = (self.max_bytes() / 8).min(128 * 1024 * 1024);
+        if self.used_bytes().saturating_add(incoming) <= self.max_bytes()
             && (preview_incoming == 0
                 || self
                     .preview_used
@@ -495,7 +504,7 @@ impl MediaStore {
             .collect();
         files.sort_by_key(|f| f.0);
         for (_, path, size) in files {
-            if self.used_bytes().saturating_add(incoming) <= self.max_bytes
+            if self.used_bytes().saturating_add(incoming) <= self.max_bytes()
                 && (preview_incoming == 0
                     || self
                         .preview_used
@@ -581,10 +590,10 @@ impl MediaStore {
         }
         let len = prepared.bytes.len() as u64;
         if let Ok(_write) = self.writes.lock() {
-            let limit = (self.max_bytes / 8).min(128 * 1024 * 1024);
+            let limit = (self.max_bytes() / 8).min(128 * 1024 * 1024);
             if len <= limit {
                 self.evict_previews(len, len);
-                if self.used_bytes().saturating_add(len) <= self.max_bytes
+                if self.used_bytes().saturating_add(len) <= self.max_bytes()
                     && self
                         .preview_used
                         .load(Ordering::Relaxed)
