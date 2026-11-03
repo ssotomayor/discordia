@@ -528,7 +528,7 @@ fn DefaultGuildPicker() -> Element {
             div { class: HINT, {crate::i18n::text("Only public guilds you belong to are listed. Applies at once.", &[])} }
             if matches!(unlisted, Some(UnlistedDefault::Private(_))) {
                 div { class: "text-[10px] text-[var(--warn)] mt-1",
-                    {crate::i18n::text("This guild is private, so newcomers join no guild. They can still create one or browse public guilds.", &[])}
+                    {crate::i18n::text("This guild is private, so newcomers join no guild. They can still browse public guilds, or create one if this server lets them.", &[])}
                 }
             }
         }
