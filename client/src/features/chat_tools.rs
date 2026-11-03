@@ -77,12 +77,8 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
         return rsx! {};
     };
     let manage_guild = state.read().can(guild_id, Permission::ManageGuild);
-    let file_policy = state
-        .read()
-        .guild_file_policies
-        .get(&guild_id)
-        .cloned()
-        .unwrap_or_default();
+    let file_policy = state.read().file_policy(guild_id);
+    let server_limits = state.read().server_info.limits.clone();
     let fetch = gateway.clone();
     use_effect(move || {
         fetch.send(ClientMessage::FetchGuildFilePolicy { guild_id });
@@ -189,7 +185,12 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                 }
                 div { class: "flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3",
                     if let Some(error) = error() { p { class: "text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} } }
-                    if panel() == "files" && manage_guild { FileLimits { guild_id, policy: file_policy } }
+                    if panel() == "files" && manage_guild {
+                        // Keyed so a fetched policy or a new server limit refills the form (trap 6).
+                        for (policy, limits) in [(file_policy.clone(), server_limits.clone())] {
+                            FileLimits { key: "{policy:?}{limits:?}", guild_id, policy, limits }
+                        }
+                    }
                     if panel() == "search" {
                         form { class: "flex flex-col gap-2",
                             onsubmit: { let mut search = search.clone(); move |e: FormEvent| { e.prevent_default(); search(0, false); } },
@@ -279,12 +280,7 @@ pub(super) fn StickerPicker(
         .cloned()
         .unwrap_or_default();
     let dismiss = super::dismiss::use_dismiss(open);
-    let max_sticker_bytes = state
-        .read()
-        .guild_file_policies
-        .get(&guild_id)
-        .map(|p| p.max_sticker_bytes as usize)
-        .unwrap_or(crate::protocol::DEFAULT_GUILD_STICKER_BYTES as usize);
+    let max_sticker_bytes = state.read().file_policy(guild_id).max_sticker_bytes as usize;
     rsx! {
         div { style: "display: contents;", "data-dismiss": "{dismiss}",
             ToolButton { icon: super::icons::STICKER, title: crate::i18n::text("Stickers", &[]), active: open(), tip_side: "top",
@@ -411,7 +407,7 @@ fn ToolButton(
 }
 
 #[component]
-fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
+fn FileLimits(guild_id: Id, policy: FilePolicy, limits: crate::protocol::ServerLimits) -> Element {
     let gateway = use_gateway();
     let initial = policy.clone();
     let mut files_kb = use_signal(move || (initial.max_bytes / 1000).to_string());
@@ -419,6 +415,10 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
     let mut stickers_kb = use_signal(move || (initial.max_sticker_bytes / 1000).to_string());
     let mut days = use_signal(move || policy.retention_days.to_string());
     let mut error = use_signal(|| None::<String>);
+    let max_upload_kb = limits.max_upload_bytes / 1000;
+    let max_avatar_kb = limits.max_avatar_bytes / 1000;
+    let max_sticker_kb = limits.max_sticker_bytes / 1000;
+    let max_days = limits.max_file_retention_days;
     rsx! {
         form { class: "flex flex-col gap-2.5",
             onsubmit: move |e: FormEvent| {
@@ -430,10 +430,10 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
                     days().parse::<u32>(),
                 ) {
                     (Ok(f_kb), Ok(a_kb), Ok(s_kb), Ok(d))
-                        if (1..=10_000).contains(&f_kb)
-                            && (1..=10_000).contains(&a_kb)
-                            && (1..=10_000).contains(&s_kb)
-                            && (1..=365).contains(&d) =>
+                        if (1..=max_upload_kb).contains(&f_kb)
+                            && (1..=max_avatar_kb).contains(&a_kb)
+                            && (1..=max_sticker_kb).contains(&s_kb)
+                            && (1..=max_days).contains(&d) =>
                     {
                         error.set(None);
                         gateway.send(ClientMessage::SetGuildFilePolicy {
@@ -446,25 +446,28 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
                             },
                         });
                     }
-                    _ => error.set(Some("Choose 1–10000 KB for limits and 1–365 days for retention.".into())),
+                    _ => error.set(Some(crate::i18n::text(
+                        "This server allows at most {0} KB for files, {1} KB for avatars, {2} KB for stickers and {3} days.",
+                        &[max_upload_kb.to_string(), max_avatar_kb.to_string(), max_sticker_kb.to_string(), max_days.to_string()],
+                    ))),
                 }
             },
             div { class: "grid grid-cols-2 gap-2",
                 label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
                     {crate::i18n::text("Chat files & photos (KB)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: files_kb(), oninput: move |e| files_kb.set(e.value()) }
+                    input { class: INPUT, r#type: "number", min: 1, max: max_upload_kb, value: files_kb(), oninput: move |e| files_kb.set(e.value()) }
                 }
                 label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
                     {crate::i18n::text("Avatars & banners (KB)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: avatars_kb(), oninput: move |e| avatars_kb.set(e.value()) }
+                    input { class: INPUT, r#type: "number", min: 1, max: max_avatar_kb, value: avatars_kb(), oninput: move |e| avatars_kb.set(e.value()) }
                 }
                 label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
                     {crate::i18n::text("Emojis & stickers (KB)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 10000, value: stickers_kb(), oninput: move |e| stickers_kb.set(e.value()) }
+                    input { class: INPUT, r#type: "number", min: 1, max: max_sticker_kb, value: stickers_kb(), oninput: move |e| stickers_kb.set(e.value()) }
                 }
                 label { class: "flex flex-col gap-1 text-[var(--text-dim)]",
                     {crate::i18n::text("Keep for (days)", &[])},
-                    input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) }
+                    input { class: INPUT, r#type: "number", min: 1, max: max_days, value: days(), oninput: move |e| days.set(e.value()) }
                 }
             }
             div { class: "flex items-center gap-2 mt-0.5",

@@ -89,7 +89,7 @@ async fn world_dressed(limits: Limits, owner_only: bool, look: Option<Look>) -> 
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     };

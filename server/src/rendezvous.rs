@@ -519,6 +519,17 @@ pub struct Registration {
     pub options: PublishOptions,
     pub transport: Option<TransportAdvert>,
     pub signer: Arc<dyn Signer>,
+    /// The operator's edits while it runs; each one registers again.
+    pub changes: Option<tokio::sync::watch::Receiver<PublishOptions>>,
+}
+
+impl Registration {
+    /// The newest options, marking them seen so the change is not taken twice.
+    pub fn refresh(&mut self) {
+        if let Some(rx) = self.changes.as_mut() {
+            self.options = rx.borrow_and_update().clone();
+        }
+    }
 }
 
 /// Where renewed relay credentials go: the embedded gateway reads this on
@@ -547,7 +558,7 @@ pub fn now_unix() -> u64 {
 /// is all that holds the listing, the pin and the voice grant.
 pub fn maintain(
     mut stream: ControlStream,
-    registration: Registration,
+    mut registration: Registration,
     minter: Option<Arc<RendezvousMinter>>,
     ice: Option<(IceServersSink, TurnCredentials)>,
     updates: tokio::sync::mpsc::UnboundedSender<HostUpdate>,
@@ -557,6 +568,7 @@ pub fn maintain(
             Some((sink, creds)) => (Some(sink), Some(creds)),
             None => (None, None),
         };
+        let mut changes = registration.changes.take();
         loop {
             let mut renewal = turn
                 .as_ref()
@@ -564,6 +576,19 @@ pub fn maintain(
             loop {
                 let frame = tokio::select! {
                     frame = stream.ws.next() => frame,
+                    _ = async {
+                        let changed = match changes.as_mut() {
+                            Some(rx) => rx.changed().await.is_ok(),
+                            None => false,
+                        };
+                        if !changed {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        tracing::info!("rendezvous: the operator changed what is published; registering again");
+                        let _ = stream.ws.close(None).await;
+                        break;
+                    }
                     _ = async {
                         match renewal.as_mut() {
                             Some(sleep) => sleep.await,
@@ -612,6 +637,9 @@ pub fn maintain(
             stream = loop {
                 tokio::time::sleep(backoff(attempt)).await;
                 attempt += 1;
+                if let Some(rx) = changes.as_mut() {
+                    registration.options = rx.borrow_and_update().clone();
+                }
                 let again = tokio::time::timeout(
                     REGISTER_TIMEOUT,
                     register(
@@ -892,6 +920,7 @@ mod name_tests {
                 options: named("Twice"),
                 transport: None,
                 signer: me.clone(),
+                changes: None,
             },
             None,
             None,

@@ -27,7 +27,7 @@ fn test_config(operators: std::collections::HashSet<String>) -> discordia_server
         livekit: LiveKitConfig::from_env(&dir),
         operators,
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     }

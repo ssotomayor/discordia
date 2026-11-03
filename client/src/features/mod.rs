@@ -45,6 +45,7 @@ pub mod roles;
 mod screen_stats;
 pub mod screenshare;
 pub mod server_rail;
+pub mod server_settings;
 mod settings_audio;
 pub mod settings_dialog;
 mod settings_mic_status;

@@ -32,7 +32,7 @@ async fn spawn_on(dir: &Path) -> (String, discordia_server::ServerHandle) {
         livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir.to_path_buf(),
         admission: Default::default(),
     };

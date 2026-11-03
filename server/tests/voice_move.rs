@@ -26,7 +26,7 @@ async fn spawn_gateway() -> (String, discordia_server::ServerHandle) {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     };
@@ -420,7 +420,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
         livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir.clone(),
         admission: Default::default(),
     };

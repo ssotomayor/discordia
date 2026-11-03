@@ -85,7 +85,7 @@ fn test_config(livekit: LiveKitConfig) -> discordia_server::ServerConfig {
         livekit,
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir,
         admission: Default::default(),
     }

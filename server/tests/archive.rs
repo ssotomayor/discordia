@@ -150,7 +150,7 @@ async fn the_export_cli_opens_the_database_the_server_wrote() {
             livekit: LiveKitConfig::from_env(&dir),
             operators: Default::default(),
             identities: Default::default(),
-            media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+            launch: Default::default(),
             data_dir: dir.clone(),
             admission: Default::default(),
         };

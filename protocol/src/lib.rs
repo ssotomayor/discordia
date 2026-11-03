@@ -1634,6 +1634,207 @@ pub struct ServerAgentSpec {
     pub guild_daily_tokens: u64,
 }
 
+/// Who may create a guild on this server.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GuildCreation {
+    #[default]
+    Anyone,
+    Operators,
+}
+
+pub const MAX_FILE_RETENTION_DAYS: u32 = 365;
+pub const MAX_MESSAGE_RETENTION_DAYS: u32 = 3650;
+pub const MAX_GUILDS_PER_OWNER_CEILING: u32 = 1000;
+/// Below this the store refuses nearly every upload, which reads as a bug, not a cap.
+pub const MIN_MEDIA_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub const DEFAULT_MEDIA_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// The operator's ceilings over every guild's own settings. A guild keeps
+/// what it chose; the lower of the two is what applies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerLimits {
+    pub max_upload_bytes: u64,
+    pub max_avatar_bytes: u64,
+    pub max_sticker_bytes: u64,
+    pub max_file_retention_days: u32,
+    /// `None`: a guild may keep its history forever.
+    #[serde(default)]
+    pub max_message_retention_days: Option<u32>,
+    pub max_guilds_per_owner: u32,
+    #[serde(default)]
+    pub guild_creation: GuildCreation,
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self {
+            max_upload_bytes: MAX_GUILD_UPLOAD_BYTES as u64,
+            max_avatar_bytes: MAX_GUILD_UPLOAD_BYTES as u64,
+            max_sticker_bytes: MAX_GUILD_UPLOAD_BYTES as u64,
+            max_file_retention_days: MAX_FILE_RETENTION_DAYS,
+            max_message_retention_days: None,
+            max_guilds_per_owner: 10,
+            guild_creation: GuildCreation::Anyone,
+        }
+    }
+}
+
+impl ServerLimits {
+    pub fn file_policy(&self, mut policy: FilePolicy) -> FilePolicy {
+        policy.max_bytes = policy.max_bytes.min(self.max_upload_bytes);
+        policy.max_avatar_bytes = policy.max_avatar_bytes.min(self.max_avatar_bytes);
+        policy.max_sticker_bytes = policy.max_sticker_bytes.min(self.max_sticker_bytes);
+        policy.retention_days = policy.retention_days.min(self.max_file_retention_days);
+        policy
+    }
+
+    pub fn message_retention(&self, guild: Option<u32>) -> Option<u32> {
+        match (guild, self.max_message_retention_days) {
+            (Some(days), Some(cap)) => Some(days.min(cap)),
+            (days, cap) => days.or(cap),
+        }
+    }
+}
+
+/// What every member is told about the server they are on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerInfo {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub limits: ServerLimits,
+}
+
+/// Everything the operator sets in Server Settings. The guild newcomers land
+/// in and the apps policy keep their own commands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerSettings {
+    /// The name friends find it by on a rendezvous, and the rail's label.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub listed_public: bool,
+    #[serde(default)]
+    pub location: Option<rendezvous::GeoPoint>,
+    pub media_max_bytes: u64,
+    #[serde(default)]
+    pub limits: ServerLimits,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            name: None,
+            description: None,
+            listed_public: false,
+            location: None,
+            media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+            limits: ServerLimits::default(),
+        }
+    }
+}
+
+/// Fields the launch configuration fixed, which the dialog shows and cannot change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerSettingPins {
+    #[serde(default)]
+    pub name: bool,
+    #[serde(default)]
+    pub description: bool,
+    #[serde(default)]
+    pub listed_public: bool,
+    #[serde(default)]
+    pub location: bool,
+    #[serde(default)]
+    pub media_max_bytes: bool,
+}
+
+/// Where the pinned fields came from, so the dialog can say where to change them.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchSource {
+    /// Environment variables, flags or the config file of `discordia-server`.
+    #[default]
+    Config,
+    /// The form this machine's app hosts from.
+    SelfHost,
+}
+
+/// What an operator is shown in Server Settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerSettingsView {
+    pub settings: ServerSettings,
+    #[serde(default)]
+    pub pinned: ServerSettingPins,
+    #[serde(default)]
+    pub source: LaunchSource,
+    /// False when it registers on no rendezvous: the identity then only names the rail.
+    #[serde(default)]
+    pub publishes: bool,
+    #[serde(default)]
+    pub media_used_bytes: u64,
+}
+
+/// Refused whole, like an agent: the operator is editing it.
+pub fn validate_server_settings(raw: ServerSettings) -> Result<ServerSettings, String> {
+    let name = raw
+        .name
+        .map(|n| sanitize_line(n.trim(), rendezvous::MAX_NAME_CHARS))
+        .filter(|n| !n.is_empty());
+    let description = raw
+        .description
+        .map(|d| sanitize_line(d.trim(), rendezvous::MAX_DESCRIPTION_CHARS))
+        .filter(|d| !d.is_empty());
+    let location = match raw.location {
+        Some(point) => Some(
+            point
+                .coarse()
+                .ok_or("a location is a latitude and a longitude")?,
+        ),
+        None => None,
+    };
+    if raw.media_max_bytes < MIN_MEDIA_MAX_BYTES {
+        return Err(format!(
+            "media storage needs at least {} MB",
+            MIN_MEDIA_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+    let l = &raw.limits;
+    let upload = 1..=MAX_GUILD_UPLOAD_BYTES as u64;
+    if !upload.contains(&l.max_upload_bytes)
+        || !upload.contains(&l.max_avatar_bytes)
+        || !upload.contains(&l.max_sticker_bytes)
+    {
+        return Err("upload limits must be 1 byte to 10 MB".into());
+    }
+    if !(1..=MAX_FILE_RETENTION_DAYS).contains(&l.max_file_retention_days) {
+        return Err(format!(
+            "files can be kept 1 to {MAX_FILE_RETENTION_DAYS} days"
+        ));
+    }
+    if l.max_message_retention_days
+        .is_some_and(|d| !(1..=MAX_MESSAGE_RETENTION_DAYS).contains(&d))
+    {
+        return Err(format!(
+            "messages can be kept 1 to {MAX_MESSAGE_RETENTION_DAYS} days, or forever"
+        ));
+    }
+    if !(1..=MAX_GUILDS_PER_OWNER_CEILING).contains(&l.max_guilds_per_owner) {
+        return Err(format!(
+            "a person may own 1 to {MAX_GUILDS_PER_OWNER_CEILING} guilds"
+        ));
+    }
+    Ok(ServerSettings {
+        name,
+        description,
+        location,
+        ..raw
+    })
+}
+
 /// Which apps a guild's admins may install on this server (#455). The
 /// operator's own installs and offered server agents are never refused by it.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2533,6 +2734,12 @@ pub enum ClientMessage {
         bot_pubkey: String,
         access: AppAccess,
     },
+    /// Operator only. Answered by `ServerSettings`.
+    FetchServerSettings,
+    /// Operator only. Pinned fields are kept as the launch configuration set them.
+    SetServerSettings {
+        settings: ServerSettings,
+    },
     /// Operator only. Answered by `ServerApps`.
     FetchServerApps,
     /// Operator only.
@@ -2976,6 +3183,8 @@ pub enum ServerMessage {
         /// The guild a connection opens when it has none of its own to return to.
         #[serde(default)]
         default_guild: Option<Id>,
+        #[serde(default)]
+        server: ServerInfo,
         /// Newest message time (ms) per text channel with any. Read marks are
         /// the client's alone; this is what it compares them against.
         #[serde(default)]
@@ -3123,6 +3332,12 @@ pub enum ServerMessage {
         #[serde(default)]
         guild_id: Option<Id>,
     },
+    /// Only ever sent to operators.
+    ServerSettings {
+        view: ServerSettingsView,
+    },
+    /// To everyone, whenever the operator changes it.
+    ServerInfo(ServerInfo),
     /// Only ever sent to operators.
     ServerAgents {
         agents: Vec<ServerAgentView>,

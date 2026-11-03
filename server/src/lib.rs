@@ -12,6 +12,7 @@ pub mod quic;
 pub mod rendezvous;
 pub mod sanitize;
 pub mod server_apps;
+pub mod server_settings;
 pub mod sfu_proxy;
 pub mod state;
 pub mod store;
@@ -63,6 +64,11 @@ impl GatewayShutdown {
         self.0.send_replace(true);
     }
 
+    /// What to register on a rendezvous, which the operator may change while it runs.
+    pub fn publish_options(&self) -> tokio::sync::watch::Receiver<rendezvous::PublishOptions> {
+        self.1.publish_options.subscribe()
+    }
+
     /// Server agents dial the gateway, so they start once it listens.
     pub fn start_agents(&self, gateway: SocketAddr) {
         match agents::loopback_gateway(gateway) {
@@ -83,8 +89,8 @@ pub struct ServerConfig {
     /// Names beyond the loopback and interface addresses, which `spawn_on`
     /// and `serve` add for the port they bind.
     pub identities: HashSet<String>,
-    /// Ceiling on the blob directory; `DISCORDIA_MEDIA_MAX_BYTES` sets it.
-    pub media_max_bytes: u64,
+    /// What the launch configuration fixed of Server Settings.
+    pub launch: server_settings::LaunchSettings,
     /// Trusted proxies (`DISCORDIA_TRUSTED_PROXIES`) and the connection caps.
     pub admission: admission::Admission,
 }
@@ -131,10 +137,18 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
     let store = store::Store::open_in(&cfg.data_dir)
         .await
         .map_err(|e| std::io::Error::other(format!("store: {e}")))?;
-    let media = media::MediaStore::open(cfg.data_dir.join("media"), cfg.media_max_bytes)?;
+    let media = media::MediaStore::open(
+        cfg.data_dir.join("media"),
+        cfg.launch
+            .media_max_bytes
+            .unwrap_or(media::DEFAULT_MAX_BYTES),
+    )?;
     let state = state::AppState::load_or_seed(store, media, cfg.operators)
         .await
         .map_err(|e| std::io::Error::other(format!("state load: {e}")))?;
+    server_settings::load(&state, cfg.launch)
+        .await
+        .map_err(|e| std::io::Error::other(format!("server settings: {e}")))?;
     state.set_limits(cfg.admission.limits.clone());
     let shutdown = Arc::new(tokio::sync::watch::Sender::new(false));
     let limits = &cfg.admission.limits;

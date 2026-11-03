@@ -39,7 +39,7 @@ async fn spawn_on(dir: &Path) -> (String, discordia_server::ServerHandle) {
         livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
         identities: Default::default(),
-        media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+        launch: Default::default(),
         data_dir: dir.to_path_buf(),
         admission: Default::default(),
     };
@@ -406,12 +406,12 @@ async fn a_profile_picture_may_not_be_a_link() {
 /// number of them; the refusal has to arrive as an error, not a silent drop.
 #[tokio::test]
 async fn one_key_cannot_own_more_than_its_share_of_guilds() {
-    use discordia_server::state::MAX_GUILDS_PER_OWNER;
+    let max_guilds = discordia_protocol::ServerLimits::default().max_guilds_per_owner;
 
     let (url, _h) = spawn_gateway().await;
     let mut bot = ready(&url, &BotIdentity::generate(), "Founder").await;
 
-    for i in 0..MAX_GUILDS_PER_OWNER {
+    for i in 0..max_guilds {
         bot.send(&ClientMessage::CreateGuild {
             name: format!("Guild {i}"),
             template: None,

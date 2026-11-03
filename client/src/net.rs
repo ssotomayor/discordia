@@ -1390,6 +1390,7 @@ fn apply(
             bot_commands,
             operator,
             default_guild,
+            server,
             latest_messages,
         } => {
             s.pending_edits.clear();
@@ -1402,6 +1403,7 @@ fn apply(
             s.self_user = Some(user);
             s.is_operator = operator;
             s.default_guild = default_guild;
+            s.server_info = server;
             s.server_chat_tools = chat_tools;
             s.server_image_previews = image_previews;
             s.server_progressive_image_uploads = progressive_image_uploads;
@@ -1757,6 +1759,12 @@ fn apply(
         }
         ServerMessage::DefaultGuild { guild_id } => {
             s.default_guild = guild_id;
+        }
+        ServerMessage::ServerInfo(info) => {
+            s.server_info = info;
+        }
+        ServerMessage::ServerSettings { view } => {
+            s.server_settings = Some(view);
         }
         ServerMessage::GuildUpdate(guild) => {
             if let Some(slot) = s.guilds.iter_mut().find(|g| g.id == guild.id) {
@@ -2734,6 +2742,7 @@ mod tests {
                         bot_commands: vec![],
                         operator: false,
                         default_guild: None,
+                        server: Default::default(),
                         latest_messages: Default::default(),
                     },
                     &tx,

@@ -136,8 +136,7 @@ fn upload_limit(state: &crate::state::AppState, channel_id: Id) -> usize {
         .channels
         .iter()
         .find(|c| c.id == channel_id)
-        .and_then(|c| state.guild_file_policies.get(&c.guild_id))
-        .cloned()
+        .map(|c| state.file_policy(c.guild_id))
         .unwrap_or_default()
         .max_bytes
         .min(crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64) as usize

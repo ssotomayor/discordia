@@ -457,6 +457,7 @@ pub struct AppState {
     pub audio_settings: bool,
     /// Account-level, so it survives moving between Home and a server.
     pub agents_open: bool,
+    pub server_settings_open: bool,
     /// The "where does my data go" panel, opened from the transport chip.
     pub topology_open: bool,
     /// The voice channel whose access dialog is open.
@@ -592,10 +593,24 @@ pub struct AppState {
     pub offered_agents: Vec<crate::protocol::OfferedAgent>,
     /// The connected server's, from Ready and `DefaultGuild`.
     pub default_guild: Option<Id>,
+    /// The connected server's name and the ceilings every guild is held under.
+    pub server_info: crate::protocol::ServerInfo,
+    /// Only ever sent to an operator, when they open Server Settings.
+    pub server_settings: Option<crate::protocol::ServerSettingsView>,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
 }
 
 impl AppState {
+    /// The guild's file policy under the server's ceilings: what the server enforces.
+    pub fn file_policy(&self, guild_id: Id) -> crate::protocol::FilePolicy {
+        self.server_info.limits.file_policy(
+            self.guild_file_policies
+                .get(&guild_id)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    }
+
     pub fn empty() -> Self {
         Self {
             status: ConnectionStatus::Connecting,
@@ -774,6 +789,9 @@ impl AppState {
             is_operator: false,
             server_agents: Vec::new(),
             server_apps: None,
+            server_info: Default::default(),
+            server_settings: None,
+            server_settings_open: false,
             offered_agents: Vec::new(),
             default_guild: None,
             audit_logs: HashMap::new(),
@@ -963,6 +981,9 @@ impl AppState {
         self.server_apps = None;
         self.offered_agents.clear();
         self.default_guild = None;
+        self.server_info = Default::default();
+        self.server_settings = None;
+        self.server_settings_open = false;
         self.emoji_images.clear();
         self.evict_inactive_dm_images(self.selected_channel);
     }

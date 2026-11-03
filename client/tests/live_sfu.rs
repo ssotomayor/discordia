@@ -122,7 +122,7 @@ async fn alternate_endpoint_delivers_audio(
             },
             operators: Default::default(),
             identities: Default::default(),
-            media_max_bytes: discordia_server::media::DEFAULT_MAX_BYTES,
+            launch: Default::default(),
             data_dir: data_dir.join("gateway"),
             admission: Default::default(),
         };

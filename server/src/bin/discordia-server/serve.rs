@@ -98,9 +98,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
         operators,
         data_dir: data_dir.clone(),
         identities,
-        media_max_bytes: opts
-            .media_max_bytes
-            .unwrap_or(discordia_server::media::DEFAULT_MAX_BYTES),
+        launch: crate::publish::launch(&opts, !publish_to.is_empty()),
         admission: discordia_server::admission::Admission {
             trusted_proxies: opts.trusted_proxies.clone().unwrap_or_default(),
             ..Default::default()
@@ -175,7 +173,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
                     tracing::info!(rendezvous = ?publish_to, addrs = ?transport.addrs, "publishing");
                     crate::publish::spawn(
                         publish_to.clone(),
-                        crate::publish::options(&opts),
+                        gateway_control.publish_options(),
                         transport,
                         name_key.clone(),
                     );
