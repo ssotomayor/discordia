@@ -365,8 +365,7 @@ impl AppState {
                 channel_id,
                 sticker_id,
             } => {
-                let gid =
-                    self.chat_send_allowed(channel_id, user, Some(Permission::SendMessages))?;
+                let gid = self.chat_send_allowed(channel_id, user, None)?;
                 let sticker = self
                     .store
                     .stickers(gid)

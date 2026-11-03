@@ -395,20 +395,6 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
     };
     state.add_member(guild_id, &member).await.unwrap();
     let image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-    let role = state
-        .create_role(
-            guild_id,
-            "Sender",
-            None,
-            vec![discordia_server::protocol::Permission::SendMessages],
-            &owner.pubkey,
-        )
-        .await
-        .unwrap();
-    state
-        .set_member_role(guild_id, role.id, &member.pubkey, true, &owner.pubkey)
-        .await
-        .unwrap();
     let create = || ClientMessage::CreateGuildSticker {
         guild_id,
         name: "test_sticker".into(),

@@ -267,7 +267,6 @@ pub(super) fn StickerPicker(
     let mut sticker_name = use_signal(String::new);
     let mut sticker_image = use_signal(|| None::<String>);
     let manage = state.read().can(guild_id, Permission::ManageEmojis);
-    let can_send = state.read().can(guild_id, Permission::SendMessages);
     let fetch = gateway.clone();
     use_effect(move || {
         fetch.send(ClientMessage::FetchGuildStickers { guild_id });
@@ -316,8 +315,7 @@ pub(super) fn StickerPicker(
                                 button {
                                     r#type: "button",
                                     style: "aspect-ratio: 1;",
-                                    class: "w-full flex items-center justify-center p-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
-                                    disabled: !can_send,
+                                    class: "w-full flex items-center justify-center p-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)] transition-colors",
                                     title: ":{sticker.shortcode}:",
                                     onclick: { let g = gateway.clone(); let id = sticker.id; move |_| { g.send(ClientMessage::SendSticker { channel_id, sticker_id: id }); open.set(false); } },
                                     if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) {
