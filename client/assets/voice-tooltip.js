@@ -1,4 +1,4 @@
-function (id) {
+function (id, centered) {
   const tip = document.getElementById(id);
   if (!tip || !tip.parentElement) return;
   const anchor = tip.parentElement;
@@ -8,7 +8,8 @@ function (id) {
     const rect = anchor.getBoundingClientRect();
     const width = tip.offsetWidth;
     const height = tip.offsetHeight;
-    const left = Math.max(8, Math.min(rect.right - width, innerWidth - width - 8));
+    const start = centered ? rect.left + (rect.width - width) / 2 : rect.right - width;
+    const left = Math.max(8, Math.min(start, innerWidth - width - 8));
     const above = rect.top - height - 6;
     const top = Math.max(8, Math.min(above >= 8 ? above : rect.bottom + 6, innerHeight - height - 8));
     tip.style.left = `${left}px`;
