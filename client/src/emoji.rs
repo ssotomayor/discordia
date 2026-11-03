@@ -28,6 +28,55 @@ pub fn unicode_parts(text: &str) -> Vec<(&str, bool)> {
     parts
 }
 
+/// More than this and an emoji-only message stays at text size: a wall of
+/// pictures at 48px would push the conversation off the screen.
+pub const JUMBO_MAX: usize = 27;
+
+/// Whether `text` is only emoji and whitespace, so it draws large. `resolves`
+/// says whether a shortcode has a picture: one that doesn't shows as text.
+pub fn jumbo(text: &str, resolves: impl Fn(&str) -> bool) -> bool {
+    let mut count = 0;
+    for piece in split_shortcodes(text) {
+        match piece {
+            Piece::Shortcode(code) if resolves(code) => count += 1,
+            Piece::Shortcode(_) => return false,
+            Piece::Text(t) => {
+                for (part, emoji) in unicode_parts(t) {
+                    if emoji {
+                        count += 1;
+                    } else if !part.trim().is_empty() {
+                        return false;
+                    }
+                }
+            }
+        }
+        if count > JUMBO_MAX {
+            return false;
+        }
+    }
+    count > 0
+}
+
+#[cfg(test)]
+mod jumbo_tests {
+    use super::{JUMBO_MAX, jumbo};
+
+    #[test]
+    fn only_emoji_and_spaces_draw_large() {
+        let known = |code: &str| code == "milk";
+        assert!(jumbo(":milk: :milk:", known));
+        assert!(jumbo(" 👍🏽\n🇦🇷 ", known));
+        assert!(jumbo(":milk:🔥", known));
+        assert!(!jumbo(":milk: :milk: aa", known));
+        assert!(!jumbo(":milk: :nope:", known));
+        assert!(!jumbo("", known));
+        assert!(!jumbo("   ", known));
+        assert!(!jumbo("1", known));
+        assert!(jumbo(&"🔥".repeat(JUMBO_MAX), known));
+        assert!(!jumbo(&"🔥".repeat(JUMBO_MAX + 1), known));
+    }
+}
+
 #[cfg(test)]
 mod unicode_tests {
     #[test]

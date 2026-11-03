@@ -166,7 +166,7 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                             }
                                         }
                                         div { class: "flex flex-wrap gap-1",
-                                            for p in role.permissions.iter().copied() {
+                                            for p in role.permissions.iter().copied().filter(|p| p.on_roles()) {
                                                 span { class: "text-[9px] px-1.5 py-px rounded bg-white/[0.04] text-[var(--text-muted)]",
                                                     {crate::i18n::label(p.label())}
                                                 }
@@ -208,19 +208,23 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                 }
                             }
                             div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", {crate::i18n::text("Permissions", &[])} }
-                            for p in Permission::ALL.iter().copied() {
+                            p { class: "text-[11px] text-[var(--text-dim)]",
+                                {crate::i18n::text("Everyone can already read, post, react, upload, send stickers and join voice. A role adds the powers below.", &[])}
+                            }
+                            for p in Permission::ALL.iter().copied().filter(|p| p.on_roles()) {
                                 {
                                     let owner_only = matches!(p, Permission::ManageRoles | Permission::ManageGuild);
                                     let locked = owner_only && !is_owner;
                                     rsx! {
                                         label {
                                             class: if locked {
-                                                "flex items-center gap-2 text-xs text-[var(--text-dim)] cursor-not-allowed select-none"
+                                                "flex items-start gap-2 text-xs text-[var(--text-dim)] cursor-not-allowed select-none"
                                             } else {
-                                                "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none"
+                                                "flex items-start gap-2 text-xs text-[var(--text)] cursor-pointer select-none"
                                             },
                                             input {
                                                 r#type: "checkbox",
+                                                class: "mt-0.5",
                                                 disabled: locked,
                                                 checked: perms.read().contains(&p),
                                                 onchange: move |_| {
@@ -229,11 +233,16 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                                     else { v.push(p); }
                                                 },
                                             }
-                                            span { {crate::i18n::label(p.label())} }
-                                            if owner_only {
-                                                span { class: "text-[8px] px-1 py-px rounded bg-[var(--warn)]/15 text-[var(--warn)] uppercase tracking-wider font-semibold",
-                                                    {crate::i18n::text("Owner-only", &[])}
+                                            div { class: "flex flex-col gap-0.5 min-w-0",
+                                                div { class: "flex items-center gap-2",
+                                                    span { {crate::i18n::label(p.label())} }
+                                                    if owner_only {
+                                                        span { class: "text-[8px] px-1 py-px rounded bg-[var(--warn)]/15 text-[var(--warn)] uppercase tracking-wider font-semibold",
+                                                            {crate::i18n::text("Only the owner can grant", &[])}
+                                                        }
+                                                    }
                                                 }
+                                                span { class: "text-[11px] text-[var(--text-dim)]", {crate::i18n::label(p.description())} }
                                             }
                                         }
                                     }

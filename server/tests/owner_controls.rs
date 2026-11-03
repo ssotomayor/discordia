@@ -169,7 +169,10 @@ async fn owner_can_assign_and_remove_every_permission_on_their_own_role() {
                     .into_iter()
                     .find(|role| role.name == "All permissions")
                     .unwrap();
-                assert_eq!(role.permissions.len(), Permission::ALL.len());
+                assert_eq!(
+                    role.permissions.len(),
+                    Permission::ALL.iter().filter(|p| p.on_roles()).count()
+                );
                 break role.id;
             }
             ServerMessage::Error { message } => panic!("owner denied: {message}"),

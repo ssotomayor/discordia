@@ -1628,7 +1628,9 @@ impl AppState {
             {
                 return Err("roles carrying manage_roles or manage_guild are owner-only".into());
             }
-            if let Some(missing) = perms.iter().find(|p| !mine.contains(p)) {
+            // An older or imported role may still carry an app-only permission, which
+            // does nothing on a role and must not stop a moderator handing it out.
+            if let Some(missing) = perms.iter().find(|p| p.on_roles() && !mine.contains(p)) {
                 return Err(format!(
                     "you can't grant {} — you don't hold it yourself",
                     serde_variant_name(*missing)
@@ -1656,7 +1658,7 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Role, String> {
         let _write = self.durable_writes.lock().await;
-        let permissions = unique(permissions);
+        let permissions = role_permissions(permissions);
         self.authorize_role_touch(guild_id, by_pubkey, &[&permissions])?;
         let (name, color) = Self::sanitize_role(name, color)?;
         let role = {
@@ -1691,7 +1693,7 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Role, String> {
         let _write = self.durable_writes.lock().await;
-        let permissions = unique(permissions);
+        let permissions = role_permissions(permissions);
         let current = self
             .roles
             .get(&guild_id)
@@ -3387,6 +3389,36 @@ impl AppState {
         .await
     }
 
+    /// Posts a picture the server already holds: it was paid for and size-checked
+    /// when stored, so the chat upload limit and the sender's quota don't apply.
+    pub async fn push_stored_image_message(
+        &self,
+        channel_id: Id,
+        author: User,
+        stored: &str,
+    ) -> Result<Message, String> {
+        let author = self.attributed_author(channel_id, author);
+        self.channels
+            .get(&channel_id)
+            .filter(|c| matches!(c.kind, crate::protocol::ChannelKind::Text))
+            .ok_or("can't post to this channel")?;
+        let inlined = stored
+            .starts_with("media:")
+            .then(|| self.media.inline(stored))
+            .flatten()
+            .ok_or("image is unavailable")?;
+        let metadata = crate::media::image_metadata(&inlined, None);
+        self.append_message(
+            channel_id,
+            author,
+            String::new(),
+            Some(stored.to_owned()),
+            Some(metadata),
+            None,
+        )
+        .await
+    }
+
     pub async fn push_image_message(&self, input: ImageMessageInput) -> Result<Message, String> {
         let ImageMessageInput {
             channel_id,
@@ -4544,6 +4576,10 @@ fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
         .unwrap_or_default()
         .trim_matches('"')
         .to_string()
+}
+
+fn role_permissions(permissions: Vec<Permission>) -> Vec<Permission> {
+    unique(permissions.into_iter().filter(|p| p.on_roles()).collect())
 }
 
 fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {

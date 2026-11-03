@@ -1765,9 +1765,15 @@ mod image_tests {
 
 pub use super::image_viewer::ImageViewer;
 
-/// 100% emoji size. Emoji glyphs draw smaller than their box, so this sits
-/// above `1em`; the chat emoji slider scales it.
-const EMOJI_EM: f64 = 1.8;
+/// 22px and 48px against the 14px message text, so both follow the text size
+/// setting; the chat emoji slider scales them. Inline stays inside one line.
+const INLINE_EMOJI_EM: f64 = 22.0 / 14.0;
+const JUMBO_EMOJI_EM: f64 = 48.0 / 14.0;
+/// A message's emoji read their size from this, which `MessageContent` raises
+/// for an emoji-only message instead of passing a flag through every node.
+const EMOJI_EM_VAR: &str = "--dxf-emoji-em";
+/// Reactions keep their size: emoji glyphs draw smaller than their box.
+const REACTION_EMOJI_EM: f64 = 1.8;
 /// A line of chrome, not a message: the emoji sliders size chat, and a topic
 /// grown by them pushed the channel list apart.
 const COMPACT_EMOJI_EM: f64 = 1.25;
@@ -1794,11 +1800,17 @@ pub(crate) fn EmojiText(
     } else {
         settings.read().emoji_size_percent
     };
-    let (base, emoji_scale) = if compact {
-        (COMPACT_EMOJI_EM, 1.0)
+    let scale = f64::from(percent.clamp(50, 250)) / 100.0;
+    let in_message = !compact && !reaction;
+    let size = if compact {
+        format!("{COMPACT_EMOJI_EM}em")
+    } else if reaction {
+        format!("{}em", REACTION_EMOJI_EM * scale)
     } else {
-        (EMOJI_EM, f64::from(percent.clamp(50, 250)) / 100.0)
+        format!("calc(var({EMOJI_EM_VAR}, {INLINE_EMOJI_EM}em) * {scale})")
     };
+    // Centred on the text beside it; chrome keeps the old baseline offset.
+    let align = if in_message { "middle" } else { "-0.3em" };
     let parts: Vec<(String, Option<String>)> = {
         let s = state.read();
         crate::emoji::split_shortcodes(&text)
@@ -1824,29 +1836,97 @@ pub(crate) fn EmojiText(
     rsx! {
         for (body, emoji) in parts.into_iter() {
             match emoji {
+                Some(url) if !url.is_empty() && in_message => rsx! {
+                    EmojiHover { name: Some(body.clone()), picture: Some(url.clone()),
+                        img {
+                            src: "{url}",
+                            alt: ":{body}:",
+                            style: "height:{size};width:auto;display:inline-block;vertical-align:{align};",
+                        }
+                    }
+                },
                 Some(url) if !url.is_empty() => rsx! {
                     img {
                         src: "{url}",
                         alt: ":{body}:",
                         title: if untitled { String::new() } else { format!(":{body}:") },
-                        style: "height:calc({base}em * {emoji_scale});width:auto;display:inline-block;vertical-align:-0.3em;",
+                        style: "height:{size};width:auto;display:inline-block;vertical-align:{align};",
                     }
                 },
                 Some(_) => rsx! { ":{body}:" },
-                None => rsx! { UnicodeEmojiText { text: body, size: base * emoji_scale } },
+                None => rsx! { UnicodeEmojiText { text: body, size: size.clone(), hover: in_message } },
             }
         }
     }
 }
 
 #[component]
-fn UnicodeEmojiText(text: String, size: f64) -> Element {
+fn UnicodeEmojiText(text: String, size: String, hover: bool) -> Element {
     rsx! {
         for (part, emoji) in crate::emoji::unicode_parts(&text) {
-            if emoji {
-                span { style: "font-size:{size}em;", "{part}" }
+            if emoji && hover {
+                EmojiHover { name: unicode_name(part).map(str::to_owned), glyph: Some(part.to_owned()),
+                    span {
+                        style: "font-size:{size};line-height:1;display:inline-block;vertical-align:middle;",
+                        "{part}"
+                    }
+                }
+            } else if emoji {
+                span { style: "font-size:{size};", "{part}" }
             } else {
                 "{part}"
+            }
+        }
+    }
+}
+
+fn unicode_name(glyph: &str) -> Option<&'static str> {
+    let bare = |s: &str| s.replace('\u{fe0f}', "");
+    let glyph = bare(glyph);
+    EMOJIS
+        .iter()
+        .find(|(e, _)| bare(e) == glyph)
+        .map(|(_, name)| *name)
+}
+
+/// The emoji at preview size with its name, in the browser's top layer:
+/// the chat scroller would clip it above the first visible line (trap 22).
+#[component]
+fn EmojiHover(
+    name: Option<String>,
+    #[props(default)] picture: Option<String>,
+    #[props(default)] glyph: Option<String>,
+    children: Element,
+) -> Element {
+    let mut shown = use_signal(|| false);
+    let id = use_hook(|| format!("emoji-tip-{}", uuid::Uuid::new_v4()));
+    rsx! {
+        span {
+            onmouseenter: move |_| shown.set(true),
+            onmouseleave: move |_| shown.set(false),
+            {children}
+            if shown() {
+                span {
+                    id: "{id}",
+                    "popover": "manual",
+                    role: "tooltip",
+                    // No display class here: it would beat the hidden state of a closed popover.
+                    class: "pointer-events-none select-none rounded-lg bg-[var(--panel-solid)] border border-[var(--border)] shadow-xl px-3 py-2 text-[var(--text)]",
+                    style: "position:fixed;inset:auto;margin:0;width:max-content;max-width:calc(100vw - 16px);",
+                    onmounted: move |_| {
+                        let _ = document::eval(&format!("({})({id:?}, true)", include_str!("../../assets/voice-tooltip.js")));
+                    },
+                    span { class: "flex items-center gap-3",
+                        if let Some(src) = picture.clone() {
+                            img { src, alt: "", style: "height:48px;width:auto;max-width:96px;object-fit:contain;" }
+                        } else if let Some(glyph) = glyph.clone() {
+                            span { style: "font-size:40px;line-height:1.2;", "{glyph}" }
+                        }
+                        if let Some(name) = name.clone() {
+                            span { class: "text-sm font-semibold whitespace-nowrap", ":{name}:" }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1870,11 +1950,21 @@ fn MessageContent(content: String, channel_id: Id, message_id: Id) -> Element {
         .unwrap_or_default();
     let mentions = spaced_mentions(&state.read(), &content, channel_id);
     let gif = crate::giphy::message_gif(&content);
+    let jumbo = {
+        let s = state.read();
+        crate::emoji::jumbo(&content, |code| {
+            guild_id.is_some_and(|g| s.emoji_image(g, code).is_some())
+                || extra.iter().any(|(c, url)| c == code && !url.is_empty())
+        })
+    };
     let link = rsx! {
         super::markup::Markup { content, markdown, guild_id, extra, mentions }
     };
     match gif {
         Some(id) => rsx! { super::gif_picker::GifEmbed { id, link } },
+        None if jumbo => rsx! {
+            span { style: "{EMOJI_EM_VAR}:{JUMBO_EMOJI_EM}em;", {link} }
+        },
         None => link,
     }
 }

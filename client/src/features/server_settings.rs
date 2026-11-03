@@ -495,7 +495,7 @@ fn SettingsForm(section: Section, view: ServerSettingsView) -> Element {
 fn DefaultGuildPicker() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let (current, public) = {
+    let (current, public, unlisted) = {
         let s = state.read();
         let public: Vec<(crate::protocol::Id, String)> = s
             .guilds
@@ -503,7 +503,8 @@ fn DefaultGuildPicker() -> Element {
             .filter(|g| g.visibility == GuildVisibility::Public)
             .map(|g| (g.id, g.name.clone()))
             .collect();
-        (s.default_guild, public)
+        let unlisted = unlisted_default(&s.guilds, s.default_guild);
+        (s.default_guild, public, unlisted)
     };
     let selected = current.map(|id| id.to_string()).unwrap_or_default();
     rsx! {
@@ -520,15 +521,80 @@ fn DefaultGuildPicker() -> Element {
                 for (id, name) in public {
                     option { key: "{id}", value: "{id}", selected: current == Some(id), "{name}" }
                 }
+                if let (Some(id), Some(unlisted)) = (current, unlisted.clone()) {
+                    option { key: "{id}", value: "{id}", selected: true, {unlisted.label()} }
+                }
             }
             div { class: HINT, {crate::i18n::text("Only public guilds you belong to are listed. Applies at once.", &[])} }
+            if matches!(unlisted, Some(UnlistedDefault::Private(_))) {
+                div { class: "text-[10px] text-[var(--warn)] mt-1",
+                    {crate::i18n::text("This guild is private, so newcomers join no guild. They can still browse public guilds, or create one if this server lets them.", &[])}
+                }
+            }
         }
+    }
+}
+
+/// The default when it is not one of the public guilds listed: a select whose value
+/// matches no option shows its first, "The system guilds", which is where nobody lands.
+#[derive(Clone, Debug, PartialEq)]
+enum UnlistedDefault {
+    Private(String),
+    NotJoined,
+}
+
+impl UnlistedDefault {
+    fn label(&self) -> String {
+        match self {
+            Self::Private(name) => crate::i18n::text(
+                "{0} (private: newcomers land nowhere)",
+                std::slice::from_ref(name),
+            ),
+            Self::NotJoined => crate::i18n::text("A guild you're not in", &[]),
+        }
+    }
+}
+
+fn unlisted_default(
+    guilds: &[crate::protocol::Guild],
+    current: Option<crate::protocol::Id>,
+) -> Option<UnlistedDefault> {
+    let id = current?;
+    match guilds.iter().find(|g| g.id == id) {
+        Some(g) if g.visibility == GuildVisibility::Public => None,
+        Some(g) => Some(UnlistedDefault::Private(g.name.clone())),
+        None => Some(UnlistedDefault::NotJoined),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_default_the_picker_does_not_list_is_still_shown() {
+        let guild = |visibility| {
+            let mut guild: crate::protocol::Guild = serde_json::from_value(serde_json::json!({
+                "id": crate::protocol::Id::new_v4(), "name": "Lobby", "icon": null, "owner_pubkey": ""
+            }))
+            .unwrap();
+            guild.visibility = visibility;
+            guild
+        };
+        let public = guild(GuildVisibility::Public);
+        let private = guild(GuildVisibility::Private);
+        let listed = std::slice::from_ref(&public);
+        assert_eq!(unlisted_default(listed, None), None);
+        assert_eq!(unlisted_default(listed, Some(public.id)), None);
+        assert_eq!(
+            unlisted_default(std::slice::from_ref(&private), Some(private.id)),
+            Some(UnlistedDefault::Private("Lobby".into()))
+        );
+        assert_eq!(
+            unlisted_default(&[], Some(private.id)),
+            Some(UnlistedDefault::NotJoined)
+        );
+    }
 
     #[test]
     fn only_a_shorter_history_asks_first() {
