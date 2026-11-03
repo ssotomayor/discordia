@@ -480,6 +480,8 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 [data-tip]:hover::after, [data-tip]:focus-visible::after { opacity: 1; transition-delay: 0.35s; }
 [data-tip-side=top]::after { top: auto; bottom: calc(100% + 6px); }
+/* A list of names, not a label: anchored at the left edge, wrapping instead of cut short. */
+[data-tip-wrap]::after { left: 0; right: auto; white-space: normal; width: max-content; }
 /* Sized up front, like the emoji picker: results arriving must not resize it. */
 .dxf-gif-popover { width: min(26rem, calc(100vw - 2rem)); height: min(28rem, 60vh); }
 .dxf-gif-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
