@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use discordia_server::media::{DEFAULT_MAX_BYTES, MediaStore};
 use discordia_server::protocol::{
-    ClientMessage, FilePolicy, Id, MessageSearch, ServerMessage, User,
+    ClientMessage, FilePolicy, Id, MessageSearch, Permission, ServerMessage, User,
 };
 use discordia_server::state::{AppState, ImageMessageInput};
 use discordia_server::store::Store;
@@ -362,13 +362,34 @@ async fn search_filters_pins_and_attachments_persist_and_do_not_cross_channels()
                 ClientMessage::SearchMessages {
                     channel_id,
                     request_id: Id::new_v4(),
-                    query,
+                    query: query.clone(),
                     offset: 0
                 }
             )
             .await
             .is_err()
     );
+    let guild_id = state.channels.get(&channel_id).unwrap().guild_id;
+    assert!(
+        state
+            .add_member(guild_id, &stranger)
+            .await
+            .unwrap()
+            .roles
+            .is_empty()
+    );
+    state
+        .handle_chat_tool(
+            &stranger,
+            ClientMessage::SearchMessages {
+                channel_id,
+                request_id: Id::new_v4(),
+                query,
+                offset: 0,
+            },
+        )
+        .await
+        .unwrap();
     let archive = state
         .store
         .export_guild(state.channels.get(&channel_id).unwrap().guild_id)
@@ -691,4 +712,68 @@ async fn community_uploads_default_to_two_mb_and_can_be_raised_to_ten() {
             .await
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn roles_carry_no_app_only_permissions_and_an_old_one_still_hands_out() {
+    let (state, owner, guild_id, _) = fixture().await;
+    let created = state
+        .create_role(
+            guild_id,
+            "Mixed",
+            None,
+            vec![Permission::SendMessages, Permission::KickMembers],
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.permissions, vec![Permission::KickMembers]);
+
+    let moderator = User {
+        pubkey: "44".repeat(32),
+        username: "moderator".into(),
+    };
+    let member = User {
+        pubkey: "55".repeat(32),
+        username: "member".into(),
+    };
+    state.add_member(guild_id, &moderator).await.unwrap();
+    state.add_member(guild_id, &member).await.unwrap();
+    let managers = state
+        .create_role(
+            guild_id,
+            "Managers",
+            None,
+            vec![Permission::ManageRoles],
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    state
+        .set_member_role(
+            guild_id,
+            managers.id,
+            &moderator.pubkey,
+            true,
+            &owner.pubkey,
+        )
+        .await
+        .unwrap();
+    let old = state
+        .create_role(guild_id, "Old", None, vec![], &owner.pubkey)
+        .await
+        .unwrap();
+    state
+        .roles
+        .get_mut(&guild_id)
+        .unwrap()
+        .iter_mut()
+        .find(|r| r.id == old.id)
+        .unwrap()
+        .permissions
+        .push(Permission::ReadMessageHistory);
+    state
+        .set_member_role(guild_id, old.id, &member.pubkey, true, &moderator.pubkey)
+        .await
+        .unwrap();
 }

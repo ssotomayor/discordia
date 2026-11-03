@@ -5,6 +5,13 @@ use crate::protocol::{
     Attachment, ClientMessage, GuildEmoji, Id, Message, Permission, ServerMessage, User,
 };
 
+/// People read, post and search any channel they can see; only an app is held
+/// to the matching permission, and an app's comes from its install, never roles.
+enum Needs {
+    Everyone(Permission),
+    AppsOnly(Permission),
+}
+
 impl AppState {
     pub async fn sweep_files(&self) {
         let _write = self.durable_writes.lock().await;
@@ -29,17 +36,12 @@ impl AppState {
                     && self.can_see_channel(pubkey, &channel)
                     && (self.bot_install(channel.guild_id, pubkey).is_none()
                         || self
-                            .effective_permissions(channel.guild_id, pubkey)
+                            .acting_permissions(channel.guild_id, pubkey)
                             .contains(&Permission::ReadMessageHistory))
             })
         })
     }
-    fn chat_channel(
-        &self,
-        channel_id: Id,
-        user: &User,
-        permission: Option<Permission>,
-    ) -> Result<Id, String> {
+    fn chat_channel(&self, channel_id: Id, user: &User, needs: Needs) -> Result<Id, String> {
         let channel = self
             .channels
             .get(&channel_id)
@@ -50,21 +52,19 @@ impl AppState {
         {
             return Err("you don't have access to that channel".into());
         }
-        if let Some(permission) = permission {
-            self.require_permission(channel.guild_id, &user.pubkey, permission)?;
-        } else if self.bot_install(channel.guild_id, &user.pubkey).is_some() {
-            self.require_permission(channel.guild_id, &user.pubkey, Permission::SendMessages)?;
+        let gid = channel.guild_id;
+        match needs {
+            Needs::Everyone(permission) => self.require_acting(gid, &user.pubkey, permission)?,
+            Needs::AppsOnly(permission) if self.bot_install(gid, &user.pubkey).is_some() => {
+                self.require_acting(gid, &user.pubkey, permission)?
+            }
+            Needs::AppsOnly(_) => {}
         }
-        Ok(channel.guild_id)
+        Ok(gid)
     }
 
-    fn chat_send_allowed(
-        &self,
-        channel_id: Id,
-        user: &User,
-        permission: Option<Permission>,
-    ) -> Result<Id, String> {
-        let gid = self.chat_channel(channel_id, user, permission)?;
+    fn chat_send_allowed(&self, channel_id: Id, user: &User) -> Result<Id, String> {
+        let gid = self.chat_channel(channel_id, user, Needs::AppsOnly(Permission::SendMessages))?;
         let perms = self.effective_permissions(gid, &user.pubkey);
         let exempt = perms.contains(&Permission::ManageMessages)
             || perms.contains(&Permission::ManageChannels);
@@ -132,7 +132,11 @@ impl AppState {
                 mut query,
                 offset,
             } => {
-                self.chat_channel(channel_id, user, Some(Permission::ReadMessageHistory))?;
+                self.chat_channel(
+                    channel_id,
+                    user,
+                    Needs::AppsOnly(Permission::ReadMessageHistory),
+                )?;
                 if query.text.len() > 200
                     || query
                         .author
@@ -160,7 +164,11 @@ impl AppState {
                 pinned,
             } => {
                 let _write = self.durable_writes.lock().await;
-                let gid = self.chat_channel(channel_id, user, Some(Permission::ManageMessages))?;
+                let gid = self.chat_channel(
+                    channel_id,
+                    user,
+                    Needs::Everyone(Permission::ManageMessages),
+                )?;
                 if pinned {
                     let pins = self
                         .store
@@ -204,7 +212,7 @@ impl AppState {
                 content,
                 reply_to,
             } => {
-                let gid = self.chat_send_allowed(channel_id, user, None)?;
+                let gid = self.chat_send_allowed(channel_id, user)?;
                 let _write = self.durable_writes.lock().await;
                 let policy = self.file_policy(gid).await?;
                 let name = file_name(&name)?;
@@ -365,7 +373,7 @@ impl AppState {
                 channel_id,
                 sticker_id,
             } => {
-                let gid = self.chat_send_allowed(channel_id, user, None)?;
+                let gid = self.chat_send_allowed(channel_id, user)?;
                 let sticker = self
                     .store
                     .stickers(gid)

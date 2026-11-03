@@ -1628,7 +1628,9 @@ impl AppState {
             {
                 return Err("roles carrying manage_roles or manage_guild are owner-only".into());
             }
-            if let Some(missing) = perms.iter().find(|p| !mine.contains(p)) {
+            // An older or imported role may still carry an app-only permission, which
+            // does nothing on a role and must not stop a moderator handing it out.
+            if let Some(missing) = perms.iter().find(|p| p.on_roles() && !mine.contains(p)) {
                 return Err(format!(
                     "you can't grant {} — you don't hold it yourself",
                     serde_variant_name(*missing)
@@ -1656,7 +1658,7 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Role, String> {
         let _write = self.durable_writes.lock().await;
-        let permissions = unique(permissions);
+        let permissions = role_permissions(permissions);
         self.authorize_role_touch(guild_id, by_pubkey, &[&permissions])?;
         let (name, color) = Self::sanitize_role(name, color)?;
         let role = {
@@ -1691,7 +1693,7 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Role, String> {
         let _write = self.durable_writes.lock().await;
-        let permissions = unique(permissions);
+        let permissions = role_permissions(permissions);
         let current = self
             .roles
             .get(&guild_id)
@@ -4574,6 +4576,10 @@ fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
         .unwrap_or_default()
         .trim_matches('"')
         .to_string()
+}
+
+fn role_permissions(permissions: Vec<Permission>) -> Vec<Permission> {
+    unique(permissions.into_iter().filter(|p| p.on_roles()).collect())
 }
 
 fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {

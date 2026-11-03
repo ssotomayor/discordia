@@ -412,11 +412,9 @@ mod tests {
     #[test]
     fn dynamic_permission_labels_are_present_in_the_catalog() {
         for permission in crate::protocol::Permission::ALL {
-            assert!(
-                catalog().contains_key(permission.label()),
-                "{}",
-                permission.label()
-            );
+            for text in [permission.label(), permission.description()] {
+                assert!(catalog().contains_key(text), "{text}");
+            }
         }
     }
 

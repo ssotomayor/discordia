@@ -284,9 +284,10 @@ fn ManualInstall(guild_id: Id) -> Element {
 
                 div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", {crate::i18n::text("Permissions", &[])} }
                 for p in Permission::BOT_INSTALLABLE.iter().copied() {
-                    label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
+                    label { class: "flex items-start gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                         input {
                             r#type: "checkbox",
+                            class: "mt-0.5",
                             checked: perms.read().contains(&p),
                             onchange: move |_| {
                                 let mut v = perms.write();
@@ -294,7 +295,10 @@ fn ManualInstall(guild_id: Id) -> Element {
                                 else { v.push(p); }
                             },
                         }
-                        {crate::i18n::label(p.label())}
+                        div { class: "flex flex-col gap-0.5 min-w-0",
+                            span { {crate::i18n::label(p.label())} }
+                            span { class: "text-[11px] text-[var(--text-dim)]", {crate::i18n::label(p.description())} }
+                        }
                     }
                 }
 

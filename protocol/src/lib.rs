@@ -1243,6 +1243,42 @@ impl Permission {
         Permission::ManageXp,
     ];
 
+    /// People post, read and react wherever they can see; these three only limit
+    /// apps, whose permissions come from their install, so a role never carries them.
+    pub fn on_roles(self) -> bool {
+        !matches!(
+            self,
+            Permission::SendMessages | Permission::ReadMessageHistory | Permission::AddReactions
+        )
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Permission::SendMessages => "Post messages, upload files and send stickers.",
+            Permission::ReadMessageHistory => "Read and search past messages.",
+            Permission::AddReactions => "React to messages.",
+            Permission::ManageChannels => {
+                "Create, edit, reorder and delete channels, choose who sees each one, and see them all. Also posts in read-only channels and skips slowmode."
+            }
+            Permission::ManageMessages => {
+                "Delete anyone's messages and pin them. Also posts in read-only channels and skips slowmode."
+            }
+            Permission::KickMembers => "Remove members; they can come back with an invite.",
+            Permission::BanMembers => "Ban members so they can't come back, and lift bans.",
+            Permission::ManageRoles => {
+                "Create, edit and reorder roles, and give or take roles made only of permissions already held."
+            }
+            Permission::ManageGuild => {
+                "Change the guild's profile, accent, access, panic mode, file limits, retention and leveling; read the audit log; manage soundboard sounds; install apps; make invites."
+            }
+            Permission::CreateInvite => "Make and replace the invite link.",
+            Permission::ManageEmojis => "Add, rename and remove custom emoji and stickers.",
+            Permission::DisconnectMembers => "Drop someone from a voice channel.",
+            Permission::MoveMembers => "Move someone to another voice channel.",
+            Permission::ManageXp => "Set or add to a member's level by hand.",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Permission::SendMessages => "Send messages",
@@ -1255,7 +1291,7 @@ impl Permission {
             Permission::ManageRoles => "Manage roles",
             Permission::ManageGuild => "Manage guild",
             Permission::CreateInvite => "Create invites",
-            Permission::ManageEmojis => "Manage emojis",
+            Permission::ManageEmojis => "Manage emojis & stickers",
             Permission::DisconnectMembers => "Disconnect from voice",
             Permission::MoveMembers => "Move voice members",
             Permission::ManageXp => "Manage experience",
