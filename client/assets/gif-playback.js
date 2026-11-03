@@ -3,7 +3,15 @@
   window.__dxfGifPlayback = true;
   const images = new Map();
   let focused = document.hasFocus();
-  const isGif = src => /^data:image\/gif[;,]/i.test(src) || /\.gif(?:[?#]|$)/i.test(src);
+  const isGiphy = src => /(?:^https?:\/\/)?(?:[a-zA-Z0-9-]+\.)*giphy\.com\//i.test(src) && /\.(?:gif|webp)(?:[?#]|$)/i.test(src);
+  const isGif = src => /^data:image\/gif[;,]/i.test(src) || /\.gif(?:[?#]|$)/i.test(src) || isGiphy(src);
+  const giphyPair = src => {
+    if (!isGiphy(src)) return null;
+    if (/_s\.gif(?=[?#]|$)/i.test(src)) {
+      return { source: src.replace(/_s\.gif(?=[?#]|$)/i, '.gif'), poster: src };
+    }
+    return { source: src, poster: src.replace(/\.(?:gif|webp)(?=[?#]|$)/i, '_s.gif') };
+  };
 
   function update(img, state) {
     const play = state.visible && focused && !document.hidden &&
@@ -44,8 +52,11 @@
     }
     if (old) untrack(img, old);
     if (!isGif(src)) return;
+    const giphy = giphyPair(src);
+    const source = giphy ? giphy.source : src;
+    const poster = giphy ? giphy.poster : null;
     const hoverTarget = img.hasAttribute('data-gif-hover') ? img.closest('button') || img : img;
-    const state = { source: src, poster: null, visible: false, hovered: hoverTarget.matches(':hover'), hoverTarget };
+    const state = { source, poster, visible: false, hovered: hoverTarget.matches(':hover'), hoverTarget };
     state.load = () => update(img, state);
     state.enter = () => { state.hovered = true; update(img, state); };
     state.leave = () => { state.hovered = false; update(img, state); };
