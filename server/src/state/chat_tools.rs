@@ -374,13 +374,10 @@ impl AppState {
                     .into_iter()
                     .find(|s| s.id == sticker_id)
                     .ok_or("unknown sticker")?;
-                let image = self
-                    .media
-                    .inline(&sticker.image)
-                    .ok_or("sticker image is unavailable")?;
                 let message = self
-                    .push_message(channel_id, user.clone(), String::new(), Some(image), None)
-                    .await?;
+                    .push_stored_image_message(channel_id, user.clone(), &sticker.image)
+                    .await
+                    .map_err(|e| format!("sticker: {e}"))?;
                 self.deliver(
                     self.guild_member_pubkeys(gid),
                     ServerMessage::MessageCreate(message),

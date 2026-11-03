@@ -427,6 +427,19 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
     );
     state
         .handle_chat_tool(
+            &owner,
+            ClientMessage::SetGuildFilePolicy {
+                guild_id,
+                policy: FilePolicy {
+                    max_bytes: 1,
+                    ..FilePolicy::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    state
+        .handle_chat_tool(
             &member,
             ClientMessage::SendSticker {
                 channel_id,

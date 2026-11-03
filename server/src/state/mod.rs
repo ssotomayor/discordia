@@ -3387,6 +3387,36 @@ impl AppState {
         .await
     }
 
+    /// Posts a picture the server already holds: it was paid for and size-checked
+    /// when stored, so the chat upload limit and the sender's quota don't apply.
+    pub async fn push_stored_image_message(
+        &self,
+        channel_id: Id,
+        author: User,
+        stored: &str,
+    ) -> Result<Message, String> {
+        let author = self.attributed_author(channel_id, author);
+        self.channels
+            .get(&channel_id)
+            .filter(|c| matches!(c.kind, crate::protocol::ChannelKind::Text))
+            .ok_or("can't post to this channel")?;
+        let inlined = stored
+            .starts_with("media:")
+            .then(|| self.media.inline(stored))
+            .flatten()
+            .ok_or("image is unavailable")?;
+        let metadata = crate::media::image_metadata(&inlined, None);
+        self.append_message(
+            channel_id,
+            author,
+            String::new(),
+            Some(stored.to_owned()),
+            Some(metadata),
+            None,
+        )
+        .await
+    }
+
     pub async fn push_image_message(&self, input: ImageMessageInput) -> Result<Message, String> {
         let ImageMessageInput {
             channel_id,
