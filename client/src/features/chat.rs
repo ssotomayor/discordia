@@ -128,6 +128,28 @@ struct PendingImage {
     name: Option<String>,
 }
 
+/// Who reacted, for the pill's hover label: names resolved now (trap 8), you first.
+fn reactors(state: &crate::state::AppState, users: &[String], me: Option<&str>) -> String {
+    const SHOWN: usize = 12;
+    let mut names = Vec::new();
+    if me.is_some_and(|me| users.iter().any(|u| u == me)) {
+        names.push(crate::i18n::text("You", &[]));
+    }
+    let others = users.iter().filter(|u| Some(u.as_str()) != me);
+    names.extend(
+        others
+            .take(SHOWN.saturating_sub(names.len()))
+            .map(|u| state.display_name(u)),
+    );
+    let rest = users.len().saturating_sub(names.len());
+    let list = names.join(", ");
+    if rest == 0 {
+        list
+    } else {
+        crate::i18n::text("{0} and {1} others", &[list, rest.to_string()])
+    }
+}
+
 fn upload_limit(state: &crate::state::AppState, channel_id: Id) -> usize {
     if state.dm_of(channel_id).is_some() {
         return crate::chat_image::MAX_DM_BYTES;
@@ -1152,10 +1174,15 @@ pub(super) fn MessageRow(
                                 let emoji = r.emoji.clone();
                                 let g = gateway.clone();
                                 let count = r.users.len();
+                                let who = reactors(&state.read(), &r.users, self_pubkey.as_deref());
                                 rsx! {
                                     button {
                                         key: "{r.emoji}",
-                                        class: "dxf-pop flex items-center gap-1 px-1.5 min-h-6 py-0.5 rounded-full border text-xs leading-none transition-colors {cls}",
+                                        class: "dxf-pop relative flex items-center gap-1 px-1.5 min-h-6 py-0.5 rounded-full border text-xs leading-none transition-colors {cls}",
+                                        "data-tip": "{who}",
+                                        "data-tip-side": "top",
+                                        "data-tip-wrap": "true",
+                                        aria_label: "{r.emoji} {count}: {who}",
                                         onclick: move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.clone() }),
                                         span { class: "flex items-center", EmojiText { text: r.emoji.clone(), guild_id, reaction: true } }
                                         span { class: "text-[10px]", "{count}" }
@@ -3509,5 +3536,38 @@ mod composer_tests {
         let args = [Value::String("a\"b".into()), Value::Bool(true)];
         let rendered: Vec<String> = args.iter().map(Value::to_string).collect();
         assert_eq!(rendered.join(","), r#""a\"b",true"#);
+    }
+}
+
+#[cfg(test)]
+mod reactor_tests {
+    use super::*;
+
+    #[test]
+    fn you_come_first_and_a_long_list_is_counted() {
+        let state = crate::state::AppState::empty();
+        let you = crate::i18n::text("You", &[]);
+        let me = "a".repeat(64);
+        let others: Vec<String> = (0..14).map(|i| format!("{i:0>64}")).collect();
+
+        let two = vec![others[0].clone(), me.clone()];
+        assert_eq!(
+            reactors(&state, &two, Some(&me)),
+            format!("{you}, {}", state.display_name(&others[0]))
+        );
+
+        let mut many = others.clone();
+        many.push(me.clone());
+        let shown: Vec<String> = std::iter::once(you.clone())
+            .chain(others[..11].iter().map(|u| state.display_name(u)))
+            .collect();
+        assert_eq!(
+            reactors(&state, &many, Some(&me)),
+            crate::i18n::text("{0} and {1} others", &[shown.join(", "), "3".into()])
+        );
+        assert_eq!(
+            reactors(&state, &others[..1], None),
+            state.display_name(&others[0])
+        );
     }
 }

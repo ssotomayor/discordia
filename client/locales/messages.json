@@ -2125,6 +2125,7 @@
   "Bio on its profile card…": ["Bio en su tarjeta de perfil…", "Bio no cartão de perfil…", "个人资料卡上的简介…", "プロフィールカードの自己紹介…"],
   "Every guild shows these unless it gives the agent a look of its own in Integrations.": ["Todas las comunidades muestran esto, salvo las que le den al agente un aspecto propio en Integraciones.", "Todas as comunidades mostram isto, a menos que deem ao agente uma aparência própria em Integrações.", "除非社区在“集成”中为该智能体设置了自己的外观，否则所有社区都显示这些。", "コミュニティが「統合」でエージェント独自の見た目を設定しない限り、すべてのコミュニティにこれが表示されます。"],
   "A picture must be a PNG, JPEG, GIF or WebP.": ["La imagen debe ser PNG, JPEG, GIF o WebP.", "A imagem deve ser PNG, JPEG, GIF ou WebP.", "图片必须是 PNG、JPEG、GIF 或 WebP 格式。", "画像は PNG、JPEG、GIF、WebP のいずれかにしてください。"],
+  "{0} and {1} others": ["{0} y {1} más", "{0} e mais {1}", "{0} 和另外 {1} 人", "{0} とほか {1} 人"],
   "{0} must be a whole number.": ["{0} debe ser un número entero.", "{0} deve ser um número inteiro.", "{0} 必须是整数。", "{0} は整数で入力してください。"],
   "Message history": ["Historial de mensajes", "Histórico de mensagens", "消息记录", "メッセージ履歴"],
   "Too many days.": ["Demasiados días.", "Dias demais.", "天数过多。", "日数が多すぎます。"],
