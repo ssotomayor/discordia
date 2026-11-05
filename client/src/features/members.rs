@@ -16,7 +16,6 @@ struct MetadataInputs {
 
 #[derive(Clone, PartialEq)]
 struct VoiceInputs {
-    connected_channel: Option<Id>,
     states: Vec<crate::protocol::VoiceState>,
 }
 
@@ -54,7 +53,6 @@ fn use_member_sources() -> MemberSources {
     let voice = use_memo(move || {
         let s = state.read();
         VoiceInputs {
-            connected_channel: s.connected_voice_channel(),
             states: s.voice_states.clone(),
         }
     });
@@ -776,18 +774,9 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
     let voice = use_memo(move || {
         let input = sources.voice.read();
         let vs = voice_here(&input.states, voice_guild, &voice_pk);
-        let same_channel = vs
-            .and_then(|v| v.channel_id)
-            .is_some_and(|cid| Some(cid) == input.connected_channel);
-        let ring = if same_channel {
-            crate::state::talk_ring(vs.is_some_and(|v| v.speaking))
-        } else {
-            ""
-        };
-        let badges = vs.map(|v| (v.muted, v.deafened));
-        (ring, badges)
+        vs.map(|v| (v.muted, v.deafened))
     });
-    let (speaking_ring, badges) = voice();
+    let badges = voice();
     let card_pubkey = member.user.pubkey.clone();
     let ctx_member = member.clone();
     let name_pk = member.user.pubkey.clone();
@@ -806,7 +795,7 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                 crate::features::profiles::Avatar {
                     pubkey: member.user.pubkey.clone(),
                     name: name.clone(),
-                    size: "w-7 h-7 {dim} {speaking_ring}",
+                    size: "w-7 h-7 {dim}",
                 }
                 span {
                     class: "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel-solid)] {pulse}",
@@ -1061,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn member_rows_hide_connection_icons_and_channel_names_but_keep_speech_indication() {
+    fn member_rows_hide_connection_icons_channel_names_and_speech_indication() {
         use dioxus::core::{AttributeValue, Mutation};
         use std::{cell::RefCell, rc::Rc};
         type Export = Rc<RefCell<Option<Signal<AppState>>>>;
@@ -1128,22 +1117,14 @@ mod tests {
             .insert("alice".into(), crate::state::ConnectionHealth::Lost);
         assert!(dom.render_immediate_to_vec().edits.is_empty());
         state.write().voice_states[0].speaking = true;
-        assert!(
-            dom.render_immediate_to_vec()
-                .edits
-                .iter()
-                .any(|edit| matches!(edit,
-                    Mutation::SetAttribute { name: "class", value: AttributeValue::Text(value), .. }
-                        if value.contains("ring-2 ring-[var(--success)]")
-                ))
-        );
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         state
             .write()
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Good);
         assert!(dom.render_immediate_to_vec().edits.is_empty());
         state.write().voice.phase = crate::state::VoicePhase::Idle;
-        assert!(!dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         state
             .write()
             .voice_quality
@@ -1230,16 +1211,10 @@ mod tests {
             s.voice.channel_id = Some(channel);
             s.voice.phase = crate::state::VoicePhase::Connected;
         }
-        let edits = dom.render_immediate_to_vec().edits;
-        assert!(edits.iter().any(|edit| matches!(edit,
-            dioxus::core::Mutation::SetAttribute { name: "class", value: dioxus::core::AttributeValue::Text(value), .. }
-                if value.contains("ring-2 ring-[var(--success)]")
-        )));
-        *expected.get_mut("row:alice").unwrap() += 1;
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         assert_eq!(renders(), expected);
         state.write().voice.phase = crate::state::VoicePhase::Idle;
-        dom.render_immediate_to_vec();
-        *expected.get_mut("row:alice").unwrap() += 1;
+        assert!(dom.render_immediate_to_vec().edits.is_empty());
         assert_eq!(renders(), expected);
         state.write().voice_states[0].muted = true;
         dom.render_immediate_to_vec();
