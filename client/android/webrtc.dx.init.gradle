@@ -6,6 +6,7 @@ allprojects { project ->
         def jar = project.file('libs/libwebrtc.jar')
         if (jar.isFile()) {
             project.dependencies.add('implementation', project.files(jar))
+            project.dependencies.add('implementation', 'com.google.android.gms:play-services-auth:21.2.0')
         }
     }
 }
