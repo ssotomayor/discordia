@@ -468,6 +468,13 @@ button:active:not(:disabled) { transform: scale(0.985); }
 
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
+/* Opens at the pointer; near a window edge (a rail docked right) it moves back
+   in by its own overflow, at most to the pointer's other side. */
+.dxf-ctx-menu {
+  position: absolute; left: var(--mx); top: var(--my);
+  translate: max(-100%, min(0px, calc(100vw - var(--mx) - 100% - 8px)))
+             max(-100%, min(0px, calc(100vh - var(--my) - 100% - 8px)));
+}
 /* Hover help for icon buttons, drawn here because `title` waits a second and looks like the OS.
    Opens below and leftward so it stays inside the chat panel; `data-tip-side=top` for the composer. */
 [data-tip]::after {

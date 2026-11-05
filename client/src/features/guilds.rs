@@ -257,8 +257,8 @@ pub fn GuildsSidebar() -> Element {
                     onclick: move |_| menu.set(None),
                     oncontextmenu: move |e| { e.prevent_default(); menu.set(None); },
                     div {
-                        class: "dxf-pop-in absolute min-w-44 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
-                        style: "left: {m.x}px; top: {m.y}px;",
+                        class: "dxf-pop-in dxf-ctx-menu min-w-44 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
+                        style: "--mx: {m.x}px; --my: {m.y}px;",
                         onclick: move |e| e.stop_propagation(),
                         {
                             let s = state.read();

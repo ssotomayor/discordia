@@ -41,8 +41,8 @@ pub(crate) fn DmMenuPopover(menu: DmMenu, on_close: EventHandler<()>) -> Element
             onclick: move |_| on_close.call(()),
             oncontextmenu: move |e| { e.prevent_default(); on_close.call(()); },
             div {
-                class: "dxf-pop-in absolute min-w-48 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
-                style: "left: {menu.x}px; top: {menu.y}px;",
+                class: "dxf-pop-in dxf-ctx-menu min-w-48 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
+                style: "--mx: {menu.x}px; --my: {menu.y}px;",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)] border-b border-[var(--border)] mb-1 truncate",
                     "{name}"
