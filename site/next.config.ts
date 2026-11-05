@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 // Static export: the VPS serves `out/` from nginx and never runs Node (docs/OPS.md).
 const config: NextConfig = {
   output: "export",
+  // `privacy/index.html` rather than `privacy.html`: nginx serves a folder's index without a rewrite.
+  trailingSlash: true,
   images: { unoptimized: true },
   reactStrictMode: true,
   // Next 16 dev otherwise writes an AGENTS.md and CLAUDE.md here; the repo root already has the rules.

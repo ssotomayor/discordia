@@ -936,6 +936,7 @@ pub fn IdentityCard(
     let mut draft = use_signal(|| identity.display_name.clone());
     let signature = crate::identity::color_signature(&identity.pubkey, 16);
     let npub = identity.npub();
+    let backup_identity = identity.clone();
     let phrase = match &identity.source {
         IdentitySource::Phrase(p) => Some(p.clone()),
         IdentitySource::Nsec(_) => None,
@@ -1028,6 +1029,7 @@ pub fn IdentityCard(
                 {crate::i18n::text("This color signature is derived from your public key. Nobody else has it.", &[])}
             }
             RecoveryPhrase { phrase }
+            super::google_backup::GoogleBackup { identity: backup_identity }
             BlobServerField {}
             super::dm_images::FileServerField {}
             details { class: "text-[10px] text-[var(--text-dim)]",

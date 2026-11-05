@@ -10,6 +10,8 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C target-feature=+crt-static"
   GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }}
+  GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
 
 jobs:
   windows-bundle:
