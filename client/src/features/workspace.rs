@@ -1034,11 +1034,7 @@ fn VoiceSounds() -> Element {
             return;
         }
         let prev = last_peers.peek().clone();
-        let joined = peers.iter().any(|p| !prev.contains(p));
         let left = prev.iter().any(|p| !peers.contains(p));
-        if joined {
-            sfx("peer-join");
-        }
         if left {
             sfx("peer-leave");
         }

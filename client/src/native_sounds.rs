@@ -97,6 +97,7 @@ enum Command {
 struct Control {
     volume: AtomicU32,
     call_ring: AtomicU32,
+    pending_peer_join: AtomicBool,
     output: Mutex<Option<String>>,
 }
 
@@ -113,6 +114,7 @@ fn service() -> Option<&'static Service> {
             let control = Arc::new(Control {
                 volume: AtomicU32::new(0.7_f32.to_bits()),
                 call_ring: AtomicU32::new(0),
+                pending_peer_join: AtomicBool::new(false),
                 output: Mutex::new(None),
             });
             let worker_control = Arc::clone(&control);
@@ -141,13 +143,40 @@ pub fn play(name: &str) {
         return;
     };
     if let Some(service) = service() {
-        match service.tx.try_send(Command::Play(Sound(index))) {
-            Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                tracing::warn!("Notification audio worker stopped");
-            }
+        enqueue_play(&service.tx, &service.control, Sound(index));
+    }
+}
+
+fn enqueue_play(tx: &mpsc::SyncSender<Command>, control: &Control, sound: Sound) {
+    match tx.try_send(Command::Play(sound)) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(Command::Play(sound))) if is_peer_join(sound) => {
+            control.pending_peer_join.store(true, Ordering::Release);
+            let _ = tx.try_send(Command::Wake);
+        }
+        Err(mpsc::TrySendError::Full(_)) => {}
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            tracing::warn!("Notification audio worker stopped");
         }
     }
+}
+
+fn is_peer_join(sound: Sound) -> bool {
+    NAMES.get(sound.0) == Some(&"peer-join")
+}
+
+fn take_pending_peer_join(control: &Control) -> Option<Command> {
+    control
+        .pending_peer_join
+        .swap(false, Ordering::AcqRel)
+        .then(|| {
+            Command::Play(Sound(
+                NAMES
+                    .iter()
+                    .position(|name| *name == "peer-join")
+                    .expect("peer-join sound is registered"),
+            ))
+        })
 }
 
 pub fn preview(name: &str) {
@@ -233,7 +262,9 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
     let mut last_play = Instant::now();
     let mut bank = SoundBank::new(0);
     loop {
-        let command = if output.is_some() {
+        let command = if let Some(command) = take_pending_peer_join(&control) {
+            command
+        } else if output.is_some() {
             match rx.recv_timeout(IDLE.saturating_sub(last_play.elapsed())) {
                 Ok(command) => command,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -851,6 +882,30 @@ mod tests {
     }
 
     #[test]
+    fn full_notification_queue_keeps_one_pending_peer_join() {
+        let control = Control {
+            volume: AtomicU32::new(0.7_f32.to_bits()),
+            call_ring: AtomicU32::new(0),
+            pending_peer_join: AtomicBool::new(false),
+            output: Mutex::new(None),
+        };
+        let (tx, _rx) = mpsc::sync_channel(1);
+        assert!(tx.try_send(Command::Wake).is_ok());
+
+        enqueue_play(
+            &tx,
+            &control,
+            Sound(NAMES.iter().position(|name| *name == "peer-join").unwrap()),
+        );
+
+        assert!(matches!(
+            take_pending_peer_join(&control),
+            Some(Command::Play(sound)) if is_peer_join(sound)
+        ));
+        assert!(take_pending_peer_join(&control).is_none());
+    }
+
+    #[test]
     fn cooldown_is_independent_per_sound_and_allows_the_exact_boundary() {
         let mut cooldowns = Cooldowns::default();
         assert!(cooldowns.accept(Sound(3), Duration::ZERO));
@@ -933,6 +988,7 @@ mod tests {
         let control = Arc::new(Control {
             volume: AtomicU32::new(0.7_f32.to_bits()),
             call_ring: AtomicU32::new(0),
+            pending_peer_join: AtomicBool::new(false),
             output: Mutex::new(None),
         });
         let output = AudioOutput::open(None, control).expect("native audio output");

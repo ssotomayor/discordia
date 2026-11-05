@@ -2179,6 +2179,20 @@ fn apply(
             let mut vs = vs;
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
+            let previous_channel = s
+                .voice_states
+                .iter()
+                .find(|previous| previous.user_pubkey == vs.user_pubkey)
+                .and_then(|previous| previous.channel_id);
+            if should_play_peer_join(
+                previous_channel,
+                vs.channel_id,
+                is_self,
+                s.voice.channel_id,
+                s.voice.joining_channel_id,
+            ) {
+                crate::features::sounds::sfx("peer-join");
+            }
             if is_self {
                 crate::dlog!(
                     "[net] VoiceStateUpdate(self) channel={:?} muted={} deafened={} speaking={} phase={:?}",
@@ -2376,9 +2390,75 @@ fn apply(
     }
 }
 
+fn should_play_peer_join(
+    previous: Option<Id>,
+    next: Option<Id>,
+    is_self: bool,
+    listening: Option<Id>,
+    joining: Option<Id>,
+) -> bool {
+    !is_self && next.is_some() && previous != next && (listening == next || joining == next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peer_join_sound_tracks_voice_events_during_entry_and_live_calls_only() {
+        let channel = Id::new_v4();
+        let other = Id::new_v4();
+
+        assert!(should_play_peer_join(
+            None,
+            Some(channel),
+            false,
+            None,
+            Some(channel)
+        ));
+        assert!(should_play_peer_join(
+            None,
+            Some(channel),
+            false,
+            Some(channel),
+            None
+        ));
+        assert!(should_play_peer_join(
+            Some(other),
+            Some(channel),
+            false,
+            Some(channel),
+            None
+        ));
+        assert!(!should_play_peer_join(
+            Some(channel),
+            Some(channel),
+            false,
+            Some(channel),
+            None
+        ));
+        assert!(!should_play_peer_join(
+            None,
+            Some(channel),
+            false,
+            None,
+            None
+        ));
+        assert!(!should_play_peer_join(
+            None,
+            Some(channel),
+            true,
+            Some(channel),
+            None
+        ));
+        assert!(!should_play_peer_join(
+            Some(channel),
+            None,
+            false,
+            Some(channel),
+            None
+        ));
+    }
 
     #[test]
     fn rules_prompts_use_the_challenge_name_without_a_catalog_and_fall_back_for_old_hosts() {
