@@ -21,6 +21,7 @@ mod dm_requests;
 mod gif_picker;
 pub mod globe;
 mod globe_geometry;
+pub mod google_backup;
 mod guild_hub;
 pub mod guild_leveling;
 pub mod guild_settings;

@@ -276,6 +276,8 @@ export default function Page() {
           <a href={`${GITHUB}/releases`}>Releases</a>
           <a href={`${GITHUB}/issues`}>Issues</a>
           <a href={`${GITHUB}/blob/master/docs/OPS.md`}>Ops guide</a>
+          <a href="/privacy/">Privacy</a>
+          <a href="/terms/">Terms</a>
         </nav>
       </footer>
     </>

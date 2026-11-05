@@ -8,6 +8,7 @@ enum Step {
     Create,
     RestorePhrase,
     ImportKey,
+    Google,
 }
 
 const INPUT: &str = "w-full bg-transparent border border-[var(--edge)] rounded-lg px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
@@ -94,6 +95,16 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                 rev: folder_rev,
                                 on_pick: move |id: Identity| on_done.call(id),
                                 on_error: move |e: String| error.set(Some(e)),
+                            }
+                            if crate::google_drive::available() {
+                                ChooseOption {
+                                    title: crate::i18n::text("Sign in with Google", &[]),
+                                    blurb: crate::i18n::text("Bring back an identity you backed up to your Google Drive.", &[]),
+                                    onclick: move |_| {
+                                        error.set(None);
+                                        step.set(Step::Google);
+                                    },
+                                }
                             }
                             ChooseOption {
                                 title: crate::i18n::text("Create new identity", &[]),
@@ -253,6 +264,15 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                 restore_phrase.set(String::new());
                                 step.set(Step::Choose);
                             } }
+                        }
+                    },
+
+                    Step::Google => rsx! {
+                        div { class: "space-y-3",
+                            super::google_backup::GoogleSignIn {
+                                on_done: move |id: Identity| on_done.call(id),
+                            }
+                            BackButton { onclick: move |_| step.set(Step::Choose) }
                         }
                     },
 

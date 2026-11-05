@@ -16,6 +16,8 @@ env:
   DIOXUS_CLI_VERSION: "0.7.10"
   # Compiled into the client; it ships in every binary, so it is no secret there.
   GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }}
+  GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
   # Debug info is most of a target dir and nothing here reads it; incremental
   # artifacts only pay off across edits on one machine. Both shrink the cache.
   CARGO_INCREMENTAL: "0"

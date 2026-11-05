@@ -276,6 +276,16 @@ pub fn unseal(sealed: &str, passphrase: &str) -> Result<Zeroizing<Vec<u8>>, Stri
         .map_err(|_| "sealed with a vault passphrase this machine no longer has".to_string())
 }
 
+/// The scrypt cost a blob names for itself. Opening one allocates 2^cost KiB,
+/// so a blob that came from elsewhere is checked before it is opened.
+pub fn cost(blob: &str) -> Option<u8> {
+    let blob = blob.trim();
+    match bech32::decode(blob) {
+        Ok((_, data)) => data.get(1).copied(),
+        Err(_) => hex::decode(blob).ok()?.get(1).copied(),
+    }
+}
+
 pub fn decrypt(ncryptsec: &str, passphrase: &str) -> Result<Zeroizing<[u8; 32]>, String> {
     let (hrp, data) = bech32::decode(ncryptsec.trim()).map_err(|e| format!("ncryptsec: {e}"))?;
     if hrp.as_str() != "ncryptsec" {
@@ -342,6 +352,15 @@ mod tests {
         assert!(decrypt(&sealed, "correct horse").is_err());
         let key = encrypt(&[7u8; 32], "correct horse", LOG_N).expect("encrypt");
         assert!(unseal(&key, "correct horse").is_err());
+    }
+
+    #[test]
+    fn cost_reads_the_scrypt_exponent_of_either_kind() {
+        let key = encrypt(&[7u8; 32], "p", LOG_N).unwrap();
+        let sealed = seal(&[9u8; 16], "p", LOG_N).unwrap();
+        assert_eq!(cost(&key), Some(LOG_N));
+        assert_eq!(cost(&sealed), Some(LOG_N));
+        assert_eq!(cost("not a blob"), None);
     }
 
     #[test]

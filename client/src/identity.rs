@@ -518,7 +518,11 @@ pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
 
 /// A phrase that does not derive the key it sits beside is a backup that
 /// would restore someone else, so it is dropped rather than shown.
-fn recover_phrase(sealed: &str, passphrase: &str, pubkey: &str) -> Option<IdentitySource> {
+pub(crate) fn recover_phrase(
+    sealed: &str,
+    passphrase: &str,
+    pubkey: &str,
+) -> Option<IdentitySource> {
     let entropy = match crate::keyvault::unseal(sealed, passphrase) {
         Ok(entropy) => entropy,
         Err(e) => {
