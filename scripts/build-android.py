@@ -212,6 +212,7 @@ def package_sources(project):
     shutil.copy2(ROOT / "client/android/DioxusPlaybackCapture.kt", sources / "DioxusPlaybackCapture.kt")
     shutil.copy2(ROOT / "client/android/DioxusDmNotifications.kt", sources / "DioxusDmNotifications.kt")
     shutil.copy2(ROOT / "client/android/DioxusScreenPreview.kt", sources / "DioxusScreenPreview.kt")
+    shutil.copy2(ROOT / "client/android/DioxusDriveAuth.kt", sources / "DioxusDriveAuth.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 

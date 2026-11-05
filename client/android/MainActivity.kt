@@ -41,6 +41,10 @@ typealias BuildConfig = com.discordia.app.BuildConfig
 
 class MainActivity : WryActivity() {
     private val dmNotifications by lazy { com.discordia.app.DioxusDmNotifications(this) }
+    private val driveAuth by lazy { com.discordia.app.DioxusDriveAuth(this) }
+    fun beginDriveAuthorization(): Boolean = driveAuth.begin()
+    fun takeDriveAuthorization(): String = driveAuth.take()
+    fun cancelDriveAuthorization() { driveAuth.cancel() }
     external fun onDmNotificationOpened(account: String, peer: String)
     external fun onDmNotificationVisibility(resumed: Boolean)
     external fun onDmNotificationSettingsChanged()
@@ -661,6 +665,7 @@ class MainActivity : WryActivity() {
     @Deprecated("Android platform callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (driveAuth.activityResult(requestCode, resultCode, data)) return
         if (requestCode == com.discordia.app.DioxusUpdater.PERMISSION_REQUEST && appUpdater?.permissionReturned() == true) {
             return
         }

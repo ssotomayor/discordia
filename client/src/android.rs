@@ -974,6 +974,65 @@ pub fn camera_devices() -> Result<Vec<crate::state::CameraDevice>, String> {
         .collect())
 }
 
+const DRIVE_CONSENT_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// Leaving the wait in any way, a dropped future included, clears the Kotlin
+/// side: a request it still held pending would refuse the next sign-in.
+struct DriveRequest;
+
+impl Drop for DriveRequest {
+    fn drop(&mut self) {
+        let _ = with_activity(|env, activity| {
+            env.call_method(activity, "cancelDriveAuthorization", "()V", &[])
+                .map(|_| ())
+                .map_err(system_error)
+        });
+    }
+}
+
+/// A Drive token from Play services, scoped to the app folder only.
+pub async fn drive_access_token() -> Result<Zeroizing<String>, String> {
+    let launched = on_ui(|env, activity| {
+        env.call_method(activity, "cancelDriveAuthorization", "()V", &[])
+            .map_err(system_error)?;
+        env.call_method(activity, "beginDriveAuthorization", "()Z", &[])
+            .and_then(|value| value.z())
+            .map_err(system_error)
+    })
+    .await?;
+    if !launched {
+        return Err("Couldn't start Google sign-in.".into());
+    }
+    let _request = DriveRequest;
+    tokio::time::timeout(DRIVE_CONSENT_WINDOW, async {
+        loop {
+            let reply = Zeroizing::new(activity_string("takeDriveAuthorization")?);
+            let reply: serde_json::Value = serde_json::from_str(&reply)
+                .map_err(|_| "Google sent an unreadable answer.".to_string())?;
+            match reply["status"].as_str() {
+                Some("pending") => tokio::time::sleep(Duration::from_millis(150)).await,
+                Some("ok") => {
+                    return reply["token"]
+                        .as_str()
+                        .filter(|token| !token.is_empty())
+                        .map(|token| Zeroizing::new(token.to_owned()))
+                        .ok_or_else(|| "Google sent an unreadable answer.".to_string());
+                }
+                Some("cancelled") => return Err("Google sign-in was cancelled.".into()),
+                Some("denied") => {
+                    return Err("Discordia needs access to its own Google Drive folder. Sign in again and leave that box ticked.".into());
+                }
+                _ => {
+                    tracing::warn!(detail = reply["message"].as_str().unwrap_or(""), "Google authorization failed");
+                    return Err("Google sign-in failed. Google Play services may be missing or out of date.".into());
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Google sign-in timed out. Try again.".to_string())?
+}
+
 /// Asks for the projection on its own, before the app announces a share.
 pub async fn request_screen_capture() -> Result<(), String> {
     let launched = on_ui(|env, activity| {

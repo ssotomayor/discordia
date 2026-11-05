@@ -5,6 +5,7 @@ allprojects { project ->
             throw new GradleException('Missing matching libwebrtc.jar; use scripts/build-android.py')
         }
         project.dependencies.add('implementation', project.files(jar))
+        project.dependencies.add('implementation', 'com.google.android.gms:play-services-auth:21.2.0')
         project.androidComponents.finalizeDsl { android ->
             android.buildTypes.getByName('debug').applicationIdSuffix = '.debug'
             def versionCode = System.getenv('DISCORDIA_ANDROID_VERSION_CODE')

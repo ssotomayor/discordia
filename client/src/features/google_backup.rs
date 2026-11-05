@@ -9,6 +9,14 @@ const INPUT: &str = "w-full bg-transparent border border-[var(--edge)] rounded-l
 const SMALL_BUTTON: &str = "text-[10px] uppercase tracking-wider border border-[var(--edge)] rounded-md px-2.5 py-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed";
 const PRIMARY_BUTTON: &str = "dxf-cta w-full py-2.5 rounded-xl text-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed";
 
+fn waiting_text() -> String {
+    if cfg!(target_os = "android") {
+        crate::i18n::text("Finish signing in with Google…", &[])
+    } else {
+        crate::i18n::text("Finish signing in with Google in your browser…", &[])
+    }
+}
+
 fn done_page() -> String {
     crate::i18n::text(
         "Done. You can close this tab and go back to Discordia.",
@@ -173,7 +181,7 @@ pub fn GoogleBackup(identity: Identity) -> Element {
                 Backup::Working => rsx! {
                     div { class: "flex items-center gap-2",
                         p { class: "flex-1 text-[10px] text-[var(--text-muted)]",
-                            {crate::i18n::text("Finish signing in with Google in your browser…", &[])}
+                            {waiting_text()}
                         }
                         button {
                             r#type: "button",
@@ -304,7 +312,7 @@ pub fn GoogleSignIn(on_done: EventHandler<Identity>) -> Element {
             match phase() {
                 Restore::Working => rsx! {
                     p { class: "text-sm text-[var(--text-muted)]",
-                        {crate::i18n::text("Finish signing in with Google in your browser…", &[])}
+                        {waiting_text()}
                     }
                 },
                 Restore::Opening => rsx! {
@@ -320,7 +328,11 @@ pub fn GoogleSignIn(on_done: EventHandler<Identity>) -> Element {
                         r#type: "button",
                         class: PRIMARY_BUTTON,
                         onclick: move |_| start(),
-                        {crate::i18n::text("Try another Google account", &[])}
+                        if cfg!(target_os = "android") {
+                            {crate::i18n::text("Try again", &[])}
+                        } else {
+                            {crate::i18n::text("Try another Google account", &[])}
+                        }
                     }
                 },
                 Restore::Choosing(found) => rsx! {
