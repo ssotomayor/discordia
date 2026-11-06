@@ -1340,6 +1340,11 @@ impl AppState {
         if owned >= cap {
             return Err(format!("you already own {cap} guilds on this server"));
         }
+        if let Some(total) = limits.max_guilds
+            && self.guilds.len() >= total as usize
+        {
+            return Err(format!("this server already holds {total} guilds"));
+        }
         let spec = GuildTemplate::resolve(template);
         let gid = Uuid::new_v4();
         let guild = Guild {
