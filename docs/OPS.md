@@ -52,7 +52,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_PUBLISH_PUBLIC` | `false` | also list it in each rendezvous's `/discover`; otherwise only the name or code finds it. ⚙ |
 | `DISCORDIA_PUBLISH_LOCATION` | — | `lat,lon` for the globe; self-declared, rounded to a tenth of a degree. ⚙ |
 
-⚙ An operator can also set it in the app's **Server Settings** (the server icon beside Agents), which applies at once — a renamed server re-registers on its rendezvous. Set by a flag, variable or the config file, it wins: the dialog shows it read-only and keeps its own value for when the setting is removed. Server Settings also holds what has no variable: the ceilings on every guild's upload sizes, file expiry and message history, who may create guilds and how many each person may own, the guild newcomers land in, and the apps policy.
+⚙ An operator can also set it in the app's **Server Settings** (the server icon beside Agents), which applies at once — a renamed server re-registers on its rendezvous. Set by a flag, variable or the config file, it wins: the dialog shows it read-only and keeps its own value for when the setting is removed. Server Settings also holds what has no variable: the ceilings on every guild's upload sizes, file expiry and message history, who may create guilds, how many each person may own and how many the server holds in all, the guild newcomers land in, and the apps policy.
 
 **Rendezvous**
 

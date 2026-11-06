@@ -1682,6 +1682,7 @@ pub enum GuildCreation {
 pub const MAX_FILE_RETENTION_DAYS: u32 = 365;
 pub const MAX_MESSAGE_RETENTION_DAYS: u32 = 3650;
 pub const MAX_GUILDS_PER_OWNER_CEILING: u32 = 1000;
+pub const MAX_GUILDS_CEILING: u32 = 100_000;
 /// Below this the store refuses nearly every upload, which reads as a bug, not a cap.
 pub const MIN_MEDIA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub const DEFAULT_MEDIA_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -1698,6 +1699,9 @@ pub struct ServerLimits {
     #[serde(default)]
     pub max_message_retention_days: Option<u32>,
     pub max_guilds_per_owner: u32,
+    /// Every guild on the server, system guilds included. `None`: no cap.
+    #[serde(default)]
+    pub max_guilds: Option<u32>,
     #[serde(default)]
     pub guild_creation: GuildCreation,
 }
@@ -1711,6 +1715,7 @@ impl Default for ServerLimits {
             max_file_retention_days: MAX_FILE_RETENTION_DAYS,
             max_message_retention_days: None,
             max_guilds_per_owner: 10,
+            max_guilds: None,
             guild_creation: GuildCreation::Anyone,
         }
     }
@@ -1861,6 +1866,13 @@ pub fn validate_server_settings(raw: ServerSettings) -> Result<ServerSettings, S
     if !(1..=MAX_GUILDS_PER_OWNER_CEILING).contains(&l.max_guilds_per_owner) {
         return Err(format!(
             "a person may own 1 to {MAX_GUILDS_PER_OWNER_CEILING} guilds"
+        ));
+    }
+    if l.max_guilds
+        .is_some_and(|n| !(1..=MAX_GUILDS_CEILING).contains(&n))
+    {
+        return Err(format!(
+            "a server may hold 1 to {MAX_GUILDS_CEILING} guilds, or no cap"
         ));
     }
     Ok(ServerSettings {

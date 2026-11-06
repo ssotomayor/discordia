@@ -39,6 +39,7 @@ struct Form {
     file_days: String,
     message_days: String,
     max_guilds: String,
+    max_total_guilds: String,
     operators_only: bool,
 }
 
@@ -61,6 +62,7 @@ impl Form {
                 .map(|d| d.to_string())
                 .unwrap_or_default(),
             max_guilds: l.max_guilds_per_owner.to_string(),
+            max_total_guilds: l.max_guilds.map(|n| n.to_string()).unwrap_or_default(),
             operators_only: l.guild_creation == GuildCreation::Operators,
         }
     }
@@ -94,6 +96,10 @@ impl Form {
                     .map_err(|_| crate::i18n::text("{0} is too large.", &[what.to_string()]))
             })
         };
+        let max_total_guilds = match blank(&self.max_total_guilds) {
+            Some(n) => Some(small(&n, &crate::i18n::text("Guilds on this server", &[]))?),
+            None => None,
+        };
         Ok(ServerSettings {
             name: blank(&self.name),
             description: blank(&self.description),
@@ -123,6 +129,7 @@ impl Form {
                     &self.max_guilds,
                     &crate::i18n::text("Guilds per person", &[]),
                 )?,
+                max_guilds: max_total_guilds,
                 guild_creation: if self.operators_only {
                     GuildCreation::Operators
                 } else {
@@ -434,6 +441,19 @@ fn SettingsForm(section: Section, view: ServerSettingsView) -> Element {
             div {
                 div { class: LABEL, {crate::i18n::text("Guilds one person may own", &[])} }
                 input { class: INPUT, r#type: "number", min: 1, max: 1000, value: "{f.max_guilds}", oninput: move |e| form.write().max_guilds = e.value() }
+            }
+            div {
+                div { class: LABEL, {crate::i18n::text("Guilds this server may hold", &[])} }
+                input {
+                    class: INPUT,
+                    r#type: "number",
+                    min: 1,
+                    max: 100000,
+                    placeholder: crate::i18n::text("no limit", &[]),
+                    value: "{f.max_total_guilds}",
+                    oninput: move |e| form.write().max_total_guilds = e.value(),
+                }
+                div { class: HINT, {crate::i18n::text("Counts every guild, the Lobby too. Past it nobody can create one; guilds that already exist stay.", &[])} }
             }
             DefaultGuildPicker {}
         },

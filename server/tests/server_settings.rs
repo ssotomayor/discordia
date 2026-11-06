@@ -210,3 +210,45 @@ async fn the_launch_configuration_wins_and_the_dialog_keeps_the_rest() {
         ServerSettings::default().media_max_bytes
     );
 }
+
+#[tokio::test]
+async fn the_server_total_counts_every_guild_and_lifts_when_cleared() {
+    let operator_id = BotIdentity::generate();
+    let (url, _h) = spawn_in(temp_data_dir(), &operator_id, Default::default()).await;
+    let (mut operator, _, existing) = arrive(&url, &operator_id, "Op").await;
+    let (mut member, _, _) = arrive(&url, &BotIdentity::generate(), "Member").await;
+
+    let mut capped = ServerSettings::default();
+    capped.limits.max_guilds = Some(existing.len() as u32 + 1);
+    save(&mut operator, capped.clone()).await.unwrap();
+
+    let create = || ClientMessage::CreateGuild {
+        name: "Mine".into(),
+        template: None,
+    };
+    member.send(&create()).await.unwrap();
+    loop {
+        match next_timeout(&mut member).await {
+            ServerMessage::GuildJoined { .. } => break,
+            ServerMessage::Error { message } => panic!("refused under the cap: {message}"),
+            _ => continue,
+        }
+    }
+    let full = error_after(&mut operator, create()).await;
+    assert!(full.contains("already holds"), "{full}");
+
+    capped.limits.max_guilds = Some(0);
+    assert!(save(&mut operator, capped).await.is_err());
+
+    save(&mut operator, ServerSettings::default())
+        .await
+        .unwrap();
+    operator.send(&create()).await.unwrap();
+    loop {
+        match next_timeout(&mut operator).await {
+            ServerMessage::GuildJoined { .. } => break,
+            ServerMessage::Error { message } => panic!("refused with no cap: {message}"),
+            _ => continue,
+        }
+    }
+}
