@@ -12,6 +12,8 @@ pub(super) struct ScrollSample {
     pub pages: Vec<PageSample>,
     #[serde(default)]
     pub anchor_shift: Option<f64>,
+    #[serde(default)]
+    pub applied: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -60,6 +62,7 @@ pub(super) struct ScrollState {
     channel: Option<Id>,
     height: f64,
     top: f64,
+    pending: Option<(u64, f64)>,
     following: bool,
 }
 
@@ -69,6 +72,7 @@ impl Default for ScrollState {
             channel: None,
             height: 0.0,
             top: 0.0,
+            pending: None,
             following: true,
         }
     }
@@ -89,6 +93,13 @@ impl ScrollState {
         {
             return command;
         }
+        // The page drops a command once a newer sample exists, so the reader is
+        // where we sent them only if it says so; else they are where last seen.
+        if let Some((sequence, top)) = self.pending.take()
+            && sample.applied == sequence
+        {
+            self.top = top;
+        }
         if self.channel != sample.channel || sample.mode == "channel" {
             self.channel = sample.channel;
             self.following = true;
@@ -99,8 +110,12 @@ impl ScrollState {
                 // growth below in between must not read as the reader leaving.
                 "scroll" => {
                     let left = sample.top < self.top - 1.0;
-                    self.following = sample.height - sample.top - sample.viewport <= 40.0
-                        || (self.following && !left);
+                    let gap = sample.height - sample.top - sample.viewport;
+                    self.following = gap <= 40.0 || (self.following && !left);
+                    // Growth whose bottom command was dropped for this sample.
+                    if self.following && !left && gap > 1.0 {
+                        command.top = Some(sample.height);
+                    }
                 }
                 // A relay replays a DM out of order: older messages can arrive
                 // in the same batch as the newest ones.
@@ -129,8 +144,12 @@ impl ScrollState {
         if sample.mode != "scroll" {
             self.height = sample.height;
         }
-        self.top = command.top.map_or(sample.top, |top| {
-            top.min(sample.height - sample.viewport).max(0.0)
+        self.top = sample.top;
+        self.pending = command.top.map(|top| {
+            (
+                sample.sequence,
+                top.min(sample.height - sample.viewport).max(0.0),
+            )
         });
         command
     }
@@ -149,6 +168,7 @@ mod tests {
             viewport: 200.0,
             pages: Vec::new(),
             anchor_shift: None,
+            applied: 1,
         }
     }
     #[test]
@@ -194,6 +214,31 @@ mod tests {
         );
         state.update(sample("scroll", 1300.0, 600.0));
         assert_eq!(state.update(sample("append", 1400.0, 600.0)).top, None);
+    }
+
+    #[test]
+    fn a_bottom_command_lost_to_a_scroll_event_is_reissued() {
+        let mut state = ScrollState::default();
+        let at = |mode, sequence, applied, height, top| ScrollSample {
+            sequence,
+            applied,
+            ..sample(mode, height, top)
+        };
+        state.update(at("channel", 1, 0, 1000.0, 800.0));
+        assert_eq!(
+            state.update(at("resize", 2, 1, 1300.0, 800.0)).top,
+            Some(1300.0)
+        );
+        // Sampled before command 2 landed, so the page dropped it.
+        assert_eq!(
+            state.update(at("scroll", 3, 1, 1300.0, 800.0)).top,
+            Some(1300.0)
+        );
+        state.update(at("scroll", 4, 3, 1300.0, 1100.0));
+        assert_eq!(
+            state.update(at("resize", 5, 3, 1500.0, 1100.0)).top,
+            Some(1500.0)
+        );
     }
 
     #[test]

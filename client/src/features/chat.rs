@@ -29,7 +29,7 @@ const GROUP_WINDOW_SECS: i64 = 300;
 const SCROLL_JS: &str = r#"
 return (async function () {
   if (window.__dxfChatScrollOff) window.__dxfChatScrollOff();
-  let node = null, channel = null, sequence = 0, alive = true, wake = null;
+  let node = null, channel = null, sequence = 0, applied = 0, alive = true, wake = null;
   let frame = null, observer = null, anchor = null;
   const observed = new Set();
   const queueMeasure = () => {
@@ -69,7 +69,8 @@ return (async function () {
     const first = candidates.find(row => row.getBoundingClientRect().bottom > rect.top);
     anchor = first ? { id: key(first), offset: first.getBoundingClientRect().top - rect.top } : null;
     dioxus.send({ mode, channel, sequence: ++sequence, height: el.scrollHeight,
-      top: el.scrollTop, viewport: el.clientHeight, pages: measured, anchor_shift: anchorShift });
+      top: el.scrollTop, viewport: el.clientHeight, pages: measured, anchor_shift: anchorShift,
+      applied });
   };
   const onScroll = () => measure('scroll', channel);
   window.__dxfChatScrollMeasure = measure;
@@ -94,7 +95,10 @@ return (async function () {
       wake = null;
       if (!alive || command === null) break;
       if (command.sequence === sequence && node === document.getElementById('dxf-chat-scroll')
-          && command.channel === channel && command.top !== null) node.scrollTop = command.top;
+          && command.channel === channel && command.top !== null) {
+        node.scrollTop = command.top;
+        applied = command.sequence;
+      }
     }
   } finally {
     if (window.__dxfChatScrollOff === off) off();
