@@ -260,6 +260,15 @@ console.log('Native camera and screen share one identity and detach independentl
   assert.deepEqual(subscriptions, [true, false, true]);
   console.log('Background preview unsubscribes only the native self screen and resumes independently.');
 
+  bridge.setSelfPreview(null, true);
+  const dockedPreview = element();
+  containers.set('screenshare-self', dockedPreview);
+  bridge.setSelfPreview('self', true);
+  assert.deepEqual(dockedPreview.children, [selfScreen.elements[2]]);
+  assert.ok(selfScreen.detached.includes(selfScreen.elements[1]));
+  assert.ok(subscriptions.every((enabled, i) => i === 1 || enabled));
+  console.log('Moving the self preview to a replacement container keeps the screen track subscribed.');
+
   let finishOldReport;
   const oldTrack = { sid: 'old', getRTCStatsReport() { return new Promise(resolve => { finishOldReport = resolve; }); } };
   const videoReport = new Map([

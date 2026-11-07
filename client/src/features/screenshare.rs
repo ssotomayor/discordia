@@ -2597,18 +2597,68 @@ fn screen_encoder_label(implementation: Option<&str>) -> String {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub struct PreviewDock {
+    pub target: Signal<Option<std::rc::Rc<MountedData>>>,
+    pub moving: Signal<bool>,
+}
+
+fn save_preview_placement(
+    mut settings: Signal<crate::settings::ClientSettings>,
+    floating: bool,
+    rect: Option<[f64; 4]>,
+) {
+    let mut next = settings.write();
+    next.screen_preview_floating = floating;
+    if let Some(rect) = rect {
+        next.screen_preview_rect = Some(rect);
+    }
+    crate::settings::save(&next);
+}
+
 #[component]
-pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
+pub fn ScreenSelfPreview(
+    #[props(default = true)] visible: bool,
+    #[props(default, !optional)] dock: Option<PreviewDock>,
+    #[props(default)] docked: bool,
+) -> Element {
     let visible = use_memo(use_reactive((&visible,), |(visible,)| visible));
     let mut state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let window = crate::platform::use_window();
 
-    let mut px = use_signal(|| 968.0_f64);
-    let mut py = use_signal(|| 56.0_f64);
-    let mut pw = use_signal(|| 300.0_f64);
-    let mut ph = use_signal(|| 208.0_f64);
-    let mut drag = use_stream_drag();
+    let [x, y, w, h] = use_hook(|| {
+        let [x, y, w, h] = dock
+            .and_then(|_| settings.peek().screen_preview_rect)
+            .unwrap_or([968.0, 56.0, 300.0, 208.0]);
+        if dock.is_none() {
+            return [x, y, w, h];
+        }
+        let viewport = window
+            .window
+            .inner_size()
+            .to_logical::<f64>(window.window.scale_factor());
+        [
+            x.clamp(0.0, (viewport.width - w).max(0.0)),
+            y.clamp(0.0, (viewport.height - h).max(0.0)),
+            w,
+            h,
+        ]
+    });
+    let mut px = use_signal(|| x);
+    let mut py = use_signal(|| y);
+    let mut pw = use_signal(|| w);
+    let mut ph = use_signal(|| h);
+    let mut drag = use_stream_drag(dock.is_some());
+    use_effect(move || {
+        if let Some(mut dock) = dock {
+            let moving = matches!(drag(), Some(Drag::Move { .. }));
+            if *dock.moving.peek() != moving {
+                dock.moving.set(moving);
+            }
+        }
+    });
 
     let sharing = use_memo(move || state.read().screen_sharing);
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
@@ -2635,7 +2685,6 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
             .unwrap_or(0)
     });
 
-    let window = crate::platform::use_window();
     let mut preview_active = use_signal(|| window_active(&window));
     let window_id = window.window.id();
     crate::platform::use_wry_event_handler(move |event, _| {
@@ -2699,6 +2748,11 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
         })));
     });
     use_drop(move || {
+        if let Some(mut dock) = dock
+            && *dock.moving.peek()
+        {
+            dock.moving.set(false);
+        }
         if let Some(task) = preview_task.write().take() {
             task.cancel();
         }
@@ -2770,6 +2824,11 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
             )
         })
         .unwrap_or_else(|| "Waiting for stream measurements…".into());
+    let drag_filter = if dock.is_some() && matches!(drag(), Some(Drag::Move { .. })) {
+        "filter: opacity(65%);"
+    } else {
+        "filter: none;"
+    };
 
     rsx! {
         if drag().is_some() {
@@ -2791,22 +2850,58 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
                         None => {}
                     }
                 },
-                onmouseup: move |_| drag.set(None),
+                onmouseup: move |event| {
+                    let interaction = drag();
+                    drag.set(None);
+                    if let Some(dock) = dock {
+                        let pointer = event.client_coordinates();
+                        let target = dock.target.peek().clone();
+                        let rect = [px(), py(), pw(), ph()];
+                        spawn(async move {
+                            let mut should_dock = false;
+                            if let (Some(Drag::Move { .. }), Some(target)) = (interaction, target)
+                                && let Ok(bounds) = target.get_client_rect().await
+                            {
+                                should_dock = bounds.contains(pointer.cast_unit());
+                            }
+                            if drag.peek().is_none() && sharing() && settings.peek().screen_preview_floating {
+                                save_preview_placement(settings, !should_dock, (!should_dock).then_some(rect));
+                            }
+                        });
+                    }
+                },
             }
         }
         div {
-            class: "dxf-screen-self dxf-media-self fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
-            style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px;",
+            class: if docked {
+                "dxf-screen-self relative w-full h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg overflow-hidden"
+            } else {
+                "dxf-screen-self dxf-media-self fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in"
+            },
+            style: (!docked).then(|| format!("left: {px}px; top: {py}px; width: {pw}px; height: {ph}px; {drag_filter}")),
             div {
-                class: "dxf-media-heading h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                class: "dxf-media-heading h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 select-none",
+                class: if !docked { "cursor-move" },
                 onmousedown: move |e| {
-                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
+                    if docked || !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
                 },
                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
                 span { class: "text-[11px] text-[var(--text)] truncate flex-1", {crate::i18n::message(&requested_label)} }
                 StreamViewers { names: state.read().self_user.as_ref().map(|user| state.read().screen_viewer_names(&user.pubkey)).unwrap_or_default() }
+                if dock.is_some() {
+                    button {
+                        class: "shrink-0 text-[10px] text-[var(--text)] hover:text-[var(--accent-strong)]",
+                        onmousedown: move |e| e.stop_propagation(),
+                        onclick: move |_| save_preview_placement(settings, docked, None),
+                        if docked {
+                            {crate::i18n::text("Undock", &[])}
+                        } else {
+                            {crate::i18n::text("Dock to members", &[])}
+                        }
+                    }
+                }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
                     onmousedown: move |e| {
@@ -2856,15 +2951,17 @@ pub fn ScreenSelfPreview(#[props(default = true)] visible: bool) -> Element {
                     }
                 }
             }
-            div {
-                class: "dxf-media-resize absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
-                style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
-                onmousedown: move |e| {
-                    e.stop_propagation();
-                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
-                    let c = e.client_coordinates();
-                    drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));
-                },
+            if !docked {
+                div {
+                    class: "dxf-media-resize absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
+                    style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
+                        let c = e.client_coordinates();
+                        drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));
+                    },
+                }
             }
         }
     }
@@ -3006,18 +3103,24 @@ fn stream_tile_style(
     )
 }
 
-fn use_stream_drag() -> Signal<Option<Drag>> {
+fn use_stream_drag(commit_on_release: bool) -> Signal<Option<Drag>> {
     let mut drag = use_signal(|| None::<Drag>);
     #[cfg(target_os = "windows")]
     use_effect(move || {
-        if drag().is_none() {
+        let Some(interaction) = drag() else {
             return;
-        }
+        };
         spawn(async move {
-            while drag.peek().is_some() {
+            while *drag.peek() == Some(interaction) {
                 tokio::time::sleep(std::time::Duration::from_millis(32)).await;
-                if drag.peek().is_some() && !primary_mouse_button_down() {
-                    drag.set(None);
+                if !primary_mouse_button_down() {
+                    // The native button state can change before the WebView delivers mouseup.
+                    if commit_on_release {
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    }
+                    if *drag.peek() == Some(interaction) && !primary_mouse_button_down() {
+                        drag.set(None);
+                    }
                 }
             }
         });
@@ -3040,7 +3143,7 @@ fn use_stream_drag() -> Signal<Option<Drag>> {
                     state: ElementState::Released,
                     button: crate::platform::tao::event::MouseButton::Left,
                     ..
-                } => true,
+                } => !commit_on_release,
                 WindowEvent::KeyboardInput { event, .. } => {
                     event.state == ElementState::Pressed && event.logical_key == Key::Escape
                 }

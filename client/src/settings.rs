@@ -154,6 +154,10 @@ pub struct ClientSettings {
     pub stream_layout_cells: Vec<(String, [u32; 4])>,
     #[serde(default)]
     pub stream_layout_free: Vec<(String, [f64; 4])>,
+    #[serde(default)]
+    pub screen_preview_floating: bool,
+    #[serde(default)]
+    pub screen_preview_rect: Option<[f64; 4]>,
     #[serde(default = "default_screenshare_quality")]
     pub screenshare_quality: String,
     #[serde(default)]
@@ -434,6 +438,8 @@ impl Default for ClientSettings {
             layout_free: Vec::new(),
             stream_layout_cells: Vec::new(),
             stream_layout_free: Vec::new(),
+            screen_preview_floating: false,
+            screen_preview_rect: None,
             screenshare_quality: default_screenshare_quality(),
             screenshare_fps: None,
             screenshare_adaptive_quality: false,
