@@ -62,6 +62,7 @@ pub(super) fn use_arrangement(
         }
         let thickness = rail_px(&settings.peek());
         let mut next = current.clone();
+        let closing = !active && normal.peek().is_some();
         if active && normal.peek().is_none() {
             let mut base = current.clone();
             base.cells.retain(|(id, _)| id != "streams");
@@ -97,12 +98,8 @@ pub(super) fn use_arrangement(
             };
             drop(saved);
             normal.set(Some(base));
-        } else if !active {
-            let previous = normal.peek().clone();
-            if let Some(previous) = previous {
-                normal.set(None);
-                next = previous;
-            }
+        } else if closing && let Some(previous) = normal.write().take() {
+            next = super::stream_layout::close_streams(current.clone(), &previous);
         }
         normalize(&mut next, size, editing, gap, thickness);
         let mut store = layout;
@@ -121,6 +118,9 @@ pub(super) fn use_arrangement(
                 }
             }
         }
+        if closing {
+            super::workspace::persist_layout(settings, store);
+        }
     });
 }
 
@@ -128,7 +128,7 @@ pub(super) fn rail_px(settings: &crate::settings::ClientSettings) -> f64 {
     f64::from(settings.rail_size.clamp(RAIL_MIN, RAIL_MAX))
 }
 
-fn stream_layout_matches_workspace(current: &Arrangement, saved: &Arrangement) -> bool {
+pub(super) fn stream_layout_matches_workspace(current: &Arrangement, saved: &Arrangement) -> bool {
     let current = resolved(current);
     let saved = resolved(saved);
     current
@@ -156,7 +156,7 @@ fn normalize(base: &mut Arrangement, size: Option<Size>, editing: bool, gap: f64
 
 /// Every panel as a fraction of the workspace, whether it was last placed
 /// freely or only ever had grid cells.
-fn resolved(base: &Arrangement) -> Vec<(String, FloatRect)> {
+pub(super) fn resolved(base: &Arrangement) -> Vec<(String, FloatRect)> {
     base.cells
         .iter()
         .map(|(id, cell)| {
@@ -349,11 +349,20 @@ mod tests {
         active: Signal<bool>,
         size: Signal<Option<Size>>,
         layout: LayoutStore,
+        settings: Signal<crate::settings::ClientSettings>,
+        editing: Signal<bool>,
     }
 
     type Export = Rc<RefCell<Option<Controls>>>;
 
     fn harness(export: Export) -> Element {
+        let root = use_hook(crate::identity::test_config_dir);
+        use_drop(move || {
+            crate::identity::TEST_CONFIG_DIR.with(|dir| *dir.borrow_mut() = None);
+            if root.exists() {
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        });
         let active = use_signal(|| false);
         let size = use_signal(|| Some((2560.0, 1440.0)));
         let editing = use_signal(|| false);
@@ -387,6 +396,8 @@ mod tests {
             active,
             size,
             layout,
+            settings,
+            editing,
         });
         rsx! { div {} }
     }
@@ -408,6 +419,74 @@ mod tests {
         assert!((rail_thickness(&right, size, 8.0).unwrap() - 90.0).abs() < 1e-9);
         let floating = with_rail(FloatRect::new(0.3, 0.2, 0.1, 0.5));
         assert_eq!(rail_thickness(&floating, size, 8.0), None);
+    }
+
+    #[tokio::test]
+    async fn redocking_while_watching_survives_closing_streams_and_is_saved() {
+        for dock in [Dock::Left, Dock::Right, Dock::Top, Dock::Bottom] {
+            let export: Export = Rc::new(RefCell::new(None));
+            let mut dom = VirtualDom::new_with_props(harness, export.clone());
+            dom.rebuild_in_place();
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            let mut controls = export.borrow().unwrap();
+            controls.active.set(true);
+            controls.editing.set(true);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            let current = Arrangement {
+                cells: controls.layout.snapshot(),
+                free: controls.layout.free_snapshot(),
+            };
+            let rects = dock_rail(
+                &current,
+                dock,
+                (2560.0, 1440.0),
+                8.0,
+                f64::from(RAIL_DEFAULT),
+            )
+            .unwrap();
+            for (id, rect) in rects {
+                controls.layout.set_free(id, rect);
+            }
+            controls.editing.set(false);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            let expected = controls.layout.get_free("guilds").unwrap();
+            let channels = controls.layout.get_free("channels");
+            let members = controls.layout.get_free("members");
+            controls.active.set(false);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            assert_eq!(controls.layout.get_free("guilds"), Some(expected));
+            assert_eq!(controls.layout.get_free("channels"), channels);
+            assert_eq!(controls.layout.get_free("members"), members);
+            assert_eq!(controls.layout.get("streams"), None);
+            let settings = controls.settings.read();
+            let saved = settings
+                .layout_free
+                .iter()
+                .find(|(id, _)| id == "guilds")
+                .unwrap()
+                .1;
+            assert_eq!(saved, [expected.x, expected.y, expected.w, expected.h]);
+            drop(settings);
+            let reloaded = crate::settings::load_or_default();
+            let settings = controls.settings.read();
+            assert_eq!(reloaded.layout_free.len(), settings.layout_free.len());
+            for ((saved_id, saved), (current_id, current)) in
+                reloaded.layout_free.iter().zip(&settings.layout_free)
+            {
+                assert_eq!(saved_id, current_id);
+                for (saved, current) in saved.iter().zip(current) {
+                    assert!((saved - current).abs() < 1e-6);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -462,7 +541,11 @@ mod tests {
             for _ in 0..4 {
                 dom.render_immediate_to_vec();
             }
-            assert_eq!(controls.layout.get_free("chat"), Some(original));
+            let restored = controls.layout.get_free("chat").unwrap();
+            assert!((restored.x - original.x).abs() < 1e-6);
+            assert!((restored.y - original.y).abs() < 1e-6);
+            assert!((restored.w - original.w).abs() < 1e-6);
+            assert!((restored.h - original.h).abs() < 1e-6);
         }
     }
 

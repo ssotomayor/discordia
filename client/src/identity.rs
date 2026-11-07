@@ -482,8 +482,7 @@ fn set_active(pubkey: &str) -> Result<(), String> {
     write_private(&active_path(), &content)
 }
 
-/// Written beside and renamed over, so a scan from another instance never
-/// sees half a file, and 0600 before any byte lands.
+/// Readers see a complete file, with 0600 before any byte lands.
 pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
     let parent = path
         .parent()
@@ -493,11 +492,11 @@ pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| "identity path has no file name".to_string())?;
-    let tmp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    let tmp = parent.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
     {
         use std::io::Write;
         let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
+        opts.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -597,8 +596,18 @@ fn to_bech32(hrp: &str, data: &[u8]) -> String {
 // process-global and another test in this binary sets and clears it.
 #[cfg(test)]
 thread_local! {
-    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+    pub(crate) static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_config_dir() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target")
+        .join(format!("test-config-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    TEST_CONFIG_DIR.with(|dir| *dir.borrow_mut() = Some(root.clone()));
+    root
 }
 
 pub fn config_dir() -> PathBuf {
@@ -935,6 +944,37 @@ mod store_tests {
         std::fs::create_dir_all(&dir).expect("sandbox");
         TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
         dir
+    }
+
+    #[test]
+    fn simultaneous_private_writes_use_separate_temporary_files() {
+        let root = test_config_dir();
+        let path = root.join("settings.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let writers: Vec<_> = (0..4)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let content = serde_json::json!({
+                        "writer": index,
+                        "payload": "x".repeat(65_536),
+                    })
+                    .to_string();
+                    barrier.wait();
+                    write_private(&path, &content)
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap().unwrap();
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(value["payload"].as_str().unwrap().len(), 65_536);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        TEST_CONFIG_DIR.with(|dir| *dir.borrow_mut() = None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

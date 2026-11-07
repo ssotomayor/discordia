@@ -47,6 +47,21 @@ fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
 }
 
 #[tokio::test]
+async fn importing_unrepresentable_experience_fails_before_creating_any_guild() {
+    let state = fresh_state().await;
+    let owner = User {
+        pubkey: "11".repeat(32),
+        username: "Owner".into(),
+    };
+    let (guild, ..) = state.create_guild("Origin", None, &owner).await.unwrap();
+    let mut archive = state.store.export_guild(guild.id).await.unwrap().unwrap();
+    archive.members[0].xp = i64::MAX as u64 + 1;
+    let before = state.store.load_all().await.unwrap().guilds.len();
+    assert!(state.store.import_guild(&archive).await.is_err());
+    assert_eq!(state.store.load_all().await.unwrap().guilds.len(), before);
+}
+
+#[tokio::test]
 async fn export_import_round_trip_preserves_structure_and_pubkeys() {
     let state = fresh_state().await;
     let owner = User {

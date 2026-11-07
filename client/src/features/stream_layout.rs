@@ -63,9 +63,83 @@ pub(super) fn restore_streams(mut base: Arrangement, saved: Arrangement) -> Arra
     base
 }
 
+pub(super) fn close_streams(mut active: Arrangement, normal: &Arrangement) -> Arrangement {
+    let rects = super::workspace_layout::resolved(&active);
+    let chat = rects.iter().find(|(id, _)| id == "chat");
+    let stream = rects.iter().find(|(id, _)| id == "streams");
+    let mut merge = false;
+    if let (Some((_, chat)), Some((_, stream))) = (chat, stream) {
+        merge = (chat.x - stream.x).abs() < 1e-6
+            && (chat.w - stream.w).abs() < 1e-6
+            && (stream.y + stream.h - chat.y).abs() < 1e-6;
+        if merge {
+            active.free.retain(|(id, _)| id != "chat");
+            active.free.push((
+                "chat".into(),
+                FloatRect::new(stream.x, stream.y, stream.w, chat.y + chat.h - stream.y),
+            ));
+        }
+    }
+    if !merge && super::workspace_layout::stream_layout_matches_workspace(normal, &active) {
+        active.cells.retain(|(id, _)| id != "chat");
+        active
+            .cells
+            .extend(normal.cells.iter().filter(|(id, _)| id == "chat").cloned());
+        active.free.retain(|(id, _)| id != "chat");
+        active
+            .free
+            .extend(normal.free.iter().filter(|(id, _)| id == "chat").cloned());
+    }
+    let stream = active
+        .cells
+        .iter()
+        .find(|(id, _)| id == "streams")
+        .map(|(_, cell)| *cell);
+    if merge
+        && let Some(stream) = stream
+        && let Some((_, chat)) = active.cells.iter_mut().find(|(id, _)| id == "chat")
+    {
+        let right = (chat.x + chat.w).max(stream.x + stream.w);
+        let bottom = (chat.y + chat.h).max(stream.y + stream.h);
+        chat.x = chat.x.min(stream.x);
+        chat.y = chat.y.min(stream.y);
+        chat.w = right - chat.x;
+        chat.h = bottom - chat.y;
+    }
+    active.cells.retain(|(id, _)| id != "streams");
+    active.free.retain(|(id, _)| id != "streams");
+    active
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_a_separately_moved_stream_restores_chat_without_covering_other_panels() {
+        let normal = Arrangement {
+            cells: super::super::workspace::tpl_default(),
+            free: Vec::new(),
+        };
+        let mut active = above_chat(normal.clone(), 12, 30);
+        active
+            .free
+            .iter_mut()
+            .find(|(id, _)| id == "streams")
+            .unwrap()
+            .1 = FloatRect::new(0.0, 0.0, 0.2, 0.5);
+        let closed = close_streams(active, &normal);
+        assert_eq!(
+            closed.cells.iter().find(|(id, _)| id == "chat"),
+            normal.cells.iter().find(|(id, _)| id == "chat")
+        );
+        assert!(
+            closed
+                .free
+                .iter()
+                .all(|(id, _)| id != "chat" && id != "streams")
+        );
+    }
 
     #[test]
     fn splitting_a_custom_chat_preserves_other_modules_and_uses_its_bounds() {

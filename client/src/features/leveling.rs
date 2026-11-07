@@ -17,7 +17,8 @@ pub fn XpLedgerService() -> Element {
     let nostr = use_context::<NostrTx>();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
-    let mut ledger = use_signal(crate::xp_ledger::load);
+    let owner = use_context::<crate::identity::Identity>().pubkey;
+    let mut ledger = use_signal(|| crate::xp_ledger::load(&owner));
 
     use_effect(move || {
         let publish = settings.read().publish_global_level;
@@ -30,7 +31,7 @@ pub fn XpLedgerService() -> Element {
         // The ledger is kept either way: turning publishing back on should not
         // start the count over, and the number is ours before it is anyone's.
         let moved = ledger.write().record(&origin, earned);
-        if moved && let Err(e) = crate::xp_ledger::save(&ledger.read()) {
+        if moved && let Err(e) = crate::xp_ledger::save(&owner, &ledger.read()) {
             crate::dlog!("[xp] ledger not saved: {e}");
         }
         if publish {
@@ -70,12 +71,13 @@ pub fn progress(rules: &crate::protocol::Leveling, xp: u64) -> Progress {
     let lv = |n: u32| crate::i18n::text("Lv {0}", &[n.to_string()]);
     let pct = |done: u64, of: u64| (done as f64 / of.max(1) as f64 * 100.0) as u32;
     if !rules.enabled || rules.tiers.is_empty() {
+        let target = (xp - into).checked_add(span);
         return Progress {
             label: lv(level),
             color: None,
             xp,
-            target: Some(xp - into + span),
-            next: Some(lv(level + 1)),
+            target,
+            next: target.map(|_| lv(level + 1)),
             pct: pct(into, span),
         };
     }
@@ -96,6 +98,14 @@ pub fn progress(rules: &crate::protocol::Leveling, xp: u64) -> Progress {
 mod tests {
     use super::*;
     use crate::nostr::xp::GlobalXp;
+
+    #[test]
+    fn maximum_experience_has_no_unrepresentable_next_target() {
+        let progress = progress(&crate::protocol::Leveling::default(), u64::MAX);
+        assert_eq!(progress.xp, u64::MAX);
+        assert_eq!(progress.target, None);
+        assert_eq!(progress.next, None);
+    }
 
     #[test]
     fn one_server_is_not_worth_saying() {

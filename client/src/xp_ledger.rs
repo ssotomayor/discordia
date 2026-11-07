@@ -35,7 +35,7 @@ impl Ledger {
     pub fn total(&self) -> crate::nostr::xp::GlobalXp {
         let earning = self.by_server.values().filter(|xp| **xp > 0);
         crate::nostr::xp::GlobalXp {
-            xp: earning.clone().sum(),
+            xp: earning.clone().copied().fold(0, u64::saturating_add),
             servers: earning.count() as u32,
         }
     }
@@ -68,28 +68,29 @@ struct Stored {
     ledger: Ledger,
 }
 
-fn ledger_path() -> std::path::PathBuf {
-    config_dir().join("xp.json")
+fn ledger_path(owner: &str) -> Result<std::path::PathBuf, String> {
+    if !crate::protocol::is_canonical_pubkey(owner) {
+        return Err("invalid ledger owner".into());
+    }
+    // The legacy xp.json has no owner, so assigning it would mix accounts again.
+    Ok(config_dir().join("xp").join(format!("{owner}.json")))
 }
 
-pub fn save(ledger: &Ledger) -> Result<(), String> {
-    let path = ledger_path();
-    let parent = path
-        .parent()
-        .ok_or_else(|| "ledger path has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
+pub fn save(owner: &str, ledger: &Ledger) -> Result<(), String> {
+    let path = ledger_path(owner)?;
     let stored = Stored {
         version: FILE_VERSION,
         ledger: ledger.clone(),
     };
     let content =
         serde_json::to_string_pretty(&stored).map_err(|e| format!("serialize ledger: {e}"))?;
-    std::fs::write(&path, content).map_err(|e| format!("write ledger: {e}"))?;
-    Ok(())
+    crate::identity::write_private(&path, &content)
 }
 
-pub fn load() -> Ledger {
-    let path = ledger_path();
+pub fn load(owner: &str) -> Ledger {
+    let Ok(path) = ledger_path(owner) else {
+        return Ledger::default();
+    };
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Ledger::default();
     };
@@ -102,6 +103,41 @@ pub fn load() -> Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_ledgers_are_isolated_and_legacy_totals_are_not_assigned() {
+        let root = crate::identity::test_config_dir();
+        let alice = "11".repeat(32);
+        let bob = "22".repeat(32);
+        let legacy = r#"{"version":1,"ledger":{"by_server":{"old.example:443":900}}}"#;
+        std::fs::write(root.join("xp.json"), legacy).unwrap();
+        assert_eq!(load(&alice), Ledger::default());
+        let mut first = Ledger::default();
+        first.record("first.example:443", 100);
+        save(&alice, &first).unwrap();
+        assert_eq!(load(&bob), Ledger::default());
+        let mut second = Ledger::default();
+        second.record("second.example:443", 30);
+        save(&bob, &second).unwrap();
+        assert_eq!(load(&alice), first);
+        assert_eq!(load(&bob), second);
+        assert_eq!(
+            std::fs::read_to_string(root.join("xp.json")).unwrap(),
+            legacy
+        );
+        assert!(save("../other", &first).is_err());
+        crate::identity::TEST_CONFIG_DIR.with(|dir| *dir.borrow_mut() = None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn large_server_totals_saturate_without_losing_the_server_count() {
+        let mut ledger = Ledger::default();
+        ledger.record("first.example:443", u64::MAX);
+        ledger.record("second.example:443", 1);
+        assert_eq!(ledger.total().xp, u64::MAX);
+        assert_eq!(ledger.total().servers, 2);
+    }
 
     #[test]
     fn a_total_spans_servers_and_counts_only_the_earning_ones() {
