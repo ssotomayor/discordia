@@ -100,6 +100,9 @@ pub enum NostrCmd {
     /// ignored when the number has not actually changed since the last one:
     /// kind 30078 is replaceable, so a re-send costs every relay a write.
     PublishXp(xp::GlobalXp),
+    ReadMarksChanged {
+        flush: bool,
+    },
     /// The profile just saved on this device, for the account's other ones.
     PublishProfile(crate::profile::LocalProfile),
     PublishName(String),
@@ -250,7 +253,7 @@ pub fn spawn_nostr(
         // Nothing goes out before every relay has replayed: a fresh device
         // would otherwise replace the account's marks with its own few.
         let mut marks_checked = false;
-        let mut marks_publisher = xp::Publisher::new(read_marks::PUBLISH_COOLDOWN);
+        let mut marks_publisher = read_marks::Publisher::default();
         let mut marks_held_at = i64::MIN;
         let mut marks_tick = tokio::time::interval(std::time::Duration::from_secs(15));
         marks_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -610,6 +613,14 @@ pub fn spawn_nostr(
                             own_name.pending = Some(name);
                         }
                     }
+                    Some(NostrCmd::ReadMarksChanged { flush }) => {
+                        if marks_checked {
+                            if flush {
+                                marks_publisher.flush();
+                            }
+                            marks_tick.reset_immediately();
+                        }
+                    }
                     Some(NostrCmd::PublishProfile(local)) => {
                         share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
                     }
@@ -737,11 +748,10 @@ pub fn spawn_nostr(
                 }
                 _ = marks_tick.tick(), if marks_checked => {
                     let marks = state.peek().read_marks();
-                    if let Some(marks) = marks_publisher.offer(marks, std::time::Instant::now()) {
-                        match read_marks::marks_event(&secret, &our_pubkey, &marks, now()) {
-                            Ok(event) => pool.publish(event),
-                            Err(e) => tracing::warn!(error = %e, "could not sign the read marks"),
-                        }
+                    match marks_publisher.offer(marks, &secret, &our_pubkey, now(), std::time::Instant::now()) {
+                        Ok(Some(event)) => pool.publish(event),
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(error = %e, "could not sign the read marks"),
                     }
                 }
                 _ = tokio::time::sleep_until(
@@ -834,12 +844,13 @@ pub fn spawn_nostr(
                             let Some(theirs) = read_marks::parse_marks(&secret, &our_pubkey, &event) else {
                                 continue;
                             };
+                            marks_publisher.accepted(&event.id);
                             state.write().adopt_read_marks(&theirs);
                             // A stale relay's copy is not what the newest holds,
                             // so it must not stop the union going back out.
                             if event.created_at >= marks_held_at {
                                 marks_held_at = event.created_at;
-                                marks_publisher.note_held(theirs);
+                                marks_publisher.note_held(theirs, event.created_at);
                             }
                         }
                         xp::KIND_APP_DATA => {
@@ -923,6 +934,9 @@ pub fn spawn_nostr(
                         state.write().nostr_relays_up.remove(&relay);
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
+                        if accepted {
+                            marks_publisher.accepted(&id);
+                        }
                         // Publish succeeds if any relay accepts; a single
                         // rejection is not a failure but is the only signal of
                         // partial delivery.
@@ -941,7 +955,10 @@ pub fn spawn_nostr(
                         if subscription != SUB_DM { continue; }
                         eprintln!("[nostr] {relay}: finished replaying stored events");
                         replayed.insert(relay);
-                        marks_checked = marks_checked || every_relay_replayed(&state, &replayed);
+                        if !marks_checked && every_relay_replayed(&state, &replayed) {
+                            marks_checked = true;
+                            marks_tick.reset_immediately();
+                        }
                         // Saved here while no relay answered, or before profiles synced.
                         if !profile_checked && every_relay_replayed(&state, &replayed) {
                             profile_checked = true;

@@ -47,7 +47,36 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
-pub fn show_dm_notification(account: &str, sender: &str, message: &str, peer: &str) {
+fn dm_toast_group(account: &str, peer: &str) -> HSTRING {
+    let group = crate::nostr::service::conversation_id(&format!("{account}:{peer}"))
+        .simple()
+        .to_string();
+    HSTRING::from(&group[..16])
+}
+
+pub(crate) fn dismiss_dm_notification(account: &str, peer: &str, read_at: i64) {
+    let group = dm_toast_group(account, peer);
+    let result = (|| -> windows::core::Result<()> {
+        let history = ToastNotificationManager::History()?;
+        for toast in history.GetHistoryWithId(&HSTRING::from(APP_ID))? {
+            if toast.Group()? != group {
+                continue;
+            }
+            let tag = toast.Tag()?;
+            if let Ok(at) = u64::from_str_radix(&tag.to_string_lossy(), 16)
+                && (at as i64) <= read_at
+            {
+                history.RemoveGroupedTagWithId(&tag, &group, &HSTRING::from(APP_ID))?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        tracing::warn!(%error, "Could not dismiss a read DM notification");
+    }
+}
+
+pub fn show_dm_notification(account: &str, sender: &str, message: &str, peer: &str, at: i64) {
     if !crate::settings::load_or_default().tray_notifications || !is_minimized_or_hidden() {
         return;
     }
@@ -74,6 +103,12 @@ pub fn show_dm_notification(account: &str, sender: &str, message: &str, peer: &s
             return;
         }
     };
+    let tag = HSTRING::from(format!("{:016x}", at as u64));
+    let group = dm_toast_group(account, peer);
+    if let Err(error) = toast.SetTag(&tag).and_then(|()| toast.SetGroup(&group)) {
+        tracing::warn!(%error, "Could not identify the DM notification");
+        return;
+    }
     let click_account = account.to_string();
     let click_peer = peer.to_string();
     let _ = toast.Activated(&TypedEventHandler::new(move |_sender, _args| {

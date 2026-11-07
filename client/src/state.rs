@@ -3171,6 +3171,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn two_devices_agree_on_two_hundred_reads_without_hiding_newer_messages() {
+        let peer = "b".repeat(64);
+        let cid = crate::nostr::service::conversation_id(&peer);
+        let mut desktop = AppState::empty();
+        let mut phone = AppState::empty();
+        for at in 1..=200 {
+            dm_at(&mut desktop, &peer, &peer, at);
+            dm_at(&mut phone, &peer, &peer, at);
+        }
+        desktop.mark_dm_read(cid);
+        phone.dm_unread.insert(cid, 200);
+        let marks = desktop.read_marks();
+        phone.adopt_read_marks(&marks);
+        assert!(!phone.dm_unread.contains_key(&cid));
+        phone.dm_accepted.insert(peer.clone());
+        dm_at(&mut phone, &peer, &peer, 201);
+        phone.note_dm_arrival(cid, &peer, 201);
+        phone.adopt_read_marks(&marks);
+        assert_eq!(phone.dm_unread[&cid], 1);
+    }
+
     /// Devices measure a skewed peer's clock a little differently, so a mark
     /// travels on the peer's clock and lands on each device's own.
     #[test]

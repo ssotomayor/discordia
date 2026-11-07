@@ -8,6 +8,45 @@ struct Notice {
     sender: String,
     message: String,
     silent: bool,
+    at: i64,
+}
+
+#[cfg(any(target_os = "android", target_os = "windows", test))]
+fn notification_read_marks(state: &AppState) -> Vec<(String, i64)> {
+    let mut peers: Vec<_> = state
+        .dm_read_at
+        .iter()
+        .map(|(peer, at)| (peer.clone(), at.saturating_add(state.clock_offset(peer))))
+        .collect();
+    peers.sort();
+    peers
+}
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+fn use_read_notification_dismissal(state: dioxus::prelude::Signal<AppState>, account: String) {
+    use dioxus::prelude::*;
+    let peers = use_memo(move || notification_read_marks(&state.read()));
+    let mut dismissed = use_signal(std::collections::HashMap::new);
+    use_effect(move || {
+        for (peer, at) in peers() {
+            if dismissed.peek().get(&peer) == Some(&at) {
+                continue;
+            }
+            #[cfg(target_os = "windows")]
+            crate::windows_notifications::dismiss_dm_notification(&account, &peer, at);
+            #[cfg(target_os = "android")]
+            native::dispatch(
+                "dismissReadDmNotification",
+                serde_json::json!({
+                    "account": account,
+                    "peer": &peer,
+                    "at": at,
+                })
+                .to_string(),
+            );
+            dismissed.write().insert(peer, at);
+        }
+    });
 }
 
 fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) -> Option<Notice> {
@@ -37,6 +76,7 @@ fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) ->
             .collect(),
         message: crate::i18n::text("New private message", &[]),
         silent: !crate::native_sounds::sound_enabled("dm"),
+        at: message.created_at,
     })
 }
 
@@ -89,6 +129,7 @@ pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, l
             &notice.sender,
             &notice.message,
             &notice.peer,
+            notice.at,
         );
     }
 }
@@ -96,6 +137,7 @@ pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, l
 #[cfg(target_os = "windows")]
 pub(crate) fn use_notifications(mut state: dioxus::prelude::Signal<AppState>, account: String) {
     use dioxus::prelude::*;
+    use_read_notification_dismissal(state, account.clone());
     let mut pending = use_signal(|| None::<String>);
     let active_account = account.clone();
     use_hook(move || {
@@ -233,6 +275,7 @@ mod native {
     }
 
     pub(crate) fn use_notifications(mut state: Signal<AppState>, account: String) {
+        use_read_notification_dismissal(state, account.clone());
         let setup_account = account.clone();
         use_hook(move || {
             let channel = crate::i18n::text("Private messages", &[]);
@@ -404,6 +447,20 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_read_marks_use_the_senders_clock_even_before_history_replays() {
+        let mut state = AppState::empty();
+        state.dm_read_at.insert("peer".into(), 100);
+        state.dm_clock_offset.insert("peer".into(), 7);
+        assert_eq!(notification_read_marks(&state), vec![("peer".into(), 107)]);
+        state.dm_unread.insert(conversation_id("peer"), 1);
+        assert_eq!(notification_read_marks(&state), vec![("peer".into(), 107)]);
+        let mut message = message();
+        message.created_at = 108;
+        state.dm_accepted.insert("peer".into());
+        assert!(notice(&state, &message, "self", true).is_some());
+    }
 
     #[test]
     fn do_not_disturb_prevents_native_message_alerts_even_without_a_server() {

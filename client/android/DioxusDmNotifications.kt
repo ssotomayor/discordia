@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import dev.dioxus.main.MainActivity
 import org.json.JSONObject
@@ -118,6 +119,7 @@ class DioxusDmNotifications(private val activity: MainActivity) {
             .setPublicVersion(publicVersion)
             .setContentIntent(pending)
             .setAutoCancel(true)
+            .setExtras(Bundle().apply { putLong(READ_TIME, value.getLong("at")) })
             .setOnlyAlertOnce(false)
             .build()
         try {
@@ -133,6 +135,19 @@ class DioxusDmNotifications(private val activity: MainActivity) {
     fun dismiss(peer: String) {
         viewedPeer = peer.takeIf { validKey(it) }
         if (resumed) account?.let { owner -> viewedPeer?.let { manager.cancel(tag(owner, it), 0) } }
+    }
+
+    fun dismissRead(payload: String) {
+        val value = JSONObject(payload)
+        val owner = value.getString("account")
+        val peer = value.getString("peer")
+        if (owner != account || !validKey(peer)) return
+        val tag = tag(owner, peer)
+        val notification = manager.activeNotifications.firstOrNull { it.tag == tag } ?: return
+        val extras = notification.notification.extras
+        if (extras.containsKey(READ_TIME) && extras.getLong(READ_TIME) <= value.getLong("at")) {
+            manager.cancel(tag, 0)
+        }
     }
 
     fun open(intent: Intent?) {
@@ -155,6 +170,7 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         private const val CHANNEL = "discordia-dm-v1"
         private const val QUIET_CHANNEL = "discordia-dm-quiet-v1"
         private const val PREFIX = "discordia-dm:"
+        private const val READ_TIME = "discordia-dm-at"
         private fun validKey(value: String) = value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
         private fun tag(account: String, peer: String) = "$PREFIX$account:$peer"
     }
