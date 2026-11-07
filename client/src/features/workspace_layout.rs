@@ -86,10 +86,12 @@ pub(super) fn use_arrangement(
                         .collect(),
                 };
                 normalize(&mut saved, size, editing, gap, thickness);
-                super::stream_layout::restore_streams(
-                    super::stream_layout::above_chat(base.clone(), 12, 30),
-                    saved,
-                )
+                let split = super::stream_layout::above_chat(base.clone(), 12, 30);
+                if stream_layout_matches_workspace(&base, &saved) {
+                    super::stream_layout::restore_streams(split, saved)
+                } else {
+                    split
+                }
             } else {
                 super::stream_layout::above_chat(base.clone(), 12, 30)
             };
@@ -124,6 +126,23 @@ pub(super) fn use_arrangement(
 
 pub(super) fn rail_px(settings: &crate::settings::ClientSettings) -> f64 {
     f64::from(settings.rail_size.clamp(RAIL_MIN, RAIL_MAX))
+}
+
+fn stream_layout_matches_workspace(current: &Arrangement, saved: &Arrangement) -> bool {
+    let current = resolved(current);
+    let saved = resolved(saved);
+    current
+        .iter()
+        .filter(|(id, _)| id != "chat" && id != "streams")
+        .all(|(id, rect)| {
+            saved.iter().any(|(saved_id, other)| {
+                id == saved_id
+                    && (rect.x - other.x).abs() < 1e-6
+                    && (rect.y - other.y).abs() < 1e-6
+                    && (rect.w - other.w).abs() < 1e-6
+                    && (rect.h - other.h).abs() < 1e-6
+            })
+        })
 }
 
 fn normalize(base: &mut Arrangement, size: Option<Size>, editing: bool, gap: f64, thickness: f64) {
@@ -389,6 +408,62 @@ mod tests {
         assert!((rail_thickness(&right, size, 8.0).unwrap() - 90.0).abs() < 1e-9);
         let floating = with_rail(FloatRect::new(0.3, 0.2, 0.1, 0.5));
         assert_eq!(rail_thickness(&floating, size, 8.0), None);
+    }
+
+    #[tokio::test]
+    async fn opening_streams_after_redocking_uses_the_current_chat_bounds() {
+        for dock in [Dock::Left, Dock::Right, Dock::Top, Dock::Bottom] {
+            let export: Export = Rc::new(RefCell::new(None));
+            let mut dom = VirtualDom::new_with_props(harness, export.clone());
+            dom.rebuild_in_place();
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            let mut controls = export.borrow().unwrap();
+            let current = Arrangement {
+                cells: controls.layout.snapshot(),
+                free: controls.layout.free_snapshot(),
+            };
+            let rects = dock_rail(
+                &current,
+                dock,
+                (2560.0, 1440.0),
+                8.0,
+                f64::from(RAIL_DEFAULT),
+            )
+            .unwrap();
+            for (id, rect) in rects {
+                controls.layout.set_free(id, rect);
+            }
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            let original = controls.layout.get_free("chat").unwrap();
+            let channels = controls.layout.get_free("channels").unwrap();
+            let members = controls.layout.get_free("members").unwrap();
+            controls.active.set(true);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            let chat = controls.layout.get_free("chat").unwrap();
+            let stream = controls.layout.get_free("streams").unwrap();
+            assert!((stream.x - original.x).abs() < 1e-6, "{dock:?}");
+            assert!((stream.w - original.w).abs() < 1e-6, "{dock:?}");
+            assert!((chat.x - original.x).abs() < 1e-6, "{dock:?}");
+            assert!((chat.w - original.w).abs() < 1e-6, "{dock:?}");
+            assert!((stream.y + stream.h - chat.y).abs() < 1e-6, "{dock:?}");
+            assert!(
+                (chat.y + chat.h - original.y - original.h).abs() < 1e-6,
+                "{dock:?}"
+            );
+            assert_eq!(controls.layout.get_free("channels"), Some(channels));
+            assert_eq!(controls.layout.get_free("members"), Some(members));
+            controls.active.set(false);
+            for _ in 0..4 {
+                dom.render_immediate_to_vec();
+            }
+            assert_eq!(controls.layout.get_free("chat"), Some(original));
+        }
     }
 
     #[tokio::test]
