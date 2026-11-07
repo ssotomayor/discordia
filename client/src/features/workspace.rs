@@ -195,9 +195,10 @@ fn LayoutButton(
     let mut open = use_signal(|| false);
     let mut edit_mode = edit_mode;
 
-    let apply = move |make: fn() -> Vec<(String, GridPosition)>, is_default: bool| {
+    let apply = move |make: fn() -> Vec<(String, GridPosition)>, name: &str| {
         let mut layout = layout;
-        let free = if is_default {
+        let mut settings = settings;
+        let free = if name == "Default" {
             default_free_layout()
         } else {
             Vec::new()
@@ -210,6 +211,9 @@ fn LayoutButton(
             arrangement = super::stream_layout::above_chat(arrangement, 12, GRID_ROWS);
         }
         layout.restore(arrangement.cells, arrangement.free);
+        if matches!(name, "Default" | "Even") {
+            settings.write().screen_preview_floating = false;
+        }
         persist_layout(settings, layout);
     };
 
@@ -241,7 +245,7 @@ fn LayoutButton(
                             key: "{name}",
                             class: "w-full text-left px-2 py-1.5 rounded-md hover:bg-white/[0.04] transition-colors",
                             onclick: move |_| {
-                                apply(make, name == "Default");
+                                apply(make, name);
                                 open.set(false);
                             },
                             div { class: "text-xs text-[var(--text)]", "{name}" }
@@ -503,6 +507,13 @@ pub fn WorkspaceView(
     let status = state.read().status;
     let activities_open = use_signal(|| false);
     let mut is_mobile = use_signal(|| cfg!(any(target_os = "android", target_os = "ios")));
+    let preview_dock = super::screenshare::PreviewDock {
+        target: use_signal(|| None),
+        moving: use_signal(|| false),
+    };
+    let mut preview_target = preview_dock.target;
+    let preview_docked = !is_mobile() && !settings.read().screen_preview_floating;
+    let preview_occupies_slot = preview_docked && state.read().screen_sharing;
     use_context_provider(|| crate::features::activities::ActivityPicker {
         open: activities_open,
         mobile: is_mobile,
@@ -635,7 +646,11 @@ pub fn WorkspaceView(
             crate::features::camera::CameraSourcePicker {}
             crate::mediakey::MediaKeyBridge {}
             if !cfg!(target_os = "android") {
-                crate::features::screenshare::ScreenSelfPreview {}
+                if is_mobile() {
+                    crate::features::screenshare::ScreenSelfPreview {}
+                } else if !preview_docked {
+                    crate::features::screenshare::ScreenSelfPreview { dock: Some(preview_dock) }
+                }
                 crate::features::camera::CameraSelfPreview {}
                 crate::features::camera::CameraGridWindow {}
             }
@@ -781,7 +796,28 @@ pub fn WorkspaceView(
                                 }
                             }
                             GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
-                                MembersPanel {}
+                                div { class: "relative flex flex-col w-full h-full min-h-0",
+                                    div { class: "flex-1 min-h-0",
+                                        MembersPanel {}
+                                    }
+                                    div {
+                                        class: if preview_occupies_slot {
+                                            "shrink-0 min-h-0"
+                                        } else {
+                                            "absolute inset-x-0 bottom-0 pointer-events-none"
+                                        },
+                                        style: "height: 30%;",
+                                        onmounted: move |event| preview_target.set(Some(event.data())),
+                                        if preview_docked {
+                                            crate::features::screenshare::ScreenSelfPreview { dock: Some(preview_dock), docked: true }
+                                        } else if (preview_dock.moving)() {
+                                            div {
+                                                class: "w-full h-full rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--panel-solid)] flex items-center justify-center text-xs text-[var(--text)]",
+                                                {crate::i18n::text("Drop to dock", &[])}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
