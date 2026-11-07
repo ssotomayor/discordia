@@ -514,6 +514,15 @@ pub fn WorkspaceView(
     let mut preview_target = preview_dock.target;
     let preview_docked = !is_mobile() && !settings.read().screen_preview_floating;
     let preview_occupies_slot = preview_docked && state.read().screen_sharing;
+    let preview_on_right =
+        layout
+            .get("members")
+            .zip(layout.get("chat"))
+            .is_some_and(|(members, chat)| {
+                members.x == chat.x
+                    && members.w == chat.w
+                    && members.y >= chat.y.saturating_add(chat.h)
+            });
     use_context_provider(|| crate::features::activities::ActivityPicker {
         open: activities_open,
         mobile: is_mobile,
@@ -796,17 +805,23 @@ pub fn WorkspaceView(
                                 }
                             }
                             GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
-                                div { class: "relative flex flex-col w-full h-full min-h-0",
-                                    div { class: "flex-1 min-h-0",
+                                div {
+                                    class: "relative flex w-full h-full min-h-0 min-w-0",
+                                    style: if preview_on_right { "flex-direction: row;" } else { "flex-direction: column;" },
+                                    div { class: "flex-1 min-h-0 min-w-0",
                                         MembersPanel {}
                                     }
                                     div {
                                         class: if preview_occupies_slot {
-                                            "shrink-0 min-h-0"
+                                            "shrink-0 min-h-0 min-w-0"
                                         } else {
-                                            "absolute inset-x-0 bottom-0 pointer-events-none"
+                                            "absolute pointer-events-none"
                                         },
-                                        style: "height: 30%;",
+                                        style: if preview_on_right {
+                                            "width: 30%; height: 100%; left: auto; right: 0; top: 0; bottom: auto;"
+                                        } else {
+                                            "width: 100%; height: 30%; left: 0; right: auto; top: auto; bottom: 0;"
+                                        },
                                         onmounted: move |event| preview_target.set(Some(event.data())),
                                         if preview_docked {
                                             crate::features::screenshare::ScreenSelfPreview { dock: Some(preview_dock), docked: true }
