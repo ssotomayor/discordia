@@ -1828,7 +1828,7 @@ fn VoiceOccupant(
                         dangerous_inner_html: crate::features::icons::SCREEN,
                     }
                 }
-                if has_camera && !is_self {
+                if has_camera {
                     button {
                         class: if is_watching_camera {
                             "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] bg-[var(--danger)]/20 shrink-0 disabled:opacity-70 disabled:cursor-default"
@@ -1836,7 +1836,9 @@ fn VoiceOccupant(
                             "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 shrink-0 disabled:opacity-70 disabled:cursor-default"
                         },
                         disabled: !can_watch_camera,
-                        title: if !can_watch_camera {
+                        title: if is_self {
+                            crate::i18n::text("Your camera", &[])
+                        } else if !can_watch_camera {
                             crate::i18n::text("Their camera is on — join the channel to watch", &[])
                         } else if is_watching_camera {
                             crate::i18n::text("Hide their camera", &[])
