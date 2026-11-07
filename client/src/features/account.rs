@@ -223,6 +223,21 @@ pub fn AccountView(
     });
     crate::state::use_dm_read_persistence(state);
     crate::state::use_channel_read_persistence(state);
+    let read_sync = use_memo(move || {
+        let current = state.read();
+        (
+            current.read_marks_revision,
+            current.app_foreground,
+            quitting.is_some_and(|request| (request.0)()),
+        )
+    });
+    let read_nostr = nostr.clone();
+    use_effect(move || {
+        let (_, foreground, quitting) = read_sync();
+        read_nostr.send(crate::nostr::service::NostrCmd::ReadMarksChanged {
+            flush: !foreground || quitting,
+        });
+    });
     crate::channel_selection::use_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_dm_standing_persistence(state);

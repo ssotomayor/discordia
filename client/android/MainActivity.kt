@@ -54,6 +54,7 @@ class MainActivity : WryActivity() {
     fun enableDmNotifications(enabled: Boolean): String = dmNotifications.enable(enabled)
     fun showDmNotification(payload: String) { dmNotifications.show(payload) }
     fun dismissDmNotification(peer: String) { dmNotifications.dismiss(peer) }
+    fun dismissReadDmNotification(payload: String) { dmNotifications.dismissRead(payload) }
     private var navigationWebView: WebView? = null
     private val screenPreview by lazy { com.discordia.app.DioxusScreenPreview(this) { navigationWebView } }
     fun setScreenPreview(payload: String) { screenPreview.configure(payload) }

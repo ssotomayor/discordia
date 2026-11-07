@@ -3,6 +3,7 @@
 //! business. No Discordia server ever holds them.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,21 @@ pub struct ReadMarks {
 }
 
 impl ReadMarks {
+    fn covers(&self, other: &Self) -> bool {
+        other
+            .dms
+            .iter()
+            .all(|(peer, at)| self.dms.get(peer).is_some_and(|mine| mine >= at))
+            && other.channels.iter().all(|(server, channels)| {
+                channels.iter().all(|(channel, at)| {
+                    self.channels
+                        .get(server)
+                        .and_then(|mine| mine.get(channel))
+                        .is_some_and(|mine| mine >= at)
+                })
+            })
+    }
+
     /// Drops the oldest marks until it fits: a device that loses one here
     /// still holds its own, and the others only re-baseline that conversation.
     fn trimmed(&self, budget: usize) -> ReadMarks {
@@ -83,6 +99,74 @@ impl ReadMarks {
     }
 }
 
+#[derive(Default)]
+pub struct Publisher {
+    held: ReadMarks,
+    held_at: i64,
+    pending: Option<(ReadMarks, Event)>,
+    last_sent: Option<Instant>,
+}
+
+impl Publisher {
+    pub fn flush(&mut self) {
+        self.last_sent = None;
+    }
+
+    pub fn offer(
+        &mut self,
+        marks: ReadMarks,
+        secret: &SecretKey,
+        owner: &str,
+        timestamp: i64,
+        now: Instant,
+    ) -> Result<Option<Event>, String> {
+        let marks = marks.trimmed(BUDGET);
+        if marks == self.held
+            || self
+                .last_sent
+                .is_some_and(|last| now.duration_since(last) < PUBLISH_COOLDOWN)
+        {
+            return Ok(None);
+        }
+        let event = match self.pending.as_ref() {
+            Some((pending, event)) if pending == &marks => event.clone(),
+            _ => marks_event(
+                secret,
+                owner,
+                &marks,
+                timestamp.max(self.held_at.saturating_add(1)),
+            )?,
+        };
+        self.pending = Some((marks, event.clone()));
+        self.last_sent = Some(now);
+        Ok(Some(event))
+    }
+
+    pub fn accepted(&mut self, id: &str) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(_, event)| event.id == id)
+            && let Some((marks, event)) = self.pending.take()
+        {
+            self.held = marks;
+            self.held_at = event.created_at;
+        }
+    }
+
+    pub fn note_held(&mut self, marks: ReadMarks, timestamp: i64) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, event)| marks.covers(pending) || event.created_at <= timestamp)
+        {
+            self.pending = None;
+        }
+        self.held = marks;
+        self.held_at = timestamp;
+    }
+}
+
 pub fn marks_event(
     secret: &SecretKey,
     our_pubkey: &str,
@@ -123,6 +207,223 @@ mod tests {
         let secret = SecretKey::from_slice(&[seed; 32]).expect("valid key");
         let pubkey = event::xonly_hex(&secret);
         (secret, pubkey)
+    }
+
+    fn dm_marks(at: i64) -> ReadMarks {
+        ReadMarks {
+            dms: [("a".repeat(64), at)].into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn publication_retries_the_same_event_until_a_relay_confirms_it() {
+        let (secret, owner) = identity(7);
+        let now = Instant::now();
+        let mut publisher = Publisher::default();
+        let marks = dm_marks(200);
+        let event = publisher
+            .offer(marks.clone(), &secret, &owner, 1_000, now)
+            .unwrap()
+            .unwrap();
+        assert!(
+            publisher
+                .offer(
+                    marks.clone(),
+                    &secret,
+                    &owner,
+                    1_001,
+                    now + PUBLISH_COOLDOWN / 2
+                )
+                .unwrap()
+                .is_none()
+        );
+        let retried = publisher
+            .offer(
+                marks.clone(),
+                &secret,
+                &owner,
+                1_060,
+                now + PUBLISH_COOLDOWN,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(retried, event);
+        publisher.accepted("unrelated-publication");
+        assert!(
+            publisher
+                .offer(
+                    marks.clone(),
+                    &secret,
+                    &owner,
+                    1_120,
+                    now + PUBLISH_COOLDOWN * 2
+                )
+                .unwrap()
+                .is_some()
+        );
+        publisher.accepted(&event.id);
+        assert!(
+            publisher
+                .offer(marks, &secret, &owner, 1_180, now + PUBLISH_COOLDOWN * 3)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_latest_read_state_replaces_a_failed_publication() {
+        let (secret, owner) = identity(7);
+        let now = Instant::now();
+        let mut publisher = Publisher::default();
+        let first = publisher
+            .offer(dm_marks(100), &secret, &owner, 1_000, now)
+            .unwrap()
+            .unwrap();
+        let next = publisher
+            .offer(
+                dm_marks(200),
+                &secret,
+                &owner,
+                1_060,
+                now + PUBLISH_COOLDOWN,
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.id, next.id);
+        publisher.accepted(&first.id);
+        assert!(
+            publisher
+                .offer(
+                    dm_marks(200),
+                    &secret,
+                    &owner,
+                    1_120,
+                    now + PUBLISH_COOLDOWN * 2
+                )
+                .unwrap()
+                .is_some()
+        );
+        publisher.accepted(&next.id);
+        assert!(
+            publisher
+                .offer(
+                    dm_marks(200),
+                    &secret,
+                    &owner,
+                    1_180,
+                    now + PUBLISH_COOLDOWN * 3
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reconnecting_with_a_newer_stale_copy_reissues_marks_with_a_newer_timestamp() {
+        let (secret, owner) = identity(7);
+        let now = Instant::now();
+        let mut publisher = Publisher::default();
+        let first = publisher
+            .offer(dm_marks(200), &secret, &owner, 1_000, now)
+            .unwrap()
+            .unwrap();
+        publisher.note_held(dm_marks(100), 1_100);
+        let next = publisher
+            .offer(
+                dm_marks(200),
+                &secret,
+                &owner,
+                1_050,
+                now + PUBLISH_COOLDOWN,
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.id, next.id);
+        assert!(next.created_at > 1_100);
+        publisher.note_held(dm_marks(300), 1_200);
+        assert!(
+            publisher
+                .offer(
+                    dm_marks(300),
+                    &secret,
+                    &owner,
+                    1_200,
+                    now + PUBLISH_COOLDOWN * 2
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn relay_marks_skip_republishing_but_the_first_read_change_goes_immediately() {
+        let (secret, owner) = identity(7);
+        let now = Instant::now();
+        let mut publisher = Publisher::default();
+        publisher.note_held(dm_marks(100), 1_000);
+        assert!(
+            publisher
+                .offer(dm_marks(100), &secret, &owner, 1_000, now)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            publisher
+                .offer(dm_marks(200), &secret, &owner, 1_000, now)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn leaving_the_app_flushes_newer_reads_without_waiting_for_the_cooldown() {
+        let (secret, owner) = identity(7);
+        let now = Instant::now();
+        let mut publisher = Publisher::default();
+        let first = publisher
+            .offer(dm_marks(100), &secret, &owner, 1_000, now)
+            .unwrap()
+            .unwrap();
+        publisher.accepted(&first.id);
+        assert!(
+            publisher
+                .offer(
+                    dm_marks(200),
+                    &secret,
+                    &owner,
+                    1_001,
+                    now + std::time::Duration::from_secs(1)
+                )
+                .unwrap()
+                .is_none()
+        );
+        publisher.flush();
+        let next = publisher
+            .offer(
+                dm_marks(200),
+                &secret,
+                &owner,
+                1_001,
+                now + std::time::Duration::from_secs(1),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(parse_marks(&secret, &owner, &next), Some(dm_marks(200)));
+        publisher.accepted(&next.id);
+        publisher.flush();
+        assert!(
+            publisher
+                .offer(
+                    dm_marks(200),
+                    &secret,
+                    &owner,
+                    1_002,
+                    now + std::time::Duration::from_secs(2)
+                )
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

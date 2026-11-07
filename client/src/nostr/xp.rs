@@ -76,14 +76,6 @@ impl<T: Clone + PartialEq> Publisher<T> {
         Some(value)
     }
 
-    /// What the relays already hold, so offering it again sends nothing.
-    pub fn note_held(&mut self, value: T) {
-        if self.pending.as_ref() == Some(&value) {
-            self.pending = None;
-        }
-        self.published = Some(value);
-    }
-
     /// When the waiting value may go, if one is waiting.
     pub fn due_at(&self) -> Option<std::time::Instant> {
         self.pending.as_ref()?;
@@ -244,19 +236,6 @@ mod publisher_tests {
             "back to the published total: nothing to send"
         );
         assert_eq!(p.offer(xp(10), t0 + PUBLISH_COOLDOWN * 2), None);
-    }
-
-    #[test]
-    fn what_the_relays_already_hold_is_not_sent_again() {
-        let t0 = Instant::now();
-        let mut p = Publisher::new(PUBLISH_COOLDOWN);
-        p.note_held(xp(10));
-        assert_eq!(p.offer(xp(10), t0), None);
-        assert_eq!(
-            p.offer(xp(11), t0),
-            Some(xp(11)),
-            "the first change still goes at once"
-        );
     }
 
     #[test]
