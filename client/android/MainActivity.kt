@@ -49,12 +49,22 @@ class MainActivity : WryActivity() {
     external fun onDmNotificationVisibility(resumed: Boolean)
     external fun onDmNotificationSettingsChanged()
     fun setDmNotificationAccount(account: String, channel: String) { dmNotifications.setAccount(account, channel) }
-    fun clearDmNotificationAccount(account: String) { dmNotifications.clearAccount(account) }
+    fun clearDmNotificationAccount(account: String) { postNotification { dmNotifications.clearAccount(account) } }
     fun dmNotificationState(): String = dmNotifications.state()
     fun enableDmNotifications(enabled: Boolean): String = dmNotifications.enable(enabled)
-    fun showDmNotification(payload: String) { dmNotifications.show(payload) }
-    fun dismissDmNotification(peer: String) { dmNotifications.dismiss(peer) }
-    fun dismissReadDmNotification(payload: String) { dmNotifications.dismissRead(payload) }
+    fun showDmNotification(payload: String) { postNotification { dmNotifications.show(payload) } }
+    fun dismissDmNotification(peer: String) { postNotification { dmNotifications.dismiss(peer) } }
+    fun dismissReadDmNotification(payload: String) { postNotification { dmNotifications.dismissRead(payload) } }
+
+    private fun postNotification(action: () -> Unit) {
+        runOnUiThread {
+            try {
+                action()
+            } catch (error: Exception) {
+                android.util.Log.w("Discordia", "Background notification operation failed", error)
+            }
+        }
+    }
     private var navigationWebView: WebView? = null
     private val screenPreview by lazy { com.discordia.app.DioxusScreenPreview(this) { navigationWebView } }
     fun setScreenPreview(payload: String) { screenPreview.configure(payload) }
@@ -210,7 +220,7 @@ class MainActivity : WryActivity() {
     private var projectionActive = false
 
     fun updateCallNotification(payload: String) {
-        com.discordia.app.DioxusForegroundService.updateControls(payload)
+        postNotification { com.discordia.app.DioxusForegroundService.updateControls(payload) }
     }
 
     private fun updateMediaService(ready: ResultReceiver? = null): Boolean {
@@ -244,10 +254,12 @@ class MainActivity : WryActivity() {
     fun voiceServiceResult(slot: Int): Int = if (voiceSlot == slot) voiceServiceResult else -1
 
     fun stopVoiceService(slot: Int) {
-        if (voiceSlot != slot) return
-        voiceSlot = -1
-        voiceServiceResult = 0
-        updateMediaService()
+        postNotification {
+            if (voiceSlot != slot) return@postNotification
+            voiceSlot = -1
+            voiceServiceResult = 0
+            updateMediaService()
+        }
     }
 
     private fun cameraEvents(slot: Int) = object : CameraVideoCapturer.CameraEventsHandler {

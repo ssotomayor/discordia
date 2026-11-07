@@ -110,7 +110,7 @@ mod native {
     use dioxus::prelude::*;
     use jni::{
         JNIEnv,
-        objects::{JObject, JString, JValue},
+        objects::{JObject, JString},
     };
     use std::{cell::RefCell, rc::Rc, sync::OnceLock, time::Duration};
     use tokio::sync::mpsc;
@@ -269,25 +269,7 @@ mod native {
                 return;
             }
         };
-        crate::platform::wry::prelude::dispatch(move |env, activity, _| {
-            let result = env.new_string(payload).and_then(|value| {
-                env.call_method(
-                    activity,
-                    "updateCallNotification",
-                    "(Ljava/lang/String;)V",
-                    &[JValue::Object(&value)],
-                )
-                .map(|_| ())
-            });
-            if let Err(error) = result {
-                tracing::warn!(%error, "Could not update call notification");
-            }
-            if env.exception_check().unwrap_or(false)
-                && let Err(error) = env.exception_clear()
-            {
-                tracing::warn!(%error, "Could not clear call notification exception");
-            }
-        });
+        crate::android::notification_command("updateCallNotification", payload);
     }
 
     pub fn use_controls(mut state: Signal<AppState>, nostr: NostrTx) {

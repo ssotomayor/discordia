@@ -20,6 +20,34 @@ mod voice_endpoints;
 mod voice_subscriptions;
 
 #[tokio::test]
+async fn an_unnegotiated_transceiver_has_no_receiving_direction() {
+    use livekit::webrtc::{
+        MediaType,
+        peer_connection_factory::PeerConnectionFactory,
+        rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit},
+    };
+
+    let factory = PeerConnectionFactory::default();
+    let connection = factory.create_peer_connection(Default::default()).unwrap();
+    let transceiver = connection
+        .add_transceiver_for_media(
+            MediaType::Audio,
+            RtpTransceiverInit {
+                direction: RtpTransceiverDirection::RecvOnly,
+                stream_ids: Vec::new(),
+                send_encodings: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert!(transceiver.mid().is_none());
+    assert_eq!(
+        transceiver.current_direction(),
+        Some(RtpTransceiverDirection::Inactive)
+    );
+    connection.close();
+}
+
+#[tokio::test]
 async fn initial_signal_budget_covers_a_stalled_websocket_without_waiting_for_validation() {
     stalled_signal_respects_budget(Duration::from_secs(5)).await;
 }
@@ -268,40 +296,47 @@ async fn alternate_endpoint_delivers_audio(
             "screen audio selection to first decoded tone: {:?}",
             watch_started.elapsed()
         );
-        watch_tx.send_replace(Default::default());
-        let stopped = Instant::now();
-        selective_audio_event(&listener, &mut watched, &mut events, true, false).await;
-        assert!(!publication.is_desired());
-        assert!(publication.track().is_none());
-        println!(
-            "screen audio deselection to unsubscribe: {:?}",
-            stopped.elapsed()
-        );
-        watch_tx.send_replace(std::collections::HashSet::from(["publisher".into()]));
-        let restarted = Instant::now();
-        let RoomEvent::TrackSubscribed {
-            track: RemoteTrack::Audio(audio),
-            ..
-        } = selective_audio_event(&listener, &mut watched, &mut events, true, true).await
-        else {
-            panic!("screen audio did not resume")
-        };
-        let mut resumed =
-            NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
-        tokio::time::timeout(Duration::from_secs(8), async {
-            loop {
-                let frame = resumed.next().await.expect("resumed stream closed");
-                if frame.data.iter().any(|sample| sample.unsigned_abs() > 100) {
-                    break;
+        for pause in [
+            Duration::ZERO,
+            Duration::from_millis(250),
+            Duration::from_secs(2),
+        ] {
+            watch_tx.send_replace(Default::default());
+            let stopped = Instant::now();
+            selective_audio_event(&listener, &mut watched, &mut events, true, false).await;
+            assert!(!publication.is_desired());
+            assert!(publication.track().is_none());
+            println!(
+                "screen audio deselection to unsubscribe: {:?}",
+                stopped.elapsed()
+            );
+            tokio::time::sleep(pause).await;
+            watch_tx.send_replace(std::collections::HashSet::from(["publisher".into()]));
+            let restarted = Instant::now();
+            let RoomEvent::TrackSubscribed {
+                track: RemoteTrack::Audio(audio),
+                ..
+            } = selective_audio_event(&listener, &mut watched, &mut events, true, true).await
+            else {
+                panic!("screen audio did not resume")
+            };
+            let mut resumed =
+                NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
+            tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    let frame = resumed.next().await.expect("resumed stream closed");
+                    if frame.data.iter().any(|sample| sample.unsigned_abs() > 100) {
+                        break;
+                    }
                 }
-            }
-        })
-        .await
-        .expect("resumed screen audio did not decode");
-        println!(
-            "screen audio reselection to decoded tone: {:?}",
-            restarted.elapsed()
-        );
+            })
+            .await
+            .expect("resumed screen audio did not decode");
+            println!(
+                "screen audio reselection to decoded tone: {:?}",
+                restarted.elapsed()
+            );
+        }
     }
     let send_route = tokio::time::timeout(Duration::from_secs(3), async {
         loop {

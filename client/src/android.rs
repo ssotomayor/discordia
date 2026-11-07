@@ -408,16 +408,18 @@ impl Drop for BackgroundCall {
     fn drop(&mut self) {
         crate::call_notifications::wake();
         let slot = self.slot;
-        crate::platform::wry::prelude::dispatch(move |env, activity, _| {
-            if let Err(error) = env.call_method(
+        if let Err(error) = with_activity(|env, activity| {
+            env.call_method(
                 activity,
                 "stopVoiceService",
                 "(I)V",
                 &[JValue::Int(slot as i32)],
-            ) {
-                tracing::warn!(%error, "Android call foreground service cleanup failed");
-            }
-        });
+            )
+            .map(|_| ())
+            .map_err(system_error)
+        }) {
+            tracing::warn!(%error, "Android call foreground service cleanup failed");
+        }
     }
 }
 
@@ -459,6 +461,24 @@ fn with_activity<T>(
             unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
         action(env, &activity)
     })
+}
+
+pub(crate) fn notification_command(method: &'static str, payload: String) {
+    // Wry's bounded pipe can block the runtime while Android suspends its native looper.
+    // These Activity methods post to the Java UI queue, which still handles background alerts.
+    if let Err(error) = with_activity(|env, activity| {
+        let value = env.new_string(payload).map_err(system_error)?;
+        env.call_method(
+            activity,
+            method,
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&value)],
+        )
+        .map(|_| ())
+        .map_err(system_error)
+    }) {
+        tracing::warn!(%error, method, "Android notification operation failed");
+    }
 }
 
 fn activity_string(method: &str) -> Result<String, String> {

@@ -1125,6 +1125,13 @@ impl SessionInner {
             let Some(mid) = transceiver.mid() else {
                 continue;
             };
+            if !matches!(
+                transceiver.current_direction(),
+                Some(libwebrtc::rtp_transceiver::RtpTransceiverDirection::RecvOnly
+                    | libwebrtc::rtp_transceiver::RtpTransceiverDirection::SendRecv)
+            ) {
+                continue;
+            }
             let receiver = transceiver.receiver();
             let Some(track) = receiver.track() else {
                 continue;
@@ -1505,6 +1512,10 @@ impl SessionInner {
                     .unwrap()
                     .create_anwser(offer_sdp, AnswerOptions::default())
                     .await?;
+
+                if let Some(subscriber) = &self.subscriber_pc {
+                    self.process_remote_track_addition(&subscriber.peer_connection());
+                }
 
                 self.signal_client
                     .send(proto::signal_request::Message::Answer(

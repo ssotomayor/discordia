@@ -389,12 +389,17 @@ mod tests {
             .await
             .expect("serve quic");
         let client = Endpoint::builder(presets::Minimal)
+            .clear_ip_transports()
+            .bind_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("bind IPv4 client")
             .bind()
             .await
             .expect("client endpoint");
         let addr = EndpointAddr::new(handle.endpoint_id).with_addrs(
             dialable_addrs(&handle.sockets)
                 .into_iter()
+                // Switching loopback families would split the per-IP budget.
+                .filter(SocketAddr::is_ipv4)
                 .map(TransportAddr::Ip),
         );
         let share = crate::admission::Limits::default().quic_connections_per_origin;
