@@ -22,7 +22,7 @@ pub(crate) enum MobileTab {
     Members,
 }
 
-fn persist_layout(
+pub(super) fn persist_layout(
     mut settings: Signal<crate::settings::ClientSettings>,
     layout: dioxus_grid_layout::LayoutStore,
 ) {

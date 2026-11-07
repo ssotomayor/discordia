@@ -593,13 +593,16 @@ impl Store {
     }
 
     pub async fn upsert_guild_xp(&self, guild_id: Id, pubkey: &str, xp: u64) -> Result<()> {
+        let xp = i64::try_from(xp).map_err(|_| {
+            sqlx::Error::Protocol("experience exceeds the supported maximum".into())
+        })?;
         sqlx::query(
             "INSERT INTO guild_xp (guild_id, pubkey, xp) VALUES (?, ?, ?)
              ON CONFLICT(guild_id, pubkey) DO UPDATE SET xp = excluded.xp",
         )
         .bind(guild_id.to_string())
         .bind(pubkey)
-        .bind(xp as i64)
+        .bind(xp)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1840,5 +1843,42 @@ fn parse_gate(s: &str) -> crate::protocol::JoinGate {
         "rules" => Rules,
         "pow" => Pow,
         _ => Open,
+    }
+}
+
+#[cfg(test)]
+mod xp_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn experience_rejects_unrepresentable_values_and_preserves_database_points() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let store = Store { pool };
+        store.init_schema().await.unwrap();
+        let guild = Id::new_v4();
+        let owner = "11".repeat(32);
+        let maximum = i64::MAX as u64;
+        store.upsert_guild_xp(guild, &owner, maximum).await.unwrap();
+        assert!(
+            store
+                .upsert_guild_xp(guild, &owner, maximum + 1)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .upsert_guild_xp(guild, &owner, u64::MAX)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load_all().await.unwrap().guild_xp,
+            vec![(guild, owner, maximum)]
+        );
+        store.pool.close().await;
     }
 }

@@ -687,21 +687,30 @@ pub fn is_canonical_pubkey(s: &str) -> bool {
 }
 
 pub fn level_progress(xp: u64) -> (u32, u64, u64) {
-    let mut level: u32 = 1;
-    let mut remaining = xp;
-    loop {
-        let span = 10 + (level as u64 - 1) * 10;
-        if remaining < span {
-            return (level, remaining, span);
-        }
-        remaining -= span;
-        level += 1;
-    }
+    // Level L starts at 5 * L * (L - 1). Widen before solving for L.
+    let level = (1 + u128::from(xp) * 4 / 5).isqrt().div_ceil(2) as u32;
+    let base = 5 * u64::from(level) * u64::from(level - 1);
+    (level, xp - base, u64::from(level) * 10)
 }
 
 #[cfg(test)]
 mod level_tests {
     use super::level_progress;
+
+    #[test]
+    fn level_curve_handles_extremes_and_exact_boundaries() {
+        for xp in [0, 9, 10, 29, 30, 1_000_000_000, i64::MAX as u64, u64::MAX] {
+            let (level, into, span) = level_progress(xp);
+            let base = 5 * u128::from(level) * u128::from(level - 1);
+            assert_eq!(base + u128::from(into), u128::from(xp));
+            assert!(into < span);
+        }
+        for level in [2_u32, 3, 50, 1_000, 1_000_000, 1_000_000_000] {
+            let base = 5 * u64::from(level) * u64::from(level - 1);
+            assert_eq!(level_progress(base).0, level);
+            assert_eq!(level_progress(base - 1).0, level - 1);
+        }
+    }
 
     #[test]
     fn level_curve() {

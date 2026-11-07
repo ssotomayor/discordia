@@ -876,7 +876,10 @@ impl AppState {
         if !self.xp_off_cooldown(guild_id, pubkey, cooldown) {
             return None;
         }
-        let new_xp = self.xp_of(guild_id, pubkey).saturating_add(amount as u64);
+        let new_xp = self
+            .xp_of(guild_id, pubkey)
+            .saturating_add(amount as u64)
+            .min(i64::MAX as u64);
         durable(
             self.store.upsert_guild_xp(guild_id, pubkey, new_xp).await,
             "xp",

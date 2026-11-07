@@ -653,16 +653,13 @@ fn parse(content: &str) -> Option<ClientSettings> {
 
 pub fn save(settings: &ClientSettings) {
     let path = settings_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let stored = Stored {
         version: FILE_VERSION,
         settings: settings.clone(),
     };
     match serde_json::to_string_pretty(&stored) {
         Ok(content) => {
-            if let Err(e) = std::fs::write(&path, content) {
+            if let Err(e) = crate::identity::write_private(&path, &content) {
                 tracing::warn!(path = %path.display(), error = %e, "could not save settings");
             }
         }
@@ -673,6 +670,32 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_failed_atomic_replace_preserves_the_previous_settings() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = crate::identity::test_config_dir();
+        let mut settings = ClientSettings {
+            mic_volume: 45,
+            ..Default::default()
+        };
+        save(&settings);
+        let guard = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(settings_path())
+            .unwrap();
+        settings.mic_volume = 95;
+        save(&settings);
+        assert_eq!(load_or_default().mic_volume, 45);
+        drop(guard);
+        save(&settings);
+        assert_eq!(load_or_default().mic_volume, 95);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        crate::identity::TEST_CONFIG_DIR.with(|dir| *dir.borrow_mut() = None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn recent_emoji_put_the_latest_first_without_repeats_and_stay_bounded() {

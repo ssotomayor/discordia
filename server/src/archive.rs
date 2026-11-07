@@ -142,6 +142,13 @@ impl Store {
                 ARCHIVE_VERSION
             );
         }
+        if archive
+            .members
+            .iter()
+            .any(|member| member.xp > i64::MAX as u64)
+        {
+            anyhow::bail!("experience exceeds the supported maximum");
+        }
 
         // The archive is whatever another instance wrote; it gets the same
         // filters the gateway applies to a client.

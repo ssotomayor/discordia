@@ -1333,7 +1333,7 @@ impl AppState {
             .iter()
             .filter(|m| m.user.pubkey == me)
             .map(|m| m.xp)
-            .sum()
+            .fold(0, u64::saturating_add)
     }
 
     pub fn global_xp_of(&self, pubkey: &str) -> Option<crate::nostr::xp::GlobalXp> {
@@ -3601,6 +3601,21 @@ mod tests {
             agent: None,
             reads: None,
         }
+    }
+
+    #[test]
+    fn server_experience_saturates_without_counting_other_members() {
+        let mut state = AppState::empty();
+        state.self_user = Some(user("self"));
+        let mut first = member("self", true);
+        first.xp = u64::MAX;
+        let mut second = member("self", true);
+        second.guild_id = uuid::Uuid::new_v4();
+        second.xp = 1;
+        let mut other = member("other", true);
+        other.xp = 500;
+        state.members = vec![first, second, other];
+        assert_eq!(state.my_server_xp(), u64::MAX);
     }
 
     fn profile(pk: &str, status: Option<&str>) -> Profile {
