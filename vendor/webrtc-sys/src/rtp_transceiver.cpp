@@ -88,8 +88,10 @@ void RtpTransceiver::set_direction(RtpTransceiverDirection direction) const {
 }
 
 RtpTransceiverDirection RtpTransceiver::current_direction() const {
+  // An unnegotiated transceiver has no direction; value() aborts without exceptions.
   return static_cast<RtpTransceiverDirection>(
-      transceiver_->current_direction().value());
+      transceiver_->current_direction().value_or(
+          webrtc::RtpTransceiverDirection::kInactive));
 }
 
 RtpTransceiverDirection RtpTransceiver::fired_direction() const {

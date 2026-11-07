@@ -159,6 +159,7 @@ jobs:
           cargo test -p discordia-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
           cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu bundled_sfu_preserves_screen_audio_source -- --ignored --test-threads=1
 
       - uses: actions/setup-node@v4
         with:
@@ -234,6 +235,8 @@ jobs:
           cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p discordia --test live_sfu bundled_sfu_preserves_screen_audio_source -- --ignored --test-threads=1
       - name: Hardware encoder queue and timing regressions
         shell: pwsh
         run: ./scripts/test-mf-encoder.ps1
@@ -283,6 +286,7 @@ jobs:
           cargo test -p discordia-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           cargo test -p discordia --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
           cargo test -p discordia --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
+          cargo test -p discordia --test live_sfu bundled_sfu_preserves_screen_audio_source -- --ignored --test-threads=1
 
   android-build:
     name: Android APK (arm64)
@@ -346,6 +350,7 @@ jobs:
         run: |
           python scripts/test-android-capture.py
           python scripts/test-android-network.py
+          python scripts/test-android-notification-dispatch.py
       - name: Sign and verify APK
         if: github.event_name == 'push'
         env:

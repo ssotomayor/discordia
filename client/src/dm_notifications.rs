@@ -253,25 +253,7 @@ mod native {
     }
 
     pub(super) fn dispatch(method: &'static str, value: String) {
-        crate::platform::wry::prelude::dispatch(move |env, activity, _| {
-            let result = env.new_string(value).and_then(|value| {
-                env.call_method(
-                    activity,
-                    method,
-                    "(Ljava/lang/String;)V",
-                    &[JValue::Object(&value)],
-                )
-                .map(|_| ())
-            });
-            if let Err(error) = result {
-                tracing::warn!(%error, method, "Android notification operation failed");
-            }
-            if env.exception_check().unwrap_or(false) {
-                if let Err(error) = env.exception_clear() {
-                    tracing::warn!(%error, "Could not clear notification exception");
-                }
-            }
-        });
+        crate::android::notification_command(method, value);
     }
 
     pub(crate) fn use_notifications(mut state: Signal<AppState>, account: String) {
