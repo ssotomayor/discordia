@@ -547,6 +547,7 @@ mod tests {
             id: channel.guild_id,
             name: "Community".into(),
             icon: None,
+            icon_image: None,
         };
         state.clear_server_session();
         let mut invite = link(&channel);

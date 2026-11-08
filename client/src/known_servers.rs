@@ -23,6 +23,8 @@ pub struct KnownGuild {
     pub name: String,
     #[serde(default)]
     pub icon: Option<String>,
+    #[serde(default)]
+    pub icon_image: Option<String>,
 }
 
 impl KnownServer {
@@ -179,6 +181,7 @@ mod tests {
             id: Id::nil(),
             name: "General".into(),
             icon: None,
+            icon_image: None,
         };
         upsert(&mut list, by_code("a"), Some(vec![guild.clone()]));
         assert_eq!(list.len(), 2);
@@ -187,6 +190,40 @@ mod tests {
         assert_eq!(list[0].guilds.len(), 1, "no guild list is not an empty one");
         remove(&mut list, &server_key(&by_code("a")));
         assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn saved_community_photos_survive_reload_and_can_be_removed() {
+        let root = crate::identity::test_config_dir();
+        let guild = KnownGuild {
+            id: Id::new_v4(),
+            name: "Community".into(),
+            icon: Some("C".into()),
+            icon_image: Some(format!("media:{}.png", "a".repeat(64))),
+        };
+        let mut list = Vec::new();
+        upsert(&mut list, by_code("a"), Some(vec![guild.clone()]));
+        save(&list);
+        assert_eq!(load(), list);
+        let mut list = load();
+        upsert(&mut list, by_code("a"), None);
+        assert_eq!(list[0].guilds[0].icon_image, guild.icon_image);
+        let mut without_photo = guild;
+        without_photo.icon_image = None;
+        upsert(&mut list, by_code("a"), Some(vec![without_photo]));
+        save(&list);
+        assert_eq!(load()[0].guilds[0].icon_image, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn older_saved_communities_without_photos_still_load() {
+        let guild: KnownGuild = serde_json::from_value(serde_json::json!({
+            "id": Id::nil(), "name": "Community", "icon": "C"
+        }))
+        .unwrap();
+        assert_eq!(guild.icon.as_deref(), Some("C"));
+        assert_eq!(guild.icon_image, None);
     }
 
     #[test]

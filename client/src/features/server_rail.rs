@@ -163,6 +163,7 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
                     id: g.id,
                     name: g.name.clone(),
                     icon: g.icon.clone(),
+                    icon_image: g.icon_image.clone(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -319,10 +320,11 @@ pub fn OtherServer(server: KnownServer) -> Element {
     let rail = use_context::<ServerRail>();
     let label = server.label();
     let pending = rail.switching_to() == Some(server.key());
-    let tiles: Vec<(Option<Id>, String, String, String)> = if server.guilds.is_empty() {
+    let tiles: Vec<_> = if server.guilds.is_empty() {
         vec![(
             None,
             initials(&label),
+            None,
             format!("{label} — click to connect"),
             crate::identity::signature_accent(&server.key()),
         )]
@@ -334,6 +336,7 @@ pub fn OtherServer(server: KnownServer) -> Element {
                 (
                     Some(g.id),
                     g.icon.clone().unwrap_or_else(|| initials(&g.name)),
+                    g.icon_image.clone(),
                     format!("{} — on {label}, click to switch", g.name),
                     crate::identity::signature_accent(&g.id.to_string()),
                 )
@@ -343,13 +346,14 @@ pub fn OtherServer(server: KnownServer) -> Element {
 
     rsx! {
         ServerHeader { server: server.clone(), current: None::<ConnectionStatus> }
-        for (guild, mark, tip, tint) in tiles {
+        for (guild, mark, image, tip, tint) in tiles {
             {
                 let target = server.clone();
                 rsx! {
                     OtherGuildTile {
                         key: "{server.key()}-{guild:?}",
                         mark,
+                        image,
                         tip,
                         tint,
                         pending,
@@ -364,12 +368,23 @@ pub fn OtherServer(server: KnownServer) -> Element {
 #[component]
 fn OtherGuildTile(
     mark: String,
+    image: Option<String>,
     tip: String,
     tint: String,
     pending: bool,
     on_click: EventHandler<()>,
 ) -> Element {
     let mut tip_at = use_signal(|| (0.0f64, 0.0f64));
+    let cached = use_resource(use_reactive((&image,), move |(image,)| async move {
+        let image = image?;
+        match tokio::task::spawn_blocking(move || cached_icon(&image)).await {
+            Ok(image) => image,
+            Err(error) => {
+                tracing::debug!(%error, "could not read the saved community icon");
+                None
+            }
+        }
+    }));
     let pulse = if pending { "dxf-pending" } else { "" };
     rsx! {
         div { class: "relative group dxf-tip-host",
@@ -387,9 +402,21 @@ fn OtherGuildTile(
                     tip_at.set((c.x + 18.0, c.y));
                 },
                 onclick: move |_| on_click.call(()),
-                "{mark}"
+                if let Some(src) = cached.read().as_ref().and_then(|image| image.as_deref()) {
+                    img { class: "w-full h-full object-cover", src: "{src}", alt: "{tip}", draggable: false, "data-gif-hover": "true" }
+                } else {
+                    "{mark}"
+                }
             }
         }
+    }
+}
+
+fn cached_icon(image: &str) -> Option<String> {
+    match image.strip_prefix("media:") {
+        // A disconnected server's cache miss must not fetch from the current server.
+        Some(address) => crate::emoji::load_cached(address),
+        None => Some(image.to_owned()),
     }
 }
 
@@ -662,6 +689,50 @@ fn address_mode(typed: &str) -> Option<SessionMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_community_photos_use_disk_cache_and_misses_have_no_image() {
+        let root = crate::identity::test_config_dir();
+        let address = format!("{}.png", "a".repeat(64));
+        let reference = format!("media:{address}");
+        let data = "data:image/png;base64,cached";
+        assert_eq!(cached_icon(&reference), None);
+        crate::emoji::store_cached(&address, data);
+        assert_eq!(cached_icon(&reference).as_deref(), Some(data));
+        assert_eq!(cached_icon(data).as_deref(), Some(data));
+        assert_eq!(cached_icon("media:../../outside.png"), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn other_server_tile_renders_its_photo_after_loading() {
+        use dioxus::core::{AttributeValue, Mutation};
+        let mut dom = VirtualDom::new(|| {
+            rsx! {
+                OtherGuildTile {
+                    mark: "C", image: Some("data:image/png;base64,cached".to_string()),
+                    tip: "Community", tint: "orange", pending: false, on_click: |_| {}
+                }
+            }
+        });
+        dom.rebuild_to_vec();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                dom.wait_for_work().await;
+                let edits = dom.render_immediate_to_vec().edits;
+                if edits.iter().any(|edit| {
+                    matches!(edit,
+                        Mutation::SetAttribute { name: "src", value: AttributeValue::Text(src), .. }
+                            if src == "data:image/png;base64,cached"
+                    )
+                }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn only_a_scheme_makes_an_address() {
