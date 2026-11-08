@@ -209,9 +209,9 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     rsx! {
         div {
             class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex items-center justify-between",
-            // A picture on its way holds its frame; one waiting on a click stays a line.
-            // Both name every property: one left out is restored from before (trap 31).
-            style: if matches!(status, Status::Uploading | Status::Loading(_)) { format!("{} width: 280px; min-height: 0;", super::image_attachment::FRAME) } else { "height: auto; width: auto; max-width: min(320px, 82vw); min-height: 48px;".to_string() },
+            // Every state holds the picture's frame: leaving a DM unloads its pictures,
+            // so each one passes through these on every visit.
+            style: "{super::image_attachment::FRAME} width: 280px;",
             span { {crate::i18n::message(label)} }
             if matches!(status, Status::Failed(_) | Status::Evicted) {
                 button {

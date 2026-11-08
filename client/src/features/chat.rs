@@ -140,12 +140,14 @@ return (async function () {
     window.removeEventListener('pointercancel', release);
     window.__dxfChatScrollMeasure = null;
     window.__dxfChatScrollLeave = null;
+    window.__dxfChatScrollFollow = null;
     window.__dxfChatScrollOff = null;
   };
   window.addEventListener('pointerup', release);
   window.addEventListener('pointercancel', release);
   window.__dxfChatScrollMeasure = settle;
   window.__dxfChatScrollLeave = () => { following = false; reach(); };
+  window.__dxfChatScrollFollow = () => { following = true; settle(); };
   window.__dxfChatScrollOff = off;
   dioxus.send(true);
   settle();
@@ -676,6 +678,11 @@ fn MessagePage(
             }
         }
     }
+}
+
+/// Whoever sends a message is taken to the bottom to see it, from anywhere.
+fn follow_bottom() {
+    let _ = document::eval("window.__dxfChatScrollFollow && window.__dxfChatScrollFollow();");
 }
 
 const PAGE_SIZE: usize = 50;
@@ -2859,6 +2866,7 @@ fn Composer(
     let finish_id = composer_id.clone();
     let mut finish = move || -> bool {
         let reply_to = replying_to.peek().as_ref().map(|r| r.message_id);
+        follow_bottom();
         draft.set(String::new());
         caret_token.set(None);
         composer_call(&finish_id, "clear", &[]);
@@ -3153,6 +3161,7 @@ fn Composer(
                     reply_to,
                 });
             }
+            follow_bottom();
             if reply_to.is_some() {
                 state.write().replying_to = None;
             }

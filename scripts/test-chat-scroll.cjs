@@ -132,6 +132,18 @@ test('a jump to a found message leaves the bottom', async () => {
   } finally { f.window.__dxfChatScrollOff(); await f.task; }
 });
 
+test('sending a message from history goes to the bottom', async () => {
+  const f = fixture();
+  try {
+    f.scroll(300);
+    f.window.__dxfChatScrollFollow();
+    assert.equal(f.node.scrollTop, f.bottom());
+    f.setRows([...f.rows(), f.row('mine', 80)]);
+    f.resize();
+    assert.equal(f.node.scrollTop, f.bottom(), 'and stays there for the message when it lands');
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
 test('a trackpad leaves the bottom in small steps and nothing pulls it back', async () => {
   const f = fixture();
   try {
@@ -198,6 +210,7 @@ test('unmounting closes the bridge while Rust is silent', async () => {
   assert.equal(f.node.listeners.size, 0);
   assert.equal(f.window.listeners.size, 0);
   assert.equal(f.window.__dxfChatScrollMeasure, null);
+  assert.equal(f.window.__dxfChatScrollFollow, null);
 });
 
 test('the scroller is shown again once pinned', () => {
