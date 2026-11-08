@@ -1623,7 +1623,7 @@ fn ChatImage(address: String, preview: Option<String>, upload_pending: bool) -> 
         } else {
             div {
                 class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                style: "max-width: min(320px, 82vw); width: 280px; height: 120px;",
+                style: "{super::image_attachment::FRAME} width: 280px;",
                 {crate::i18n::text("Loading image…", &[])}
             }
         }
