@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync('client/src/features/chat.rs', 'utf8').match(/const SCROLL_JS: &str = r#"([\s\S]*?)"#;/)[1];
+const chat = fs.readFileSync('client/src/features/chat.rs', 'utf8');
+const source = chat.match(/const SCROLL_JS: &str = r#"([\s\S]*?)"#;/)[1];
 
 // Rows are laid out top to bottom; the scroller's top edge sits at y = 0.
 function fixture(heights = Array(20).fill(100), viewport = 500) {
@@ -153,4 +154,10 @@ test('unmounting closes the bridge while Rust is silent', async () => {
   assert.equal(f.done(), true);
   assert.equal(f.node.listeners.size, 0);
   assert.equal(f.window.__dxfChatScrollMeasure, null);
+});
+
+test('the scroller is shown again once pinned', () => {
+  // Dioxus restores a style property the new string leaves out (trap 31).
+  const line = chat.split('\n').find(l => l.includes('visibility: hidden'));
+  assert.match(line, /visibility: visible/);
 });

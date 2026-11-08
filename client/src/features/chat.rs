@@ -529,7 +529,8 @@ pub fn ChatView() -> Element {
                 div { id: "dxf-chat-scroll",
                 "data-chat-channel": selected_channel.map(|c| c.to_string()).unwrap_or_default(),
                 // Hidden until the bridge has pinned it: the first render paints before any eval runs.
-                style: if scroll_ready() || !virtual_enabled() { "overflow-anchor: none;" } else { "overflow-anchor: none; visibility: hidden;" },
+                // `visible` is spelled out: a property left out of a new style is restored (trap 31).
+                style: if scroll_ready() || !virtual_enabled() { "overflow-anchor: none; visibility: visible;" } else { "overflow-anchor: none; visibility: hidden;" },
                 onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
