@@ -16,7 +16,9 @@ async function chatBridge() {
     removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name); } });
   let node = element('one'), content = {}, frames = [], resize, mutation;
   const samples = [];
-  const window = {};
+  const window = { listeners: new Map(),
+    addEventListener(name, fn) { this.listeners.set(name, fn); },
+    removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name); } };
   let closed = false;
   const run = vm.runInNewContext('(async function(window, document, dioxus) {' + script + '})', {
     requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
@@ -48,7 +50,7 @@ async function chatBridge() {
   node = element('one');
   window.__dxfChatScrollMeasure();
   assert.equal(old.listeners.size, 0, 'a remounted scroller releases the old one');
-  assert.equal(node.listeners.size, 1);
+  assert.equal(node.listeners.size, 5, 'scroll and the inputs that say a person moved it');
   assert(resize.nodes.has(node) && !resize.nodes.has(old));
   assert(mutation.nodes.has(node) && !mutation.nodes.has(old));
   assert.equal(node.scrollTop, 1000);
@@ -60,6 +62,7 @@ async function chatBridge() {
   await lifetime;
   assert.equal(closed, true, 'unmount closes the eval even while Rust is silent');
   assert.equal(node.listeners.size, 0);
+  assert.equal(window.listeners.size, 0);
   assert.equal(resize.nodes.size, 0);
   assert.equal(mutation.nodes.size, 0);
   assert.equal(frames.length, 0);

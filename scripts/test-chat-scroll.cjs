@@ -37,7 +37,9 @@ function fixture(heights = Array(20).fill(100), viewport = 500) {
     removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name); },
   };
   const content = {};
-  const window = {};
+  const window = { listeners: new Map(),
+    addEventListener(name, fn) { this.listeners.set(name, fn); },
+    removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name); } };
   let done = false;
   const task = vm.runInNewContext(`(function(){${source}})()`, {
     window,
@@ -56,6 +58,9 @@ function fixture(heights = Array(20).fill(100), viewport = 500) {
     resize: () => resized(), retitle: () => switched(),
     // The browser's scroll event, dispatched a frame after the move.
     scroll: value => { if (value !== undefined) top = value; node.listeners.get('scroll')(); },
+    // Layout clamping a scroller whose content shrank, with no event yet.
+    clamp: () => { top = Math.min(top, node.scrollHeight - node.clientHeight); },
+    input: (name, event = {}) => node.listeners.get(name)({ target: node, ...event }),
     frame: () => { const pending = frames.splice(0); pending.forEach(fn => fn()); },
     done: () => done,
   };
@@ -86,6 +91,44 @@ test('late images and new messages keep the bottom without a visible frame', asy
     assert.equal(f.node.scrollTop, f.bottom(), 'growth seen first by a scroll event is not leaving');
     f.resize();
     assert.equal(f.node.scrollTop, f.bottom());
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
+test('an image swapped in and loaded before the scroll event keeps the bottom', async () => {
+  const f = fixture();
+  try {
+    f.rows()[19].h = 0;
+    f.clamp();
+    f.rows()[19].h = 340;
+    f.scroll();
+    assert.equal(f.node.scrollTop, f.bottom(), 'the clamp is not the reader leaving');
+    f.setRows([...f.rows(), f.row('row-20', 80)]);
+    f.resize();
+    assert.equal(f.node.scrollTop, f.bottom());
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
+test('a wheel up while an image loads leaves the bottom', async () => {
+  const f = fixture();
+  try {
+    f.rows()[19].h = 340;
+    f.input('wheel', { deltaY: -120 });
+    f.scroll(f.node.scrollTop - 120);
+    const reading = f.node.scrollTop;
+    f.setRows([...f.rows(), f.row('row-20', 80)]);
+    f.resize();
+    assert.equal(f.node.scrollTop, reading);
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
+test('a jump to a found message leaves the bottom', async () => {
+  const f = fixture();
+  try {
+    f.window.__dxfChatScrollLeave();
+    f.scroll(400);
+    f.setRows([...f.rows(), f.row('row-20', 80)]);
+    f.resize();
+    assert.equal(f.node.scrollTop, 400);
   } finally { f.window.__dxfChatScrollOff(); await f.task; }
 });
 
@@ -153,6 +196,7 @@ test('unmounting closes the bridge while Rust is silent', async () => {
   await f.task;
   assert.equal(f.done(), true);
   assert.equal(f.node.listeners.size, 0);
+  assert.equal(f.window.listeners.size, 0);
   assert.equal(f.window.__dxfChatScrollMeasure, null);
 });
 

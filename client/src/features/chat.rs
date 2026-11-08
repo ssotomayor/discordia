@@ -29,8 +29,8 @@ const GROUP_WINDOW_SECS: i64 = 300;
 const SCROLL_JS: &str = r#"
 return (async function () {
   if (window.__dxfChatScrollOff) window.__dxfChatScrollOff();
-  let node = null, content, channel, following = true, lastTop = 0, anchor = null;
-  let alive = true, wake = null, frame = null;
+  let node = null, content, channel, following = true, lastTop = 0, lastHeight = 0, anchor = null;
+  let alive = true, wake = null, frame = null, intent = 0, dragging = false;
   // Both callbacks run after layout and before paint, so a correction made in
   // them is never seen; a round trip through Rust always showed a frame first.
   const resize = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settle()) : null;
@@ -40,9 +40,9 @@ return (async function () {
     const el = document.getElementById('dxf-chat-scroll');
     if (!el) return false;
     if (el !== node) {
-      if (node) node.removeEventListener('scroll', onScroll);
+      if (node) for (const name in inputs) node.removeEventListener(name, inputs[name]);
       node = el; content = undefined; channel = undefined;
-      node.addEventListener('scroll', onScroll, { passive: true });
+      for (const name in inputs) node.addEventListener(name, inputs[name], { passive: true });
       if (switched) {
         switched.disconnect();
         switched.observe(node, { attributes: true, attributeFilter: ['data-chat-channel'] });
@@ -99,35 +99,53 @@ return (async function () {
     if (cid !== channel) { channel = cid; following = true; anchor = null; }
     if (following) node.scrollTop = node.scrollHeight; else hold();
     lastTop = node.scrollTop;
+    lastHeight = node.scrollHeight;
     anchor = capture();
     report();
   };
-  // A scroll event can land before the resize callback of the same frame, so
-  // growth below reads as distance from the bottom; only moving up leaves it.
+  // Content shrinking clamps the scroller up too, and an image loading before
+  // this event then reads as a reader far above: only a person leaves the bottom.
   const onScroll = () => {
     if (!alive || !node || !node.clientHeight) return;
-    const top = node.scrollTop;
-    const gap = node.scrollHeight - top - node.clientHeight;
-    const up = top < lastTop - 1;
+    const top = node.scrollTop, height = node.scrollHeight;
+    const gap = height - top - node.clientHeight;
+    const meant = top < lastTop - 1
+      && (dragging || Date.now() - intent < 400 || Math.abs(height - lastHeight) < 1);
     const was = following;
-    following = gap <= 40 || (following && !up);
-    if (following && !up && gap > 1) node.scrollTop = node.scrollHeight;
+    following = gap <= 40 || (following && !meant);
+    if (following && !meant && gap > 1) node.scrollTop = node.scrollHeight;
     else if (!was && !following) hold();
     lastTop = node.scrollTop;
+    lastHeight = node.scrollHeight;
     anchor = capture();
     report();
   };
+  const reach = () => { intent = Date.now(); };
+  const inputs = {
+    scroll: onScroll,
+    wheel: e => { if (e.deltaY < 0) reach(); },
+    touchmove: reach,
+    keydown: e => { if (['PageUp', 'ArrowUp', 'Home'].includes(e.key) && !e.target.isContentEditable) reach(); },
+    pointerdown: e => { if (e.target === node || e.button === 1) dragging = true; },
+  };
+  const release = () => { dragging = false; };
   const off = () => {
     alive = false;
     if (wake) wake();
     if (frame !== null) cancelAnimationFrame(frame);
     if (resize) resize.disconnect();
     if (switched) switched.disconnect();
-    if (node) node.removeEventListener('scroll', onScroll);
+    if (node) for (const name in inputs) node.removeEventListener(name, inputs[name]);
+    window.removeEventListener('pointerup', release);
+    window.removeEventListener('pointercancel', release);
     window.__dxfChatScrollMeasure = null;
+    window.__dxfChatScrollLeave = null;
     window.__dxfChatScrollOff = null;
   };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
   window.__dxfChatScrollMeasure = settle;
+  window.__dxfChatScrollLeave = () => { following = false; reach(); };
   window.__dxfChatScrollOff = off;
   dioxus.send(true);
   settle();
@@ -669,6 +687,7 @@ const JUMP_JS: &str = r#"function (page, row) {
   let tries = 0;
   const step = () => {
     const el = document.querySelector('[data-chat-row="' + row + '"]');
+    if (window.__dxfChatScrollLeave) window.__dxfChatScrollLeave();
     if (el) {
       el.scrollIntoView({ block: 'center' });
       const glow = getComputedStyle(el).getPropertyValue('--accent-soft').trim();
