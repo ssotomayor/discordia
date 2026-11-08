@@ -347,6 +347,7 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
         div { class: "dxf-mobile-workspace flex-1 min-h-0 min-w-0 flex flex-col h-full w-full overflow-hidden",
             div { id: "{pager_id}", class: if cfg!(target_os = "android") { "dxf-mobile-pager" } else { "flex-1 min-h-0 w-full overflow-hidden relative" },
                 "data-mobile-tab": "{tab_index(current)}",
+                "data-mobile-dm": "{state.read().dm_mode}",
                 MobilePanel { active: current == MobileTab::Channels, name: "channels", paged: cfg!(target_os = "android"),
                     div { class: "flex h-full w-full overflow-hidden bg-[var(--bg)]",
                         div { class: "dxf-mobile-server-column w-16 shrink-0 h-full border-r border-[var(--border)] overflow-y-auto flex flex-col items-center py-2",

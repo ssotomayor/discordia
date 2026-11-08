@@ -8,6 +8,7 @@ let timer;
 let touching = false;
 let preview = false;
 let moving = false;
+let requested = null;
 let closed = false;
 let width = pager.clientWidth;
 const index = () => Math.max(0, Math.min(2, Number(pager.dataset.mobileTab) || 0));
@@ -18,6 +19,14 @@ const clearPreview = () => {
 const settle = () => {
   clearTimeout(timer);
   if (closed || touching || !pager.clientWidth) return;
+  // Late scrollend events belong to the old animation, not a new selection.
+  if (requested !== null) {
+    const left = requested * pager.clientWidth;
+    requested = null;
+    if (Math.abs(pager.scrollLeft - left) > 1) pager.scrollTo({left, behavior: 'auto'});
+    clearPreview();
+    return;
+  }
   const target = Math.max(0, Math.min(2, Math.round(pager.scrollLeft / pager.clientWidth)));
   if (Math.abs(pager.scrollLeft - target * pager.clientWidth) > 1) {
     pager.scrollTo({left: target * pager.clientWidth, behavior: 'auto'});
@@ -35,14 +44,18 @@ const scroll = () => {
   clearTimeout(timer);
   if (!touching) timer = setTimeout(settle, 140);
 };
-const start = () => { touching = true; clearTimeout(timer); };
+const start = () => { touching = true; requested = null; clearTimeout(timer); };
 const end = event => {
   touching = event.touches.length > 0;
   if (!touching) { clearTimeout(timer); timer = setTimeout(settle, 140); }
 };
 const sync = () => {
+  clearTimeout(timer);
+  requested = index();
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  pager.scrollTo({left: index() * pager.clientWidth, behavior: reduced ? 'auto' : 'smooth'});
+  const instant = reduced || pager.dataset.mobileDm === 'true';
+  pager.scrollTo({left: requested * pager.clientWidth, behavior: instant ? 'auto' : 'smooth'});
+  if (!touching) timer = setTimeout(settle, 140);
 };
 const changed = new MutationObserver(sync);
 changed.observe(pager, {attributes: true, attributeFilter: ['data-mobile-tab']});
@@ -50,6 +63,7 @@ const resized = new ResizeObserver(() => {
   if (pager.clientWidth && pager.clientWidth !== width) {
     width = pager.clientWidth;
     touching = false;
+    requested = null;
     clearTimeout(timer);
     pager.scrollTo({left: index() * width, behavior: 'auto'});
     clearPreview();
