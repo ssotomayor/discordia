@@ -1542,9 +1542,27 @@ fn occupant_diagnostics_tooltip(
         Some(crate::state::ConnectionHealth::Lost) => {
             crate::i18n::text("Connection: Disrupted", &[])
         }
-        None => crate::i18n::text("Connection: Unavailable", &[]),
+        None => match stats {
+            Some(crate::state::TrackStats::Inbound {
+                recent_loss_pct: Some(loss),
+                ..
+            }) if loss.is_finite() && (0.0..100.0).contains(&loss) => {
+                crate::i18n::text("Connection: Receiving audio", &[])
+            }
+            Some(crate::state::TrackStats::Outbound {
+                packets_per_sec: Some(packets),
+                ..
+            }) if is_self && packets > 0 => crate::i18n::text("Connection: Sending audio", &[]),
+            _ => crate::i18n::text("Connection: Unavailable", &[]),
+        },
     };
     lines.push(quality_desc);
+    if health.is_none() {
+        lines.push(crate::i18n::text(
+            "Quality rating: Not reported by server",
+            &[],
+        ));
+    }
 
     if let Some(ping) = ping_ms {
         lines.push(crate::i18n::text(
@@ -2602,6 +2620,80 @@ mod tests {
         assert!(text.contains("Connection: Unavailable"));
         assert!(!text.contains("Loss:"));
         assert!(!text.contains("ping"));
+    }
+
+    #[test]
+    fn receiving_audio_does_not_require_a_server_quality_rating() {
+        let stats = crate::state::TrackStats::Inbound {
+            loss_pct: 0.0,
+            recent_loss_pct: Some(0.0),
+            discarded_packets: Some(0),
+            concealed_pct: Some(0.0),
+            jitter_ms: 1.0,
+            buffer_ms: 32.0,
+            concealment_events: 0,
+        };
+        let text = occupant_diagnostics_tooltip(None, Some(stats), Some(41), false);
+        assert!(text.contains("Connection: Receiving audio"));
+        assert!(text.contains("Quality rating: Not reported by server"));
+        assert!(text.contains("Loss: 0.0% recent"));
+        assert!(!text.contains("Connection: Unavailable"));
+        let reported = occupant_diagnostics_tooltip(
+            Some(crate::state::ConnectionHealth::Poor),
+            Some(stats),
+            Some(41),
+            false,
+        );
+        assert!(reported.contains("Connection: Reduced"));
+        assert!(!reported.contains("Receiving audio"));
+        assert!(!reported.contains("Not reported"));
+    }
+
+    #[test]
+    fn cumulative_counters_and_server_ping_do_not_prove_current_reception() {
+        for recent in [None, Some(f32::NAN), Some(-1.0), Some(100.0), Some(101.0)] {
+            let text = occupant_diagnostics_tooltip(
+                None,
+                Some(crate::state::TrackStats::Inbound {
+                    loss_pct: 0.0,
+                    recent_loss_pct: recent,
+                    discarded_packets: None,
+                    concealed_pct: None,
+                    jitter_ms: 1.0,
+                    buffer_ms: 32.0,
+                    concealment_events: 0,
+                }),
+                Some(41),
+                false,
+            );
+            assert!(text.contains("Connection: Unavailable"));
+        }
+    }
+
+    #[test]
+    fn sending_audio_does_not_claim_a_delivery_or_quality_rating() {
+        for packets in [None, Some(0), Some(50)] {
+            let text = occupant_diagnostics_tooltip(
+                None,
+                Some(crate::state::TrackStats::Outbound {
+                    bitrate_kbps: Some(64),
+                    packets_per_sec: packets,
+                    target_kbps: 64,
+                    loss_pct: None,
+                }),
+                Some(41),
+                true,
+            );
+            assert!(text.contains(if packets == Some(50) {
+                "Connection: Sending audio"
+            } else {
+                "Connection: Unavailable"
+            }));
+            assert!(text.contains("Quality rating: Not reported by server"));
+            assert!(!text.contains("Connection: Good"));
+            assert!(!text.contains("Connection: Excellent"));
+            assert!(!text.contains("Loss:"));
+        }
     }
 }
 
