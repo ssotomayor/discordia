@@ -256,8 +256,11 @@ fn upload_limit(state: &crate::state::AppState, channel_id: Id) -> usize {
         .min(crate::protocol::MAX_GUILD_UPLOAD_BYTES as u64) as usize
 }
 
+/// A dropped file: its path, and its bytes if they could be read during the drop.
+type Dropped = (std::path::PathBuf, Option<std::sync::Arc<Vec<u8>>>);
+
 fn load_attachment(
-    path: Option<std::path::PathBuf>,
+    dropped: Option<Dropped>,
     max_bytes: usize,
     mut pending: Signal<Option<PendingImage>>,
     mut error: Signal<Option<String>>,
@@ -266,13 +269,14 @@ fn load_attachment(
     let request = generation.peek().wrapping_add(1);
     generation.set(request);
     spawn(async move {
-        let name = path
+        let name = dropped
             .as_ref()
-            .and_then(|p| p.file_name())
+            .and_then(|(p, _)| p.file_name())
             .map(|name| name.to_string_lossy().into_owned());
         let result = tokio::task::spawn_blocking(move || {
-            let url = match path {
-                Some(path) => crate::chat_image::read_file_with_limit(&path, max_bytes)?,
+            let url = match dropped {
+                Some((_, Some(bytes))) => crate::chat_image::from_dropped_bytes(&bytes, max_bytes)?,
+                Some((path, None)) => crate::chat_image::read_file_with_limit(&path, max_bytes)?,
                 None => crate::chat_image::read_clipboard(max_bytes)?,
             };
             let preview = crate::chat_image::preview_data_url(&url).ok().flatten();
@@ -381,7 +385,7 @@ pub fn ChatView() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
     let mut drag_over = use_signal(|| false);
-    let mut dropped_file = use_signal::<Option<std::path::PathBuf>>(|| None);
+    let mut dropped_file = use_signal::<Option<Dropped>>(|| None);
 
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
@@ -551,7 +555,9 @@ pub fn ChatView() -> Element {
                 drag_over.set(false);
                 if drop_id == "dxf-chat-drop"
                     && let Some(file) = event.files().into_iter().next() {
-                    dropped_file.set(Some(file.path()));
+                    let path = file.path();
+                    let bytes = crate::chat_image::read_dropped(&path);
+                    dropped_file.set(Some((path, bytes)));
                 }
             },
 
@@ -1242,16 +1248,11 @@ pub(super) fn MessageRow(
                 if state.read().dm_images.contains_key(&message_id) {
                     super::dm_images::EncryptedImage { channel_id, message_id }
                 }
-                if let Some(metadata) = message.image_metadata.as_ref() {
+                if let Some(name) = message.image_metadata.as_ref().and_then(|metadata| metadata.name.as_ref()) {
                     div {
                         class: "mt-1 text-[10px] text-[var(--text-dim)]",
                         style: "max-width:20rem;overflow-wrap:anywhere;",
-                        if let Some(name) = metadata.name.as_ref() {
-                            span { "{name}" }
-                        }
-                        if let (Some(width), Some(height)) = (metadata.width, metadata.height) {
-                            span { {crate::i18n::text(" · {0} × {1} px", &[(width).to_string(), (height).to_string()])} }
-                        }
+                        "{name}"
                     }
                 }
                 if let Some(invite) = voice_invite.clone() {
@@ -2793,7 +2794,7 @@ fn composer_focus_key(state: &crate::state::AppState, channel_id: Id) -> (bool, 
 fn Composer(
     channel_id: Id,
     composer_label: String,
-    mut dropped_file: Signal<Option<std::path::PathBuf>>,
+    mut dropped_file: Signal<Option<Dropped>>,
 ) -> Element {
     let mut state = use_app_state();
     let replying_to = use_memo(move || {
@@ -2854,10 +2855,10 @@ fn Composer(
 
     let mut generation = use_signal(|| 0_u64);
     use_effect(move || {
-        if let Some(path) = dropped_file() {
+        if let Some(dropped) = dropped_file() {
             dropped_file.set(None);
             load_attachment(
-                Some(path),
+                Some(dropped),
                 upload_limit(&state.peek(), channel_id),
                 pending_image,
                 attach_err,

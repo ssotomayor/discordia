@@ -62,6 +62,29 @@ pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, Str
     compress_image_file(path, max_bytes)
 }
 
+/// Read in the drop handler itself: a screenshot dragged from macOS's thumbnail
+/// sits in a temporary folder that is emptied moments after the drop.
+pub fn read_dropped(path: &Path) -> Option<std::sync::Arc<Vec<u8>>> {
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_INPUT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_INPUT_FILE_BYTES).then(|| std::sync::Arc::new(bytes))
+}
+
+pub fn from_dropped_bytes(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    let max_bytes = max_bytes.min(MAX_DM_BYTES);
+    if bytes.len() <= max_bytes {
+        from_bytes_with_limit(bytes, max_bytes)
+    } else {
+        compress_image_bytes(bytes, max_bytes)
+    }
+}
+
 fn compress_image_file(path: &Path, max_bytes: usize) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
     let mut bytes = Vec::new();
@@ -366,6 +389,26 @@ mod tests {
         assert_eq!(read_file(&path), Err(TOO_LARGE.into()));
         assert!(read_file_with_limit(&path, 5_000_000).is_ok());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_dropped_screenshot_survives_its_file_being_removed() {
+        let path =
+            std::env::temp_dir().join(format!("discordia-drop-{}.png", uuid::Uuid::new_v4()));
+        let url = rgba_png_with_limit(4, 4, &[200; 4 * 4 * 4], MAX_BYTES).unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let bytes = read_dropped(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(read_file_with_limit(&path, MAX_BYTES).is_err());
+        assert!(
+            from_dropped_bytes(&bytes, MAX_BYTES)
+                .unwrap()
+                .starts_with("data:image/png")
+        );
+        assert!(read_dropped(&path).is_none());
     }
 
     #[test]

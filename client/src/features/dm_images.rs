@@ -191,11 +191,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                     },
                 }
             }
-            EncryptedImageDetails {
-                name: details_name,
-                width: details_width,
-                height: details_height,
-            }
+            EncryptedImageDetails { name: details_name }
         };
     }
     let label = match &status {
@@ -237,29 +233,18 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                 }
             }
         }
-        EncryptedImageDetails {
-            name: details_name,
-            width: details_width,
-            height: details_height,
-        }
+        EncryptedImageDetails { name: details_name }
     }
 }
 
 #[component]
-fn EncryptedImageDetails(name: Option<String>, width: Option<u32>, height: Option<u32>) -> Element {
-    let dimensions = width.zip(height);
-    if name.is_none() && dimensions.is_none() {
-        return rsx! {};
-    }
+fn EncryptedImageDetails(name: Option<String>) -> Element {
     rsx! {
-        div {
-            class: "mt-1 text-[10px] text-[var(--text-dim)]",
-            style: "max-width:20rem;overflow-wrap:anywhere;",
-            if let Some(name) = name {
-                span { "{name}" }
-            }
-            if let Some((width, height)) = dimensions {
-                span { {crate::i18n::text(" · {0} × {1} px", &[(width).to_string(), (height).to_string()])} }
+        if let Some(name) = name {
+            div {
+                class: "mt-1 text-[10px] text-[var(--text-dim)]",
+                style: "max-width:20rem;overflow-wrap:anywhere;",
+                "{name}"
             }
         }
     }

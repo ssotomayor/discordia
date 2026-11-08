@@ -670,7 +670,6 @@
   " (you)": [" (tú)", " (você)", " （您）", " (あなた)"],
   " · via {0}": [" · mediante {0}", " · via {0}", " · 通过 {0}", " · {0} 経由"],
   " · {0} watching": [" · {0} mirando", " · {0} assistindo", " · {0} 观看", " · {0} を見ています"],
-  " · {0} × {1} px": [" · {0} × {1} px", " · {0} × {1} px", " · {0} × {1} 像素", " · {0} × {1} ピクセル"],
   "\"End to end\" means whoever forwards it cannot read it. \"In transit\" means the wire is encrypted but an endpoint on the path can.": ["«De extremo a extremo» significa que quien lo retransmite no puede leerlo. «En tránsito» significa que la conexión está cifrada, pero un extremo del recorrido puede leerlo.", "“De ponta a ponta” significa que quem retransmite não pode ler. “Em trânsito” significa que a conexão é criptografada, mas uma ponta do caminho pode ler.", "“端到端”意味着转发者无法阅读。 “传输中”意味着线路已加密，但路径上的端点可以加密。", "「エンドツーエンド」とは、転送した人がそれを読むことができないことを意味します。 「転送中」とは、ワイヤは暗号化されていますが、パス上のエンドポイントは暗号化できることを意味します。"],
   "# Text": ["# Texto", "# Texto", "# 文本", "# テキスト"],
   "+ Add": ["+ Agregar", "+ Adicionar", "+ 添加", "+ 追加"],
