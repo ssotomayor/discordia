@@ -4,7 +4,7 @@ const {test} = require('node:test');
 const vm = require('node:vm');
 const source = readFileSync('client/assets/mobile-pager.js', 'utf8').replace('__PAGER_ID__', '"pager"');
 
-async function fixture(initial = 0, reduced = false) {
+async function fixture(initial = 0, reduced = false, deferredSmooth = false) {
   const listeners = new Map();
   const timers = new Map();
   const sent = [];
@@ -14,7 +14,10 @@ async function fixture(initial = 0, reduced = false) {
   let hide;
   const pager = {
     clientWidth: 400, scrollLeft: 0, dataset: {mobileTab: String(initial)},
-    scrollTo(options) { calls.push(options); this.scrollLeft = options.left; },
+    scrollTo(options) {
+      calls.push(options);
+      if (!deferredSmooth || options.behavior !== 'smooth') this.scrollLeft = options.left;
+    },
     addEventListener(name, callback) { listeners.set(name, callback); },
     removeEventListener(name, callback) { if (listeners.get(name) === callback) listeners.delete(name); },
   };
@@ -119,6 +122,53 @@ test('resize preserves the selected page and reduced motion avoids smooth animat
   f.pager.dataset.mobileTab = '1';
   f.observers[0].callback();
   assert.equal(f.calls.at(-1).behavior, 'auto');
+  await f.close();
+});
+
+test('an old scrollend cannot undo opening a selected conversation', async () => {
+  const f = await fixture(0, false, true);
+  f.fire('touchstart'); f.fire('touchend');
+  f.pager.dataset.mobileTab = '1';
+  f.observers[0].callback();
+  f.fire('scrollend');
+  f.tick();
+  assert.ok(!f.sent.some(event => event.type === 'select'));
+  assert.equal(f.pager.scrollLeft, 400);
+  await f.close();
+});
+
+test('opening DMs is immediate while swipes still select their destination', async () => {
+  const f = await fixture(0, false, true);
+  f.pager.dataset.mobileDm = 'true';
+  f.pager.dataset.mobileTab = '1'; f.observers[0].callback();
+  assert.equal(f.calls.at(-1).behavior, 'auto');
+  assert.equal(f.pager.scrollLeft, 400);
+  f.fire('scrollend');
+  f.fire('touchstart');
+  f.pager.scrollLeft = 0; f.fire('scroll');
+  f.fire('touchend'); f.fire('scrollend');
+  assert.ok(f.sent.some(event => event.type === 'select' && event.index === 0));
+  await f.close();
+});
+
+test('rapid button changes finish at the latest requested page', async () => {
+  const f = await fixture(0, false, true);
+  f.pager.dataset.mobileTab = '2'; f.observers[0].callback();
+  f.pager.scrollLeft = 400; f.fire('scroll');
+  f.pager.dataset.mobileTab = '0'; f.observers[0].callback();
+  f.fire('scrollend');
+  assert.ok(!f.sent.some(event => event.type === 'select'));
+  assert.equal(f.pager.scrollLeft, 0);
+  await f.close();
+});
+
+test('a new gesture can override an unfinished button animation', async () => {
+  const f = await fixture(0, false, true);
+  f.pager.dataset.mobileTab = '1'; f.observers[0].callback();
+  f.fire('touchstart');
+  f.pager.scrollLeft = 800; f.fire('scroll');
+  f.fire('touchend'); f.fire('scrollend');
+  assert.ok(f.sent.some(event => event.type === 'select' && event.index === 2));
   await f.close();
 });
 
