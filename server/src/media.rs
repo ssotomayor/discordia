@@ -26,13 +26,7 @@ pub fn image_metadata(url: &str, original_name: Option<&str>) -> crate::protocol
                 .decode(payload)
                 .ok()
         })
-        .and_then(|bytes| {
-            image::ImageReader::new(std::io::Cursor::new(bytes))
-                .with_guessed_format()
-                .ok()?
-                .into_dimensions()
-                .ok()
-        });
+        .and_then(|bytes| discordia_image_policy::shown_size(&bytes));
     crate::protocol::ImageMetadata {
         name,
         width: dimensions.map(|d| d.0),

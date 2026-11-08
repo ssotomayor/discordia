@@ -11,6 +11,7 @@ function fixture(heights = Array(20).fill(100), viewport = 500) {
   let rows = [], top = 0, resized = null, switched = null;
   const hidden = () => node.clientHeight === 0;
   const layout = () => { let y = 0; for (const row of rows) { row.y = y; y += row.h; } return y; };
+  let divider = null;
   const row = (id, h) => {
     const el = { h, y: 0, isConnected: true, dataset: { chatRow: id },
       getBoundingClientRect: () => hidden() ? { top: 0, bottom: 0, height: 0 }
@@ -31,7 +32,11 @@ function fixture(heights = Array(20).fill(100), viewport = 500) {
     },
     getBoundingClientRect: () => ({ top: 0 }),
     querySelectorAll: selector => (layout(), selector === '[data-chat-row]' ? rows : [page]),
-    querySelector: selector => rows.find(r => selector === '[data-chat-row="' + r.dataset.chatRow + '"]') || null,
+    querySelector: selector => {
+      if (selector === '[data-chat-unread]') return divider === null ? null : rows.find(r => r.dataset.chatRow === divider) || null;
+      if (selector === '[data-chat-row]') return rows[0] || null;
+      return rows.find(r => selector === '[data-chat-row="' + r.dataset.chatRow + '"]') || null;
+    },
     listeners: new Map(),
     addEventListener(name, fn) { this.listeners.set(name, fn); },
     removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name); },
@@ -53,7 +58,9 @@ function fixture(heights = Array(20).fill(100), viewport = 500) {
   const bottom = () => node.scrollHeight - node.clientHeight;
   return {
     node, window, samples, task, bottom, row,
-    rows: () => rows, setRows: next => { rows = next; },
+    rows: () => rows, setRows: (next, unread = divider) => { rows = next; divider = unread; },
+    // Rust re-rendering another conversation into the same scroller.
+    open: (cid, next, unread = null) => { node.dataset.chatChannel = cid; rows = next; divider = unread; switched(); },
     // What the engine does after layout and before paint.
     resize: () => resized(), retitle: () => switched(),
     // The browser's scroll event, dispatched a frame after the move.
@@ -155,7 +162,11 @@ test('a trackpad leaves the bottom in small steps and nothing pulls it back', as
     f.scroll(f.bottom() - 20);
     f.setRows([...f.rows(), f.row('row-21', 80)]);
     f.resize();
-    assert.equal(f.node.scrollTop, f.bottom(), 'returning near the bottom follows again');
+    assert.notEqual(f.node.scrollTop, f.bottom(), '20px above is still reading');
+    f.scroll(f.bottom() - 1);
+    f.setRows([...f.rows(), f.row('row-22', 80)]);
+    f.resize();
+    assert.equal(f.node.scrollTop, f.bottom(), 'within 2px of the bottom follows again');
   } finally { f.window.__dxfChatScrollOff(); await f.task; }
 });
 
@@ -187,6 +198,53 @@ test('switching conversations follows the bottom again in the same frame', async
     assert.equal(f.node.scrollTop, f.bottom());
     f.frame();
     assert.equal(f.samples.at(-1).channel, 'two');
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
+test('a conversation reopens where it was left, or at the bottom if it was there', async () => {
+  const f = fixture();
+  try {
+    const one = f.rows();
+    const two = Array.from({ length: 30 }, (_, i) => f.row('two-' + i, 60));
+    f.input('wheel', { deltaY: -100 });
+    f.scroll(1000);
+    const line = () => one.find(r => r.dataset.chatRow === 'row-10').getBoundingClientRect().top;
+    const before = line();
+    f.open('two', two);
+    assert.equal(f.node.scrollTop, f.bottom());
+    f.open('one', one);
+    assert.equal(line(), before, 'the reading line comes back');
+    f.setRows([...one, f.row('row-20', 80)]);
+    f.resize();
+    assert.equal(line(), before, 'and it was not following');
+    f.open('two', two);
+    f.open('one', f.rows());
+    f.scroll(f.bottom());
+    f.open('two', two);
+    f.open('one', f.rows());
+    assert.equal(f.node.scrollTop, f.bottom(), 'left at the bottom, opens at the bottom');
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
+test('an unread conversation opens at its first new message', async () => {
+  const f = fixture();
+  try {
+    f.open('two', Array.from({ length: 40 }, (_, i) => f.row('two-' + i, 60)), 'two-12');
+    const divider = f.rows().find(r => r.dataset.chatRow === 'two-12');
+    assert.equal(divider.getBoundingClientRect().top, 125, 'a quarter down the view');
+    f.setRows([...f.rows(), f.row('two-40', 60)]);
+    f.resize();
+    assert.equal(divider.getBoundingClientRect().top, 125, 'what arrives below does not move it');
+  } finally { f.window.__dxfChatScrollOff(); await f.task; }
+});
+
+test('a conversation opened before its history arrives is placed when it does', async () => {
+  const f = fixture();
+  try {
+    f.open('three', []);
+    f.setRows(Array.from({ length: 30 }, (_, i) => f.row('three-' + i, 60)), 'three-5');
+    f.resize();
+    assert.equal(f.rows()[5].getBoundingClientRect().top, 125);
   } finally { f.window.__dxfChatScrollOff(); await f.task; }
 });
 

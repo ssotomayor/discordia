@@ -30,7 +30,9 @@ const SCROLL_JS: &str = r#"
 return (async function () {
   if (window.__dxfChatScrollOff) window.__dxfChatScrollOff();
   let node = null, content, channel, following = true, lastTop = 0, lastHeight = 0, anchor = null;
-  let alive = true, wake = null, frame = null, intent = 0, dragging = false;
+  let alive = true, wake = null, frame = null, intent = 0, dragging = false, opening = null;
+  // Where each conversation was left, for the session: none means its bottom.
+  const saved = window.__dxfChatScrollSaved || (window.__dxfChatScrollSaved = new Map());
   // Both callbacks run after layout and before paint, so a correction made in
   // them is never seen; a round trip through Rust always showed a frame first.
   const resize = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settle()) : null;
@@ -68,7 +70,32 @@ return (async function () {
     if (!el) return null;
     const key = el.dataset.chatRow ? '[data-chat-row="' + el.dataset.chatRow + '"]'
       : '[data-chat-page="' + el.dataset.chatPage + '"]';
-    return { el, key, at: el.getBoundingClientRect().top - top + node.scrollTop };
+    const at = el.getBoundingClientRect().top - top + node.scrollTop;
+    const page = el.closest ? el.closest('[data-chat-page]') : null;
+    return { el, key, at, page: page && '[data-chat-page="' + page.dataset.chatPage + '"]',
+      inPage: page ? at - (page.getBoundingClientRect().top - top + node.scrollTop) : 0 };
+  };
+  const position = el => el.getBoundingClientRect().top - edge() + node.scrollTop;
+  const keep = () => {
+    if (channel === undefined || channel === null || opening) return;
+    if (following || !anchor) saved.delete(channel);
+    else saved.set(channel, { key: anchor.key, page: anchor.page, inPage: anchor.inPage,
+      offset: anchor.at - lastTop });
+  };
+  // Pinned until messages are there; then the first unread, else where it was
+  // left, else the bottom.
+  const place = () => {
+    if (!node.querySelector('[data-chat-row]')) return false;
+    const divider = node.querySelector('[data-chat-unread]');
+    const left = opening.saved;
+    const row = !divider && left ? node.querySelector(left.key) : null;
+    const page = !divider && left && !row && left.page ? node.querySelector(left.page) : null;
+    if (divider) node.scrollTop = position(divider) - node.clientHeight / 4;
+    else if (row) node.scrollTop = position(row) - left.offset;
+    else if (page) node.scrollTop = position(page) + left.inPage - left.offset;
+    else node.scrollTop = node.scrollHeight;
+    following = node.scrollHeight - node.scrollTop - node.clientHeight <= 2;
+    return true;
   };
   // How far the reading line moved in the content: layout, never scrolling.
   const drift = () => {
@@ -96,8 +123,14 @@ return (async function () {
   const settle = () => {
     if (!alive || !bind() || !node.clientHeight) return;
     const cid = node.dataset.chatChannel || null;
-    if (cid !== channel) { channel = cid; following = true; anchor = null; }
-    if (following) node.scrollTop = node.scrollHeight; else hold();
+    if (cid !== channel) {
+      keep();
+      channel = cid; following = true; anchor = null;
+      opening = cid === null ? null : { saved: saved.get(cid) || null };
+    }
+    if (opening) { if (place()) opening = null; else node.scrollTop = node.scrollHeight; }
+    else if (following) node.scrollTop = node.scrollHeight;
+    else hold();
     lastTop = node.scrollTop;
     lastHeight = node.scrollHeight;
     anchor = capture();
@@ -111,8 +144,9 @@ return (async function () {
     const gap = height - top - node.clientHeight;
     const meant = top < lastTop - 1
       && (dragging || Date.now() - intent < 400 || Math.abs(height - lastHeight) < 1);
+    if (meant) opening = null;
     const was = following;
-    following = gap <= 40 || (following && !meant);
+    following = gap <= 2 || (following && !meant);
     if (following && !meant && gap > 1) node.scrollTop = node.scrollHeight;
     else if (!was && !following) hold();
     lastTop = node.scrollTop;
@@ -130,6 +164,7 @@ return (async function () {
   };
   const release = () => { dragging = false; };
   const off = () => {
+    keep();
     alive = false;
     if (wake) wake();
     if (frame !== null) cancelAnimationFrame(frame);
@@ -146,8 +181,8 @@ return (async function () {
   window.addEventListener('pointerup', release);
   window.addEventListener('pointercancel', release);
   window.__dxfChatScrollMeasure = settle;
-  window.__dxfChatScrollLeave = () => { following = false; reach(); };
-  window.__dxfChatScrollFollow = () => { following = true; settle(); };
+  window.__dxfChatScrollLeave = () => { opening = null; following = false; reach(); };
+  window.__dxfChatScrollFollow = () => { opening = null; following = true; settle(); };
   window.__dxfChatScrollOff = off;
   dioxus.send(true);
   settle();
@@ -402,6 +437,15 @@ pub fn ChatView() -> Element {
     let typing_label = typing_label(&typers);
 
     let selected_memo = use_memo(move || state.read().selected_channel);
+    // Read in the render that opens the conversation, before anything marks it.
+    let unread_from = use_memo(move || {
+        let cid = selected_memo();
+        state
+            .peek()
+            .unread_from
+            .filter(|(id, _)| Some(*id) == cid)
+            .map(|(_, mark)| mark)
+    });
     let mut page_states =
         use_signal(std::collections::HashMap::<Id, super::chat_scroll::PageState>::new);
     let mut scroll_ready = use_signal(|| false);
@@ -486,6 +530,15 @@ pub fn ChatView() -> Element {
         .map(Vec::as_slice)
         .unwrap_or_default();
     let pages = page_states.read();
+    let me = Some(use_context::<crate::identity::Identity>().pubkey);
+    let first_unread = unread_from().and_then(|mark| {
+        messages
+            .iter()
+            .find(|m| {
+                m.created_at.timestamp_millis() > mark && Some(&m.author.pubkey) != me.as_ref()
+            })
+            .map(|m| m.id)
+    });
     rsx! {
         div { id: "{drop_id}", class: "relative flex flex-col h-full min-h-0",
             ondragover: move |event: DragEvent| {
@@ -589,10 +642,11 @@ pub fn ChatView() -> Element {
                                     let end = (start + PAGE_SIZE).min(messages.len());
                                     let id = messages[start].id;
                                     let page = pages.get(&id);
-                                    let active = !virtual_enabled() || page.map(|p| p.active).unwrap_or(end + PAGE_SIZE >= messages.len());
+                                    let opens_here = first_unread.is_some_and(|id| messages[start..end].iter().any(|m| m.id == id));
+                                    let active = !virtual_enabled() || page.map(|p| p.active).unwrap_or(end + PAGE_SIZE >= messages.len() || opens_here);
                                     let height = page.map(|p| p.height).unwrap_or((end - start) as f64 * 80.0);
                                     rsx! {
-                                        MessagePage { key: "{id}", id, channel_id: messages[start].channel_id, start, end, active, height, is_dm }
+                                        MessagePage { key: "{id}", id, channel_id: messages[start].channel_id, start, end, active, height, is_dm, first_unread }
                                     }
                                 }
                             }
@@ -626,6 +680,7 @@ fn MessagePage(
     active: bool,
     height: f64,
     is_dm: bool,
+    first_unread: Option<Id>,
 ) -> Element {
     let state = use_app_state();
     if !active {
@@ -659,6 +714,12 @@ fn MessagePage(
                         if is_dm { message.author.username = snapshot.display_name(&message.author.pubkey); }
                         rsx! {
                             div { key: "{msg.id}", "data-chat-row": "{msg.id}", style: "display: flow-root;",
+                                if first_unread == Some(msg.id) {
+                                    div { "data-chat-unread": "true", class: "flex items-center gap-2", style: "margin: 0.6rem 0 0.35rem;",
+                                        div { class: "flex-1", style: "height:1px; background-color: var(--danger);" }
+                                        span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--danger)]", {crate::i18n::text("New messages", &[])} }
+                                    }
+                                }
                                 if let Some(day) = day {
                                     div { class: "flex items-center gap-3", style: "margin: 0.85rem 0 0.6rem;",
                                         div { class: "flex-1", style: "height:1px; background: var(--border);" }
@@ -806,6 +867,14 @@ pub(super) fn MessageRow(
     let mut show_react = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
     let expires_at = super::voice_invite::message_expiry(&message);
+    // Only a message arriving now slides in: history mounting on open, or a page
+    // remounting on the way back up, is already there.
+    let arriving = use_hook(|| {
+        (chrono::Utc::now() - message.created_at)
+            .num_seconds()
+            .abs()
+            < 10
+    });
     let expiry_channel = message.channel_id;
     let expiry_id = message.id;
     use_future(move || async move {
@@ -1039,7 +1108,7 @@ pub(super) fn MessageRow(
             }
         }
         div {
-            class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
+            class: if arriving { "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in" } else { "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02]" },
             style: "{mention_style}",
             "data-context-message": "{message.content}",
 
@@ -1165,6 +1234,7 @@ pub(super) fn MessageRow(
                 if let Some(address) = message.image.as_ref() {
                     ChatImage {
                         address: address.clone(),
+                        size: message.image_metadata.as_ref().and_then(|metadata| metadata.width.zip(metadata.height)),
                         preview: message.image_metadata.as_ref().and_then(|metadata| metadata.preview.clone()),
                         upload_pending: message.image_metadata.as_ref().is_some_and(|metadata| metadata.upload_pending),
                     }
@@ -1586,7 +1656,12 @@ fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element 
 }
 
 #[component]
-fn ChatImage(address: String, preview: Option<String>, upload_pending: bool) -> Element {
+fn ChatImage(
+    address: String,
+    size: Option<(u32, u32)>,
+    preview: Option<String>,
+    upload_pending: bool,
+) -> Element {
     let mut state = use_app_state();
     let resolved = use_memo(use_reactive(
         (&address, &preview),
@@ -1615,6 +1690,7 @@ fn ChatImage(address: String, preview: Option<String>, upload_pending: bool) -> 
         if let Some(src) = resolved() {
             super::image_attachment::ImageAttachment {
                 source:src,
+                size,
                 zoomable: !upload_pending,
                 onclick: move |_| {
 
@@ -1630,8 +1706,8 @@ fn ChatImage(address: String, preview: Option<String>, upload_pending: bool) -> 
         } else {
             div {
                 class: "mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
-                style: "{super::image_attachment::FRAME} width: 280px;",
-                {crate::i18n::text("Loading image…", &[])}
+                style: "{super::image_attachment::frame(size)} overflow: hidden; min-height: 0;",
+                span { class: "dxf-late", {crate::i18n::text("Loading image…", &[])} }
             }
         }
     }

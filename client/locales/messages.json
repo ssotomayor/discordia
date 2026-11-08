@@ -376,6 +376,7 @@
   "Voice call not answered": ["Llamada sin respuesta", "Chamada não atendida", "语音呼叫未应答", "音声通話に応答しませんでした"],
   "Voice call": ["Llamada de voz", "Chamada de voz", "语音通话", "音声通話"],
   "New private message": ["Nuevo mensaje privado", "Nova mensagem privada", "新私人消息", "新しいプライベート メッセージ"],
+  "New messages": ["Mensajes nuevos", "Novas mensagens", "新消息", "新着メッセージ"],
   "Private messages": ["Mensajes privados", "Mensagens privadas", "私人消息", "プライベートメッセージ"],
   "DM notifications": ["Notificaciones de DM", "Notificações de DM", "DM 通知", "DM通知"],
   "Notify about new private messages while Discordia is running. Notifications may stop if Android closes the app.": ["Avisar de mensajes privados nuevos mientras Discordia está funcionando. Los avisos pueden dejar de llegar si Android cierra la app.", "Avisar sobre novas mensagens privadas enquanto o Discordia estiver funcionando. As notificações podem parar se o Android fechar o app.", "在 Discordia 运行时通知新的私人消息。如果 Android 关闭应用程序，通知可能会停止。", "Discordia の実行中に新しいプライベート メッセージについて通知します。 Android がアプリを閉じると、通知が停止する場合があります。"],

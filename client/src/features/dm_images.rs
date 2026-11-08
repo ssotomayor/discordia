@@ -179,6 +179,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             if let Some(src) = source() {
                 super::image_attachment::ImageAttachment {
                     source:src,
+                    size: details_width.zip(details_height),
                       zoomable:true,
                     onclick: move |_| {
 
@@ -209,10 +210,10 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     rsx! {
         div {
             class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex items-center justify-between",
-            // Every state holds the picture's frame: leaving a DM unloads its pictures,
+            // Every state holds the picture's box: leaving a DM unloads its pictures,
             // so each one passes through these on every visit.
-            style: "{super::image_attachment::FRAME} width: 280px;",
-            span { {crate::i18n::message(label)} }
+            style: "{super::image_attachment::frame(details_width.zip(details_height))} min-width: min(240px, 82vw); min-height: 48px;",
+            span { class: if matches!(status, Status::Loading(_)) { "dxf-late" } else { "" }, {crate::i18n::message(label)} }
             if matches!(status, Status::Failed(_) | Status::Evicted) {
                 button {
                     r#type: "button",

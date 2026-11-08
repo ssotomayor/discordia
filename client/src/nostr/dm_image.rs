@@ -396,11 +396,8 @@ pub fn encrypt(data_url: &str) -> Result<(Descriptor, Vec<u8>), String> {
         return Err("Unsupported image type.".into());
     }
     crate::chat_image::from_bytes_with_limit(&bytes, MAX_BYTES)?;
-    let format = image::guess_format(&bytes).map_err(|_| "Invalid image.")?;
     let (width, height) =
-        image::ImageReader::with_format(std::io::Cursor::new(bytes.as_slice()), format)
-            .into_dimensions()
-            .map_err(|_| "Could not read image dimensions.")?;
+        discordia_image_policy::shown_size(&bytes).ok_or("Could not read image dimensions.")?;
     let mut key = Zeroizing::new([0u8; 32]);
     let mut nonce = [0u8; 12];
     rand::rngs::OsRng.fill_bytes(key.as_mut());

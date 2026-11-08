@@ -428,6 +428,8 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
 .dxf-fade { animation: dxf-fade-in 0.2s var(--ease) both; }
+/* A wait shorter than this needs no word: most pictures arrive before it shows. */
+.dxf-late { animation: dxf-fade-in 0.2s var(--ease) 2s both; }
 
 .dx-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); border-top-color: var(--accent); display: inline-block; margin-right: 8px; animation: dxf-spin 1s linear infinite; }
 @keyframes dxf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

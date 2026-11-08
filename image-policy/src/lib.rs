@@ -49,6 +49,33 @@ fn preserve_png_color(bytes: &[u8]) -> bool {
     false
 }
 
+fn turned(orientation: image::metadata::Orientation) -> bool {
+    use image::metadata::Orientation::*;
+    matches!(
+        orientation,
+        Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH
+    )
+}
+
+/// The size a picture is shown at, which a rotated photo's stored size is not:
+/// a chat reserves this box before the picture loads.
+pub fn shown_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    reader.limits(limits());
+    let mut decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    Some(if turned(orientation) {
+        (height, width)
+    } else {
+        (width, height)
+    })
+}
+
 pub fn create(bytes: &[u8]) -> Result<Option<Preview>, String> {
     if bytes.len() > MAX_INPUT_BYTES {
         return Err("Image exceeds preview input limit.".into());
@@ -79,13 +106,7 @@ pub fn create(bytes: &[u8]) -> Result<Option<Preview>, String> {
         return Err("Too many image pixels.".into());
     }
     let orientation = decoder.orientation().map_err(|e| e.to_string())?;
-    let (w, h) = if matches!(
-        orientation,
-        image::metadata::Orientation::Rotate90
-            | image::metadata::Orientation::Rotate270
-            | image::metadata::Orientation::Rotate90FlipH
-            | image::metadata::Orientation::Rotate270FlipH
-    ) {
+    let (w, h) = if turned(orientation) {
         (height, width)
     } else {
         (width, height)

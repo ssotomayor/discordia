@@ -385,6 +385,9 @@ pub struct AppState {
     /// history the relays replay at launch does not raise an alert twice.
     pub dm_read_at: HashMap<String, i64>,
     pub read_marks_revision: u64,
+    /// The read mark a conversation had when it was last opened unread, in ms:
+    /// marking it read moves the mark, and the "New messages" line needs the old one.
+    pub unread_from: Option<(Id, i64)>,
     /// Author pubkey → seconds that author's clock runs ahead of ours, as
     /// measured on a live message. A DM carries the time its *sender* wrote on
     /// it, so without this a peer whose clock is a minute out has every reply
@@ -649,6 +652,7 @@ impl AppState {
             dm_clock_offset: HashMap::new(),
             dm_read_at: HashMap::new(),
             read_marks_revision: 0,
+            unread_from: None,
             muted_channels: HashSet::new(),
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
@@ -1765,10 +1769,23 @@ impl AppState {
     }
 
     pub fn mark_channel_read(&mut self, channel_id: Id) {
+        let mark = self
+            .server_origin
+            .as_ref()
+            .and_then(|server| self.channel_read_at.get(server)?.get(&channel_id).copied());
+        self.note_unread_from(channel_id, self.channel_unread.contains(&channel_id), mark);
         self.channel_unread.remove(&channel_id);
         self.channel_mentions.remove(&channel_id);
         if let Some(at) = self.channel_latest.get(&channel_id).copied() {
             self.advance_read_mark(channel_id, at);
+        }
+    }
+
+    fn note_unread_from(&mut self, channel_id: Id, unread: bool, mark: Option<i64>) {
+        if unread && let Some(mark) = mark {
+            self.unread_from = Some((channel_id, mark));
+        } else if self.unread_from.is_some_and(|(id, _)| id == channel_id) {
+            self.unread_from = None;
         }
     }
 
@@ -2109,10 +2126,17 @@ impl AppState {
     /// on the next launch — so this leaves the watermark `note_dm_arrival`
     /// reads.
     pub fn mark_dm_read(&mut self, channel_id: Id) {
+        let unread = self.dm_unread.get(&channel_id).is_some_and(|n| *n > 0);
         self.dm_unread.remove(&channel_id);
         let Some(peer) = self.dm_of(channel_id).map(|d| d.other_pubkey.clone()) else {
             return;
         };
+        // A DM mark is in seconds: everything after its second is new.
+        let mark = self
+            .dm_read_at
+            .get(&peer)
+            .map_or(i64::MIN, |at| at * 1000 + 999);
+        self.note_unread_from(channel_id, unread, Some(mark));
         let newest = self
             .messages
             .get(&channel_id)
@@ -3090,6 +3114,31 @@ mod tests {
 
     /// What arrived while the app was closed shows as unread on the next
     /// Ready, measured against marks only this machine holds.
+    #[test]
+    fn opening_an_unread_channel_keeps_the_mark_it_had() {
+        let guild = Id::new_v4();
+        let mut s = AppState::empty();
+        s.server_origin = Some("server-a".into());
+        let channel = text_channel(&mut s, guild);
+        let other = text_channel(&mut s, guild);
+        s.note_latest_messages(HashMap::from([(channel, 100), (other, 100)]));
+        s.note_latest_messages(HashMap::from([(channel, 250)]));
+        s.mark_channel_read(channel);
+        assert_eq!(
+            s.unread_from,
+            Some((channel, 100)),
+            "the mark before opening"
+        );
+        s.mark_channel_read(other);
+        assert_eq!(
+            s.unread_from,
+            Some((channel, 100)),
+            "another read channel leaves it"
+        );
+        s.mark_channel_read(channel);
+        assert_eq!(s.unread_from, None, "reopened once read, nothing is new");
+    }
+
     #[test]
     fn read_marks_outlive_the_session_and_meet_readys_newest_times() {
         let guild = Id::new_v4();

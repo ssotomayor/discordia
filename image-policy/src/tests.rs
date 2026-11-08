@@ -53,6 +53,9 @@ fn rotates_pixels_and_preserves_icc_profile() {
     oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
     oriented.extend_from_slice(exif);
     oriented.extend_from_slice(&jpeg[2..]);
+    assert_eq!(shown_size(&oriented), Some((800, 1200)));
+    assert_eq!(shown_size(&jpeg), Some((1200, 800)));
+    assert_eq!(shown_size(b"not an image"), None);
     let preview = create(&oriented).unwrap().unwrap();
     assert_eq!(preview.mime, "image/jpeg");
     let decoded = image::load_from_memory(&preview.bytes).unwrap().to_rgb8();
