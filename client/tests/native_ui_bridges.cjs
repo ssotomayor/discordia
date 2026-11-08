@@ -9,90 +9,60 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 async function chatBridge() {
   const source = fs.readFileSync(path.join(root, 'src/features/chat.rs'), 'utf8');
   const script = source.match(/const SCROLL_JS: &str = r#"([\s\S]*?)"#;/)[1];
-  const element = () => ({ scrollHeight: 1000, scrollTop: 300, clientHeight: 200,
-    listeners: new Map(), addEventListener(name, fn) { this.listeners.set(name, fn); },
+  const element = channel => ({ scrollHeight: 1000, scrollTop: 300, clientHeight: 200,
+    dataset: { chatChannel: channel }, listeners: new Map(),
+    getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [], querySelector: () => null,
+    addEventListener(name, fn) { this.listeners.set(name, fn); },
     removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name); } });
-  let pages = [], rows = [], scheduled, observer;
-  let node = element(), receive;
-  const geometry = target => {
-    target.getBoundingClientRect = () => ({ top: 0 });
-    target.querySelectorAll = selector => selector === '[data-chat-row]' ? rows : pages;
-  };
-  geometry(node);
+  let node = element('one'), content = {}, frames = [], resize, mutation;
   const samples = [];
   const window = {};
   let closed = false;
   const run = vm.runInNewContext('(async function(window, document, dioxus) {' + script + '})', {
-    requestAnimationFrame: fn => { scheduled = fn; return 1; },
-    cancelAnimationFrame: () => { scheduled = null; },
+    requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+    cancelAnimationFrame: () => { frames = []; },
     ResizeObserver: class {
-      constructor(fn) { this.callback = fn; this.nodes = new Set(); observer = this; }
+      constructor(fn) { this.callback = fn; this.nodes = new Set(); resize = this; }
       observe(node) { this.nodes.add(node); }
-      unobserve(node) { this.nodes.delete(node); }
+      disconnect() { this.nodes.clear(); }
+    },
+    MutationObserver: class {
+      constructor(fn) { this.callback = fn; this.nodes = new Set(); mutation = this; }
+      observe(node, options) { assert.deepEqual([...options.attributeFilter], ['data-chat-channel']); this.nodes.add(node); }
       disconnect() { this.nodes.clear(); }
     },
   });
-  const lifetime = run(window, { getElementById: () => node },
-    { send: value => samples.push(value), recv: () => new Promise(resolve => { receive = resolve; }) })
+  const lifetime = run(window,
+    { getElementById: id => id === 'dxf-chat-scroll' ? node : id === 'dxf-chat-content' ? content : null },
+    { send: value => samples.push(value), recv: () => new Promise(() => {}) })
     .then(() => { closed = true; });
   await tick();
   assert.equal(closed, false, 'Dioxus must keep the bidirectional channel open');
   assert.equal(samples.shift(), true);
-  window.__dxfChatScrollMeasure('channel', 'one');
-  const first = samples.pop();
-  assert.equal(node.scrollTop, 1000, 'opening a channel scrolls before waiting for Rust');
-  node.scrollTop = 300;
-  node.listeners.get('scroll')();
-  assert.equal(samples.pop().top, 300, 'manual scrolling replaces the initial position');
-  window.__dxfChatScrollMeasure('append', 'one');
-  const second = samples.pop();
-  receive({ channel: 'one', sequence: first.sequence, top: 1000 });
-  await tick();
-  assert.equal(node.scrollTop, 300, 'a late response cannot override a newer measurement');
-  receive({ channel: 'one', sequence: second.sequence, top: 900 });
-  await tick();
-  assert.equal(node.scrollTop, 900);
-  node.listeners.get('scroll')();
-  const manual = samples.pop();
-  assert.equal(manual.mode, 'scroll');
-  assert.equal(manual.top, 900);
-  let rowTop = 20;
-  const page = { dataset: { chatPage: 'page-one' }, getBoundingClientRect: () => ({ top: -100, bottom: 900, height: 1000 }) };
-  const row = { dataset: { chatRow: 'row-one' }, getBoundingClientRect: () => ({ top: rowTop, bottom: rowTop + 40, height: 40 }) };
-  pages = [page]; rows = [row];
-  window.__dxfChatScrollMeasure('append', 'one');
-  const measured = samples.pop();
-  assert.equal(measured.pages[0].height, 1000);
-  assert(observer.nodes.has(page));
-  rowTop += 200;
-  observer.callback(); observer.callback();
-  const resizeFrame = scheduled; scheduled = null;
-  resizeFrame();
-  const resizeSample = samples.pop();
-  assert.equal(resizeSample.mode, 'resize');
-  assert.equal(resizeSample.anchor_shift, 200, 'image and page reflow reports the actual reading-anchor movement');
-  pages = []; rows = [];
-  window.__dxfChatScrollMeasure('channel', 'two');
-  assert(!observer.nodes.has(page), 'removed history pages are released');
-  const next = samples.pop();
-  assert.equal(node.scrollTop, 1000, 'switching channels immediately shows the latest messages');
-  receive({ channel: 'one', sequence: next.sequence, top: 1 });
-  await tick();
-  assert.equal(node.scrollTop, 1000, 'channel identity is checked even if the sequence matches');
+  assert.equal(node.scrollTop, 1000, 'mounting shows the latest messages');
+  assert(resize.nodes.has(node) && resize.nodes.has(content), 'viewport and content are both watched');
+  assert(mutation.nodes.has(node));
+  frames.splice(0).forEach(fn => fn());
+  assert.equal(JSON.stringify(samples.pop()), JSON.stringify({ channel: 'one', viewport: 200, pages: [] }));
   const old = node;
-  node = element(); geometry(node);
-  receive({ channel: 'two', sequence: next.sequence, top: 1 });
-  await tick();
-  assert.equal(node.scrollTop, 300, 'a remounted node cannot receive an old command');
-  window.__dxfChatScrollMeasure('append', 'two');
-  assert.equal(old.listeners.size, 0);
+  node = element('one');
+  window.__dxfChatScrollMeasure();
+  assert.equal(old.listeners.size, 0, 'a remounted scroller releases the old one');
   assert.equal(node.listeners.size, 1);
+  assert(resize.nodes.has(node) && !resize.nodes.has(old));
+  assert(mutation.nodes.has(node) && !mutation.nodes.has(old));
+  assert.equal(node.scrollTop, 1000);
+  const replaced = content;
+  content = {};
+  resize.callback();
+  assert(resize.nodes.has(content) && !resize.nodes.has(replaced), 'a replaced content wrapper is watched');
   window.__dxfChatScrollOff();
   await lifetime;
-  assert.equal(closed, true, 'unmount closes the eval even while waiting for Rust');
-  assert.equal(node.scrollTop, 300);
+  assert.equal(closed, true, 'unmount closes the eval even while Rust is silent');
   assert.equal(node.listeners.size, 0);
-  assert.equal(observer.nodes.size, 0);
+  assert.equal(resize.nodes.size, 0);
+  assert.equal(mutation.nodes.size, 0);
+  assert.equal(frames.length, 0);
 }
 
 function globeBridge() {

@@ -29,77 +29,110 @@ const GROUP_WINDOW_SECS: i64 = 300;
 const SCROLL_JS: &str = r#"
 return (async function () {
   if (window.__dxfChatScrollOff) window.__dxfChatScrollOff();
-  let node = null, channel = null, sequence = 0, applied = 0, alive = true, wake = null;
-  let frame = null, observer = null, anchor = null;
-  const observed = new Set();
-  const queueMeasure = () => {
-    if (!alive || frame !== null) return;
-    frame = requestAnimationFrame(() => { frame = null; measure('resize', channel); });
-  };
-  if (typeof ResizeObserver !== 'undefined') observer = new ResizeObserver(queueMeasure);
-  const measure = (mode, cid) => {
-    if (!alive) return;
+  let node = null, content, channel, following = true, lastTop = 0, anchor = null;
+  let alive = true, wake = null, frame = null;
+  // Both callbacks run after layout and before paint, so a correction made in
+  // them is never seen; a round trip through Rust always showed a frame first.
+  const resize = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => settle()) : null;
+  const switched = typeof MutationObserver !== 'undefined' ? new MutationObserver(() => settle()) : null;
+  const edge = () => node.getBoundingClientRect().top;
+  const bind = () => {
     const el = document.getElementById('dxf-chat-scroll');
-    if (!el) return;
-    if (node !== el) {
+    if (!el) return false;
+    if (el !== node) {
       if (node) node.removeEventListener('scroll', onScroll);
-      node = el;
+      node = el; content = undefined; channel = undefined;
       node.addEventListener('scroll', onScroll, { passive: true });
-      if (observer) { observer.disconnect(); observed.clear(); observer.observe(node); }
+      if (switched) {
+        switched.disconnect();
+        switched.observe(node, { attributes: true, attributeFilter: ['data-chat-channel'] });
+      }
     }
-    if (channel !== cid) anchor = null;
-    if (mode === 'channel') el.scrollTop = el.scrollHeight;
-    channel = cid;
-    const pages = el.querySelectorAll ? Array.from(el.querySelectorAll('[data-chat-page]')) : [];
-    for (const old of observed) {
-      if (!pages.includes(old)) { if (observer) observer.unobserve(old); observed.delete(old); }
+    const inner = document.getElementById('dxf-chat-content');
+    if (inner !== content) {
+      content = inner;
+      if (resize) { resize.disconnect(); resize.observe(node); if (inner) resize.observe(inner); }
     }
-    const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0 };
-    const measured = pages.map(page => {
-      if (observer && !observed.has(page)) { observer.observe(page); observed.add(page); }
-      const bounds = page.getBoundingClientRect();
-      return { id: page.dataset.chatPage, top: bounds.top - rect.top, height: bounds.height };
-    });
-    const rows = el.querySelectorAll ? Array.from(el.querySelectorAll('[data-chat-row]')) : [];
-    const candidates = rows.length ? rows : pages;
-    const key = row => row.dataset.chatRow || row.dataset.chatPage;
-    const oldAnchor = anchor && candidates.find(row => key(row) === anchor.id);
-    const anchorShift = mode !== 'scroll' && oldAnchor
-      ? oldAnchor.getBoundingClientRect().top - rect.top - anchor.offset : null;
-    const first = candidates.find(row => row.getBoundingClientRect().bottom > rect.top);
-    anchor = first ? { id: key(first), offset: first.getBoundingClientRect().top - rect.top } : null;
-    dioxus.send({ mode, channel, sequence: ++sequence, height: el.scrollHeight,
-      top: el.scrollTop, viewport: el.clientHeight, pages: measured, anchor_shift: anchorShift,
-      applied });
+    return true;
   };
-  const onScroll = () => measure('scroll', channel);
-  window.__dxfChatScrollMeasure = measure;
+  const capture = () => {
+    let items = node.querySelectorAll('[data-chat-row]');
+    if (!items.length) items = node.querySelectorAll('[data-chat-page]');
+    const top = edge();
+    let lo = 0, hi = items.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].getBoundingClientRect().bottom > top) hi = mid; else lo = mid + 1;
+    }
+    const el = items[lo];
+    if (!el) return null;
+    const key = el.dataset.chatRow ? '[data-chat-row="' + el.dataset.chatRow + '"]'
+      : '[data-chat-page="' + el.dataset.chatPage + '"]';
+    return { el, key, at: el.getBoundingClientRect().top - top + node.scrollTop };
+  };
+  // How far the reading line moved in the content: layout, never scrolling.
+  const drift = () => {
+    if (!anchor) return 0;
+    const el = anchor.el.isConnected ? anchor.el : node.querySelector(anchor.key);
+    return el ? el.getBoundingClientRect().top - edge() + node.scrollTop - anchor.at : 0;
+  };
+  const hold = () => {
+    const by = drift();
+    if (Math.abs(by) > 0.5) node.scrollTop += by;
+  };
+  const report = () => {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      if (!alive || !node) return;
+      const top = edge();
+      const pages = Array.from(node.querySelectorAll('[data-chat-page]'), page => {
+        const bounds = page.getBoundingClientRect();
+        return { id: page.dataset.chatPage, top: bounds.top - top, height: bounds.height };
+      });
+      dioxus.send({ channel, viewport: node.clientHeight, pages });
+    });
+  };
+  const settle = () => {
+    if (!alive || !bind() || !node.clientHeight) return;
+    const cid = node.dataset.chatChannel || null;
+    if (cid !== channel) { channel = cid; following = true; anchor = null; }
+    if (following) node.scrollTop = node.scrollHeight; else hold();
+    lastTop = node.scrollTop;
+    anchor = capture();
+    report();
+  };
+  // A scroll event can land before the resize callback of the same frame, so
+  // growth below reads as distance from the bottom; only moving up leaves it.
+  const onScroll = () => {
+    if (!alive || !node || !node.clientHeight) return;
+    const top = node.scrollTop;
+    const gap = node.scrollHeight - top - node.clientHeight;
+    const up = top < lastTop - 1;
+    const was = following;
+    following = gap <= 40 || (following && !up);
+    if (following && !up && gap > 1) node.scrollTop = node.scrollHeight;
+    else if (!was && !following) hold();
+    lastTop = node.scrollTop;
+    anchor = capture();
+    report();
+  };
   const off = () => {
     alive = false;
-    if (wake) wake(null);
+    if (wake) wake();
     if (frame !== null) cancelAnimationFrame(frame);
-    if (observer) observer.disconnect();
-    observed.clear();
+    if (resize) resize.disconnect();
+    if (switched) switched.disconnect();
     if (node) node.removeEventListener('scroll', onScroll);
     window.__dxfChatScrollMeasure = null;
     window.__dxfChatScrollOff = null;
   };
+  window.__dxfChatScrollMeasure = settle;
   window.__dxfChatScrollOff = off;
   dioxus.send(true);
+  settle();
   try {
-    while (alive) {
-      const command = await new Promise(resolve => {
-        wake = resolve;
-        dioxus.recv().then(resolve, () => resolve(null));
-      });
-      wake = null;
-      if (!alive || command === null) break;
-      if (command.sequence === sequence && node === document.getElementById('dxf-chat-scroll')
-          && command.channel === channel && command.top !== null) {
-        node.scrollTop = command.top;
-        applied = command.sequence;
-      }
-    }
+    await new Promise(resolve => { wake = resolve; dioxus.recv().then(resolve, resolve); });
   } finally {
     if (window.__dxfChatScrollOff === off) off();
   }
@@ -348,17 +381,7 @@ pub fn ChatView() -> Element {
     let channel_guild = channel_meta.as_ref().map(|c| c.guild_id);
     let typing_label = typing_label(&typers);
 
-    let scroll_key = use_memo(move || {
-        let s = state.read();
-        let cid = s.selected_channel;
-        let msgs = cid.and_then(|c| s.messages.get(&c));
-        (
-            cid,
-            msgs.and_then(|m| m.first().map(|x| x.id)),
-            msgs.and_then(|m| m.last().map(|x| x.id)),
-            s.command_notes.len(),
-        )
-    });
+    let selected_memo = use_memo(move || state.read().selected_channel);
     let mut page_states =
         use_signal(std::collections::HashMap::<Id, super::chat_scroll::PageState>::new);
     let mut scroll_ready = use_signal(|| false);
@@ -371,20 +394,13 @@ pub fn ChatView() -> Element {
             return;
         }
         scroll_ready.set(true);
-        let mut policy = super::chat_scroll::ScrollState::default();
-        let mut page_channel = None;
         while let Ok(sample) = eval.recv::<super::chat_scroll::ScrollSample>().await {
             if sample.channel != state.peek().selected_channel {
                 continue;
             }
             let next_pages = super::chat_scroll::page_states(&sample.pages, sample.viewport);
-            if page_channel != sample.channel || *page_states.peek() != next_pages {
-                page_channel = sample.channel;
+            if *page_states.peek() != next_pages {
                 page_states.set(next_pages);
-            }
-            let command = policy.update(sample);
-            if eval.send(command).is_err() {
-                break;
             }
         }
         virtual_enabled.set(false);
@@ -395,40 +411,13 @@ pub fn ChatView() -> Element {
             s.evict_inactive_dm_images(None);
         }
     });
-    let mut prev_key = use_signal(|| (None::<Id>, None::<Id>));
+    // The page follows on its own; this rebinds a remounted scroller.
     use_effect(move || {
-        let (cid, first, _last, _notes) = scroll_key();
-        let _ = scroll_mounted();
-        if !scroll_ready() {
-            return;
+        let _ = (selected_memo(), scroll_mounted());
+        if scroll_ready() {
+            let _ =
+                document::eval("window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure();");
         }
-        let (prev_cid, prev_first) = *prev_key.peek();
-        let channel_changed = cid != prev_cid;
-        let prepended = !channel_changed && prev_first.is_some() && first != prev_first;
-        prev_key.set((cid, first));
-
-        let mode = if channel_changed {
-            "channel"
-        } else if prepended {
-            "prepend"
-        } else {
-            "append"
-        };
-        let channel = serde_json::to_string(&cid).unwrap_or_else(|_| "null".into());
-        let _ = document::eval(&format!(
-            "window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure({mode:?}, {channel});"
-        ));
-    });
-    use_effect(move || {
-        let _ = page_states.read();
-        if !scroll_ready() {
-            return;
-        }
-        let channel =
-            serde_json::to_string(&state.peek().selected_channel).unwrap_or_else(|_| "null".into());
-        let _ = document::eval(&format!(
-            "window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure('resize', {channel});"
-        ));
     });
     let jump = use_memo(move || state.read().message_jump);
     let mut jump_fetched = use_signal(|| None::<i64>);
@@ -437,7 +426,7 @@ pub fn ChatView() -> Element {
         let Some((channel_id, target, at)) = jump() else {
             return;
         };
-        let (selected, ..) = scroll_key();
+        let selected = selected_memo();
         let s = state.peek();
         let held = s
             .messages
@@ -538,52 +527,58 @@ pub fn ChatView() -> Element {
 
             NoDrag {
                 div { id: "dxf-chat-scroll",
-                style: "overflow-anchor: none;", onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
+                "data-chat-channel": selected_channel.map(|c| c.to_string()).unwrap_or_default(),
+                // Hidden until the bridge has pinned it: the first render paints before any eval runs.
+                style: if scroll_ready() || !virtual_enabled() { "overflow-anchor: none;" } else { "overflow-anchor: none; visibility: hidden;" },
+                onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if is_dm { {crate::i18n::text("No messages yet. Say hi 👋", &[])} } else { {crate::i18n::text("No messages yet.", &[])} }
                         }
-                    } else {
-                        if messages.len() >= PAGE_SIZE {
-                            if let (Some(channel_id), Some(oldest)) =
-                                (selected_channel, messages.first())
-                            {
+                    }
+                    div { id: "dxf-chat-content", style: "display: flow-root;",
+                        if !messages.is_empty() {
+                            if messages.len() >= PAGE_SIZE {
+                                if let (Some(channel_id), Some(oldest)) =
+                                    (selected_channel, messages.first())
                                 {
-                                    let before_ms = oldest.created_at.timestamp_millis();
-                                    let gw = gateway.clone();
-                                    rsx! {
-                                        div { class: "flex justify-center pb-3",
-                                            button {
-                                                class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                                                onclick: move |_| {
-                                                    gw.send(ClientMessage::FetchMessages {
-                                                        channel_id,
-                                                        limit: PAGE_SIZE as u32,
-                                                        before_ms: Some(before_ms),
-                                                    });
-                                                },
-                                                {crate::i18n::text("Load earlier messages", &[])}
+                                    {
+                                        let before_ms = oldest.created_at.timestamp_millis();
+                                        let gw = gateway.clone();
+                                        rsx! {
+                                            div { class: "flex justify-center pb-3",
+                                                button {
+                                                    class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                                                    onclick: move |_| {
+                                                        gw.send(ClientMessage::FetchMessages {
+                                                            channel_id,
+                                                            limit: PAGE_SIZE as u32,
+                                                            before_ms: Some(before_ms),
+                                                        });
+                                                    },
+                                                    {crate::i18n::text("Load earlier messages", &[])}
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                        for start in (0..messages.len()).step_by(PAGE_SIZE) {
-                            {
-                                let end = (start + PAGE_SIZE).min(messages.len());
-                                let id = messages[start].id;
-                                let page = pages.get(&id);
-                                let active = !virtual_enabled() || page.map(|p| p.active).unwrap_or(end + PAGE_SIZE >= messages.len());
-                                let height = page.map(|p| p.height).unwrap_or((end - start) as f64 * 80.0);
-                                rsx! {
-                                    MessagePage { key: "{id}", id, channel_id: messages[start].channel_id, start, end, active, height, is_dm }
+                            for start in (0..messages.len()).step_by(PAGE_SIZE) {
+                                {
+                                    let end = (start + PAGE_SIZE).min(messages.len());
+                                    let id = messages[start].id;
+                                    let page = pages.get(&id);
+                                    let active = !virtual_enabled() || page.map(|p| p.active).unwrap_or(end + PAGE_SIZE >= messages.len());
+                                    let height = page.map(|p| p.height).unwrap_or((end - start) as f64 * 80.0);
+                                    rsx! {
+                                        MessagePage { key: "{id}", id, channel_id: messages[start].channel_id, start, end, active, height, is_dm }
+                                    }
                                 }
                             }
                         }
-                    }
-                    if let Some(channel_id) = selected_channel {
-                        crate::features::bot_commands::CommandNotes { channel_id }
+                        if let Some(channel_id) = selected_channel {
+                            crate::features::bot_commands::CommandNotes { channel_id }
+                        }
                     }
                 }
 
