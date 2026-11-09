@@ -397,6 +397,7 @@
   "The browser did not identify the active decoder as hardware or software. Missing data does not mean CPU decoding.": ["El navegador no identificó si el decodificador activo usa hardware o software. La falta de datos no significa que decodifique por CPU.", "O navegador não identificou se o decodificador ativo usa hardware ou software. A ausência de dados não significa decodificação por CPU.", "浏览器未将活动解码器识别为硬件或软件。丢失数据并不意味着CPU解码。", "ブラウザは、アクティブなデコーダをハードウェアまたはソフトウェアとして識別しませんでした。データが欠落しているからといって、CPU がデコードするわけではありません。"],
   "Mention a user": ["Mencionar a un usuario", "Mencionar uma pessoa", "提及用户", "ユーザーについて言及する"],
   "Back to chat": ["Volver al chat", "Voltar ao chat", "返回聊天", "チャットに戻る"],
+  "More": ["Más", "Mais", "更多", "その他"],
   "Channels": ["Canales", "Canais", "频道", "チャンネル"],
   "Chat": ["Chat", "Chat", "聊天", "チャット"],
   "Microphone permission is required. Enable it in Android app settings.": ["Hace falta permiso para usar el micrófono. Habilitalo en los ajustes de Android de la app.", "É necessário permitir o microfone nas configurações Android do aplicativo.", "需要麦克风权限。在 Android 应用程序设置中启用它。", "マイクの許可が必要です。 Android アプリ設定で有効にします。"],

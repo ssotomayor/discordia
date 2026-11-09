@@ -3334,7 +3334,7 @@ fn Composer(
     }
 
     rsx! {
-        div { class: "px-3 pb-3 shrink-0 relative",
+        div { class: "dxf-composer-shell px-3 pb-3 shrink-0 relative",
 
             if let Some(r) = replying_to() {
                 div { class: "flex items-center gap-2 mb-1 px-2 py-1 rounded-t-md bg-[var(--panel-solid)] border border-b-0 border-[var(--border)] text-[11px]",
@@ -3570,6 +3570,8 @@ fn Composer(
                         }
                     }
                 }
+                // A phone has no keyboard shortcuts to show, and the row would cost a line of chat.
+                if !cfg!(any(target_os = "android", target_os = "ios")) || file_request().is_some() {
                 div {
                     class: "flex flex-wrap pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
                     style: "column-gap: 0.875rem; row-gap: 0.125rem;",
@@ -3581,7 +3583,7 @@ fn Composer(
                         title: crate::i18n::text("Or type **bold**, *italic* and __underline__", &[]),
                         {crate::i18n::text("{0}B bold · {0}I italic · {0}U underline", &[shortcut.to_string()])}
                     }
-                    if markdown {
+                    if markdown && !cfg!(any(target_os = "android", target_os = "ios")) {
                         span {
                             class: "text-[var(--accent)]",
                             title: crate::i18n::text("Headings, lists, quotes, code and links render here", &[]),
@@ -3591,6 +3593,7 @@ fn Composer(
                     if file_request().is_some() {
                         span { class: "text-[var(--accent)]", {crate::i18n::text("Uploading file…", &[])} }
                     }
+                }
                 }
             }
         }

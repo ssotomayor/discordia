@@ -208,8 +208,41 @@
 .dxf-platform-mobile .dxf-channel-account { height: 66px; padding: 5px 8px; border-color: var(--mobile-line); }
 .dxf-platform-mobile .dxf-channel-account > button { min-height: 48px; border-radius: 12px; }
 .dxf-platform-mobile .dxf-mobile-nav { background-color: var(--panel-solid); border-color: var(--mobile-line); }
-.dxf-platform-mobile .dxf-mobile-nav button { gap: 4px; }
-.dxf-platform-mobile .dxf-mobile-nav button > span:last-child { font-size: 11px; margin-top: 0; }
+.dxf-platform-mobile .dxf-mobile-nav button { gap: 4px; min-width: 0; }
+.dxf-platform-mobile .dxf-mobile-nav button > span:last-child { font-size: 11px; line-height: 14px; margin-top: 0; }
+.dxf-platform-mobile .dxf-composer-shell { padding-top: 8px; padding-bottom: 8px; }
+.dxf-platform-mobile #dxf-chat-scroll { overflow-x: hidden; }
+.dxf-platform-mobile #dxf-chat-content { min-width: 0; overflow-wrap: anywhere; }
+/* The workspace's 0.5rem bottom padding sits under the 56px bar. */
+.dxf-platform-mobile { --mobile-nav-reach: calc(56px + var(--safe-bottom) + 0.5rem); }
+.dxf-mobile-menu-scrim {
+  position: fixed; inset: 0 0 var(--mobile-nav-reach) 0; z-index: 45;
+  background-color: rgb(0 0 0 / 0.5);
+}
+.dxf-mobile-menu {
+  position: fixed; z-index: 46;
+  right: calc(12.5vw - 18px); bottom: calc(var(--mobile-nav-reach) + 12px);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  max-width: calc(100vw - 24px); max-height: calc(100dvh - var(--mobile-nav-reach) - 24px - var(--safe-top)); overflow-y: auto;
+}
+.dxf-mobile-menu > * { animation: dxf-mobile-menu-in 160ms ease-out backwards; animation-delay: calc(var(--i, 0) * 25ms); }
+@keyframes dxf-mobile-menu-in { from { opacity: 0; transform: translateY(12px) scale(0.92); } }
+.dxf-mobile-menu-status { display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 24px)); }
+.dxf-mobile-menu-status .dxf-connection-controls { min-height: 44px; border-radius: 12px; background-color: var(--panel-solid); }
+.dxf-mobile-menu-status .dxf-connection-controls > button { min-height: 44px; }
+.dxf-mobile-menu-status .dxf-host-banner { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 10px; border-radius: 12px; background-color: var(--panel-solid); }
+.dxf-mobile-menu-item { display: flex; align-items: center; gap: 12px; min-height: 48px; color: var(--text); }
+.dxf-mobile-menu-label {
+  padding: 6px 12px; border-radius: 10px; font-size: 14px; line-height: 20px;
+  background-color: var(--panel-solid); border: 1px solid var(--border); box-shadow: 0 4px 14px rgb(0 0 0 / 0.25);
+}
+.dxf-mobile-menu-fab {
+  display: flex; align-items: center; justify-content: center; flex: 0 0 48px; width: 48px; height: 48px; border-radius: 16px;
+  color: var(--accent); background-color: var(--panel-solid); border: 1px solid var(--border); box-shadow: 0 4px 14px rgb(0 0 0 / 0.3);
+}
+.dxf-mobile-menu-fab svg { width: 20px; height: 20px; }
+.dxf-mobile-menu-item:active .dxf-mobile-menu-fab { background-color: var(--accent-soft); }
+.dxf-mobile-menu-danger .dxf-mobile-menu-fab { color: var(--danger); }
 .dxf-platform-mobile .dxf-mobile-nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 21px; height: 21px; }
 .dxf-platform-mobile .dxf-mobile-nav-icon svg { width: 21px; height: 21px; stroke-width: 1.8; }
 @media (max-width: 360px) {
