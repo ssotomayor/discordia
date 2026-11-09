@@ -171,6 +171,10 @@ pub fn GuildSettingsDialog(
         }
     });
 
+    crate::mobile_back::use_handler(crate::mobile_back::SETTINGS, true, move |_| {
+        on_close.call(())
+    });
+
     let Some(g) = guild() else {
         return rsx! { Fragment {} };
     };
@@ -354,13 +358,15 @@ pub fn GuildSettingsDialog(
 
     rsx! {
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6",
+            class: "dxf-sheet-backdrop dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6",
             onclick: move |_| on_close.call(()),
             div {
                 // Fixed, not shrink-wrapped, so switching tabs moves nothing.
-                class: "dxf-modal-in w-[820px] h-[600px] max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-sheet dxf-modal-in w-[820px] h-[600px] max-w-full max-h-full flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                role: "dialog",
+                aria_modal: "true",
                 onclick: move |e| e.stop_propagation(),
-                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center shrink-0",
+                div { class: "dxf-sheet-heading px-4 py-3 border-b border-[var(--border)] flex items-center shrink-0",
                     h3 { class: "text-sm font-medium text-[var(--accent)] flex-1 truncate", {crate::i18n::text("Guild settings — {0}", std::slice::from_ref(&(g . name)))} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
@@ -368,8 +374,8 @@ pub fn GuildSettingsDialog(
                         "✕"
                     }
                 }
-                div { class: "flex-1 flex min-h-0",
-                    div { class: "w-48 shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
+                div { class: "dxf-sheet-body flex-1 flex min-h-0",
+                    div { class: "dxf-sheet-nav w-48 shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
                         for (t, label, icon, unsaved) in tabs.iter().copied() {
                             {
                                 let selected = current == t;

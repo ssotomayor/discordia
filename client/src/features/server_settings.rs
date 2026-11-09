@@ -198,6 +198,9 @@ pub fn ServerSettingsDialog() -> Element {
         });
     }
     let mut section = use_signal(|| Section::Identity);
+    crate::mobile_back::use_handler(crate::mobile_back::SETTINGS, open(), move |_| {
+        state.write().server_settings_open = false
+    });
     if !open() {
         return rsx! {};
     }
@@ -221,14 +224,14 @@ pub fn ServerSettingsDialog() -> Element {
     ];
     rsx! {
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/50",
+            class: "dxf-sheet-backdrop dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/50",
             onclick: close,
             div {
-                class: "dxf-modal-in w-[44rem] max-w-[95vw] h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-sheet dxf-modal-in w-[44rem] max-w-[95vw] h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 role: "dialog",
                 aria_modal: "true",
                 onclick: move |e| e.stop_propagation(),
-                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
+                div { class: "dxf-sheet-heading px-4 py-3 border-b border-[var(--border)] flex items-center",
                     h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Server Settings", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
@@ -237,8 +240,8 @@ pub fn ServerSettingsDialog() -> Element {
                         "✕"
                     }
                 }
-                div { class: "flex-1 min-h-0 flex",
-                    nav { class: "w-44 shrink-0 border-r border-[var(--border)] p-2 space-y-1",
+                div { class: "dxf-sheet-body flex-1 min-h-0 flex",
+                    nav { class: "dxf-sheet-nav w-44 shrink-0 border-r border-[var(--border)] p-2 space-y-1",
                         for (s, label) in sections {
                             button { key: "{label}", class: item(s), onclick: move |_| section.set(s), "{label}" }
                         }

@@ -1350,7 +1350,6 @@ fn MobileMenu(mut open: Signal<bool>, on_disconnect: EventHandler<()>) -> Elemen
         open.set(false)
     });
     let s = state.read();
-    let reconnecting = s.status == ConnectionStatus::Reconnecting;
     let hosting = s.host_info.is_some();
     let operator = s.is_operator && s.status == ConnectionStatus::Ready;
     drop(s);
@@ -1365,16 +1364,8 @@ fn MobileMenu(mut open: Signal<bool>, on_disconnect: EventHandler<()>) -> Elemen
         if open() {
             div { class: "dxf-mobile-menu-scrim dxf-backdrop-in", onclick: move |_| open.set(false) }
             div { class: "dxf-mobile-menu", role: "menu",
-                div { class: "dxf-mobile-menu-status", style: "--i: 6;",
-                    if hosting { HostBanner {} }
-                    div { class: "dxf-connection-controls flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
-                        TransportBadge {}
-                        VoiceRouteBadge {}
-                        if reconnecting {
-                            span { class: "px-2 text-[10px] text-[var(--warn)]", {crate::i18n::text("Reconnecting…", &[])} }
-                        }
-                        EncryptionBadge {}
-                    }
+                if hosting {
+                    div { class: "dxf-mobile-menu-status", style: "--i: 6;", HostBanner {} }
                 }
                 MobileMenuItem { icon: UNPLUG_ICON_SVG, label: crate::i18n::text("Disconnect", &[]), order: 5, danger: true,
                     onclick: move |_| { open.set(false); on_disconnect.call(()); },
@@ -1392,6 +1383,9 @@ fn MobileMenu(mut open: Signal<bool>, on_disconnect: EventHandler<()>) -> Elemen
                 }
                 MobileMenuItem { icon: crate::features::icons::GEAR, label: crate::i18n::text("Settings", &[]), order: 1,
                     onclick: move |_| act(|s| s.audio_settings = true),
+                }
+                MobileMenuItem { icon: crate::features::icons::SIGNAL_GOOD, label: crate::i18n::text("Your connection", &[]), order: 0,
+                    onclick: move |_| act(|s| s.topology_open = true),
                 }
             }
         }
@@ -1560,9 +1554,6 @@ fn TransportBadge() -> Element {
             aria_label: crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label))),
             span { class: "dxf-route-full", {crate::i18n::text("Server: {0}", std::slice::from_ref(&(route_label)))} }
             span { class: "dxf-route-mobile",
-                if cfg!(target_os = "android") {
-                    span { class: "dxf-route-caption", {crate::i18n::text("Server", &[])} }
-                }
                 span { class: "dxf-route-value", "{route_label}" }
             }
         }

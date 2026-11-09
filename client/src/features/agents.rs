@@ -108,6 +108,9 @@ pub fn AgentsDialog() -> Element {
             gateway.send(ClientMessage::FetchServerAgents);
         }
     });
+    crate::mobile_back::use_handler(crate::mobile_back::SETTINGS, open(), move |_| {
+        state.write().agents_open = false
+    });
     if !open() {
         return rsx! {};
     }
@@ -128,12 +131,14 @@ pub fn AgentsDialog() -> Element {
     };
     rsx! {
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/50",
+            class: "dxf-sheet-backdrop dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/50",
             onclick: close,
             div {
-                class: "dxf-modal-in w-[46rem] max-w-[95vw] h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-sheet dxf-modal-in w-[46rem] max-w-[95vw] h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                role: "dialog",
+                aria_modal: "true",
                 onclick: move |e| e.stop_propagation(),
-                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
+                div { class: "dxf-sheet-heading px-4 py-3 border-b border-[var(--border)] flex items-center",
                     h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Agents", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
@@ -142,8 +147,8 @@ pub fn AgentsDialog() -> Element {
                         "✕"
                     }
                 }
-                div { class: "flex-1 min-h-0 flex",
-                    div { class: "w-52 shrink-0 border-r border-[var(--border)] flex flex-col",
+                div { class: "dxf-sheet-body flex-1 min-h-0 flex",
+                    div { class: "dxf-sheet-list w-52 shrink-0 border-r border-[var(--border)] flex flex-col",
                         div { class: "flex-1 overflow-y-auto p-2 space-y-1",
                             if operator() {
                                 div { class: "{LABEL} px-2 pt-1", {crate::i18n::text("On this device", &[])} }

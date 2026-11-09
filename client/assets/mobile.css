@@ -155,19 +155,8 @@
   display: flex; align-items: center; justify-content: center; flex: 0 0 19px; width: 19px; height: 19px;
 }
 .dxf-platform-mobile :is(.dxf-home-tools, .dxf-workspace-tools) button svg { display: block; width: 19px; height: 19px; flex-shrink: 0; }
-.dxf-platform-mobile .dxf-workspace-mobile .dxf-connection-controls {
-  border-radius: 12px; background-color: var(--panel-solid); border-color: var(--mobile-line);
-  min-height: 44px; overflow-x: auto; scrollbar-width: none;
-}
 .dxf-platform-mobile :is(.dxf-home-tools, .dxf-workspace-tools) button:hover { background-color: var(--panel-solid); }
 .dxf-platform-mobile .dxf-workspace-mobile .dxf-workspace-tools .dxf-server-disconnect:hover { color: var(--danger); }
-.dxf-platform-mobile .dxf-transport-badge { position: relative; text-align: left; text-transform: none; letter-spacing: normal; padding: 3px 8px 3px 17px; }
-.dxf-platform-mobile .dxf-transport-badge::before { content: ""; position: absolute; left: 7px; top: 20px; width: 5px; height: 5px; border-radius: 50%; background-color: currentColor; }
-.dxf-platform-mobile .dxf-route-caption { display: block; font-size: 10px; line-height: 14px; color: var(--mobile-muted); }
-.dxf-platform-mobile .dxf-route-value { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 11px; line-height: 16px; color: var(--text); }
-.dxf-platform-mobile .dxf-voice-route-badge { flex: 0 0 44px !important; padding: 0; }
-.dxf-platform-mobile .dxf-voice-route-badge .dxf-route-mobile { display: flex; justify-content: center; align-items: center; }
-.dxf-platform-mobile .dxf-voice-route-badge .dxf-voice-phase { display: none; }
 .dxf-platform-mobile .dxf-mobile-server-column { width: var(--mobile-rail-width); padding: 0; background-color: var(--bg); border-color: var(--mobile-line); }
 .dxf-platform-mobile .dxf-guilds-panel { border: 0; border-radius: 0; background-color: var(--bg); }
 .dxf-platform-mobile .dxf-guilds-grip { display: none; }
@@ -228,8 +217,6 @@
 .dxf-mobile-menu > * { animation: dxf-mobile-menu-in 160ms ease-out backwards; animation-delay: calc(var(--i, 0) * 25ms); }
 @keyframes dxf-mobile-menu-in { from { opacity: 0; transform: translateY(12px) scale(0.92); } }
 .dxf-mobile-menu-status { display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 24px)); }
-.dxf-mobile-menu-status .dxf-connection-controls { min-height: 44px; border-radius: 12px; background-color: var(--panel-solid); }
-.dxf-mobile-menu-status .dxf-connection-controls > button { min-height: 44px; }
 .dxf-mobile-menu-status .dxf-host-banner { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 10px; border-radius: 12px; background-color: var(--panel-solid); }
 .dxf-mobile-menu-item { display: flex; align-items: center; gap: 12px; min-height: 48px; color: var(--text); }
 .dxf-mobile-menu-label {
@@ -281,3 +268,43 @@
 }
 .dxf-mobile-pager :is(input, textarea, select, [contenteditable], video, audio) { touch-action: pan-y pinch-zoom; }
 .dxf-mobile-pager pre { overscroll-behavior-x: contain; }
+/* A phone has no hover: a message's action bar waits for the long-press menu (text-menu.js). */
+.dxf-platform-mobile .dxf-msg-bar:not(.dxf-msg-bar-open) { display: none; }
+.dxf-platform-mobile [data-context-message] { -webkit-user-select: none; user-select: none; }
+.dxf-platform-mobile .dxf-text-menu { font-size: 15px; padding: 6px; }
+.dxf-platform-mobile .dxf-text-menu button { min-height: 44px; padding: 10px 12px; }
+.dxf-platform-mobile .dxf-text-menu kbd { display: none; }
+.dxf-platform-mobile .dxf-text-menu-reactions button { min-height: 48px; font-size: 24px; }
+/* Agents, Server/Guild Settings, Integrations and Where your data goes fill the screen like Settings. */
+.dxf-platform-mobile .dxf-sheet-backdrop {
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+}
+.dxf-platform-mobile .dxf-sheet { width: 100%; height: 100%; max-width: 100%; max-height: 100%; }
+.dxf-platform-mobile .dxf-sheet-heading { min-height: 48px; padding: 0 4px 0 16px; }
+.dxf-platform-mobile .dxf-sheet-heading h3 { font-size: 16px; }
+.dxf-platform-mobile .dxf-sheet-heading > button { width: 44px; height: 44px; }
+.dxf-platform-mobile .dxf-sheet-body { flex-direction: column; }
+.dxf-platform-mobile .dxf-sheet-nav {
+  width: 100%; flex-direction: row; display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden;
+  border-right: 0; border-bottom: 1px solid var(--border); scrollbar-width: none;
+}
+.dxf-platform-mobile .dxf-sheet-nav > * { margin: 0; }
+.dxf-platform-mobile .dxf-sheet-nav button { flex: 0 0 auto; width: auto; min-height: 44px; white-space: nowrap; }
+.dxf-platform-mobile .dxf-sheet-list { width: 100%; max-height: 38%; border-right: 0; border-bottom: 1px solid var(--border); }
+.dxf-platform-mobile .dxf-sheet :is(button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), summary) { min-height: 44px; }
+.dxf-platform-mobile .dxf-sheet select { font-size: 16px; }
+/* Swipe a message left to reply (swipe-reply.js). Rightward stays the pager's page turn,
+   so pan-left (finger right) stays native; the transform exists only mid-gesture (trap 22). */
+.dxf-platform-mobile [data-context-message] { touch-action: pan-y pan-left; }
+.dxf-platform-mobile :is(.dxf-swiping, .dxf-swipe-settling) { transform: translateX(var(--swipe, 0px)); }
+.dxf-platform-mobile .dxf-swipe-settling { transition: transform 160ms ease-out; }
+.dxf-platform-mobile :is(.dxf-swiping, .dxf-swipe-settling)::after {
+  content: "↩"; position: absolute; top: 50%; right: calc(var(--swipe, 0px) / 2);
+  display: flex; align-items: center; justify-content: center; width: 36px; height: 36px;
+  border-radius: 50%; border: 1px solid var(--border); background-color: var(--panel-solid); color: var(--text-muted);
+  font-size: 18px; line-height: 1; pointer-events: none;
+  opacity: var(--swipe-progress, 0);
+  transform: translate(50%, -50%) scale(calc(0.6 + 0.4 * var(--swipe-progress, 0)));
+}
+.dxf-platform-mobile .dxf-swipe-settling::after { transition: opacity 160ms ease-out, right 160ms ease-out; }
+.dxf-platform-mobile .dxf-swipe-armed::after { color: var(--accent); border-color: var(--accent); background-color: var(--accent-soft); }

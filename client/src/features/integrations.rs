@@ -84,14 +84,20 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
         });
     }
 
+    crate::mobile_back::use_handler(crate::mobile_back::SETTINGS, true, move |_| {
+        on_close.call(())
+    });
+
     rsx! {
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+            class: "dxf-sheet-backdrop dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
             onclick: move |_| on_close.call(()),
             div {
-                class: "dxf-modal-in w-[26rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-sheet dxf-modal-in w-[26rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                role: "dialog",
+                aria_modal: "true",
                 onclick: move |e| e.stop_propagation(),
-                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
+                div { class: "dxf-sheet-heading px-4 py-3 border-b border-[var(--border)] flex items-center",
                     h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Integrations", &[])} }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",

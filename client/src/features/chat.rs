@@ -455,6 +455,11 @@ pub fn ChatView() -> Element {
     let mut scroll_ready = use_signal(|| false);
     let mut virtual_enabled = use_signal(|| true);
     let mut scroll_mounted = use_signal(|| 0_u64);
+    use_hook(|| {
+        if cfg!(target_os = "android") {
+            let _ = document::eval(include_str!("../../assets/swipe-reply.js"));
+        }
+    });
     use_future(move || async move {
         let mut eval = document::eval(SCROLL_JS);
         if eval.recv::<bool>().await.is_err() {
@@ -475,6 +480,9 @@ pub fn ChatView() -> Element {
     });
     use_drop(move || {
         let _ = document::eval("window.__dxfChatScrollOff && window.__dxfChatScrollOff();");
+        if cfg!(target_os = "android") {
+            let _ = document::eval("window.__dxfSwipeReplyOff && window.__dxfSwipeReplyOff();");
+        }
         if let Ok(mut s) = state.try_write() {
             s.evict_inactive_dm_images(None);
         }
@@ -1076,10 +1084,12 @@ pub(super) fn MessageRow(
     });
 
     let menu_open = show_react() || confirm_delete();
+    // A phone has no hover: the bar stays out of the DOM there (`mobile.css`) and
+    // the long-press menu (`text-menu.js`) clicks its buttons by data-context-action.
     let bar_visibility = if menu_open {
-        "opacity-100"
+        "dxf-msg-bar dxf-msg-bar-open opacity-100"
     } else {
-        "opacity-0 group-hover:opacity-100"
+        "dxf-msg-bar opacity-0 group-hover:opacity-100"
     };
 
     if expires_at.is_some_and(|expires| chrono::Utc::now().timestamp() >= expires) {
@@ -3566,6 +3576,8 @@ fn Composer(
                         button {
                             class: "dxf-cta shrink-0 h-8 text-xs font-semibold uppercase tracking-wider px-4 rounded-lg transition-all",
                             r#type: "submit",
+                            // Taking focus would blur the field and drop the soft keyboard.
+                            onmousedown: move |e| e.prevent_default(),
                             {crate::i18n::text("Send", &[])}
                         }
                     }
