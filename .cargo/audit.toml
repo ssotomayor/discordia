@@ -12,4 +12,9 @@ ignore = [
     # 1.0.10 the lock pins is the root list it hands out. No 0.26.x release
     # carries the fix, and no released tokio-tungstenite stops asking for one.
     "RUSTSEC-2026-0381",
+    # libsqlite3-sys 0.30.1, bundled by sqlx-sqlite and rusqlite. The leak needs
+    # a database plus `-wal` someone else wrote; the server and rendezvous open
+    # only the ones they created in their own data dir (import is JSON). The fix
+    # is 0.39, which no sqlx allows yet (0.9 caps <0.38) and links= forbids two. #495
+    "RUSTSEC-2026-0459",
 ]
