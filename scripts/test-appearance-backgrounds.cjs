@@ -35,8 +35,8 @@ assert.ok(previews.has('mesh') && previews.has('none'));
       checked++;
     }
     console.log(`Mesh background and preview: ${checked} theme/viewport combinations passed`);
-    const popupClass=appearance.match(/class: "(dxf-pop-in fixed[^"\n]+)"/)[1];
-    const popupStyle=appearance.match(/style: "(width: min\(320px[^"\n]+)"/)[1];
+    const popupClass=appearance.match(/"(dxf-pop-in fixed[^"\n]*\bw-80\b[^"\n]*)"/)[1];
+    const popupStyle=appearance.match(/"(width: min\(320px[^"\n]+)"/)[1];
     const tailwind=fs.readFileSync('client/assets/tailwind.css','utf8');
     for(const [width,height] of [[320,640],[390,844],[800,360],[1280,800]]) {
       await page.setViewportSize({width,height});
