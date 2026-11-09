@@ -9,9 +9,9 @@ pub(super) fn frame(size: Option<(u32, u32)>) -> String {
         Some((w, h)) => {
             let scale = (400.0 / f64::from(w)).min(300.0 / f64::from(h)).min(1.0);
             let width = (f64::from(w) * scale).round().max(1.0);
-            format!("width: {width}px; height: auto; aspect-ratio: {w} / {h}; max-width: 82vw;")
+            format!("width: {width}px; height: auto; aspect-ratio: {w} / {h}; max-width: 100%;")
         }
-        None => "width: 280px; height: 240px; aspect-ratio: auto; max-width: 82vw;".into(),
+        None => "width: 280px; height: 240px; aspect-ratio: auto; max-width: 100%;".into(),
     }
 }
 
@@ -31,7 +31,7 @@ pub(super) fn ImageAttachment(
     let width = if size.is_some() {
         ""
     } else {
-        " width: auto; max-width: min(480px, 82vw);"
+        " width: auto; max-width: min(480px, 100%);"
     };
     rsx! {img {
         class:"mt-1 rounded-lg border border-[var(--border-strong)] bg-[var(--panel2)] block hover:border-[var(--accent)] hover:brightness-105 transition-all shadow-sm",

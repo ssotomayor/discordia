@@ -506,6 +506,7 @@ pub fn WorkspaceView(
 
     let status = state.read().status;
     let activities_open = use_signal(|| false);
+    let menu_open = use_signal(|| false);
     let mut is_mobile = use_signal(|| cfg!(any(target_os = "android", target_os = "ios")));
     let preview_dock = super::screenshare::PreviewDock {
         target: use_signal(|| None),
@@ -684,76 +685,69 @@ pub fn WorkspaceView(
             GuildDialogHost {}
             crate::features::guilds::RulesPromptDialog {}
 
-            div { class: "dxf-workspace-header dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
-                onmousedown: move |_| crate::app::start_window_drag(),
-                if !cfg!(target_os = "windows") {
-                    div { class: "dxf-workspace-brand shrink-0 flex items-center gap-2 px-1",
-                        crate::app::DiscordiaLogo { class: "dxf-workspace-logo w-6 h-6", compact: cfg!(target_os = "android") }
-                        span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
+            if cfg!(target_os = "android") {
+                MobileMenu { open: menu_open, on_disconnect: move |_| leave(String::new()) }
+            } else {
+                div { class: "dxf-workspace-header dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
+                    onmousedown: move |_| crate::app::start_window_drag(),
+                    if !cfg!(target_os = "windows") {
+                        div { class: "dxf-workspace-brand shrink-0 flex items-center gap-2 px-1",
+                            crate::app::DiscordiaLogo { class: "dxf-workspace-logo w-6 h-6" }
+                            span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", {crate::i18n::text("Discordia", &[])} }
+                        }
                     }
-                }
-                HostBanner {}
-                // One chip: what the connection is, and the button that ends it.
-                // Named, so it is never read as the voice hang-up downstairs.
-                div {
-                    class: "dxf-connection-controls dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
-                    onmousedown: move |e| e.stop_propagation(),
-                    TransportBadge {}
-                    VoiceRouteBadge {}
-                    if status == ConnectionStatus::Reconnecting {
-                        span { class: "px-2 text-[10px] text-[var(--warn)]", {crate::i18n::text("Reconnecting…", &[])} }
-                    }
-                    EncryptionBadge {}
-                    if !cfg!(target_os = "android") {
-                    button {
-                        class: "dxf-server-disconnect h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
-                        title: crate::i18n::text("Disconnect from this server", &[]),
-                        aria_label: crate::i18n::text("Disconnect from this server", &[]),
-                        onclick: move |_| leave(String::new()),
-                        span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
-                        span { class: "dxf-disconnect-label", {crate::i18n::text("Disconnect", &[])} }
-                    }
-                    }
-                }
-                // Settings and appearance sit in the corner of the window, not
-                // beside your name: they are about the app, not about you.
-                div { class: "dxf-workspace-tools dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
-                    onmousedown: move |e| e.stop_propagation(),
-                    if !is_mobile() {
-                        LayoutButton { layout, settings, edit_mode }
-                    }
-                    crate::features::appearance::AppearanceButton {}
-                    button {
-                        class: "dxf-workspace-agents w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                        title: crate::i18n::text("Agents", &[]),
-                        aria_label: crate::i18n::text("Agents", &[]),
-                        onclick: move |_| state.clone().write().agents_open = true,
-                        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::BOT }
-                    }
-                    crate::features::server_settings::ServerSettingsButton {}
-                    button {
-                        class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                        title: crate::i18n::text("Settings", &[]),
-                        onclick: move |_| {
-                            let open = !state.read().audio_settings;
-                            state.clone().write().audio_settings = open;
-                        },
-                        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
-                    }
-                    if cfg!(target_os = "android") {
+                    HostBanner {}
+                    // One chip: what the connection is, and the button that ends it.
+                    // Named, so it is never read as the voice hang-up downstairs.
+                    div {
+                        class: "dxf-connection-controls dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
+                        onmousedown: move |e| e.stop_propagation(),
+                        TransportBadge {}
+                        VoiceRouteBadge {}
+                        if status == ConnectionStatus::Reconnecting {
+                            span { class: "px-2 text-[10px] text-[var(--warn)]", {crate::i18n::text("Reconnecting…", &[])} }
+                        }
+                        EncryptionBadge {}
                         button {
-                            class: "dxf-server-disconnect flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--danger)]",
+                            class: "dxf-server-disconnect h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                             title: crate::i18n::text("Disconnect from this server", &[]),
                             aria_label: crate::i18n::text("Disconnect from this server", &[]),
                             onclick: move |_| leave(String::new()),
                             span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
+                            span { class: "dxf-disconnect-label", {crate::i18n::text("Disconnect", &[])} }
+                        }
+                    }
+                    // Settings and appearance sit in the corner of the window, not
+                    // beside your name: they are about the app, not about you.
+                    div { class: "dxf-workspace-tools dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
+                        onmousedown: move |e| e.stop_propagation(),
+                        if !is_mobile() {
+                            LayoutButton { layout, settings, edit_mode }
+                        }
+                        crate::features::appearance::AppearanceButton {}
+                        button {
+                            class: "dxf-workspace-agents w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                            title: crate::i18n::text("Agents", &[]),
+                            aria_label: crate::i18n::text("Agents", &[]),
+                            onclick: move |_| state.clone().write().agents_open = true,
+                            span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::BOT }
+                        }
+                        crate::features::server_settings::ServerSettingsButton {}
+                        button {
+                            class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                            title: crate::i18n::text("Settings", &[]),
+                            onclick: move |_| {
+                                let open = !state.read().audio_settings;
+                                state.clone().write().audio_settings = open;
+                            },
+                            span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
                         }
                     }
                 }
             }
 
             if is_mobile() {
-                super::mobile_workspace::MobileWorkspace { activities_open }
+                super::mobile_workspace::MobileWorkspace { activities_open, menu_open }
             } else {
                 div { class: "flex-1 overflow-auto min-h-0",
                     onmounted: move |event| {
@@ -1286,7 +1280,7 @@ fn HostBanner() -> Element {
     };
 
     rsx! {
-        div { class: "dxf-no-drag shrink-0 h-8 pl-2.5 pr-1 bg-[var(--panel2)] border border-[var(--border)] rounded-lg flex items-center gap-2 text-xs",
+        div { class: "dxf-host-banner dxf-no-drag shrink-0 h-8 pl-2.5 pr-1 bg-[var(--panel2)] border border-[var(--border)] rounded-lg flex items-center gap-2 text-xs",
             onmousedown: move |e| e.stop_propagation(),
             span {
                 class: "w-2 h-2 rounded-full shrink-0",
@@ -1343,6 +1337,83 @@ fn HostBanner() -> Element {
             span { class: "flex-1" }
             Reachability { reachability }
             span { class: "{voice_color}", title: crate::i18n::message(&voice_title), {format!("● {}", crate::i18n::label(voice_label))} }
+        }
+    }
+}
+
+/// Android has no workspace header; what it held opens from the bottom bar's More.
+#[component]
+fn MobileMenu(mut open: Signal<bool>, on_disconnect: EventHandler<()>) -> Element {
+    let mut state = use_app_state();
+    let mut appearance = use_signal(|| false);
+    crate::mobile_back::use_handler(crate::mobile_back::OVERLAY, open(), move |_| {
+        open.set(false)
+    });
+    let s = state.read();
+    let reconnecting = s.status == ConnectionStatus::Reconnecting;
+    let hosting = s.host_info.is_some();
+    let operator = s.is_operator && s.status == ConnectionStatus::Ready;
+    drop(s);
+    let mut act = move |f: fn(&mut crate::state::AppState)| {
+        open.set(false);
+        f(&mut state.write());
+    };
+    rsx! {
+        if appearance() {
+            crate::features::appearance::AppearancePanel { open: appearance, at: None }
+        }
+        if open() {
+            div { class: "dxf-mobile-menu-scrim dxf-backdrop-in", onclick: move |_| open.set(false) }
+            div { class: "dxf-mobile-menu", role: "menu",
+                div { class: "dxf-mobile-menu-status", style: "--i: 6;",
+                    if hosting { HostBanner {} }
+                    div { class: "dxf-connection-controls flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
+                        TransportBadge {}
+                        VoiceRouteBadge {}
+                        if reconnecting {
+                            span { class: "px-2 text-[10px] text-[var(--warn)]", {crate::i18n::text("Reconnecting…", &[])} }
+                        }
+                        EncryptionBadge {}
+                    }
+                }
+                MobileMenuItem { icon: UNPLUG_ICON_SVG, label: crate::i18n::text("Disconnect", &[]), order: 5, danger: true,
+                    onclick: move |_| { open.set(false); on_disconnect.call(()); },
+                }
+                MobileMenuItem { icon: crate::features::icons::PALETTE, label: crate::i18n::text("Appearance", &[]), order: 4,
+                    onclick: move |_| { open.set(false); appearance.set(true); },
+                }
+                MobileMenuItem { icon: crate::features::icons::BOT, label: crate::i18n::text("Agents", &[]), order: 3,
+                    onclick: move |_| act(|s| s.agents_open = true),
+                }
+                if operator {
+                    MobileMenuItem { icon: crate::features::icons::SERVER, label: crate::i18n::text("Server Settings", &[]), order: 2,
+                        onclick: move |_| act(|s| s.server_settings_open = true),
+                    }
+                }
+                MobileMenuItem { icon: crate::features::icons::GEAR, label: crate::i18n::text("Settings", &[]), order: 1,
+                    onclick: move |_| act(|s| s.audio_settings = true),
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn MobileMenuItem(
+    icon: &'static str,
+    label: String,
+    order: u8,
+    #[props(default)] danger: bool,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! {
+        button {
+            class: if danger { "dxf-mobile-menu-item dxf-mobile-menu-danger" } else { "dxf-mobile-menu-item" },
+            role: "menuitem",
+            style: "--i: {order};",
+            onclick: move |e| onclick.call(e),
+            span { class: "dxf-mobile-menu-label", "{label}" }
+            span { class: "dxf-mobile-menu-fab", aria_hidden: "true", dangerous_inner_html: icon }
         }
     }
 }

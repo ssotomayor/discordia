@@ -219,7 +219,10 @@ mod tests {
 }
 
 #[component]
-pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
+pub(super) fn MobileWorkspace(
+    mut activities_open: Signal<bool>,
+    mut menu_open: Signal<bool>,
+) -> Element {
     #[allow(unused_mut)]
     let mut state = use_app_state();
     let mut tab = use_signal(|| MobileTab::Channels);
@@ -385,30 +388,52 @@ pub(super) fn MobileWorkspace(mut activities_open: Signal<bool>) -> Element {
                 }
             }
             div {
-                class: "dxf-mobile-nav shrink-0 flex items-center justify-around border-t border-[var(--border)] bg-[var(--panel2)] z-30 select-none",
-                style: "padding-bottom: max(var(--safe-bottom), 6px); height: calc(52px + var(--safe-bottom));",
+                class: "dxf-mobile-nav shrink-0 flex items-stretch justify-around border-t border-[var(--border)] bg-[var(--panel2)] z-30 select-none",
+                style: "padding-bottom: var(--safe-bottom); height: calc(56px + var(--safe-bottom));",
                 for (next, icon, label) in [(MobileTab::Channels, super::icons::CHANNEL_LIST, "Channels"), (MobileTab::Chat, super::icons::CHAT, "Chat"), (MobileTab::Members, super::icons::USERS, if state.read().dm_mode { "Profile" } else { "Members" })] {
                     button {
                         key: "{next:?}",
-                        class: if current == next {
-                            "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs text-[var(--accent)] font-semibold"
+                        class: if current == next && !menu_open() {
+                            "flex-1 flex flex-col items-center justify-center text-xs text-[var(--accent)] font-semibold"
                         } else {
-                            "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs text-[var(--text-muted)]"
+                            "flex-1 flex flex-col items-center justify-center text-xs text-[var(--text-muted)]"
                         },
                         aria_pressed: "{current == next}",
-                        onclick: move |_| { if *tab.peek() != next { tab.set(next); } },
+                        onclick: move |_| {
+                            if *menu_open.peek() { menu_open.set(false); }
+                            if *tab.peek() != next { tab.set(next); }
+                        },
                         span { class: "dxf-mobile-nav-icon", aria_hidden: "true", dangerous_inner_html: icon }
-                        span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text(label, &[])} }
+                        span { class: "text-[10px] tracking-tight", {crate::i18n::text(label, &[])} }
                     }
                 }
-                if !cfg!(target_os = "android") {
-                button {
-                    class: "flex-1 flex flex-col items-center justify-center min-h-[44px] py-1 text-xs text-[var(--text-muted)]",
-                    onclick: move |_| activities_open.set(true),
-                    aria_expanded: activities_open(),
-                    span { class: "dxf-mobile-nav-icon", aria_hidden: "true", dangerous_inner_html: super::icons::DICES }
-                    span { class: "text-[10px] tracking-tight mt-0.5", {crate::i18n::text("Activities", &[])} }
-                }
+                if cfg!(target_os = "android") {
+                    button {
+                        class: if menu_open() {
+                            "dxf-mobile-more flex-1 flex flex-col items-center justify-center text-xs text-[var(--accent)] font-semibold"
+                        } else {
+                            "dxf-mobile-more flex-1 flex flex-col items-center justify-center text-xs text-[var(--text-muted)]"
+                        },
+                        aria_expanded: menu_open(),
+                        aria_haspopup: "menu",
+                        onclick: move |_| menu_open.toggle(),
+                        span { class: "dxf-mobile-nav-icon relative", aria_hidden: "true",
+                            span { class: "contents", dangerous_inner_html: if menu_open() { super::icons::CLOSE } else { super::icons::MORE } }
+                            // The header that said "Reconnecting…" is inside this menu now.
+                            if state.read().status == crate::state::ConnectionStatus::Reconnecting {
+                                span { class: "absolute w-2 h-2 rounded-full bg-[var(--warn)]", style: "top: -2px; right: -4px;" }
+                            }
+                        }
+                        span { class: "text-[10px] tracking-tight", {crate::i18n::text("More", &[])} }
+                    }
+                } else {
+                    button {
+                        class: "flex-1 flex flex-col items-center justify-center text-xs text-[var(--text-muted)]",
+                        onclick: move |_| activities_open.set(true),
+                        aria_expanded: activities_open(),
+                        span { class: "dxf-mobile-nav-icon", aria_hidden: "true", dangerous_inner_html: super::icons::DICES }
+                        span { class: "text-[10px] tracking-tight", {crate::i18n::text("Activities", &[])} }
+                    }
                 }
             }
         }

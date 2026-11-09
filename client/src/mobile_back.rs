@@ -4,6 +4,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 pub const SCREEN: u16 = 100;
 pub const CONTENT: u16 = 200;
 pub const SOCIAL_CHAT: u16 = 300;
+pub const OVERLAY: u16 = 500;
 pub const SETTINGS: u16 = 1000;
 
 #[cfg(any(target_os = "android", test))]

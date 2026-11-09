@@ -73,10 +73,33 @@ pub(crate) const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
 
 #[component]
 pub fn AppearanceButton() -> Element {
-    let mut settings = use_context::<Signal<ClientSettings>>();
     let mut open = use_signal(|| false);
-    let mut err = use_signal::<Option<String>>(|| None);
     let mut at = use_signal(|| (0.0_f64, 0.0_f64));
+    rsx! {
+        div {
+            button {
+                class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                title: crate::i18n::text("Theme, accent and background", &[]),
+                onclick: move |e| {
+                    let c = e.client_coordinates();
+                    at.set((c.x, c.y));
+                    open.set(true);
+                },
+                span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PALETTE }
+            }
+            if open() {
+                AppearancePanel { open, at: Some(at()) }
+            }
+        }
+    }
+}
+
+/// `at` is the tap that opened it; without one it is a sheet above Android's bottom bar.
+#[component]
+pub fn AppearancePanel(mut open: Signal<bool>, at: Option<(f64, f64)>) -> Element {
+    let mut settings = use_context::<Signal<ClientSettings>>();
+    let err = use_signal::<Option<String>>(|| None);
+    crate::mobile_back::use_handler(crate::mobile_back::OVERLAY, true, move |_| open.set(false));
 
     let mut update = move |f: &dyn Fn(&mut ClientSettings)| {
         let mut next = settings.read().clone();
@@ -86,252 +109,240 @@ pub fn AppearanceButton() -> Element {
     };
 
     let current = settings.read().clone();
-    let (at_x, at_y) = at();
+    // Drops from the title-bar button: anchored upward it opened off the top of the screen.
+    let place = match at {
+        Some((at_x, at_y)) => format!("width: min(320px, calc(100vw - 16px)); left: min(max({at_x}px - 280px, 8px), max(8px, calc(100vw - 328px))); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;"),
+        None => "left: 8px; right: 8px; bottom: calc(var(--mobile-nav-reach) + 8px); max-height: calc(100dvh - var(--mobile-nav-reach) - 16px - var(--safe-top)); overflow-y: auto;".into(),
+    };
 
     rsx! {
         div {
-            button {
-                class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                title: crate::i18n::text("Theme, accent and background", &[]),
-                onclick: move |e| {
-                    let c = e.client_coordinates();
-                    at.set((c.x, c.y));
-                    err.set(None);
-                    open.set(true);
-                },
-                span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PALETTE }
+            class: "fixed inset-0 z-[55]",
+            onclick: move |_| open.set(false),
+        }
+        div {
+            class: if at.is_some() { "dxf-pop-in fixed z-[60] w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4" } else { "dxf-pop-in fixed z-[60] bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-xl p-4" },
+            style: "{place}",
+            onclick: move |e| e.stop_propagation(),
+            h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Appearance", &[])} }
+
+            for (label, kind) in [
+                ("Text size", SizeKind::Text),
+                ("Chat emoji size", SizeKind::Emoji),
+                ("Reaction emoji size", SizeKind::Reaction),
+            ] {
+                {
+                    let (lo, hi) = kind.bounds();
+                    let size = kind.get(&current);
+                    rsx! {
+                        label { class: "flex items-center gap-2 mb-3 text-xs",
+                            span { class: "flex-1", {crate::i18n::label(label)} }
+                            input {
+                                r#type: "range", min: "{lo}", max: "{hi}", step: "10", value: "{size}",
+                                class: "w-24 accent-[var(--accent)]",
+                                oninput: move |e| {
+                                    if let Ok(value) = e.value().parse::<u16>() {
+                                        update(&move |s| kind.set(s, value));
+                                    }
+                                },
+                            }
+                            span { "{size}%" }
+                        }
+                    }
+                }
+            }
+            button { class: "text-xs text-[var(--accent)] mb-4",
+                onclick: move |_| update(&|s| { s.text_size_percent = 100; s.emoji_size_percent = 100; s.reaction_size_percent = 100; }),
+                {crate::i18n::text("Reset sizes", &[])}
             }
 
-            if open() {
-                div {
-                    class: "fixed inset-0 z-[55]",
-                    onclick: move |_| open.set(false),
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Theme", &[])} }
+            div { class: "dxf-theme-grid", role: "group", aria_label: crate::i18n::text("Theme", &[]),
+                for theme in THEMES.iter() {
+                    {
+                        let id = theme.id;
+                        let preview_vars = crate::app::theme_vars(id);
+                        let selected = current.theme == id;
+                        let ring = if selected {
+                            "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
+                        } else {
+                            "border border-[var(--edge)]"
+                        };
+                        rsx! {
+                            button {
+                                key: "{id}",
+                                class: "dxf-theme-tile",
+                                title: crate::i18n::label(theme.label),
+                                aria_label: crate::i18n::label(theme.label),
+                                aria_pressed: selected,
+                                onclick: move |_| update(&|s| s.theme = id.to_string()),
+                                span {
+                                    class: "dxf-theme-swatch {ring}",
+                                    style: "{preview_vars}background-color:var(--bg);background-image:linear-gradient(150deg,{theme.swatch},transparent 78%);",
+                                }
+                                span { class: "dxf-theme-name",
+                                    {crate::i18n::label(theme.label)}
+                                }
+                            }
+                        }
+                    }
                 }
-                div {
-                    class: "dxf-pop-in fixed z-[60] w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
-                    // Drops from the button, which now lives in the title bar:
-                    // anchored upward it opened off the top of the screen.
-                    style: "width: min(320px, calc(100vw - 16px)); left: min(max({at_x}px - 280px, 8px), max(8px, calc(100vw - 328px))); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;",
-                    onclick: move |e| e.stop_propagation(),
-                    h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", {crate::i18n::text("Appearance", &[])} }
+            }
 
-                    for (label, kind) in [
-                        ("Text size", SizeKind::Text),
-                        ("Chat emoji size", SizeKind::Emoji),
-                        ("Reaction emoji size", SizeKind::Reaction),
-                    ] {
-                        {
-                            let (lo, hi) = kind.bounds();
-                            let size = kind.get(&current);
-                            rsx! {
-                                label { class: "flex items-center gap-2 mb-3 text-xs",
-                                    span { class: "flex-1", {crate::i18n::label(label)} }
-                                    input {
-                                        r#type: "range", min: "{lo}", max: "{hi}", step: "10", value: "{size}",
-                                        class: "w-24 accent-[var(--accent)]",
-                                        oninput: move |e| {
-                                            if let Ok(value) = e.value().parse::<u16>() {
-                                                update(&move |s| kind.set(s, value));
-                                            }
-                                        },
-                                    }
-                                    span { "{size}%" }
-                                }
-                            }
-                        }
-                    }
-                    button { class: "text-xs text-[var(--accent)] mb-4",
-                        onclick: move |_| update(&|s| { s.text_size_percent = 100; s.emoji_size_percent = 100; s.reaction_size_percent = 100; }),
-                        {crate::i18n::text("Reset sizes", &[])}
-                    }
-
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Theme", &[])} }
-                    div { class: "dxf-theme-grid", role: "group", aria_label: crate::i18n::text("Theme", &[]),
-                        for theme in THEMES.iter() {
-                            {
-                                let id = theme.id;
-                                let preview_vars = crate::app::theme_vars(id);
-                                let selected = current.theme == id;
-                                let ring = if selected {
-                                    "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
-                                } else {
-                                    "border border-[var(--edge)]"
-                                };
-                                rsx! {
-                                    button {
-                                        key: "{id}",
-                                        class: "dxf-theme-tile",
-                                        title: crate::i18n::label(theme.label),
-                                        aria_label: crate::i18n::label(theme.label),
-                                        aria_pressed: selected,
-                                        onclick: move |_| update(&|s| s.theme = id.to_string()),
-                                        span {
-                                            class: "dxf-theme-swatch {ring}",
-                                            style: "{preview_vars}background-color:var(--bg);background-image:linear-gradient(150deg,{theme.swatch},transparent 78%);",
-                                        }
-                                        span { class: "dxf-theme-name",
-                                            {crate::i18n::label(theme.label)}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Background", &[])} }
-                    div { class: "grid grid-cols-3 gap-2 mb-4",
-                        for (id, label, preview) in BACKGROUND_TILES.iter().copied() {
-                            {
-                                let selected = current.pattern == id && current.background.is_none();
-                                let ring = if selected {
-                                    "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
-                                } else {
-                                    "border border-[var(--edge)] hover:border-[var(--border-strong)]"
-                                };
-                                rsx! {
-                                    button {
-                                        key: "{id}",
-                                        class: "h-14 rounded-lg flex items-center justify-center text-xs font-medium text-[var(--text)] {ring}",
-                                        style: "{preview}",
-                                        onclick: move |_| update(&|s| { s.pattern = id.to_string(); s.background = None; }),
-                                        {crate::i18n::label(label)}
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Accent", &[])} }
-                    div { class: "flex items-center gap-2 mb-4",
-                        input {
-                            r#type: "color",
-                            class: "w-8 h-8 rounded border border-[var(--border)] bg-transparent cursor-pointer",
-                            value: "{current.accent.clone().unwrap_or_else(|| \"#e0a06a\".into())}",
-                            oninput: move |e| {
-                                let v = e.value();
-                                update(&move |s| s.accent = Some(v.clone()));
-                            },
-                        }
-                        span { class: "text-xs text-[var(--text-muted)] flex-1",
-                            if current.accent.is_some() { {crate::i18n::text("Custom accent", &[])} } else { {crate::i18n::text("Theme default", &[])} }
-                        }
-                        if current.accent.is_some() {
-                            button {
-                                class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                onclick: move |_| update(&|s| s.accent = None),
-                                {crate::i18n::text("Reset", &[])}
-                            }
-                        }
-                    }
-                    label { class: "flex items-center gap-2 cursor-pointer select-none mb-1",
-                        input {
-                            r#type: "checkbox",
-                            class: "accent-[var(--accent)]",
-                            checked: current.keep_my_accent,
-                            onchange: move |e| {
-                                let on = e.checked();
-                                update(&move |s| s.keep_my_accent = on);
-                            },
-                        }
-                        span { class: "text-xs text-[var(--text)] flex-1", {crate::i18n::text("Keep my accent everywhere", &[])} }
-                    }
-                    div { class: "text-[10px] text-[var(--text-dim)] mb-4",
-                        if current.keep_my_accent {
-                            {crate::i18n::text("Guilds that set their own accent are ignored — you see this colour everywhere.", &[])}
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Background", &[])} }
+            div { class: "grid grid-cols-3 gap-2 mb-4",
+                for (id, label, preview) in BACKGROUND_TILES.iter().copied() {
+                    {
+                        let selected = current.pattern == id && current.background.is_none();
+                        let ring = if selected {
+                            "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
                         } else {
-                            {crate::i18n::text("A guild that sets its own accent overrides this inside that guild. Your colour comes back in direct messages and on the home screen.", &[])}
-                        }
-                    }
-
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Custom image", &[])} }
-                    div { class: "h-20 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs mb-2",
-                        if let Some(url) = current.background.clone() {
-                            img { class: "w-full h-full object-cover", src: "{url}", alt: crate::i18n::text("background preview", &[]) }
-                        } else {
-                            {crate::i18n::text("no background", &[])}
-                        }
-                    }
-                    div { class: "flex items-center gap-2 mb-3",
-                        label {
-                            class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
-                            {crate::i18n::text("Choose image", &[])}
-                            input {
-                                r#type: "file",
-                                accept: "image/*",
-                                class: "hidden",
-                                onchange: move |evt: FormEvent| {
-                                    let files = evt.files();
-                                    let mut settings = settings;
-                                    let mut err = err;
-                                    spawn(async move {
-                                        let Some(file) = files.into_iter().next() else { return };
-                                        match file.read_bytes().await {
-                                            Ok(bytes) => {
-                                                if bytes.len() > MAX_BACKGROUND_BYTES {
-                                                    err.set(Some("Image too large (max 4 MB).".into()));
-                                                    return;
-                                                }
-                                                let mime = file
-                                                    .content_type()
-                                                    .filter(|m| m.starts_with("image/"))
-                                                    .unwrap_or_else(|| "image/png".to_string());
-                                                let b64 = base64::engine::general_purpose::STANDARD
-                                                    .encode(&bytes);
-                                                err.set(None);
-                                                let mut next = settings.read().clone();
-                                                next.background = Some(format!("data:{mime};base64,{b64}"));
-                                                settings.set(next.clone());
-                                                settings::save(&next);
-                                            }
-                                            Err(_) => err.set(Some("Couldn't read that file.".into())),
-                                        }
-                                    });
-                                },
-                            }
-                        }
-                        if current.background.is_some() {
+                            "border border-[var(--edge)] hover:border-[var(--border-strong)]"
+                        };
+                        rsx! {
                             button {
-                                class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                onclick: move |_| update(&|s| s.background = None),
-                                {crate::i18n::text("Remove", &[])}
+                                key: "{id}",
+                                class: "h-14 rounded-lg flex items-center justify-center text-xs font-medium text-[var(--text)] {ring}",
+                                style: "{preview}",
+                                onclick: move |_| update(&|s| { s.pattern = id.to_string(); s.background = None; }),
+                                {crate::i18n::label(label)}
                             }
                         }
                     }
+                }
+            }
 
-                    if current.background.is_some() {
-                        div { class: "flex items-center gap-2 mb-1",
-                            span { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] w-10", {crate::i18n::text("Dim", &[])} }
-                            input {
-                                r#type: "range",
-                                class: "flex-1 accent-[var(--accent)]",
-                                min: "0",
-                                max: "90",
-                                value: "{current.background_dim}",
-                                oninput: move |e| {
-                                    if let Ok(v) = e.value().parse::<u8>() {
-                                        update(&move |s| s.background_dim = v);
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Accent", &[])} }
+            div { class: "flex items-center gap-2 mb-4",
+                input {
+                    r#type: "color",
+                    class: "w-8 h-8 rounded border border-[var(--border)] bg-transparent cursor-pointer",
+                    value: "{current.accent.clone().unwrap_or_else(|| \"#e0a06a\".into())}",
+                    oninput: move |e| {
+                        let v = e.value();
+                        update(&move |s| s.accent = Some(v.clone()));
+                    },
+                }
+                span { class: "text-xs text-[var(--text-muted)] flex-1",
+                    if current.accent.is_some() { {crate::i18n::text("Custom accent", &[])} } else { {crate::i18n::text("Theme default", &[])} }
+                }
+                if current.accent.is_some() {
+                    button {
+                        class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                        onclick: move |_| update(&|s| s.accent = None),
+                        {crate::i18n::text("Reset", &[])}
+                    }
+                }
+            }
+            label { class: "flex items-center gap-2 cursor-pointer select-none mb-1",
+                input {
+                    r#type: "checkbox",
+                    class: "accent-[var(--accent)]",
+                    checked: current.keep_my_accent,
+                    onchange: move |e| {
+                        let on = e.checked();
+                        update(&move |s| s.keep_my_accent = on);
+                    },
+                }
+                span { class: "text-xs text-[var(--text)] flex-1", {crate::i18n::text("Keep my accent everywhere", &[])} }
+            }
+            div { class: "text-[10px] text-[var(--text-dim)] mb-4",
+                if current.keep_my_accent {
+                    {crate::i18n::text("Guilds that set their own accent are ignored — you see this colour everywhere.", &[])}
+                } else {
+                    {crate::i18n::text("A guild that sets its own accent overrides this inside that guild. Your colour comes back in direct messages and on the home screen.", &[])}
+                }
+            }
+
+            div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", {crate::i18n::text("Custom image", &[])} }
+            div { class: "h-20 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs mb-2",
+                if let Some(url) = current.background.clone() {
+                    img { class: "w-full h-full object-cover", src: "{url}", alt: crate::i18n::text("background preview", &[]) }
+                } else {
+                    {crate::i18n::text("no background", &[])}
+                }
+            }
+            div { class: "flex items-center gap-2 mb-3",
+                label {
+                    class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors cursor-pointer",
+                    {crate::i18n::text("Choose image", &[])}
+                    input {
+                        r#type: "file",
+                        accept: "image/*",
+                        class: "hidden",
+                        onchange: move |evt: FormEvent| {
+                            let files = evt.files();
+                            let mut settings = settings;
+                            let mut err = err;
+                            spawn(async move {
+                                let Some(file) = files.into_iter().next() else { return };
+                                match file.read_bytes().await {
+                                    Ok(bytes) => {
+                                        if bytes.len() > MAX_BACKGROUND_BYTES {
+                                            err.set(Some("Image too large (max 4 MB).".into()));
+                                            return;
+                                        }
+                                        let mime = file
+                                            .content_type()
+                                            .filter(|m| m.starts_with("image/"))
+                                            .unwrap_or_else(|| "image/png".to_string());
+                                        let b64 = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        err.set(None);
+                                        let mut next = settings.read().clone();
+                                        next.background = Some(format!("data:{mime};base64,{b64}"));
+                                        settings.set(next.clone());
+                                        settings::save(&next);
                                     }
-                                },
+                                    Err(_) => err.set(Some("Couldn't read that file.".into())),
+                                }
+                            });
+                        },
+                    }
+                }
+                if current.background.is_some() {
+                    button {
+                        class: "px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                        onclick: move |_| update(&|s| s.background = None),
+                        {crate::i18n::text("Remove", &[])}
+                    }
+                }
+            }
+
+            if current.background.is_some() {
+                div { class: "flex items-center gap-2 mb-1",
+                    span { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] w-10", {crate::i18n::text("Dim", &[])} }
+                    input {
+                        r#type: "range",
+                        class: "flex-1 accent-[var(--accent)]",
+                        min: "0",
+                        max: "90",
+                        value: "{current.background_dim}",
+                        oninput: move |e| {
+                            if let Ok(v) = e.value().parse::<u8>() {
+                                update(&move |s| s.background_dim = v);
                             }
-                            span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{current.background_dim}%" }
-                        }
+                        },
                     }
+                    span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{current.background_dim}%" }
+                }
+            }
 
-                    if let Some(e) = err() {
-                        div { class: "mt-2 text-[10px] text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
-                    }
+            if let Some(e) = err() {
+                div { class: "mt-2 text-[10px] text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
+            }
 
-                    div { class: "mt-4 pt-3 border-t border-[var(--edge)] text-[11px] text-[var(--text-dim)] leading-relaxed",
-                        {crate::i18n::text("Tip: drag panel headers to move, corners to resize. Toggle Edit layout for snap presets.", &[])}
-                    }
+            if at.is_some() {
+                div { class: "mt-4 pt-3 border-t border-[var(--edge)] text-[11px] text-[var(--text-dim)] leading-relaxed",
+                    {crate::i18n::text("Tip: drag panel headers to move, corners to resize. Toggle Edit layout for snap presets.", &[])}
+                }
+            }
 
-                    div { class: "mt-3 flex justify-end",
-                        button {
-                            class: "px-3 py-1.5 rounded-lg text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] hover:border-[var(--accent)] transition-colors",
-                            onclick: move |_| open.set(false),
-                            {crate::i18n::text("Done", &[])}
-                        }
-                    }
+            div { class: "mt-3 flex justify-end",
+                button {
+                    class: "px-3 py-1.5 rounded-lg text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| open.set(false),
+                    {crate::i18n::text("Done", &[])}
                 }
             }
         }
