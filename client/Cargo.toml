@@ -154,6 +154,8 @@ rubato-legacy = { package = "rubato", version = "=0.16.2" }
 axum = { workspace = true }
 # A caller in a gateway call, which a `/sfu` tunnel needs.
 discordia-rendezvous = { path = "../rendezvous" }
+# The phone's signatures are tested against the relay's own router.
+discordia-push-relay = { path = "../push-relay" }
 livekit-api = { workspace = true }
 uuid = { workspace = true }
 

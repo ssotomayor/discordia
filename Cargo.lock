@@ -2463,6 +2463,7 @@ dependencies = [
  "discordia-image-policy",
  "discordia-nostr",
  "discordia-protocol",
+ "discordia-push-relay",
  "discordia-rendezvous",
  "discordia-server",
  "dispatch2",
