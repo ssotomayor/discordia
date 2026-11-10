@@ -8,6 +8,18 @@ Tracking: #384 covers DMs and excludes mentions; open one issue for mentions and
 one per row of [Later](#later) before starting. Delete this file when the last
 phase merges — `docs/MAP.md`, `docs/OPS.md` and `CLAUDE.md` carry what stays true.
 
+## Status
+
+| Phase | State |
+|---|---|
+| 0 Spike | Not run on its own: the real cold path was built instead. Loading `libmain` with no Activity is still unproven until an APK from CI is tried on a phone. |
+| 1 `discordia-nostr` | Built, tested. |
+| 2 Push relay | Built, tested against a fake Google; never against FCM itself. |
+| 3 Android plumbing | Written, never compiled: Kotlin, Gradle, the Android-only Rust and the settings UI. CI is the first build. |
+| 4 DMs | Relay watcher and phone handler built, tested. |
+| 5 Mentions | Server, client registration, attention and tap routing built, tested. |
+| 6 Docs and validation | Docs done. Phone validation, the relay's deployment and the measurements are open. |
+
 ## Decisions
 
 | Decision | Why |
