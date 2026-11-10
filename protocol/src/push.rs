@@ -150,6 +150,7 @@ pub struct MentionPayload {
     pub guild_name: String,
     #[serde(default)]
     pub channel_name: String,
+    /// Unix seconds; a read mark is milliseconds, so the phone scales before comparing.
     pub at: i64,
 }
 
