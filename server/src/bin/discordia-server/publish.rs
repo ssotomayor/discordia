@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use discordia_server::protocol::LaunchSource;
+use discordia_server::push::PushConfig;
 use discordia_server::rendezvous::{
     self, HostKey, HostUpdate, PublishOptions, Registration, TransportAdvert,
 };
@@ -28,8 +29,8 @@ pub fn targets(urls: &[String]) -> Result<Vec<String>, String> {
 
 /// Whatever the flags, environment or config file set is fixed for this run;
 /// Server Settings fills in the rest.
-pub fn launch(opts: &ServerOptions, publishes: bool) -> LaunchSettings {
-    LaunchSettings {
+pub fn launch(opts: &ServerOptions, publishes: bool) -> Result<LaunchSettings, String> {
+    Ok(LaunchSettings {
         name: opts.publish_name.clone().map(Some),
         description: opts.publish_description.clone().map(Some),
         listed_public: opts.publish_public,
@@ -37,7 +38,8 @@ pub fn launch(opts: &ServerOptions, publishes: bool) -> LaunchSettings {
         media_max_bytes: opts.media_max_bytes,
         source: LaunchSource::Config,
         publishes,
-    }
+        push: PushConfig::from_setting(opts.push_relay.as_deref())?,
+    })
 }
 
 pub fn spawn(
@@ -123,8 +125,33 @@ mod tests {
             media_max_bytes: Some(1 << 30),
             ..ServerOptions::default()
         };
-        let pins = launch(&opts, true).pins();
+        let pins = launch(&opts, true).unwrap().pins();
         assert!(pins.name && pins.media_max_bytes);
         assert!(!pins.description && !pins.listed_public && !pins.location);
+    }
+
+    #[test]
+    fn push_goes_to_the_project_relay_unless_turned_off() {
+        let with = |push_relay: Option<&str>| {
+            launch(
+                &ServerOptions {
+                    push_relay: push_relay.map(str::to_string),
+                    ..ServerOptions::default()
+                },
+                false,
+            )
+            .map(|l| l.push.url().map(str::to_string))
+        };
+        assert_eq!(
+            with(None).unwrap().as_deref(),
+            Some(discordia_server::protocol::push::DEFAULT_PUSH_RELAY)
+        );
+        assert_eq!(with(Some("off")).unwrap(), None);
+        assert_eq!(with(Some("")).unwrap(), None);
+        assert_eq!(
+            with(Some("https://push.example/")).unwrap().as_deref(),
+            Some("https://push.example")
+        );
+        assert!(with(Some("http://push.example")).is_err());
     }
 }

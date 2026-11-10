@@ -585,6 +585,8 @@ pub async fn start_self_host(
             media_max_bytes: None,
             source: crate::protocol::LaunchSource::SelfHost,
             publishes: rendezvous_state.is_some(),
+            push: discordia_server::push::PushConfig::from_setting(None)
+                .map_err(|e| format!("embedded server: {e}"))?,
         },
         admission: Default::default(),
     };

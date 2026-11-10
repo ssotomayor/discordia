@@ -2676,6 +2676,7 @@ dependencies = [
  "discordia-agent",
  "discordia-bot",
  "discordia-image-policy",
+ "discordia-nostr",
  "discordia-protocol",
  "discordia-rendezvous",
  "flate2",

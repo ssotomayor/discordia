@@ -28,7 +28,7 @@ fn persist(res: Result<(), sqlx::Error>, what: &str) {
     }
 }
 
-fn durable<T>(res: Result<T, sqlx::Error>, what: &str) -> Result<T, String> {
+pub(crate) fn durable<T>(res: Result<T, sqlx::Error>, what: &str) -> Result<T, String> {
     res.map_err(|e| {
         tracing::error!(error = %e, what, "durable write failed");
         "The server could not save this change. Please try again.".to_string()
@@ -72,6 +72,9 @@ struct Conn {
     host: Option<String>,
     route: crate::connection_routes::RouteSource,
     progressive_image_uploads: bool,
+    /// `SetAttention`. True until told otherwise, so a client that never
+    /// says is never pushed while it is connected.
+    attended: bool,
 }
 
 #[derive(Clone)]
@@ -227,6 +230,7 @@ pub struct AppState {
     session_revisions: DashMap<String, u64>,
     next_conn_id: AtomicU64,
     upload_budget: DashMap<String, (std::time::Instant, u64)>,
+    pub(crate) push: crate::push::Push,
     pub(crate) durable_writes: tokio::sync::Mutex<()>,
 }
 
@@ -284,6 +288,7 @@ impl AppState {
             session_revisions: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
             upload_budget: DashMap::new(),
+            push: Default::default(),
             durable_writes: tokio::sync::Mutex::new(()),
         };
 
@@ -542,6 +547,7 @@ impl AppState {
                 host: None,
                 route: crate::connection_routes::RouteSource::Socket(ip),
                 progressive_image_uploads: false,
+                attended: true,
             },
         );
         Ok((id, rx, close))
@@ -562,6 +568,25 @@ impl AppState {
         if let Some(mut conn) = self.conns.get_mut(&conn_id) {
             conn.progressive_image_uploads = enabled;
         }
+    }
+
+    pub(crate) fn set_attention(&self, conn_id: u64, attended: bool) {
+        if let Some(mut conn) = self.conns.get_mut(&conn_id) {
+            conn.attended = attended;
+        }
+    }
+
+    pub(crate) fn attended(&self, pubkey: &str) -> bool {
+        let ids: Vec<u64> = self
+            .conn_ids_by_pubkey
+            .get(pubkey)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default();
+        ids.into_iter().any(|id| {
+            self.conns
+                .get(&id)
+                .is_some_and(|conn| conn.attended && !conn.closing)
+        })
     }
 
     pub(crate) fn supports_progressive_image_uploads(&self, conn_id: u64) -> bool {

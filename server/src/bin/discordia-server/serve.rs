@@ -98,7 +98,7 @@ pub async fn serve(opts: ServerOptions) -> Result<(), String> {
         operators,
         data_dir: data_dir.clone(),
         identities,
-        launch: crate::publish::launch(&opts, !publish_to.is_empty()),
+        launch: crate::publish::launch(&opts, !publish_to.is_empty())?,
         admission: discordia_server::admission::Admission {
             trusted_proxies: opts.trusted_proxies.clone().unwrap_or_default(),
             ..Default::default()

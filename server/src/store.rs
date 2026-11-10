@@ -46,6 +46,16 @@ pub struct EndedCall {
     pub cleared: crate::protocol::VoiceState,
 }
 
+/// A mention-push registration. Server-wide and never exported: the handle is
+/// a capability to wake someone's phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushRow {
+    pub handle: String,
+    pub pubkey: String,
+    pub key: String,
+    pub updated_at: i64,
+}
+
 #[derive(Default)]
 pub struct LoadedState {
     pub users: Vec<User>,
@@ -296,6 +306,9 @@ impl Store {
                 guild_id TEXT NOT NULL, curator TEXT NOT NULL, PRIMARY KEY (guild_id, curator))",
             "CREATE TABLE IF NOT EXISTS app_blocklists (
                 curator TEXT PRIMARY KEY, created_at INTEGER NOT NULL, blocked TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS push_registrations (
+                handle TEXT PRIMARY KEY, pubkey TEXT NOT NULL, key TEXT NOT NULL, updated_at INTEGER NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_push_registrations_pubkey ON push_registrations(pubkey)",
         ];
         for stmt in ddl {
             sqlx::query(stmt).execute(&self.pool).await?;
@@ -1475,6 +1488,105 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Moves `handle` to `pubkey` if another key held it, then keeps that key's
+    /// `cap` newest. `updated_at` ties break by rowid, which an upsert keeps.
+    pub async fn upsert_push_registration(
+        &self,
+        row: &PushRow,
+        cap: usize,
+    ) -> Result<Option<String>> {
+        let mut tx = self.pool.begin().await?;
+        let previous: Option<String> =
+            sqlx::query("SELECT pubkey FROM push_registrations WHERE handle = ?")
+                .bind(&row.handle)
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|r| r.get(0));
+        sqlx::query(
+            "INSERT INTO push_registrations(handle, pubkey, key, updated_at) VALUES (?, ?, ?, ?)
+             ON CONFLICT(handle) DO UPDATE SET pubkey = excluded.pubkey, key = excluded.key,
+             updated_at = excluded.updated_at",
+        )
+        .bind(&row.handle)
+        .bind(&row.pubkey)
+        .bind(&row.key)
+        .bind(row.updated_at)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM push_registrations WHERE pubkey = ?1 AND handle NOT IN (
+                SELECT handle FROM push_registrations WHERE pubkey = ?1
+                ORDER BY updated_at DESC, rowid DESC LIMIT ?2)",
+        )
+        .bind(&row.pubkey)
+        .bind(cap as i64)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(previous.filter(|p| *p != row.pubkey))
+    }
+
+    /// `pubkey` set: only if that key holds it.
+    pub async fn delete_push_registration(
+        &self,
+        handle: &str,
+        pubkey: Option<&str>,
+    ) -> Result<bool> {
+        let done = match pubkey {
+            Some(pubkey) => {
+                sqlx::query("DELETE FROM push_registrations WHERE handle = ? AND pubkey = ?")
+                    .bind(handle)
+                    .bind(pubkey)
+                    .execute(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query("DELETE FROM push_registrations WHERE handle = ?")
+                    .bind(handle)
+                    .execute(&self.pool)
+                    .await?
+            }
+        };
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn push_registrations(&self, pubkey: Option<&str>) -> Result<Vec<PushRow>> {
+        let rows = match pubkey {
+            Some(pubkey) => sqlx::query(
+                "SELECT handle, pubkey, key, updated_at FROM push_registrations WHERE pubkey = ?
+                 ORDER BY updated_at DESC, rowid DESC",
+            )
+            .bind(pubkey)
+            .fetch_all(&self.pool)
+            .await?,
+            None => {
+                sqlx::query(
+                    "SELECT handle, pubkey, key, updated_at FROM push_registrations
+                 ORDER BY updated_at DESC, rowid DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .map(|r| PushRow {
+                handle: r.get(0),
+                pubkey: r.get(1),
+                key: r.get(2),
+                updated_at: r.get(3),
+            })
+            .collect())
+    }
+
+    pub async fn prune_push_registrations(&self, older_than_ms: i64) -> Result<u64> {
+        let done = sqlx::query("DELETE FROM push_registrations WHERE updated_at < ?")
+            .bind(older_than_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected())
     }
 
     pub async fn stickers(&self, guild_id: Id) -> Result<Vec<GuildEmoji>> {
