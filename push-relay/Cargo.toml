@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 discordia-protocol = { workspace = true }
+discordia-nostr = { path = "../nostr" }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 reqwest = { workspace = true }
@@ -25,3 +26,7 @@ rand = "0.8"
 ring = "0.17"
 # 0.32 because it links the libsqlite3-sys the server's sqlx does; Cargo allows one.
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

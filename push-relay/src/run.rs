@@ -8,6 +8,7 @@ use crate::fcm::FcmSender;
 use crate::limits::Limits;
 use crate::sender::{RecordingSender, Sender};
 use crate::store::{Caps, Store};
+use crate::watcher::{Watcher, WatcherConfig};
 use crate::{Config, Relay, local_audiences, router};
 
 /// One setting, three spellings: `--flag`, the variable beside it, and the key in a
@@ -169,13 +170,19 @@ pub async fn run(opts: Options) -> Result<(), String> {
         .await
         .map_err(|e| format!("cannot bind {addr}: {e}"))?;
     tracing::info!(%addr, "discordia-push-relay listening");
-    axum::serve(
+    let watcher = Watcher::spawn(
+        relay.clone(),
+        WatcherConfig::new(relay.config.dm_allow_list()),
+    );
+    let served = axum::serve(
         listener,
         router(relay).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string());
+    watcher.stop().await;
+    served
 }
 
 /// Opens the running relay's database beside it: SQLite in WAL mode with a

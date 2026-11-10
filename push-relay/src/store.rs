@@ -75,6 +75,7 @@ const SCHEMA: &str = "
 pub struct Store {
     db: Mutex<Connection>,
     caps: Caps,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 pub fn new_handle() -> String {
@@ -97,6 +98,7 @@ impl Store {
         Ok(Self {
             db: Mutex::new(db),
             caps,
+            changed: tokio::sync::watch::Sender::new(0),
         })
     }
 
@@ -116,11 +118,22 @@ impl Store {
         Ok(Self {
             db: Mutex::new(db),
             caps,
+            changed: tokio::sync::watch::Sender::new(0),
         })
     }
 
     pub fn caps(&self) -> Caps {
         self.caps
+    }
+
+    /// Bumped by every write that can change `dm_watch_list`, refreshes included:
+    /// the watcher diffs the list, so a spurious bump costs one query.
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+
+    fn bump(&self) {
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
     }
 
     fn db(&self) -> MutexGuard<'_, Connection> {
@@ -211,23 +224,33 @@ impl Store {
         )?
         .execute(params![pubkey, self.caps.devices_per_key as i64])?;
         tx.commit()?;
+        drop(db);
+        self.bump();
         Ok(expires)
     }
 
     pub fn delete_device(&self, pubkey: &str, token: &str) -> Result<bool, StoreError> {
-        Ok(self
+        let gone = self
             .db()
             .prepare_cached("DELETE FROM devices WHERE pubkey = ?1 AND token = ?2")?
             .execute(params![pubkey, token])?
-            > 0)
+            > 0;
+        if gone {
+            self.bump();
+        }
+        Ok(gone)
     }
 
     pub fn delete_device_id(&self, id: i64) -> Result<bool, StoreError> {
-        Ok(self
+        let gone = self
             .db()
             .prepare_cached("DELETE FROM devices WHERE id = ?1")?
             .execute([id])?
-            > 0)
+            > 0;
+        if gone {
+            self.bump();
+        }
+        Ok(gone)
     }
 
     pub fn create_handle(&self, pubkey: &str, token: &str, now: u64) -> Result<String, StoreError> {
@@ -302,7 +325,8 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Every unexpired key with DMs on and the relays it named: the watcher's subscription set.
+    /// Every unexpired key with DMs on and the relays its devices named; empty when
+    /// any of them named none, which means every relay the watcher may dial.
     pub fn dm_watch_list(&self, now: u64) -> Result<Vec<(String, Vec<String>)>, StoreError> {
         let db = self.db();
         let mut stmt = db.prepare_cached(
@@ -317,6 +341,10 @@ impl Store {
             let relays: Vec<String> = serde_json::from_str(&relays).unwrap_or_default();
             match out.last_mut() {
                 Some((last, merged)) if *last == pubkey => {
+                    if merged.is_empty() || relays.is_empty() {
+                        merged.clear();
+                        continue;
+                    }
                     for r in relays {
                         if !merged.contains(&r) {
                             merged.push(r);
@@ -330,10 +358,14 @@ impl Store {
     }
 
     pub fn sweep(&self, now: u64) -> Result<usize, StoreError> {
-        Ok(self
+        let n = self
             .db()
             .prepare_cached("DELETE FROM devices WHERE expires_at <= ?1")?
-            .execute([now as i64])?)
+            .execute([now as i64])?;
+        if n > 0 {
+            self.bump();
+        }
+        Ok(n)
     }
 
     pub fn device_count(&self) -> Result<usize, StoreError> {
@@ -426,6 +458,33 @@ mod tests {
         s.upsert_device(&key(2), &reg("b"), T0).unwrap();
         assert!(s.upsert_device(&key(3), &reg("a"), T0).is_ok());
         assert_eq!(s.device_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn every_write_that_can_move_the_watch_list_signals() {
+        let s = store();
+        let mut rx = s.changes();
+        s.upsert_device(&key(1), &reg("a"), T0).unwrap();
+        assert!(rx.has_changed().unwrap());
+        rx.mark_unchanged();
+        assert!(!s.delete_device(&key(1), "nope").unwrap());
+        assert!(
+            !rx.has_changed().unwrap(),
+            "nothing deleted, nothing to say"
+        );
+        s.delete_device(&key(1), "a").unwrap();
+        assert!(rx.has_changed().unwrap());
+        rx.mark_unchanged();
+        s.upsert_device(&key(1), &reg("b"), T0).unwrap();
+        rx.mark_unchanged();
+        s.sweep(T0 + 31 * DAY).unwrap();
+        assert!(rx.has_changed().unwrap());
+        rx.mark_unchanged();
+        s.upsert_device(&key(1), &reg("c"), T0).unwrap();
+        let id = s.devices_of(&key(1), false, T0).unwrap()[0].device;
+        rx.mark_unchanged();
+        s.delete_device_id(id).unwrap();
+        assert!(rx.has_changed().unwrap());
     }
 
     #[test]
@@ -570,5 +629,14 @@ mod tests {
         );
         assert_eq!(s.devices_of(&key(1), true, T0).unwrap().len(), 2);
         assert!(s.devices_of(&key(2), true, T0).unwrap().is_empty());
+
+        let mut anywhere = reg("d");
+        anywhere.dm = true;
+        s.upsert_device(&key(1), &anywhere, T0).unwrap();
+        assert_eq!(
+            s.dm_watch_list(T0).unwrap(),
+            vec![(key(1), vec![])],
+            "a device that names no relay widens its key to all of them"
+        );
     }
 }

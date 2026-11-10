@@ -235,7 +235,7 @@ group (trap 14).
 
 Relay watcher:
 
-- One `RelayPool` over the allow-listed relays ∩ each device's `relays`. Filter `{kinds:[1059], "#p":[…], since: now − 2 d − 60}`, pubkeys chunked, resubscribed (debounced) when the set changes.
+- One `RelayPool` per allow-listed relay a watched key's devices name (or all, if a device names none): a pool's events do not say which relay sent them. Filter `{kinds:[1059], "#p":[…], since: now − 2 d − 60}`, pubkeys chunked, resubscribed (debounced) when the set changes.
 - A wrap's `created_at` is backdated up to 2 days (`nip59::MAX_BACKDATE`), so `since: now` would miss everything, and every resubscribe replays the backlog. Rule: every event id goes into a bounded seen set; a (relay, pubkey) pair is *baselined* at the first EOSE of a subscription that included it; push only an unseen id for a baselined pair. A restart re-baselines — no storm, and what arrived while down is not pushed.
 
 Phone:

@@ -8,6 +8,7 @@ pub mod routes;
 pub mod run;
 pub mod sender;
 pub mod store;
+pub mod watcher;
 
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -52,6 +53,19 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// What the DM watcher may dial.
+    pub fn dm_allow_list(&self) -> Vec<String> {
+        match &self.dm_relays {
+            Some(list) => list.clone(),
+            None => discordia_nostr::relay::DEFAULT_RELAYS
+                .iter()
+                .map(|r| r.to_string())
+                .collect(),
+        }
+    }
+}
+
 /// Loopback by every name: what a relay on a developer's machine is dialled by.
 pub fn local_audiences() -> HashSet<String> {
     ["127.0.0.1", "localhost", "[::1]"]
@@ -84,7 +98,7 @@ pub enum DmPush {
 /// A gift wrap the watcher saw, and where.
 pub struct DmEvent<'a> {
     pub id: &'a str,
-    /// The event as JSON, exactly as the relay sent it.
+    /// The event as JSON; the phone verifies it, so field order is free.
     pub json: &'a str,
     pub relay: &'a str,
 }

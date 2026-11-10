@@ -373,7 +373,10 @@ async fn a_token_put_under_another_key_moves_to_it_and_leaves_its_handles() {
     let h = spawn().await;
     register(&h, 1, "tok").await;
     let handle = new_handle(&h, 1, "tok").await;
+    let mut changes = h.relay.store.changes();
     assert_eq!(register(&h, 2, "tok").await, StatusCode::OK);
+    assert!(changes.has_changed().unwrap(), "the DM watcher hears of it");
+    changes.mark_unchanged();
     assert_eq!(h.relay.store.device_count().unwrap(), 1);
     let (second, _) = sign_request(&key(2), "PUT", "/", AUDIENCE, 0, b"").unwrap();
     assert_eq!(
@@ -394,6 +397,7 @@ async fn a_token_put_under_another_key_moves_to_it_and_leaves_its_handles() {
         StatusCode::NOT_FOUND,
         "the old key holds nothing"
     );
+    assert!(!changes.has_changed().unwrap());
 }
 
 #[tokio::test]

@@ -79,7 +79,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_PUSH_PUBLIC_HOSTS` | — | comma-separated host names (or URLs) phones dial the relay by; loopback always counts. A signed request names one, and any other is refused |
 | `DISCORDIA_PUSH_TRUSTED_PROXIES` | — (trust nobody) | as the gateway's `DISCORDIA_TRUSTED_PROXIES`: without it every caller is the proxy to the per-address limits. Under compose, the bridge's gateway |
 | `DISCORDIA_PUSH_FCM_CREDENTIALS` | — | path to the Firebase service-account JSON (compose: the host path, mounted read-only). Unset: registrations are accepted unchecked and sends are logged, not made |
-| `DISCORDIA_PUSH_DM_RELAYS` | the watcher's list | comma-separated `wss://` relays the DM watcher may dial |
+| `DISCORDIA_PUSH_DM_RELAYS` | `relay::DEFAULT_RELAYS` | comma-separated `wss://` relays the DM watcher may dial, and only while a key is watched there. A device's `relays` narrows this list, never widens it; a device naming none takes all of it |
 
 | Limit | Value |
 |---|---|
@@ -87,6 +87,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | Device expiry | 30 days after its last `PUT`; swept hourly |
 | Per address | 60/min on signed routes, 1200/min on `/v1/push`, 32 new devices a day |
 | Per handle / per key (DMs) | 20/min and 300/day / 30/min |
+| DM watcher | 100 keys per filter, ≤ 8 subscriptions per relay, resubscribed 3 s after a registry change and every 6 h; 100 000 wrap ids remembered. A restart pushes nothing that arrived while it was down |
 
 Deploy the coordinator with `/voice-evict` alongside these clients. A host's
 registration grant permits removing seats only from its own room namespace;
