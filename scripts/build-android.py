@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from xml.sax.saxutils import escape
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +25,7 @@ REQUIRED_WEBRTC_CLASSES = (
     "livekit/org/webrtc/SurfaceViewRenderer.class",
 )
 # Every one of these must reach the final DEX, wherever it came from.
-REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class", "com/discordia/app/DioxusScreenPreview.class")
+REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class", "com/discordia/app/DioxusScreenPreview.class", "com/discordia/app/DioxusNotifier.class", "com/discordia/app/DioxusPushService.class")
 REQUIRED_SYMBOLS = {
     "Java_com_discordia_app_DioxusForegroundService_onCallAction",
     "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory",
@@ -39,8 +40,20 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_onDmNotificationOpened",
     "Java_dev_dioxus_main_MainActivity_onDmNotificationVisibility",
     "Java_dev_dioxus_main_MainActivity_onDmNotificationSettingsChanged",
+    "Java_dev_dioxus_main_MainActivity_onMentionNotificationOpened",
+    "Java_com_discordia_app_DioxusPushService_handlePush",
+    "Java_com_discordia_app_DioxusNotifier_onPushPlatform",
 }
 BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
+# Firebase reads these by resource name; the google-services plugin would write them,
+# but dx's root build has no classpath for it.
+FIREBASE_SHARED = (
+    ("google_api_key", "FIREBASE_API_KEY"),
+    ("gcm_defaultSenderId", "FIREBASE_SENDER_ID"),
+    ("project_id", "FIREBASE_PROJECT_ID"),
+)
+FIREBASE_FILE = "values/discordia_firebase.xml"
+FIREBASE_KEEP = "raw/discordia_firebase_keep.xml"
 
 
 def verify_native_exports(archive, env):
@@ -194,6 +207,63 @@ def package_resources(project):
     shutil.copy2(ROOT / "client/assets/icon-1024.png", logo)
 
 
+def android_string(value):
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"').replace("\n", "\\n")
+    # aapt reads a leading @ or ? as a reference to another resource.
+    if escaped[:1] in ("@", "?"):
+        escaped = "\\" + escaped
+    return escape(escaped)
+
+
+def firebase_values(env, debug):
+    values = {"google_app_id": env.get("FIREBASE_APP_ID_DEBUG" if debug else "FIREBASE_APP_ID", "").strip()}
+    values.update((name, env.get(variable, "").strip()) for name, variable in FIREBASE_SHARED)
+    return values if all(values.values()) else None
+
+
+def firebase_resources(values):
+    strings = "".join(
+        f'    <string name="{name}" translatable="false">{android_string(value)}</string>\n'
+        for name, value in values.items()
+    )
+    return f'<?xml version="1.0" encoding="utf-8"?>\n<resources>\n{strings}</resources>\n'
+
+
+def write_resource(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def package_firebase(project, env):
+    """Unset values leave Firebase uninitialised: the app runs and push is unavailable."""
+    main = project / "app/src/main/res"
+    debug = project / "app/src/debug/res"
+    for stale in (main / FIREBASE_FILE, main / FIREBASE_KEEP, debug / FIREBASE_FILE):
+        stale.unlink(missing_ok=True)
+    release_values = firebase_values(env, debug=False)
+    debug_values = firebase_values(env, debug=True)
+    if release_values:
+        write_resource(main / FIREBASE_FILE, firebase_resources(release_values))
+        # Firebase looks these up with getIdentifier, which the resource shrinker cannot see.
+        names = ",".join(f"@string/{name}" for name in release_values)
+        write_resource(main / FIREBASE_KEEP, f'<?xml version="1.0" encoding="utf-8"?>\n<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="{names}" />\n')
+    if debug_values:
+        write_resource(debug / FIREBASE_FILE, firebase_resources(debug_values))
+    elif release_values:
+        # Google matches an app by package and app id; `.debug` under the release id gets no token.
+        write_resource(debug / FIREBASE_FILE, firebase_resources({"google_app_id": ""}))
+
+
+def verify_firebase_resources(apk, env, release):
+    if firebase_values(env, debug=not release) is None:
+        return
+    tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
+    aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
+    resources = subprocess.check_output([str(aapt), "dump", "resources", str(apk)], text=True)
+    if ":string/google_app_id:" not in resources:
+        raise RuntimeError("Final APK is missing the Firebase app id; push would never start")
+
+
 def package_sources(project):
     # Tao owns one process-wide native context; a second Activity creation aborts it.
     for variant in ("debug", "release"):
@@ -213,6 +283,8 @@ def package_sources(project):
     shutil.copy2(ROOT / "client/android/DioxusDmNotifications.kt", sources / "DioxusDmNotifications.kt")
     shutil.copy2(ROOT / "client/android/DioxusScreenPreview.kt", sources / "DioxusScreenPreview.kt")
     shutil.copy2(ROOT / "client/android/DioxusDriveAuth.kt", sources / "DioxusDriveAuth.kt")
+    shutil.copy2(ROOT / "client/android/DioxusNotifier.kt", sources / "DioxusNotifier.kt")
+    shutil.copy2(ROOT / "client/android/DioxusPushService.kt", sources / "DioxusPushService.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 
@@ -272,6 +344,7 @@ def main():
         resources = project / "app/src/main/res"
         # dx rewrites its templates but retains our extra resources on incremental builds.
         package_resources(project)
+        package_firebase(project, env)
         for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
             (resources / f"mipmap-{density}/ic_launcher.png").unlink(missing_ok=True)
     dx = ["dx", "build", "--android", "--target", args.target,
@@ -296,6 +369,7 @@ def main():
     finally:
         auto_init.unlink(missing_ok=True)
     package_resources(project)
+    package_firebase(project, env)
     package_sources(project)
     gradle = project / ("gradlew.bat" if os.name == "nt" else "gradlew")
     task = "assembleRelease" if args.release else "assembleDebug"
@@ -307,6 +381,7 @@ def main():
     apk = apks[0]
     verify_activity_mode(apk, env)
     verify_notification_permission(apk, env)
+    verify_firebase_resources(apk, env, args.release)
     if args.release:
         verify_release_metadata(apk, env)
         verify_release_branding(apk, env)

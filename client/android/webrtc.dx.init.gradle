@@ -7,6 +7,7 @@ allprojects { project ->
         if (jar.isFile()) {
             project.dependencies.add('implementation', project.files(jar))
             project.dependencies.add('implementation', 'com.google.android.gms:play-services-auth:21.2.0')
+            project.dependencies.add('implementation', 'com.google.firebase:firebase-messaging:24.0.0')
         }
     }
 }

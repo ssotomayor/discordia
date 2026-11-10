@@ -343,6 +343,13 @@ jobs:
           fi
           cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Build and validate release APK
+        # Firebase client identifiers, not signing material; unset on forks builds without push.
+        env:
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_APP_ID_DEBUG: ${{ secrets.FIREBASE_APP_ID_DEBUG }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_SENDER_ID: ${{ secrets.FIREBASE_SENDER_ID }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
           python scripts/build-android.py --release --version-code '${{ github.run_number }}' \
             --version-name 'v0.1.0-pre.${{ github.run_number }}' \
@@ -353,6 +360,7 @@ jobs:
           python scripts/test-android-capture.py
           python scripts/test-android-network.py
           python scripts/test-android-notification-dispatch.py
+          python scripts/test-android-notifier.py
       - name: Sign and verify APK
         if: github.event_name == 'push'
         env:
