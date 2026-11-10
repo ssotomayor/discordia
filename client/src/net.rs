@@ -1400,6 +1400,7 @@ fn apply(
             let selected_dm =
                 recovering && s.dm_mode && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
             let local_channel = s.voice.channel_id;
+            s.readies = s.readies.wrapping_add(1);
             s.self_user = Some(user);
             s.is_operator = operator;
             s.default_guild = default_guild;

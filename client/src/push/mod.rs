@@ -1,9 +1,13 @@
 //! Mobile push. `headless` works from files alone because a push can start a
-//! process that never had an Activity; `registration` runs in the live app.
+//! process that never had an Activity; the rest runs in the live app.
 
+pub mod attention;
+pub mod device;
+pub mod gateway;
 pub mod headless;
 pub mod peers;
 pub mod registration;
+pub mod tap;
 
 const NAME_CHARS: usize = 100;
 

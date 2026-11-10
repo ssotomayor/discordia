@@ -15,6 +15,9 @@ pub struct KnownServer {
     pub name: Option<String>,
     #[serde(default)]
     pub guilds: Vec<KnownGuild>,
+    /// The dial origin at its last Ready; a mention notification names a server by it.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +36,7 @@ impl KnownServer {
             mode,
             name: None,
             guilds: Vec::new(),
+            origin: None,
         }
     }
 

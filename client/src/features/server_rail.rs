@@ -169,16 +169,21 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
         })
     });
     let named = use_memo(move || state.read().server_info.name.clone());
+    let origin = use_memo(move || state.read().server_origin.clone());
     use_effect(move || {
         let Some(guilds) = seen() else { return };
         let mut list = known.write();
         known_servers::upsert(&mut list, mode.clone(), Some(guilds));
-        if let Some(name) = named()
-            && let Some(server) = list
-                .iter_mut()
-                .find(|s| s.key() == known_servers::server_key(&mode))
+        if let Some(server) = list
+            .iter_mut()
+            .find(|s| s.key() == known_servers::server_key(&mode))
         {
-            server.name = Some(name);
+            if let Some(name) = named() {
+                server.name = Some(name);
+            }
+            if let Some(origin) = origin() {
+                server.origin = Some(origin);
+            }
         }
         known_servers::save(&list);
     });

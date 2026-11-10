@@ -42,6 +42,7 @@ mod mobile_workspace;
 #[cfg(test)]
 mod native_teardown;
 pub mod profiles;
+pub(crate) mod push;
 pub mod roles;
 mod screen_stats;
 pub mod screenshare;
