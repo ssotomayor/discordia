@@ -28,7 +28,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc, watch};
 
-use super::event::Event;
+use crate::event::Event;
 
 /// Relays used when the user has not chosen any.
 ///
@@ -135,6 +135,15 @@ impl RelayPool {
     /// Each relay gets its own task and its own reconnect clock; a relay that
     /// never comes up costs nothing but its own retries.
     pub fn connect(urls: Vec<String>) -> (RelayPool, mpsc::UnboundedReceiver<RelayEvent>) {
+        Self::connect_with_wakeups(urls, None)
+    }
+
+    /// As `connect`, and every change on `wakeups` redials each relay at once:
+    /// an Android resume or network change leaves sockets that look open but are dead.
+    pub fn connect_with_wakeups(
+        urls: Vec<String>,
+        wakeups: Option<watch::Receiver<u64>>,
+    ) -> (RelayPool, mpsc::UnboundedReceiver<RelayEvent>) {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
         let (out_tx, out_rx) = mpsc::unbounded_channel::<RelayEvent>();
 
@@ -161,11 +170,12 @@ impl RelayPool {
             )));
         }
 
-        #[cfg(target_os = "android")]
-        tasks.push(tokio::spawn(refresh_after_wakeups(
-            crate::android::nostr_wakeups(),
-            refresh.clone(),
-        )));
+        if let Some(wakeups) = wakeups {
+            tasks.push(tokio::spawn(refresh_after_wakeups(
+                wakeups,
+                refresh.clone(),
+            )));
+        }
 
         tasks.push(tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
@@ -221,7 +231,6 @@ impl RelayPool {
     }
 }
 
-#[cfg(any(target_os = "android", test))]
 async fn refresh_after_wakeups(mut wakeups: watch::Receiver<u64>, refresh: watch::Sender<u64>) {
     while wakeups.changed().await.is_ok() {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -745,7 +754,7 @@ mod tests {
 
     fn signed_event() -> Event {
         let secret = secp256k1::SecretKey::from_slice(&[7; 32]).expect("valid key");
-        super::super::event::sign_with(&secret, 1_700_000_000, 1, vec![], "hello".into())
+        crate::event::sign_with(&secret, 1_700_000_000, 1, vec![], "hello".into())
     }
 
     /// A relay can send whatever it likes, and the signature is the only thing

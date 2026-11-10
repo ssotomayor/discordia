@@ -22,7 +22,7 @@ Un solo cliente Dioxus **0.7.10** (Cargo.lock) para escritorio y móvil: misma U
 | Pantalla (envío) | ✅ MediaProjection ≤1080p30, audio API 29+ | ❌ | `sysvideo/android.rs`, `sysaudio/android.rs` |
 | Streams (recepción) | ✅ visor inline | ◐ sin probar | `features/screenshare.rs` |
 | Segundo plano | ✅ servicio `microphone\|camera\|mediaProjection` + wake lock | ❌ | `DioxusForegroundService.kt` |
-| Red y reanudación | ✅ callbacks a iroh y relays | ❌ | `quic/network_monitor.rs`, `nostr/relay.rs` |
+| Red y reanudación | ✅ callbacks a iroh y relays | ❌ | `quic/network_monitor.rs`, `nostr/src/relay.rs` |
 | Notificaciones DM | ◐ solo con proceso vivo | ❌ | `dm_notifications.rs` |
 | Controles de llamada en notificación | ✅ | ❌ | `call_notifications.rs` |
 | Actualizador | ✅ PackageInstaller | — tienda | `update_android.rs` |

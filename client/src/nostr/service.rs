@@ -185,7 +185,7 @@ pub fn spawn_nostr(
             call_outgoing,
             record_tx,
         );
-        let (pool, mut events) = RelayPool::connect(relays.clone());
+        let (pool, mut events) = RelayPool::connect_with_wakeups(relays.clone(), super::wakeups());
 
         // No author filter: gift wraps are signed by ephemeral keys. `p` is
         // the only handle.

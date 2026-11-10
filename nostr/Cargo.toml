@@ -1,0 +1,21 @@
+[package]
+name = "discordia-nostr"
+version = "0.1.0"
+edition = "2024"
+description = "Nostr events, NIP-44 and a relay pool, shared by the client and the push relay."
+publish = false
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+secp256k1 = { workspace = true }
+sha2 = "0.10"
+hex = { workspace = true }
+hkdf = "0.12"
+chacha20 = "0.9"
+hmac = "0.12"
+base64 = "0.22"
+rand = "0.8"

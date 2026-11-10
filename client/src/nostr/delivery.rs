@@ -127,7 +127,8 @@ impl Senders {
         {
             self.pools.remove(&oldest);
         }
-        let (pool, mut events) = RelayPool::connect(vec![url.to_string()]);
+        let (pool, mut events) =
+            RelayPool::connect_with_wakeups(vec![url.to_string()], super::wakeups());
         let answers = self.answers.clone();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
