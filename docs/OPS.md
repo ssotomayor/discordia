@@ -110,6 +110,7 @@ peer's IP, and a proxy makes every host the same peer.
 | `DISCORDIA_DM_RELAY_ONLY` | off | `1` requires a configured TURN server and excludes direct media connections |
 | `GIPHY_API_KEY` | the build's | GIF picker key. Read at compile time (CI secret `GIPHY_API_KEY`) and overridden at run time; unset in both hides the GIF button. A job reads secrets when it starts, so a run already going when the secret is set ships without it; CI has no manual trigger, the next push to master builds it in. Searches go from the client to GIPHY; readers fetch the GIF from GIPHY too |
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | the build's | Google Drive backup and "Sign in with Google" on desktop. Android needs neither: Play services matches the APK to the Cloud project's Android OAuth client by package and signing SHA-1, so a debug APK signed by an unregistered keystore gets a sign-in error. Read at compile time (CI secrets of the same names) and overridden at run time; either unset hides both. The Desktop-app OAuth client of the Google Cloud project, scope `drive.appdata` only. Same rule as `GIPHY_API_KEY`: a run started before the secret existed ships without it |
+| `FIREBASE_APP_ID`, `FIREBASE_APP_ID_DEBUG`, `FIREBASE_API_KEY`, `FIREBASE_SENDER_ID`, `FIREBASE_PROJECT_ID` | the build's | Android push. `build-android.py` writes them as string resources into the generated Gradle project, never into the repo; Firebase reads them when the process starts. Google matches the app by package and app id: `FIREBASE_APP_ID` is `com.discordia.app`'s, `FIREBASE_APP_ID_DEBUG` is `com.discordia.app.debug`'s, and a debug build without its own id has no push rather than borrowing the release one. Client identifiers, not signing material: CI passes the secrets of the same names to PR builds too. Any of the four for a package unset: the APK still builds, Firebase never starts, no device is registered and the setting describes alerts only while the app runs. Not overridable at run time. Same rule as `GIPHY_API_KEY`: a run started before the secret existed ships without it |
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
@@ -397,6 +398,8 @@ Each asset keeps its minisign signature. Existing Linux installations remain usa
 | `ANDROID_KEYSTORE_BASE64` | Base64 of the release JKS; alias `discordia` |
 | `ANDROID_KEYSTORE_PASSWORD` | JKS password |
 | `ANDROID_KEY_PASSWORD` | Private-key password |
+
+The build step also reads the five `FIREBASE_*` secrets (Client variables above); a fork without them builds without push.
 
 Keep the JKS and passwords backed up **outside the repository**; no private key belongs in an artifact, cache or release. Reuse that key for every update. `scripts/sign-android.py` aligns before signing and verifies the APK and committed certificate before publishing the output. Release builds validate package, debuggable flag and version metadata; versionCode follows the CI run number. DEX validation requires class definitions, including WebRTC's `livekit.org.jni_zero` bridge; a referenced class name alone does not prove R8 preserved it. `discordia.pro` retains that bridge and WebRTC methods used only through JNI.
 

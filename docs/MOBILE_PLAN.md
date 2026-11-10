@@ -23,7 +23,7 @@ Un solo cliente Dioxus **0.7.10** (Cargo.lock) para escritorio y móvil: misma U
 | Streams (recepción) | ✅ visor inline | ◐ sin probar | `features/screenshare.rs` |
 | Segundo plano | ✅ servicio `microphone\|camera\|mediaProjection` + wake lock | ❌ | `DioxusForegroundService.kt` |
 | Red y reanudación | ✅ callbacks a iroh y relays | ❌ | `quic/network_monitor.rs`, `nostr/src/relay.rs` |
-| Notificaciones DM | ◐ solo con proceso vivo | ❌ | `dm_notifications.rs` |
+| Notificaciones DM y menciones | ◐ FCM con el proceso muerto; sin probar en un teléfono. Sin push en builds sin `FIREBASE_*` ni en teléfonos sin Play services | ❌ | `dm_notifications.rs`, `push/`, `DioxusPushService.kt`, `DioxusNotifier.kt` |
 | Controles de llamada en notificación | ✅ | ❌ | `call_notifications.rs` |
 | Actualizador | ✅ PackageInstaller | — tienda | `update_android.rs` |
 | Actividades | ❌ deshabilitadas | ❌ | `activity_window.rs` |
@@ -58,6 +58,10 @@ Un solo cliente Dioxus **0.7.10** (Cargo.lock) para escritorio y móvil: misma U
 | Actividades deshabilitadas en móvil | Trampa 35: no pueden correr en el WebView principal y no hay ventana aislada móvil. |
 | Barras del sistema visibles | Preferencia del usuario; el modo inmersivo dejaba un área negra en el recorte. |
 | `discordia-server` sigue enlazado; `LIVEKIT_BUNDLE_SKIP=1` solo omite el SFU | El cliente usa tipos y helpers del servidor (`net.rs`, `quic.rs`, `voice.rs`). |
+| El servicio FCM recibe directorio, idioma y `JNIEnv` como argumentos | Un push puede arrancar el proceso sin Activity: `ndk_context` no está inicializado y `android::config_dir()` termina el proceso. Inicializarlo desde el servicio haría abortar a Tao al crear la Activity. |
+| El push nunca crea la clave del Keystore | Una clave nueva dejaría ilegibles todas las identidades guardadas (trampa 23); sin clave, no hay aviso. |
+| Una sola `DioxusNotifier.showDm` para el camino vivo y el push, con el último `at` avisado por etiqueta | Un DM puede llegar por los dos caminos; así avisa una vez. |
+| Nombres de canal guardados en `SharedPreferences`, inglés si faltan | En un proceso frío no hay Rust de UI que los traduzca. |
 | Código bajo `cfg(target_os = "android")` no pasa por Clippy en CI | Trampa 14 cubre solo targets de escritorio; el build Android tolera warnings. |
 | Nunca desinstalar para probar | Borra la identidad Keystore; usar `adb install -r`. Debug y Release coexisten (`docs/OPS.md`). |
 
