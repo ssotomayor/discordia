@@ -3,6 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The relay official builds use; a server and a client must name the same one
+/// for a handle minted at one to mean anything to the other.
+pub const DEFAULT_PUSH_RELAY: &str = "https://push.discordia.world";
+
 /// First in every signed relay request, so none can equal a login, a
 /// rendezvous ownership proof or a Nostr event id preimage.
 pub const PUSH_DOMAIN: &str = "discordia-push-v1";
