@@ -536,11 +536,35 @@ pub fn ChatView() -> Element {
         }
     });
 
+    // A refused fetch is answered with an `Error` that names no channel.
+    let mut stalled = use_signal(|| None::<Id>);
+    let mut stall_timer = use_signal(|| None::<dioxus::core::Task>);
+    use_effect(move || {
+        let channel = selected_memo();
+        if let Some(task) = stall_timer.write().take() {
+            task.cancel();
+        }
+        if stalled.peek().is_some() {
+            stalled.set(None);
+        }
+        let Some(channel) = channel else { return };
+        stall_timer.set(Some(spawn(async move {
+            tokio::time::sleep(HISTORY_PATIENCE).await;
+            stalled.set(Some(channel));
+        })));
+    });
+
     let history = state.read();
     let messages = selected_channel
         .and_then(|cid| history.messages.get(&cid))
         .map(Vec::as_slice)
         .unwrap_or_default();
+    let loading = selected_channel.is_some_and(|cid| {
+        !is_dm
+            && messages.is_empty()
+            && !history.history_loaded.contains(&cid)
+            && stalled() != Some(cid)
+    });
     let pages = page_states.read();
     let me = Some(use_context::<crate::identity::Identity>().pubkey);
     let first_unread = unread_from().and_then(|mark| {
@@ -619,7 +643,9 @@ pub fn ChatView() -> Element {
                 // `visible` is spelled out: a property left out of a new style is restored (trap 31).
                 style: if scroll_ready() || !virtual_enabled() { "overflow-anchor: none; visibility: visible;" } else { "overflow-anchor: none; visibility: hidden;" },
                 onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
-                    if messages.is_empty() && selected_channel.is_some() {
+                    if loading {
+                        HistorySkeleton {}
+                    } else if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if is_dm { {crate::i18n::text("No messages yet. Say hi 👋", &[])} } else { {crate::i18n::text("No messages yet.", &[])} }
                         }
@@ -679,6 +705,32 @@ pub fn ChatView() -> Element {
 
                 for channel_id in selected_channel {
                     Composer { key: "{channel_id}", channel_id, composer_label: composer_label.clone(), dropped_file }
+                }
+            }
+        }
+    }
+}
+
+const HISTORY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Name and body widths, in percent, so the rows do not read as a table.
+const SKELETON_ROWS: [(u8, u8); 6] = [(22, 64), (16, 82), (28, 46), (18, 72), (24, 58), (14, 38)];
+
+#[component]
+fn HistorySkeleton() -> Element {
+    rsx! {
+        div {
+            class: "dxf-skeleton",
+            role: "status",
+            aria_busy: "true",
+            aria_label: crate::i18n::text("Loading messages…", &[]),
+            for (i, (name, body)) in SKELETON_ROWS.into_iter().enumerate() {
+                div { key: "{i}", class: "dxf-skeleton-row",
+                    div { class: "dxf-skeleton-bar dxf-skeleton-avatar" }
+                    div { class: "dxf-skeleton-lines",
+                        div { class: "dxf-skeleton-bar dxf-skeleton-line", style: "width: {name}%;" }
+                        div { class: "dxf-skeleton-bar dxf-skeleton-line", style: "width: {body}%;" }
+                    }
                 }
             }
         }
@@ -1482,7 +1534,8 @@ fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
         s.emojis_of(guild_id)
             .iter()
             .map(|e| {
-                let url = s.emoji_images.get(&e.image).cloned().unwrap_or_default();
+                let url =
+                    crate::image_assets::cached_uri(&s.emoji_images, &e.image).unwrap_or_default();
                 (e.shortcode.clone(), e.image.clone(), url)
             })
             .collect()
@@ -1931,15 +1984,12 @@ pub(crate) fn EmojiText(
             .map(|p| match p {
                 crate::emoji::Piece::Text(t) => (t.to_string(), None),
                 crate::emoji::Piece::Shortcode(code) => {
-                    let url = guild_id
-                        .and_then(|g| s.emoji_image(g, code))
-                        .map(str::to_string)
-                        .or_else(|| {
-                            extra
-                                .iter()
-                                .find(|(c, _)| c == code)
-                                .map(|(_, u)| u.clone())
-                        });
+                    let url = guild_id.and_then(|g| s.emoji_uri(g, code)).or_else(|| {
+                        extra
+                            .iter()
+                            .find(|(c, _)| c == code)
+                            .map(|(_, u)| u.clone())
+                    });
                     (code.to_string(), Some(url.unwrap_or_default()))
                 }
             })
@@ -2384,6 +2434,21 @@ fn guild_emojis_of(
     (list, urls)
 }
 
+/// `guild_emojis_of` for drawing: page paths, not the bytes a DM carries.
+fn guild_emoji_uris_of(
+    s: &crate::state::AppState,
+    channel_id: Id,
+) -> (Vec<GuildEmoji>, std::collections::HashMap<String, String>) {
+    let (list, _) = guild_emojis_of(s, channel_id);
+    let uris = list
+        .iter()
+        .filter_map(|e| {
+            crate::image_assets::cached_uri(&s.emoji_images, &e.image).map(|u| (e.image.clone(), u))
+        })
+        .collect();
+    (list, uris)
+}
+
 fn suggestions_now(
     s: &crate::state::AppState,
     channel_id: Id,
@@ -2392,7 +2457,7 @@ fn suggestions_now(
     if let Some(query) = token.strip_prefix('@') {
         return mentions::suggestions(s, channel_id, query);
     }
-    let (list, urls) = guild_emojis_of(s, channel_id);
+    let (list, urls) = guild_emoji_uris_of(s, channel_id);
     emoji_suggestions(token, &list, &urls)
 }
 
@@ -2464,7 +2529,7 @@ fn ComposerEmojiPicker(
         open.set(false);
     });
 
-    let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
+    let (guild_emojis, emoji_urls) = guild_emoji_uris_of(&state.read(), channel_id);
     let q = query();
     let searching = !q.trim().trim_matches(':').is_empty();
     let recent = if searching {
