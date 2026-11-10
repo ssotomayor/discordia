@@ -664,6 +664,7 @@
   "Stop test": ["Detener prueba", "Parar teste", "停止测试", "テストを停止します"],
   "Test microphone": ["Probar micrófono", "Testar microfone", "测试麦克风", "テストマイク"],
   "Speak to hear yourself through the selected output with your current microphone settings. Use headphones to avoid feedback.": ["Habla para escucharte por la salida seleccionada con los ajustes actuales del micrófono. Usa auriculares para evitar acoples.", "Fale para se ouvir pela saída selecionada com as configurações atuais do microfone. Use fones de ouvido para evitar microfonia.", "使用当前麦克风设置通过选定的输出说话以听到自己的声音。使用耳机以避免反馈。", "現在のマイク設定で、選択した出力を通じて自分の声を聞くために話します。フィードバックを避けるためにヘッドフォンを使用してください。"],
+  "Leave the voice call to open that mention.": ["Sal de la llamada de voz para abrir esa mención.", "Saia da chamada de voz para abrir essa menção.", "请先离开语音通话再打开该提及。", "このメンションを開くには、ボイス通話を終了してください。"],
   "Leave your voice call to test the microphone.": ["Sal de la llamada de voz para probar el micrófono.", "Saia da chamada de voz para testar o microfone.", "留下您的语音通话以测试麦克风。", "マイクをテストするために音声通話を終了します。"],
   "Playing your voice back": ["Reproduciendo tu voz", "Reproduzindo sua voz", "播放您的声音", "あなたの声を再生しています"],
   "No audio output is available for the microphone test.": ["No hay una salida de audio disponible para la prueba de micrófono.", "Nenhuma saída de áudio está disponível para o teste de microfone.", "没有音频输出可用于麦克风测试。", "マイク テストに使用できる音声出力はありません。"],
@@ -2253,5 +2254,12 @@
   "Couldn't prepare the backup.": ["No se pudo preparar la copia.", "Não foi possível preparar o backup.", "无法准备备份。", "バックアップを準備できませんでした。"],
   "Couldn't open the backup.": ["No se pudo abrir la copia.", "Não foi possível abrir o backup.", "无法打开备份。", "バックアップを開けませんでした。"],
   "Finish signing in with Google…": ["Termina de iniciar sesión con Google…", "Termine de entrar com o Google…", "请完成 Google 登录…", "Googleへのログインを完了してください…"],
-  "Google sign-in failed. Google Play services may be missing or out of date.": ["Falló el inicio de sesión con Google. Puede que Google Play Services falte o esté desactualizado.", "O login com o Google falhou. O Google Play Services pode estar ausente ou desatualizado.", "Google 登录失败。Google Play 服务可能缺失或版本过旧。", "Googleログインに失敗しました。Google Play開発者サービスがないか、古い可能性があります。"]
+  "Google sign-in failed. Google Play services may be missing or out of date.": ["Falló el inicio de sesión con Google. Puede que Google Play Services falte o esté desactualizado.", "O login com o Google falhou. O Google Play Services pode estar ausente ou desatualizado.", "Google 登录失败。Google Play 服务可能缺失或版本过旧。", "Googleログインに失敗しました。Google Play開発者サービスがないか、古い可能性があります。"],
+  "{0} mentioned you": ["{0} te mencionó", "{0} mencionou você", "{0} 提到了你", "{0} さんがあなたをメンションしました"],
+  "Notifications": ["Notificaciones", "Notificações", "通知", "通知"],
+  "Mentions": ["Menciones", "Menções", "提及", "メンション"],
+  "Notifications are working": ["Las notificaciones funcionan", "As notificações estão funcionando", "通知功能正常", "通知は正常に動作しています"],
+  "Notify about new private messages and mentions, even when Discordia is closed. Some phones delay alerts for apps in the background.": ["Avisar de mensajes privados nuevos y menciones, incluso con Discordia cerrada. Algunos teléfonos retrasan los avisos de apps en segundo plano.", "Avisar sobre novas mensagens privadas e menções, mesmo com o Discordia fechado. Alguns celulares atrasam os avisos de apps em segundo plano.", "即使 Discordia 已关闭，也会通知新的私人消息和提及。部分手机会延迟后台应用的通知。", "Discordia を閉じていても、新しいプライベート メッセージとメンションを通知します。一部のスマートフォンでは、バックグラウンドのアプリの通知が遅れることがあります。"],
+  "When someone mentions you on a server you have opened on this phone.": ["Cuando alguien te menciona en un servidor que abriste en este teléfono.", "Quando alguém menciona você em um servidor que você abriu neste celular.", "当有人在你曾在此手机上打开的服务器中提及你时。", "このスマートフォンで開いたサーバーで誰かがあなたをメンションしたとき。"],
+  "Could not save that choice. Try again.": ["No se pudo guardar esa opción. Volvé a intentarlo.", "Não foi possível salvar essa opção. Tente novamente.", "无法保存该选项。请重试。", "その選択を保存できませんでした。もう一度お試しください。"]
 }

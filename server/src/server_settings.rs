@@ -25,6 +25,8 @@ pub struct LaunchSettings {
     pub source: LaunchSource,
     /// Whether anything registers on a rendezvous.
     pub publishes: bool,
+    /// Taken out at start; the default pushes nowhere.
+    pub push: crate::push::PushConfig,
 }
 
 impl LaunchSettings {
@@ -81,6 +83,7 @@ pub fn info(state: &AppState) -> ServerInfo {
     ServerInfo {
         name: settings.name,
         limits: settings.limits,
+        push: state.push.url(),
     }
 }
 

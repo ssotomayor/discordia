@@ -34,7 +34,8 @@ pub async fn answer_dms<H: Harness + Clone>(
     let me = event::xonly_hex(&secret);
     let started = Utc::now().timestamp();
     report(Status::Connecting);
-    let (pool, mut events) = RelayPool::connect(relays.clone());
+    let (pool, mut events) =
+        RelayPool::connect_with_wakeups(relays.clone(), crate::nostr::wakeups());
     pool.publish(nip17::dm_relay_list(&secret, &relays, started));
     pool.publish(event::sign_with(
         &secret,

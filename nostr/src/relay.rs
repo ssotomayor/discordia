@@ -28,7 +28,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc, watch};
 
-use super::event::Event;
+use crate::event::Event;
 
 /// Relays used when the user has not chosen any.
 ///
@@ -99,6 +99,7 @@ pub enum RelayEvent {
 enum Command {
     Publish(Box<Event>),
     Subscribe { id: String, filters: Vec<Filter> },
+    Unsubscribe { id: String },
 }
 
 /// Standing subscriptions, by the id the relay knows them under.
@@ -135,6 +136,15 @@ impl RelayPool {
     /// Each relay gets its own task and its own reconnect clock; a relay that
     /// never comes up costs nothing but its own retries.
     pub fn connect(urls: Vec<String>) -> (RelayPool, mpsc::UnboundedReceiver<RelayEvent>) {
+        Self::connect_with_wakeups(urls, None)
+    }
+
+    /// As `connect`, and every change on `wakeups` redials each relay at once:
+    /// an Android resume or network change leaves sockets that look open but are dead.
+    pub fn connect_with_wakeups(
+        urls: Vec<String>,
+        wakeups: Option<watch::Receiver<u64>>,
+    ) -> (RelayPool, mpsc::UnboundedReceiver<RelayEvent>) {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
         let (out_tx, out_rx) = mpsc::unbounded_channel::<RelayEvent>();
 
@@ -161,16 +171,23 @@ impl RelayPool {
             )));
         }
 
-        #[cfg(target_os = "android")]
-        tasks.push(tokio::spawn(refresh_after_wakeups(
-            crate::android::nostr_wakeups(),
-            refresh.clone(),
-        )));
+        if let Some(wakeups) = wakeups {
+            tasks.push(tokio::spawn(refresh_after_wakeups(
+                wakeups,
+                refresh.clone(),
+            )));
+        }
 
         tasks.push(tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
-                if let Command::Subscribe { id, filters } = &cmd {
-                    subs.lock().await.insert(id.clone(), filters.clone());
+                match &cmd {
+                    Command::Subscribe { id, filters } => {
+                        subs.lock().await.insert(id.clone(), filters.clone());
+                    }
+                    Command::Unsubscribe { id } => {
+                        subs.lock().await.remove(id);
+                    }
+                    Command::Publish(_) => {}
                 }
                 for s in &senders {
                     let copy = match &cmd {
@@ -179,6 +196,7 @@ impl RelayPool {
                             id: id.clone(),
                             filters: filters.clone(),
                         },
+                        Command::Unsubscribe { id } => Command::Unsubscribe { id: id.clone() },
                     };
                     let _ = s.send(copy);
                 }
@@ -219,9 +237,13 @@ impl RelayPool {
             filters,
         });
     }
+
+    /// Close the subscription `id` on every relay and stop re-issuing it on reconnect.
+    pub fn unsubscribe(&self, id: &str) {
+        let _ = self.cmd.send(Command::Unsubscribe { id: id.to_string() });
+    }
 }
 
-#[cfg(any(target_os = "android", test))]
 async fn refresh_after_wakeups(mut wakeups: watch::Receiver<u64>, refresh: watch::Sender<u64>) {
     while wakeups.changed().await.is_ok() {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -419,6 +441,12 @@ async fn serve_with_health(
                         return "send failed".into();
                     }
                 }
+                Some(Command::Unsubscribe { id }) => {
+                    let msg = serde_json::json!(["CLOSE", id]).to_string();
+                    if send_frame(&mut tx, Message::Text(msg)).await.is_err() {
+                        return "send failed".into();
+                    }
+                }
                 None => return "pool shut down".into(),
             },
             msg = rx.next() => {
@@ -559,6 +587,58 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(second[1], "dm");
+        drop(pool);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unsubscribed_id_is_closed_and_not_reissued_on_reconnect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (frames, mut received) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for until in ["CLOSE", "REQ"] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Ok(text) = message.to_text() {
+                        let frame: serde_json::Value = serde_json::from_str(text).unwrap();
+                        let done = frame[0] == until;
+                        frames.send(frame).unwrap();
+                        if done {
+                            break;
+                        }
+                    }
+                }
+                sockets.push(socket);
+            }
+        });
+        let (pool, _events) = RelayPool::connect(vec![url]);
+        for id in ["a", "b"] {
+            pool.subscribe(id, vec![Filter::default()]);
+        }
+        pool.unsubscribe("a");
+        let mut first = Vec::new();
+        while let Ok(Some(frame)) =
+            tokio::time::timeout(Duration::from_secs(2), received.recv()).await
+        {
+            let close = frame[0] == "CLOSE";
+            first.push(frame);
+            if close {
+                break;
+            }
+        }
+        assert_eq!(first.last().unwrap(), &serde_json::json!(["CLOSE", "a"]));
+        pool._refresh.send_modify(|revision| *revision += 1);
+        let reissued = tokio::time::timeout(Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reissued[1], "b",
+            "only the standing subscription comes back"
+        );
         drop(pool);
         server.await.unwrap();
     }
@@ -745,7 +825,7 @@ mod tests {
 
     fn signed_event() -> Event {
         let secret = secp256k1::SecretKey::from_slice(&[7; 32]).expect("valid key");
-        super::super::event::sign_with(&secret, 1_700_000_000, 1, vec![], "hello".into())
+        crate::event::sign_with(&secret, 1_700_000_000, 1, vec![], "hello".into())
     }
 
     /// A relay can send whatever it likes, and the signature is the only thing

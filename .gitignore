@@ -22,6 +22,7 @@ Thumbs.db
 .claude/worktrees/
 discordia-data/
 rendezvous-data/
+push-relay-data/
 
 node_modules/
 
@@ -43,3 +44,9 @@ client/nsis/MicrosoftEdgeWebview2Setup.exe
 
 # The Wizards example keeps its app key here; it is a secret.
 wizards.key
+
+# Firebase client config: the build reads FIREBASE_* instead (docs/PUSH_PLAN.md)
+google-services*.json
+
+# Google service-account keys dropped at the root; a private key, never committed.
+/discordia-*.json

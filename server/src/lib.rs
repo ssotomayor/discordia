@@ -8,6 +8,7 @@ pub mod http;
 pub mod livekit;
 pub mod livekit_bundle;
 pub mod media;
+pub mod push;
 pub mod quic;
 pub mod rendezvous;
 pub mod sanitize;
@@ -133,7 +134,9 @@ impl ServerHandle {
     }
 }
 
-async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, GatewayShutdown)> {
+async fn build_context(
+    mut cfg: ServerConfig,
+) -> std::io::Result<(Arc<AppContext>, GatewayShutdown)> {
     let store = store::Store::open_in(&cfg.data_dir)
         .await
         .map_err(|e| std::io::Error::other(format!("store: {e}")))?;
@@ -146,6 +149,7 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
     let state = state::AppState::load_or_seed(store, media, cfg.operators)
         .await
         .map_err(|e| std::io::Error::other(format!("state load: {e}")))?;
+    let push = std::mem::take(&mut cfg.launch.push);
     server_settings::load(&state, cfg.launch)
         .await
         .map_err(|e| std::io::Error::other(format!("server settings: {e}")))?;
@@ -164,6 +168,9 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
         ),
         admission: cfg.admission,
     });
+    push::start(&ctx.state, push)
+        .await
+        .map_err(|e| std::io::Error::other(format!("push registrations: {e}")))?;
 
     // Its own tick: the retention sweep runs hourly and a voice minute is a
     // minute. Both are cheap when nobody is in a call.
@@ -193,6 +200,7 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
             if deleted > 0 {
                 tracing::info!(deleted, "retention sweep removed expired messages");
             }
+            sweep_state.prune_push_registrations().await;
             let media = sweep_state.sweep_media().await;
             if media.deleted > 0 {
                 tracing::info!(

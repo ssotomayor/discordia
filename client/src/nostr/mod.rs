@@ -33,15 +33,26 @@ pub mod call_history;
 pub mod calls;
 pub mod delivery;
 pub mod dm_image;
-pub mod event;
 pub mod metadata;
 pub mod nip02;
 pub mod nip17;
-pub mod nip44;
 pub mod nip51;
 pub mod nip59;
 pub mod profile;
 pub mod read_marks;
-pub mod relay;
 pub mod service;
 pub mod xp;
+
+pub use discordia_nostr::{event, nip44, relay};
+
+/// Every pool takes these, so none keeps a dead socket after an Android resume.
+pub(crate) fn wakeups() -> Option<tokio::sync::watch::Receiver<u64>> {
+    #[cfg(target_os = "android")]
+    {
+        Some(crate::android::nostr_wakeups())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        None
+    }
+}

@@ -2449,7 +2449,6 @@ dependencies = [
  "bip39",
  "block2",
  "bs58",
- "chacha20 0.9.1",
  "chacha20poly1305",
  "chrono",
  "coreaudio-sys",
@@ -2462,13 +2461,14 @@ dependencies = [
  "discordia-agent",
  "discordia-bot",
  "discordia-image-policy",
+ "discordia-nostr",
  "discordia-protocol",
+ "discordia-push-relay",
  "discordia-rendezvous",
  "discordia-server",
  "dispatch2",
  "futures-util",
  "hex",
- "hkdf",
  "hmac",
  "iana-time-zone",
  "igd-next",
@@ -2573,6 +2573,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "discordia-nostr"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20 0.9.1",
+ "futures-util",
+ "hex",
+ "hkdf",
+ "hmac",
+ "rand 0.8.6",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+]
+
+[[package]]
 name = "discordia-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2582,6 +2601,33 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "discordia-push-relay"
+version = "0.1.0"
+dependencies = [
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "clap",
+ "dashmap",
+ "discordia-nostr",
+ "discordia-protocol",
+ "futures-util",
+ "hex",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "ring",
+ "rusqlite",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "toml 0.8.2",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2631,6 +2677,7 @@ dependencies = [
  "discordia-agent",
  "discordia-bot",
  "discordia-image-policy",
+ "discordia-nostr",
  "discordia-protocol",
  "discordia-rendezvous",
  "flate2",

@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import struct
 import unittest
+from xml.etree import ElementTree
 import zipfile
 from unittest.mock import patch
 
@@ -116,6 +117,73 @@ class AndroidReleaseTests(unittest.TestCase):
                     building.verify_release_metadata(Path("release.apk"), env)
         with patch.object(building.subprocess, "check_output", return_value=good):
             building.verify_release_metadata(Path("release.apk"), env)
+
+    FIREBASE = {
+        "FIREBASE_APP_ID": "1:123:android:abc",
+        "FIREBASE_APP_ID_DEBUG": "1:123:android:def",
+        "FIREBASE_API_KEY": "AIza-key_1",
+        "FIREBASE_SENDER_ID": "123",
+        "FIREBASE_PROJECT_ID": "discordia-test",
+    }
+
+    def firebase_strings(self, path):
+        return {element.get("name"): element.text or "" for element in ElementTree.parse(path).getroot()}
+
+    def test_firebase_values_reach_the_resource_set_of_their_package(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            building.package_firebase(project, self.FIREBASE)
+            main = project / "app/src/main/res" / building.FIREBASE_FILE
+            debug = project / "app/src/debug/res" / building.FIREBASE_FILE
+            self.assertEqual(self.firebase_strings(main), {
+                "google_app_id": "1:123:android:abc", "google_api_key": "AIza-key_1",
+                "gcm_defaultSenderId": "123", "project_id": "discordia-test",
+            })
+            self.assertEqual(self.firebase_strings(debug)["google_app_id"], "1:123:android:def")
+            for element in ElementTree.parse(main).getroot():
+                self.assertEqual(element.get("translatable"), "false")
+            keep = ElementTree.parse(project / "app/src/main/res" / building.FIREBASE_KEEP).getroot()
+            self.assertIn("@string/google_app_id", keep.get("{http://schemas.android.com/tools}keep"))
+
+    def test_without_firebase_values_the_build_carries_none_and_drops_stale_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            building.package_firebase(project, self.FIREBASE)
+            for unset in ({}, {**self.FIREBASE, "FIREBASE_API_KEY": "", "FIREBASE_APP_ID_DEBUG": " "}):
+                building.package_firebase(project, unset)
+                self.assertEqual([path for path in project.rglob("*") if path.is_file()], [])
+
+    def test_a_debug_build_without_its_own_app_id_does_not_borrow_the_release_one(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            building.package_firebase(project, {**self.FIREBASE, "FIREBASE_APP_ID_DEBUG": ""})
+            debug = project / "app/src/debug/res" / building.FIREBASE_FILE
+            self.assertEqual(self.firebase_strings(debug), {"google_app_id": ""})
+            release_only = {key: value for key, value in self.FIREBASE.items() if key != "FIREBASE_APP_ID"}
+            building.package_firebase(project, release_only)
+            self.assertFalse((project / "app/src/main/res" / building.FIREBASE_FILE).exists())
+            self.assertEqual(self.firebase_strings(debug)["google_app_id"], "1:123:android:def")
+
+    def test_firebase_values_are_escaped_for_aapt_and_xml(self):
+        self.assertEqual(building.android_string("a'b\"c\\d&<>"), "a\\'b\\\"c\\\\d&amp;&lt;&gt;")
+        self.assertEqual(building.android_string("@string/x"), "\\@string/x")
+        self.assertEqual(building.android_string("?attr"), "\\?attr")
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            building.package_firebase(project, {**self.FIREBASE, "FIREBASE_PROJECT_ID": "<x>&'y'"})
+            strings = self.firebase_strings(project / "app/src/main/res" / building.FIREBASE_FILE)
+            self.assertEqual(strings["project_id"], "<x>&\\'y\\'")
+
+    def test_a_shrunk_away_firebase_app_id_fails_the_build_only_when_one_was_given(self):
+        env = {"ANDROID_HOME": "sdk", **self.FIREBASE}
+        present = "resource 0x7f0f0001 com.discordia.app:string/google_app_id: t=0x03\n"
+        with patch.object(building.subprocess, "check_output", return_value=present):
+            building.verify_firebase_resources(Path("release.apk"), env, True)
+        with patch.object(building.subprocess, "check_output", return_value="") as dump:
+            with self.assertRaisesRegex(RuntimeError, "Firebase"):
+                building.verify_firebase_resources(Path("debug.apk"), env, False)
+            building.verify_firebase_resources(Path("release.apk"), {"ANDROID_HOME": "sdk"}, True)
+            self.assertEqual(dump.call_count, 1)
 
     def test_certificate_mismatch_cannot_publish_an_apk(self):
         self.check_signing("b" * 64, succeeds=False)

@@ -6,6 +6,7 @@ allprojects { project ->
         }
         project.dependencies.add('implementation', project.files(jar))
         project.dependencies.add('implementation', 'com.google.android.gms:play-services-auth:21.2.0')
+        project.dependencies.add('implementation', 'com.google.firebase:firebase-messaging:24.0.0')
         project.androidComponents.finalizeDsl { android ->
             android.buildTypes.getByName('debug').applicationIdSuffix = '.debug'
             def versionCode = System.getenv('DISCORDIA_ANDROID_VERSION_CODE')

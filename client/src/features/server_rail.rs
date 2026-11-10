@@ -40,6 +40,8 @@ pub struct ServerRail {
     pub adding: Signal<bool>,
     current: Signal<SessionMode>,
     checks: Coroutine<KnownServer>,
+    identity: Signal<crate::identity::Identity>,
+    live_origin: Memo<Option<String>>,
 }
 
 impl ServerRail {
@@ -63,10 +65,16 @@ impl ServerRail {
     }
 
     pub fn remove(mut self, key: &str) {
-        let mut list = self.known.write();
-        known_servers::remove(&mut list, key);
-        known_servers::save(&list);
+        let released = {
+            let mut list = self.known.write();
+            let removed = known_servers::remove(&mut list, key);
+            known_servers::save(&list);
+            known_servers::released_origins(&removed, &list, self.live_origin.peek().as_deref())
+        };
         self.reach.write().remove(key);
+        for origin in released {
+            super::push::forget_server(self.identity.peek().clone(), origin);
+        }
     }
 
     /// A second click on a server already being asked is the same request.
@@ -113,6 +121,8 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
     let switch = use_signal(|| None::<Switch>);
     let adding = use_signal(|| false);
     let current = use_signal(|| mode.clone());
+    let identity = use_signal(|| params.identity.clone());
+    let origin = use_memo(move || state.read().server_origin.clone());
 
     let checks = use_coroutine(move |mut asks: UnboundedReceiver<KnownServer>| async move {
         let mut running = futures_util::stream::FuturesUnordered::new();
@@ -141,6 +151,8 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
         adding,
         current,
         checks,
+        identity,
+        live_origin: origin,
     };
 
     use_hook(move || {
@@ -173,12 +185,16 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
         let Some(guilds) = seen() else { return };
         let mut list = known.write();
         known_servers::upsert(&mut list, mode.clone(), Some(guilds));
-        if let Some(name) = named()
-            && let Some(server) = list
-                .iter_mut()
-                .find(|s| s.key() == known_servers::server_key(&mode))
+        if let Some(server) = list
+            .iter_mut()
+            .find(|s| s.key() == known_servers::server_key(&mode))
         {
-            server.name = Some(name);
+            if let Some(name) = named() {
+                server.name = Some(name);
+            }
+            if let Some(origin) = origin() {
+                server.origin = Some(origin);
+            }
         }
         known_servers::save(&list);
     });

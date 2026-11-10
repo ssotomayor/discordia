@@ -48,7 +48,7 @@ impl Language {
     }
 }
 
-fn from_tag(tag: &str) -> Language {
+pub(crate) fn from_tag(tag: &str) -> Language {
     match tag
         .split(['-', '_', '.', '@'])
         .next()

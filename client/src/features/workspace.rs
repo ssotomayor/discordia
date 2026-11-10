@@ -398,6 +398,14 @@ pub fn WorkspaceView(
     provide_context(params.mode.clone());
     let rail = super::server_rail::use_server_rail(&params, state);
     provide_context(rail);
+    super::push::use_mention_push(state, gateway_tx.clone(), params.identity.clone());
+    super::push::use_attention(state, gateway_tx.clone());
+    super::push::use_mention_open(
+        state,
+        gateway_tx.clone(),
+        rail,
+        params.identity.pubkey.clone(),
+    );
     let popouts = super::stream_viewer::use_popouts(state);
     provide_context(popouts);
     let profile_owner = use_signal(|| params.identity.pubkey.clone());

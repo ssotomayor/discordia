@@ -585,6 +585,7 @@ pub async fn start_self_host(
             media_max_bytes: None,
             source: crate::protocol::LaunchSource::SelfHost,
             publishes: rendezvous_state.is_some(),
+            push: embedded_push(&crate::push::registration::relay_url()),
         },
         admission: Default::default(),
     };
@@ -724,6 +725,33 @@ fn local_ipv4() -> Option<Ipv4Addr> {
     match local_ip_address::local_ip().ok()? {
         IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Some(v4),
         _ => None,
+    }
+}
+
+/// The relay this client registers at, so a phone on its own host is reachable.
+/// A URL the server refuses turns push off rather than the server.
+fn embedded_push(relay: &str) -> discordia_server::push::PushConfig {
+    discordia_server::push::PushConfig::from_setting(Some(relay)).unwrap_or_else(|error| {
+        tracing::warn!(%error, "embedded server runs without mention push");
+        discordia_server::push::PushConfig::off()
+    })
+}
+
+#[cfg(test)]
+mod push_tests {
+    #[test]
+    fn the_embedded_server_advertises_the_clients_relay_or_none() {
+        let url = |relay: &str| super::embedded_push(relay).url().map(str::to_owned);
+        assert_eq!(
+            url("https://push.example/"),
+            Some("https://push.example".into())
+        );
+        assert_eq!(
+            url("http://127.0.0.1:7720"),
+            Some("http://127.0.0.1:7720".into())
+        );
+        assert_eq!(url("off"), None);
+        assert_eq!(url("http://push.example"), None, "refused, not fatal");
     }
 }
 

@@ -47,7 +47,7 @@ ALLOWED_DOMAINS=(
     # Nostr, for DMs and kind 0 profiles. Only the client talks to these and
     # the client has no display in here — they are allowed so a probe or an
     # #[ignore]d test against a real relay works, not because the suite needs
-    # them. client/src/nostr/ holds the defaults; blossom.band is media.
+    # them. nostr/src/relay.rs holds the defaults; blossom.band is media.
     relay.damus.io
     nos.lol
     relay.primal.net

@@ -139,6 +139,11 @@ pub fn load(pubkey: &str) -> Option<LocalProfile> {
     load_at(&profile_path(&config_dir(), pubkey)?)
 }
 
+/// For a process woken without the app: `root` is handed in, never looked up.
+pub(crate) fn load_in(root: &std::path::Path, pubkey: &str) -> Option<LocalProfile> {
+    load_at(&profile_path(root, pubkey)?)
+}
+
 fn load_at(path: &std::path::Path) -> Option<LocalProfile> {
     let content = std::fs::read_to_string(path).ok()?;
     let stored: Stored = serde_json::from_str(&content).ok()?;

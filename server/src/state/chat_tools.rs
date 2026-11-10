@@ -286,8 +286,9 @@ impl AppState {
                 )?;
                 self.deliver(
                     self.guild_member_pubkeys(gid),
-                    ServerMessage::MessageCreate(message),
+                    ServerMessage::MessageCreate(message.clone()),
                 );
+                self.notify_offline_mentions(gid, &message);
                 Ok(Some(ServerMessage::FileUploadResult {
                     request_id,
                     error: None,

@@ -583,6 +583,10 @@ pub struct AppState {
     pub error_toast: Option<String>,
     /// Set by a switch from the server rail; the next Ready opens this guild.
     pub open_guild_on_ready: Option<Id>,
+    /// A tapped mention notification on its way to its channel.
+    pub mention_tap: Option<crate::push::tap::PendingTap>,
+    /// Counts Readies, so a reconnect is seen even when nothing else changed.
+    pub readies: u64,
     pub composer_focus_request: Option<(Id, u64)>,
     /// Set when following a voice invite; joins this voice channel upon ready or guild join.
     pub voice_invite_on_ready: Option<PendingVoiceInvite>,
@@ -787,6 +791,8 @@ impl AppState {
             invites: HashMap::new(),
             error_toast: None,
             open_guild_on_ready: None,
+            mention_tap: None,
+            readies: 0,
             composer_focus_request: None,
             voice_invite_on_ready: None,
             gateway_failure: None,

@@ -17,6 +17,18 @@ pub(super) fn use_account_state(settings: Signal<ClientSettings>) -> Signal<AppS
     state
 }
 
+/// The push relay watches the same relays the Nostr service dials, or misses DMs.
+pub(super) fn dm_relays(saved: &ClientSettings) -> Vec<String> {
+    if saved.dm_relays.is_empty() {
+        crate::nostr::relay::DEFAULT_RELAYS
+            .iter()
+            .map(|url| (*url).to_string())
+            .collect()
+    } else {
+        saved.dm_relays.clone()
+    }
+}
+
 fn initial_state(saved: &ClientSettings) -> AppState {
     let mut s = AppState::empty();
     s.last_text_channels = saved.last_text_channels.clone();
@@ -94,15 +106,7 @@ pub fn AccountView(
         }
     });
     let nostr = use_hook(|| {
-        let saved = settings.peek();
-        let relays = if saved.dm_relays.is_empty() {
-            crate::nostr::relay::DEFAULT_RELAYS
-                .iter()
-                .map(|url| (*url).to_string())
-                .collect()
-        } else {
-            saved.dm_relays.clone()
-        };
+        let relays = dm_relays(&settings.peek());
         crate::nostr::service::spawn_nostr(identity.clone(), relays, state, settings)
     });
     provide_context(state);
@@ -241,6 +245,15 @@ pub fn AccountView(
     crate::channel_selection::use_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_dm_standing_persistence(state);
+    crate::push::peers::use_push_peers(state, identity.pubkey.clone());
+    super::push::use_device(&identity, settings);
+    super::push::use_mention_taps(
+        state,
+        identity.pubkey.clone(),
+        invite_identity,
+        session.is_none(),
+        on_connect,
+    );
     crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
     let mut fallback = use_signal(|| None::<Fallback>);
@@ -266,6 +279,7 @@ pub fn AccountView(
                             on_connect.call(back.params);
                             return;
                         }
+                        state.write().mention_tap = None;
                         on_disconnect.call(reason);
                     },
                     on_switch: move |target: super::server_rail::Switch| {
@@ -284,13 +298,16 @@ pub fn AccountView(
                 }
             }
         } else {
-            super::home::HomeView { identity, error, last_session, on_connect,
+            super::home::HomeView { identity: identity.clone(), error, last_session, on_connect,
                 on_rename: move |name| {
                     if let Err(message) = rename.call(name) {
                         state.write().error_toast = Some(message);
                     }
                 },
-                on_sign_out,
+                on_sign_out: move |_| {
+                    super::push::sign_out(identity.clone());
+                    on_sign_out.call(());
+                },
             }
         }
     }

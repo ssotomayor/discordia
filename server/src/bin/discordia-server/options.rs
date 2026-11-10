@@ -88,6 +88,10 @@ pub struct ServerOptions {
     #[arg(long, env = "DISCORDIA_PUBLISH_LOCATION")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publish_location: Option<Location>,
+    /// Push relay for members' mention notifications; only ciphertext leaves. "off" (or empty here or in the file) sends none [default: https://push.discordia.world]
+    #[arg(long, env = "DISCORDIA_PUSH_RELAY")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_relay: Option<String>,
 }
 
 /// "lat,lon" on the command line and in the environment, a table in the file.
@@ -145,6 +149,7 @@ impl ServerOptions {
             publish_description: self.publish_description.or(file.publish_description),
             publish_public: self.publish_public.or(file.publish_public),
             publish_location: self.publish_location.or(file.publish_location),
+            push_relay: self.push_relay.or(file.push_relay),
         }
     }
 
@@ -200,6 +205,7 @@ mod tests {
                 publish_to: Some(vec!["ws://rendezvous.example:7700".into()]),
                 publish_name: Some("Casa".into()),
                 publish_location: Some("-34.6,-58.4".parse().unwrap()),
+                push_relay: Some("off".into()),
                 ..ServerOptions::default()
             }),
             rendezvous: Some(discordia_rendezvous::run::Options {

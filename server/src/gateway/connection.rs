@@ -535,6 +535,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 let guild_id = ctx.state.channel_guild(message.channel_id);
                                 let targets = guild_id.map(|guild_id| ctx.state.guild_member_pubkeys(guild_id)).unwrap_or_default();
                                 ctx.state.deliver(targets, ServerMessage::MessageCreate(message.clone()));
+                                if let Some(guild_id) = guild_id {
+                                    ctx.state.notify_offline_mentions(guild_id, &message);
+                                }
                                 if !is_bot
                                     && let Some(guild_id) = guild_id
                                     && let Some(member) = ctx.state.award_xp(
@@ -647,7 +650,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 Ok(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
-                                    ctx.state.deliver(targets, ServerMessage::MessageCreate(msg));
+                                    ctx.state.deliver(targets, ServerMessage::MessageCreate(msg.clone()));
+                                    ctx.state.notify_offline_mentions(gid, &msg);
                                     // A bot earns nothing: it is installed, not
                                     // present, and a level badge on one says a
                                     // person was here.
@@ -672,6 +676,35 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 message: "unknown channel".into(),
                             }).await;
                         }
+                    }
+                    ClientMessage::RegisterPush { handle, key } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        if let Err(message) = ctx.state.register_push(&u.pubkey, &handle, &key).await {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                        }
+                    }
+                    ClientMessage::UnregisterPush { handle } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        if let Err(message) = ctx.state.unregister_push(&u.pubkey, &handle).await {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                        }
+                    }
+                    ClientMessage::SetAttention { attended } => {
+                        ctx.state.set_attention(conn_id, attended);
                     }
                     ClientMessage::CreateGuild { name, template } => {
                         let Some(creator) = user.clone() else {

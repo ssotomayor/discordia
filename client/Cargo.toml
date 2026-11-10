@@ -38,8 +38,6 @@ hmac = "0.12"
 sha2 = "0.10"
 chacha20poly1305 = "0.10"
 aes-gcm = { version = "0.10.3", features = ["zeroize"] }
-chacha20 = "0.9"
-hkdf = "0.12"
 dirs = "5"
 rand = "0.8"
 
@@ -47,6 +45,7 @@ base64 = "0.22"
 
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 discordia-image-policy = { path = "../image-policy" }
+discordia-nostr = { path = "../nostr" }
 
 rubato = "=5.0.1"
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "all-meta"] }
@@ -155,6 +154,8 @@ rubato-legacy = { package = "rubato", version = "=0.16.2" }
 axum = { workspace = true }
 # A caller in a gateway call, which a `/sfu` tunnel needs.
 discordia-rendezvous = { path = "../rendezvous" }
+# The phone's signatures are tested against the relay's own router.
+discordia-push-relay = { path = "../push-relay" }
 livekit-api = { workspace = true }
 uuid = { workspace = true }
 

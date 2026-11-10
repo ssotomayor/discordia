@@ -21,9 +21,9 @@ Windows/runtime version. The installer leaves one top-level Start Menu icon and
 no separate uninstall shortcut, so Uninstall lives on that icon's context menu.
 Cargo is a development launcher, not a shipped service.
 
-Every server and rendezvous variable below is also a `--flag` and a key in a
-TOML file's `[server]` or `[rendezvous]` table: drop `DISCORDIA_` (or
-`DISCORDIA_RENDEZVOUS_`) and lowercase (`DISCORDIA_QUIC_PORT` → `quic_port`,
+Every server, rendezvous and push relay variable below is also a `--flag` and a key in a
+TOML file's `[server]`, `[rendezvous]` or `[push_relay]` table: drop `DISCORDIA_` (or
+`DISCORDIA_RENDEZVOUS_`, `DISCORDIA_PUSH_`) and lowercase (`DISCORDIA_QUIC_PORT` → `quic_port`,
 `LIVEKIT_URL` → `livekit_url`). A flag beats the variable, which beats the file.
 `--config`/`DISCORDIA_CONFIG` names the file, else `/etc/discordia/discordia.toml`
 when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a variable only.
@@ -51,6 +51,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_PUBLISH_DESCRIPTION` | — | one line beside the name. ⚙ |
 | `DISCORDIA_PUBLISH_PUBLIC` | `false` | also list it in each rendezvous's `/discover`; otherwise only the name or code finds it. ⚙ |
 | `DISCORDIA_PUBLISH_LOCATION` | — | `lat,lon` for the globe; self-declared, rounded to a tenth of a degree. ⚙ |
+| `DISCORDIA_PUSH_RELAY` | `https://push.discordia.world` | the relay that wakes a member's phone when a guild message mentions them and none of their clients is being looked at. Only NIP-44 ciphertext under that phone's own key leaves, to the handle it registered; the relay sees this server's address, the time and the size. `off` sends nothing and refuses registrations (an empty variable counts as unset; an empty flag or file key is off). `https://`, or `http://` on loopback only. Registrations (≤ 4 a key, gone 30 days after the last refresh) are never in a guild export |
 
 ⚙ An operator can also set it in the app's **Server Settings** (the server icon beside Agents), which applies at once — a renamed server re-registers on its rendezvous. Set by a flag, variable or the config file, it wins: the dialog shows it read-only and keeps its own value for when the setting is removed. Server Settings also holds what has no variable: the ceilings on every guild's upload sizes, file expiry and message history, who may create guilds, how many each person may own and how many the server holds in all, the guild newcomers land in, and the apps policy.
 
@@ -69,6 +70,25 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_RENDEZVOUS_TURN_RELAY_IP` | resolved from the URL | the public IPv4 handed out in allocations; set it when the URL's name does not resolve to this machine |
 | `DISCORDIA_RENDEZVOUS_TURN_SECRET` | random per start | HMAC secret behind the time-limited credentials; hosts renew theirs over the control stream, so a restart costs nothing |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts whose media ports nobody outside can reach *and* that have no relay; the rendezvous mints their tokens so no host holds the secret. A host that maps its ports, or has a relay, carries its own calls and ignores this |
+
+**Push relay** (`discordia-push-relay`; `ping <pubkey>` sends a test push to that key's devices through the same database)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DISCORDIA_PUSH_ADDR` | `127.0.0.1:7720` | HTTP bind, behind a TLS proxy: `PUT`/`DELETE /v1/devices`, `POST /v1/handles`, `DELETE /v1/handles/{handle}`, `POST /v1/push/{handle}`, `GET /` |
+| `DISCORDIA_PUSH_DATA_DIR` | `./push-relay-data` | devices and handles, `push.db` (SQLite) |
+| `DISCORDIA_PUSH_PUBLIC_HOSTS` | — | comma-separated host names (or URLs) phones dial the relay by; loopback always counts. A signed request names one, and any other is refused |
+| `DISCORDIA_PUSH_TRUSTED_PROXIES` | — (trust nobody) | as the gateway's `DISCORDIA_TRUSTED_PROXIES`: without it every caller is the proxy to the per-address limits. Under compose, the bridge's gateway |
+| `DISCORDIA_PUSH_FCM_CREDENTIALS` | — | path to the Firebase service-account JSON (compose: the host path, mounted read-only). Unset: registrations are accepted unchecked and sends are logged, not made |
+| `DISCORDIA_PUSH_DM_RELAYS` | `relay::DEFAULT_RELAYS` | comma-separated `wss://` relays the DM watcher may dial, and only while a key is watched there. A device's `relays` narrows this list, never widens it; a device naming none takes all of it |
+
+| Limit | Value |
+|---|---|
+| Devices per key / handles per device / devices in all | 4, oldest evicted / 64 / 100 000, new ones refused |
+| Device expiry | 30 days after its last `PUT`; swept hourly |
+| Per address | 60/min on signed routes, 1200/min on `/v1/push`, 32 new devices a day |
+| Per handle / per key (DMs) | 20/min and 300/day / 30/min |
+| DM watcher | 100 keys per filter, ≤ 8 subscriptions per relay, resubscribed 3 s after a registry change and every 6 h; 100 000 wrap ids remembered. A restart pushes nothing that arrived while it was down |
 
 Deploy the coordinator with `/voice-evict` alongside these clients. A host's
 registration grant permits removing seats only from its own room namespace;
@@ -90,6 +110,7 @@ peer's IP, and a proxy makes every host the same peer.
 | `DISCORDIA_DM_RELAY_ONLY` | off | `1` requires a configured TURN server and excludes direct media connections |
 | `GIPHY_API_KEY` | the build's | GIF picker key. Read at compile time (CI secret `GIPHY_API_KEY`) and overridden at run time; unset in both hides the GIF button. A job reads secrets when it starts, so a run already going when the secret is set ships without it; CI has no manual trigger, the next push to master builds it in. Searches go from the client to GIPHY; readers fetch the GIF from GIPHY too |
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | the build's | Google Drive backup and "Sign in with Google" on desktop. Android needs neither: Play services matches the APK to the Cloud project's Android OAuth client by package and signing SHA-1, so a debug APK signed by an unregistered keystore gets a sign-in error. Read at compile time (CI secrets of the same names) and overridden at run time; either unset hides both. The Desktop-app OAuth client of the Google Cloud project, scope `drive.appdata` only. Same rule as `GIPHY_API_KEY`: a run started before the secret existed ships without it |
+| `FIREBASE_APP_ID`, `FIREBASE_APP_ID_DEBUG`, `FIREBASE_API_KEY`, `FIREBASE_SENDER_ID`, `FIREBASE_PROJECT_ID` | the build's | Android push. `build-android.py` writes them as string resources into the generated Gradle project, never into the repo; Firebase reads them when the process starts. Google matches the app by package and app id: `FIREBASE_APP_ID` is `com.discordia.app`'s, `FIREBASE_APP_ID_DEBUG` is `com.discordia.app.debug`'s, and a debug build without its own id has no push rather than borrowing the release one. Client identifiers, not signing material: CI passes the secrets of the same names to PR builds too. Any of the four for a package unset: the APK still builds, Firebase never starts, no device is registered and the setting describes alerts only while the app runs. Not overridable at run time. Same rule as `GIPHY_API_KEY`: a run started before the secret existed ships without it |
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
@@ -272,9 +293,9 @@ over IPv6 (a rendezvous with an AAAA record) is listed without a direct address.
 
 ## Deploying the test box
 
-CI builds the two images on every push to `master` (`deploy-images` in
+CI builds the three images on every push to `master` (`deploy-images` in
 `ci.yml`, gated on `test`) and pushes them to
-`ghcr.io/<owner>/discordia-{server,rendezvous}`, tagged `latest` and the short
+`ghcr.io/<owner>/discordia-{server,rendezvous,push-relay}`, tagged `latest` and the short
 sha. **Never build on the deployment box**: the server crate needs more RAM than
 a small VPS has, and the OOM killer picks among the containers already running.
 The `buildcache` tag beside them is BuildKit's layer cache, not an image; the
@@ -317,6 +338,7 @@ toolchain and cannot build, so `out/` is produced elsewhere and synced in.
 | `discordia.world`, `www` | the site, HTTPS | nginx vhost `discordia.world`, root `/var/www/discordia.world`, certbot cert, `error_page 404 /404.html`, `/_next/static/` immutable for a year |
 | `app.discordia.world` | `wss://` gateway proxy to 127.0.0.1:9000 | nginx vhost `app.discordia.world`, WebSocket upgrade, 1 h timeouts, `X-Forwarded-For` set; the gateway runs with `DISCORDIA_TRUSTED_PROXIES=127.0.0.1` |
 | `rendezvous.discordia.world` | plain `ws://…:7700`, no proxy, no TLS | bare A record; the rendezvous must see real peer addresses |
+| `push.discordia.world` | the push relay, HTTPS | nginx vhost to 127.0.0.1:7720, `X-Forwarded-For` set; the relay trusts the bridge gateway it arrives from |
 
 | Path | What happens |
 |---|---|
@@ -377,6 +399,8 @@ Each asset keeps its minisign signature. Existing Linux installations remain usa
 | `ANDROID_KEYSTORE_PASSWORD` | JKS password |
 | `ANDROID_KEY_PASSWORD` | Private-key password |
 
+The build step also reads the five `FIREBASE_*` secrets (Client variables above); a fork without them builds without push.
+
 Keep the JKS and passwords backed up **outside the repository**; no private key belongs in an artifact, cache or release. Reuse that key for every update. `scripts/sign-android.py` aligns before signing and verifies the APK and committed certificate before publishing the output. Release builds validate package, debuggable flag and version metadata; versionCode follows the CI run number. DEX validation requires class definitions, including WebRTC's `livekit.org.jni_zero` bridge; a referenced class name alone does not prove R8 preserved it. `discordia.pro` retains that bridge and WebRTC methods used only through JNI.
 
 ```sh
@@ -408,6 +432,11 @@ Debug and release coexist with independent data; debug never offers release inst
 
 DMs are in none of these rows: they are Nostr gift wraps on relays, and a relay
 learns only that somebody messaged you.
+
+| Push | Sees |
+|---|---|
+| Push relay | a device's FCM token and the key that registered it, which handles it holds, and per push a time and a size. Mention bodies are NIP-44 to the handle's key; a DM push carries the gift wrap relays already publish |
+| Google (FCM) | the same, plus the recipient's key and an inline DM's gift wrap: ciphertext whose sender only the phone can open |
 
 ## Release profile comparison
 

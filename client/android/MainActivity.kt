@@ -48,7 +48,10 @@ class MainActivity : WryActivity() {
     external fun onDmNotificationOpened(account: String, peer: String)
     external fun onDmNotificationVisibility(resumed: Boolean)
     external fun onDmNotificationSettingsChanged()
-    fun setDmNotificationAccount(account: String, channel: String) { dmNotifications.setAccount(account, channel) }
+    external fun onMentionNotificationOpened(account: String, origin: String, guild: String, channel: String, message: String)
+    fun setDmNotificationAccount(account: String, labels: String) { dmNotifications.setAccount(account, labels) }
+    fun requestPushToken() { com.discordia.app.DioxusNotifier.requestToken(this) }
+    fun pushAvailable(): Boolean = com.discordia.app.DioxusNotifier.pushAvailable(this)
     fun clearDmNotificationAccount(account: String) { postNotification { dmNotifications.clearAccount(account) } }
     fun dmNotificationState(): String = dmNotifications.state()
     fun enableDmNotifications(enabled: Boolean): String = dmNotifications.enable(enabled)

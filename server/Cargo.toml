@@ -62,6 +62,8 @@ discordia-image-policy = { path = "../image-policy" }
 anyhow = "1"
 
 discordia-protocol = { workspace = true }
+# NIP-44 seals a mention push under the key its phone registered.
+discordia-nostr = { path = "../nostr" }
 serde = { workspace = true }
 # raw_value: a frame's `op` is read before its `d` is parsed (gateway::parse_frame).
 serde_json = { workspace = true, features = ["raw_value"] }

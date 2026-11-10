@@ -86,10 +86,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (server crates)
-        run: cargo clippy -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous --all-targets -- -D warnings
+        run: cargo clippy -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous -p discordia-push-relay --all-targets -- -D warnings
 
-      - name: Tests (protocol + server + bot SDK + rendezvous)
-        run: cargo test -p discordia-protocol -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous
+      - name: Tests (protocol + nostr + server + bot SDK + rendezvous + push relay)
+        run: cargo test -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous -p discordia-push-relay
 
   audit:
     name: dependency advisories
@@ -343,6 +343,13 @@ jobs:
           fi
           cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Build and validate release APK
+        # Firebase client identifiers, not signing material; unset on forks builds without push.
+        env:
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_APP_ID_DEBUG: ${{ secrets.FIREBASE_APP_ID_DEBUG }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_SENDER_ID: ${{ secrets.FIREBASE_SENDER_ID }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
           python scripts/build-android.py --release --version-code '${{ github.run_number }}' \
             --version-name 'v0.1.0-pre.${{ github.run_number }}' \
@@ -353,6 +360,7 @@ jobs:
           python scripts/test-android-capture.py
           python scripts/test-android-network.py
           python scripts/test-android-notification-dispatch.py
+          python scripts/test-android-notifier.py
       - name: Sign and verify APK
         if: github.event_name == 'push'
         env:
@@ -688,7 +696,7 @@ jobs:
           generate_release_notes: true
           files: release/*
   deploy-images:
-    name: deploy images · server+rendezvous (ghcr)
+    name: deploy images · server+rendezvous+push-relay (ghcr)
     # Gated on `test` so a red master never becomes a pullable image. Not gated
     # on the prerelease jobs: those bundle a desktop client this deployment has
     # no part in, and waiting on macOS/Windows runners would delay a server fix.
@@ -705,6 +713,8 @@ jobs:
             dockerfile: Dockerfile
           - crate: rendezvous
             dockerfile: Dockerfile.rendezvous
+          - crate: push-relay
+            dockerfile: Dockerfile.push-relay
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

@@ -9,6 +9,7 @@ struct Notice {
     message: String,
     silent: bool,
     at: i64,
+    id: String,
 }
 
 #[cfg(any(target_os = "android", target_os = "windows", test))]
@@ -77,6 +78,7 @@ fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) ->
         message: crate::i18n::text("New private message", &[]),
         silent: !crate::native_sounds::sound_enabled("dm"),
         at: message.created_at,
+        id: message.id.clone(),
     })
 }
 
@@ -179,7 +181,9 @@ pub(crate) fn use_notifications(mut state: dioxus::prelude::Signal<AppState>, ac
 
 #[cfg(target_os = "android")]
 pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, live: bool) {
-    if let Some(notice) = notice(state, message, account, live) {
+    if let Some(notice) = notice(state, message, account, live)
+        && crate::push::device::preferences().dms
+    {
         match serde_json::to_string(&notice) {
             Ok(payload) => native::dispatch("showDmNotification", payload),
             Err(error) => tracing::warn!(%error, "Could not prepare DM notification"),
@@ -260,16 +264,22 @@ mod native {
         use_read_notification_dismissal(state, account.clone());
         let setup_account = account.clone();
         use_hook(move || {
-            let channel = crate::i18n::text("Private messages", &[]);
+            // A push may start a process with no Rust UI; Kotlin keeps these for it.
+            let labels = serde_json::json!({
+                "dm": crate::i18n::text("Private messages", &[]),
+                "mention": crate::i18n::text("Mentions", &[]),
+                "ping": crate::i18n::text("Notifications are working", &[]),
+            })
+            .to_string();
             crate::platform::wry::prelude::dispatch(move |env, activity, _| {
                 let result = (|| -> Result<(), jni::errors::Error> {
                     let account = env.new_string(setup_account)?;
-                    let channel = env.new_string(channel)?;
+                    let labels = env.new_string(labels)?;
                     env.call_method(
                         activity,
                         "setDmNotificationAccount",
                         "(Ljava/lang/String;Ljava/lang/String;)V",
-                        &[JValue::Object(&account), JValue::Object(&channel)],
+                        &[JValue::Object(&account), JValue::Object(&labels)],
                     )?;
                     Ok(())
                 })();
@@ -282,6 +292,11 @@ mod native {
                     }
                 }
             });
+            // Synchronous, so `push::device` starts from the platform's state, not
+            // from an empty one that reads as "unregister this device".
+            if let Err(error) = crate::android::request_push_token() {
+                tracing::warn!(%error, "Could not read the push platform state");
+            }
         });
         let mut pending = use_signal(|| None::<String>);
         let active_account = account.clone();
@@ -367,10 +382,41 @@ mod native {
         .await
     }
 
+    /// Optimistic: the box flips at once and flips back only if `push.json` refused.
+    fn flip(
+        mut preferences: Signal<crate::push::device::Preferences>,
+        mut failed: Signal<bool>,
+        dms: bool,
+        on: bool,
+    ) {
+        let mut next = *preferences.peek();
+        if dms {
+            next.dms = on;
+        } else {
+            next.mentions = on;
+        }
+        preferences.set(next);
+        failed.set(false);
+        crate::service_task::spawn(async move {
+            let result = if dms {
+                crate::push::device::set_dms(on).await
+            } else {
+                crate::push::device::set_mentions(on).await
+            };
+            if result.is_err() {
+                preferences.set(crate::push::device::preferences());
+                failed.set(true);
+            }
+        });
+    }
+
     #[component]
     pub(crate) fn NotificationSettings() -> Element {
         let mut status = use_signal(|| "loading".to_string());
         let mut busy = use_signal(|| false);
+        let push = use_hook(crate::android::push_available);
+        let preferences = use_signal(crate::push::device::preferences);
+        let failed = use_signal(|| false);
         use_future(move || async move {
             status.set(
                 notification_state(None)
@@ -385,10 +431,15 @@ mod native {
             "enabled" => "Enabled",
             _ => "Disabled",
         };
+        let description = if push {
+            "Notify about new private messages and mentions, even when Discordia is closed. Some phones delay alerts for apps in the background."
+        } else {
+            "Notify about new private messages while Discordia is running. Notifications may stop if Android closes the app."
+        };
         rsx! {
             section { class: "mt-6 border-t border-[var(--border)] pt-4", aria_busy: busy() || status() == "loading",
-                h3 { class: "font-semibold", {crate::i18n::text("DM notifications", &[])} }
-                p { class: "mt-2 text-sm text-[var(--text-muted)]", {crate::i18n::text("Notify about new private messages while Discordia is running. Notifications may stop if Android closes the app.", &[])} }
+                h3 { class: "font-semibold", {crate::i18n::text("Notifications", &[])} }
+                p { class: "mt-2 text-sm text-[var(--text-muted)]", {crate::i18n::text(description, &[])} }
                 p { role: "status", class: "mt-2 text-sm", {crate::i18n::text(status_label, &[])} }
                 if status() == "blocked" {
                     p { class: "text-sm text-[var(--text-muted)]", {crate::i18n::text("Allow notifications in Android settings to receive DM alerts.", &[])} }
@@ -420,6 +471,34 @@ mod native {
                         });
                     },
                     {crate::i18n::text(if busy() { "Checking…" } else if enabled { "Disable notifications" } else { "Enable notifications" }, &[])}
+                }
+                if enabled {
+                    div { class: "mt-3 flex flex-col",
+                        label { class: "flex items-center gap-2 min-h-[44px] cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                class: "accent-[var(--accent)]",
+                                checked: preferences().dms,
+                                onchange: move |e| flip(preferences, failed, true, e.checked()),
+                            }
+                            span { class: "text-sm", {crate::i18n::text("Direct messages", &[])} }
+                        }
+                        label { class: "flex items-center gap-2 min-h-[44px] cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                class: "accent-[var(--accent)]",
+                                checked: preferences().mentions,
+                                onchange: move |e| flip(preferences, failed, false, e.checked()),
+                            }
+                            span { class: "text-sm", {crate::i18n::text("Mentions", &[])} }
+                        }
+                        if push {
+                            p { class: "ml-6 text-sm text-[var(--text-muted)]", {crate::i18n::text("When someone mentions you on a server you have opened on this phone.", &[])} }
+                        }
+                        if failed() {
+                            p { role: "alert", class: "text-sm", {crate::i18n::text("Could not save that choice. Try again.", &[])} }
+                        }
+                    }
                 }
             }
         }
