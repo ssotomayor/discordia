@@ -59,6 +59,20 @@ pub(crate) fn sign_out(identity: Identity) {
     });
 }
 
+/// A saved server taken off the rail: its handle is revoked at the relay and
+/// dropped from `push.json`, so that server can no longer wake this phone.
+pub(crate) fn forget_server(identity: Identity, origin: String) {
+    let Some(relay) = relay() else { return };
+    let dir = crate::identity::config_dir();
+    crate::service_task::spawn(async move {
+        if let Err(error) =
+            crate::push::registration::forget_origin(&dir, &relay, &identity, &origin).await
+        {
+            tracing::warn!(%error, "push: a removed server's handle was not revoked");
+        }
+    });
+}
+
 /// Gives this server the install's handle on every Ready (`push::gateway`).
 pub(crate) fn use_mention_push(state: Signal<AppState>, gateway: GatewayTx, identity: Identity) {
     let session = use_memo(move || {

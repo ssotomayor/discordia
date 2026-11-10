@@ -127,8 +127,30 @@ pub fn upsert(list: &mut Vec<KnownServer>, mode: SessionMode, guilds: Option<Vec
     }
 }
 
-pub fn remove(list: &mut Vec<KnownServer>, key: &str) {
-    list.retain(|s| s.key() != key);
+/// What was taken out, so whatever it held elsewhere can go with it.
+pub fn remove(list: &mut Vec<KnownServer>, key: &str) -> Vec<KnownServer> {
+    let (removed, kept) = std::mem::take(list)
+        .into_iter()
+        .partition(|s| s.key() == key);
+    *list = kept;
+    removed
+}
+
+/// Origins no saved server and not the live session still answers to: a
+/// server's push handle is per origin, and another entry may dial the same one.
+pub fn released_origins(
+    removed: &[KnownServer],
+    kept: &[KnownServer],
+    live: Option<&str>,
+) -> Vec<String> {
+    let mut origins: Vec<String> = removed
+        .iter()
+        .filter_map(|server| server.origin.clone())
+        .filter(|origin| live != Some(origin.as_str()))
+        .filter(|origin| !kept.iter().any(|s| s.origin.as_ref() == Some(origin)))
+        .collect();
+    origins.dedup();
+    origins
 }
 
 fn path() -> PathBuf {
@@ -194,6 +216,40 @@ mod tests {
         assert_eq!(list[0].guilds.len(), 1, "no guild list is not an empty one");
         remove(&mut list, &server_key(&by_code("a")));
         assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn removing_a_server_releases_its_origin_unless_something_still_dials_it() {
+        let at = |code: &str, origin: Option<&str>| KnownServer {
+            origin: origin.map(str::to_owned),
+            ..KnownServer::new(by_code(code))
+        };
+        let mut list = vec![
+            at("a", Some("quic://a@1.2.3.4:1")),
+            at("b", Some("quic://b@1.2.3.4:2")),
+            at("c", Some("quic://b@1.2.3.4:2")),
+            at("d", None),
+        ];
+        let removed = remove(&mut list, &server_key(&by_code("a")));
+        assert_eq!(removed, [at("a", Some("quic://a@1.2.3.4:1"))]);
+        assert_eq!(list.len(), 3);
+        assert_eq!(
+            released_origins(&removed, &list, None),
+            ["quic://a@1.2.3.4:1"]
+        );
+        assert!(
+            released_origins(&removed, &list, Some("quic://a@1.2.3.4:1")).is_empty(),
+            "the live session's handle is the gateway loop's"
+        );
+
+        let removed = remove(&mut list, &server_key(&by_code("b")));
+        assert!(
+            released_origins(&removed, &list, None).is_empty(),
+            "another entry still dials that origin"
+        );
+        let removed = remove(&mut list, &server_key(&by_code("d")));
+        assert!(released_origins(&removed, &list, None).is_empty());
+        assert!(remove(&mut list, "nothing").is_empty());
     }
 
     #[test]
