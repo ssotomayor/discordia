@@ -369,6 +369,34 @@ async fn a_rotated_token_keeps_its_handles_over_http() {
 }
 
 #[tokio::test]
+async fn a_token_put_under_another_key_moves_to_it_and_leaves_its_handles() {
+    let h = spawn().await;
+    register(&h, 1, "tok").await;
+    let handle = new_handle(&h, 1, "tok").await;
+    assert_eq!(register(&h, 2, "tok").await, StatusCode::OK);
+    assert_eq!(h.relay.store.device_count().unwrap(), 1);
+    let (second, _) = sign_request(&key(2), "PUT", "/", AUDIENCE, 0, b"").unwrap();
+    assert_eq!(
+        h.relay.store.devices_of(&second, true, now_unix()).unwrap()[0].token,
+        "tok"
+    );
+    assert_eq!(push(&h, &handle, "YQ==").await, StatusCode::NOT_FOUND);
+    let resp = Signed::new(
+        key(1),
+        Method::DELETE,
+        "/v1/devices",
+        json!({"token": "tok"}),
+    )
+    .send(&h)
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "the old key holds nothing"
+    );
+}
+
+#[tokio::test]
 async fn new_devices_are_limited_per_address_per_day_and_refreshes_are_not() {
     let limits = Limits {
         registrations: Limiter::per_day(2),

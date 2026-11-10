@@ -63,6 +63,7 @@ const SCHEMA: &str = "
         UNIQUE (pubkey, token)
     );
     CREATE INDEX IF NOT EXISTS devices_by_expiry ON devices (expires_at);
+    CREATE INDEX IF NOT EXISTS devices_by_token ON devices (token);
     CREATE TABLE IF NOT EXISTS handles (
         handle TEXT PRIMARY KEY,
         device INTEGER NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
@@ -149,6 +150,11 @@ impl Store {
         let exists = tx
             .prepare_cached("SELECT 1 FROM devices WHERE pubkey = ?1 AND token = ?2")?
             .exists(params![pubkey, req.token])?;
+        // Only the install and this relay know a token, so presenting one held by
+        // another key is an account switch on that phone, not a theft.
+        let moved: i64 = tx
+            .prepare_cached("SELECT COUNT(*) FROM devices WHERE token = ?1 AND pubkey != ?2")?
+            .query_row(params![req.token, pubkey], |r| r.get(0))?;
         let replaced: Option<i64> = match &req.replaces {
             Some(old) if *old != req.token => tx
                 .prepare_cached("SELECT id FROM devices WHERE pubkey = ?1 AND token = ?2")?
@@ -156,7 +162,7 @@ impl Store {
                 .optional()?,
             _ => None,
         };
-        if !exists && replaced.is_none() {
+        if !exists && replaced.is_none() && moved == 0 {
             let total: i64 = tx.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))?;
             let own: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM devices WHERE pubkey = ?1",
@@ -168,6 +174,10 @@ impl Store {
             {
                 return Err(StoreError::Full);
             }
+        }
+        if moved > 0 {
+            tx.prepare_cached("DELETE FROM devices WHERE token = ?1 AND pubkey != ?2")?
+                .execute(params![req.token, pubkey])?;
         }
         tx.prepare_cached(
             "INSERT INTO devices (pubkey, token, package, dm, relays, created_at, updated_at, expires_at)
@@ -386,14 +396,36 @@ mod tests {
     }
 
     #[test]
-    fn the_same_token_under_two_keys_is_two_rows() {
+    fn a_token_put_under_another_key_moves_there_without_its_handles() {
         let s = store();
         s.upsert_device(&key(1), &reg("a"), T0).unwrap();
-        s.upsert_device(&key(2), &reg("a"), T0).unwrap();
+        s.upsert_device(&key(1), &reg("keep"), T0).unwrap();
+        let h = s.create_handle(&key(1), "a", T0).unwrap();
+        s.upsert_device(&key(2), &reg("a"), T0 + 1).unwrap();
         assert_eq!(s.device_count().unwrap(), 2);
-        assert!(!s.delete_device(&key(2), "b").unwrap());
-        assert!(s.delete_device(&key(2), "a").unwrap());
-        assert_eq!(s.devices_of(&key(1), false, T0).unwrap().len(), 1);
+        assert!(s.handle_target(&h, T0 + 1).unwrap().is_none());
+        assert!(!s.delete_device(&key(1), "a").unwrap());
+        let mine: Vec<_> = s
+            .devices_of(&key(1), false, T0 + 1)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.token)
+            .collect();
+        assert_eq!(mine, ["keep"]);
+        assert_eq!(s.devices_of(&key(2), false, T0 + 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_full_relay_still_lets_a_token_change_keys() {
+        let s = Store::in_memory(Caps {
+            total_devices: 2,
+            ..Caps::default()
+        })
+        .unwrap();
+        s.upsert_device(&key(1), &reg("a"), T0).unwrap();
+        s.upsert_device(&key(2), &reg("b"), T0).unwrap();
+        assert!(s.upsert_device(&key(3), &reg("a"), T0).is_ok());
+        assert_eq!(s.device_count().unwrap(), 2);
     }
 
     #[test]
