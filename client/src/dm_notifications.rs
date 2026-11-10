@@ -9,6 +9,7 @@ struct Notice {
     message: String,
     silent: bool,
     at: i64,
+    id: String,
 }
 
 #[cfg(any(target_os = "android", target_os = "windows", test))]
@@ -77,6 +78,7 @@ fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) ->
         message: crate::i18n::text("New private message", &[]),
         silent: !crate::native_sounds::sound_enabled("dm"),
         at: message.created_at,
+        id: message.id.clone(),
     })
 }
 
@@ -179,7 +181,9 @@ pub(crate) fn use_notifications(mut state: dioxus::prelude::Signal<AppState>, ac
 
 #[cfg(target_os = "android")]
 pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, live: bool) {
-    if let Some(notice) = notice(state, message, account, live) {
+    if let Some(notice) = notice(state, message, account, live)
+        && crate::push::device::preferences().dms
+    {
         match serde_json::to_string(&notice) {
             Ok(payload) => native::dispatch("showDmNotification", payload),
             Err(error) => tracing::warn!(%error, "Could not prepare DM notification"),
@@ -260,16 +264,22 @@ mod native {
         use_read_notification_dismissal(state, account.clone());
         let setup_account = account.clone();
         use_hook(move || {
-            let channel = crate::i18n::text("Private messages", &[]);
+            // A push may start a process with no Rust UI; Kotlin keeps these for it.
+            let labels = serde_json::json!({
+                "dm": crate::i18n::text("Private messages", &[]),
+                "mention": crate::i18n::text("Mentions", &[]),
+                "ping": crate::i18n::text("Notifications are working", &[]),
+            })
+            .to_string();
             crate::platform::wry::prelude::dispatch(move |env, activity, _| {
                 let result = (|| -> Result<(), jni::errors::Error> {
                     let account = env.new_string(setup_account)?;
-                    let channel = env.new_string(channel)?;
+                    let labels = env.new_string(labels)?;
                     env.call_method(
                         activity,
                         "setDmNotificationAccount",
                         "(Ljava/lang/String;Ljava/lang/String;)V",
-                        &[JValue::Object(&account), JValue::Object(&channel)],
+                        &[JValue::Object(&account), JValue::Object(&labels)],
                     )?;
                     Ok(())
                 })();
@@ -282,6 +292,11 @@ mod native {
                     }
                 }
             });
+            // Synchronous, so `push::device` starts from the platform's state, not
+            // from an empty one that reads as "unregister this device".
+            if let Err(error) = crate::android::request_push_token() {
+                tracing::warn!(%error, "Could not read the push platform state");
+            }
         });
         let mut pending = use_signal(|| None::<String>);
         let active_account = account.clone();

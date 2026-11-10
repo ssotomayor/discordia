@@ -33,6 +33,21 @@ fn registered_as(account: &str) -> PushState {
 }
 
 #[test]
+fn the_platform_reports_no_token_as_an_empty_one() {
+    assert_eq!(platform_from(" tok ", PACKAGE, true), phone("tok"));
+    for token in ["", "  ", &"t".repeat(4097)] {
+        assert_eq!(
+            platform_from(token, PACKAGE, true),
+            Platform {
+                token: None,
+                ..phone("unused")
+            }
+        );
+    }
+    assert!(!platform_from("tok", PACKAGE, false).enabled);
+}
+
+#[test]
 fn what_the_relay_should_hold() {
     let me = "a".repeat(64);
     let fresh = PushState::default();

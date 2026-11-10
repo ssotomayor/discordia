@@ -31,6 +31,32 @@ pub(crate) fn taps() -> &'static watch::Sender<Option<MentionTap>> {
     TAPS.get_or_init(|| watch::channel(None).0)
 }
 
+const MAX_ORIGIN_BYTES: usize = 512;
+
+/// A tapped notification's launch URI, believed only once every part checks.
+pub fn from_parts(
+    account: &str,
+    origin: &str,
+    guild: &str,
+    channel: &str,
+    message: &str,
+) -> Option<MentionTap> {
+    if !crate::protocol::is_canonical_pubkey(account)
+        || origin.is_empty()
+        || origin.len() > MAX_ORIGIN_BYTES
+        || origin.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(MentionTap {
+        account: account.to_owned(),
+        origin: origin.to_owned(),
+        guild: guild.parse().ok()?,
+        channel: channel.parse().ok()?,
+        message: message.parse().ok()?,
+    })
+}
+
 /// For the platform layer, when a mention notification is tapped. Kept until
 /// an account is mounted to take it, as a cold start opens the app first.
 pub fn open_mention(tap: MentionTap) {
@@ -149,6 +175,33 @@ mod tests {
             in_call: false,
             switching: false,
             known,
+        }
+    }
+
+    #[test]
+    fn a_launch_uri_is_believed_only_whole() {
+        let id = |n: u128| Id::from_u128(n).to_string();
+        let tap = from_parts(ME, "quic://key@203.0.113.7:4433", &id(1), &id(2), &id(3));
+        assert_eq!(
+            tap,
+            Some(MentionTap {
+                account: ME.into(),
+                origin: "quic://key@203.0.113.7:4433".into(),
+                guild: Id::from_u128(1),
+                channel: Id::from_u128(2),
+                message: Id::from_u128(3),
+            })
+        );
+        let long = "o".repeat(513);
+        for (account, origin, guild) in [
+            (&ME[1..], THERE, id(1)),
+            (&*ME.to_uppercase(), THERE, id(1)),
+            (ME, "", id(1)),
+            (ME, "chat.example\n:443", id(1)),
+            (ME, long.as_str(), id(1)),
+            (ME, THERE, "not-an-id".into()),
+        ] {
+            assert_eq!(from_parts(account, origin, &guild, &id(2), &id(3)), None);
         }
     }
 

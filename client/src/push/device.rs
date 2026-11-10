@@ -55,6 +55,18 @@ pub fn set_platform(next: Platform) {
     });
 }
 
+const MAX_TOKEN_BYTES: usize = 4096;
+
+/// What the platform layer reports, as it reports it: an empty token is none.
+pub fn platform_from(token: &str, package: &str, enabled: bool) -> Platform {
+    let token = token.trim();
+    Platform {
+        token: (!token.is_empty() && token.len() <= MAX_TOKEN_BYTES).then(|| token.to_owned()),
+        enabled,
+        package: package.trim().to_owned(),
+    }
+}
+
 /// Bumped whenever `push.json` changes in a way a running session acts on.
 pub fn changes() -> &'static watch::Sender<u64> {
     static CHANGES: OnceLock<watch::Sender<u64>> = OnceLock::new();

@@ -1,6 +1,8 @@
 //! Mobile push. `headless` works from files alone because a push can start a
 //! process that never had an Activity; the rest runs in the live app.
 
+#[cfg(target_os = "android")]
+mod android;
 pub mod attention;
 pub mod device;
 pub mod gateway;

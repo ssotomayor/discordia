@@ -481,6 +481,26 @@ pub(crate) fn notification_command(method: &'static str, payload: String) {
     }
 }
 
+/// Kotlin reports the stored token and the notification switch through
+/// `DioxusNotifier.onPushPlatform` before this returns, then fetches a fresh token.
+pub(crate) fn request_push_token() -> Result<(), String> {
+    with_activity(|env, activity| {
+        env.call_method(activity, "requestPushToken", "()V", &[])
+            .map(|_| ())
+            .map_err(system_error)
+    })
+}
+
+/// False in a build without the `FIREBASE_*` values: Firebase never started.
+pub(crate) fn push_available() -> bool {
+    with_activity(|env, activity| {
+        env.call_method(activity, "pushAvailable", "()Z", &[])
+            .and_then(|value| value.z())
+            .map_err(system_error)
+    })
+    .unwrap_or(false)
+}
+
 fn activity_string(method: &str) -> Result<String, String> {
     with_activity(|env, activity| {
         let value = env
@@ -808,99 +828,122 @@ pub fn vault_passphrase() -> Result<Zeroizing<String>, String> {
     let _guard = VAULT_LOCK.lock();
     let stored_state = vault_state_exists()?;
     let marker_path = config_dir().join("vault.backend");
-    match std::fs::read_to_string(&marker_path) {
-        Ok(marker) if marker.trim() != VAULT_MARKER => {
-            return Err("The identity vault belongs to another storage backend.".into());
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("read vault backend: {error}")),
-    }
-    let bytes = with_env(|env| {
-        let provider = env.new_string("AndroidKeyStore").map_err(system_error)?;
-        let store = env
-            .call_static_method(
-                "java/security/KeyStore",
-                "getInstance",
-                "(Ljava/lang/String;)Ljava/security/KeyStore;",
-                &[JValue::Object(&provider)],
-            )
-            .and_then(|value| value.l())
-            .map_err(system_error)?;
-        env.call_method(
-            &store,
-            "load",
-            "(Ljava/security/KeyStore$LoadStoreParameter;)V",
-            &[JValue::Object(&JObject::null())],
-        )
-        .map_err(system_error)?;
-        let alias = env.new_string(VAULT_ALIAS).map_err(system_error)?;
-        let present = env
-            .call_method(
-                &store,
-                "containsAlias",
-                "(Ljava/lang/String;)Z",
-                &[JValue::Object(&alias)],
-            )
-            .and_then(|value| value.z())
-            .map_err(system_error)?;
-        if !present {
-            if stored_state {
-                return Err("The Android Keystore key is missing. Existing identities cannot be opened on this device.".into());
-            }
-            create_vault_key(env, &alias, &provider)?;
-        }
-        let key = env
-            .call_method(
-                &store,
-                "getKey",
-                "(Ljava/lang/String;[C)Ljava/security/Key;",
-                &[JValue::Object(&alias), JValue::Object(&JObject::null())],
-            )
-            .and_then(|value| value.l())
-            .map_err(system_error)?;
-        let encoded = env
-            .call_method(&key, "getEncoded", "()[B", &[])
-            .and_then(|value| value.l())
-            .map_err(system_error)?;
-        if !encoded.is_null() {
-            return Err("Android returned an exportable key instead of a Keystore key.".into());
-        }
-        let algorithm = env.new_string("HmacSHA256").map_err(system_error)?;
-        let mac = env
-            .call_static_method(
-                "javax/crypto/Mac",
-                "getInstance",
-                "(Ljava/lang/String;)Ljavax/crypto/Mac;",
-                &[JValue::Object(&algorithm)],
-            )
-            .and_then(|value| value.l())
-            .map_err(system_error)?;
-        env.call_method(
-            &mac,
-            "init",
-            "(Ljava/security/Key;)V",
-            &[JValue::Object(&key)],
-        )
-        .map_err(system_error)?;
-        let label = env
-            .byte_array_from_slice(VAULT_LABEL)
-            .map_err(system_error)?;
-        let result = env
-            .call_method(&mac, "doFinal", "([B)[B", &[JValue::Object(&label)])
-            .and_then(|value| value.l())
-            .map_err(system_error)?;
-        let result = JByteArray::from(result);
-        let bytes = Zeroizing::new(env.convert_byte_array(&result).map_err(system_error)?);
-        if bytes.len() != 32 {
-            return Err("Android Keystore returned an invalid vault key length.".into());
-        }
-        env.set_byte_array_region(&result, 0, &[0; 32])
-            .map_err(system_error)?;
-        Ok(bytes)
-    })?;
+    check_vault_marker(&marker_path)?;
+    let bytes = with_env(|env| keystore_hmac(env, !stored_state))?;
     crate::identity::write_private(&marker_path, VAULT_MARKER)?;
     Ok(Zeroizing::new(hex::encode(bytes.as_slice())))
+}
+
+fn check_vault_marker(path: &std::path::Path) -> Result<(), String> {
+    match std::fs::read_to_string(path) {
+        Ok(marker) if marker.trim() != VAULT_MARKER => {
+            Err("The identity vault belongs to another storage backend.".into())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("read vault backend: {error}")),
+    }
+}
+
+/// For a push in a process that may have no Activity: the `env` it was called
+/// with, the directory it was given, and never a new key (trap 23).
+pub(crate) fn headless_vault_passphrase(
+    env: &mut JNIEnv<'_>,
+    dir: &std::path::Path,
+) -> Result<Zeroizing<String>, String> {
+    check_vault_marker(&dir.join("vault.backend"))?;
+    let result = env.with_local_frame(48, |env| {
+        Ok::<_, jni::errors::Error>(keystore_hmac(env, false))
+    });
+    if env.exception_check().map_err(system_error)? {
+        env.exception_clear().map_err(system_error)?;
+    }
+    let bytes = result.map_err(system_error)??;
+    Ok(Zeroizing::new(hex::encode(bytes.as_slice())))
+}
+
+fn keystore_hmac(env: &mut JNIEnv<'_>, may_create: bool) -> Result<Zeroizing<Vec<u8>>, String> {
+    let provider = env.new_string("AndroidKeyStore").map_err(system_error)?;
+    let store = env
+        .call_static_method(
+            "java/security/KeyStore",
+            "getInstance",
+            "(Ljava/lang/String;)Ljava/security/KeyStore;",
+            &[JValue::Object(&provider)],
+        )
+        .and_then(|value| value.l())
+        .map_err(system_error)?;
+    env.call_method(
+        &store,
+        "load",
+        "(Ljava/security/KeyStore$LoadStoreParameter;)V",
+        &[JValue::Object(&JObject::null())],
+    )
+    .map_err(system_error)?;
+    let alias = env.new_string(VAULT_ALIAS).map_err(system_error)?;
+    let present = env
+        .call_method(
+            &store,
+            "containsAlias",
+            "(Ljava/lang/String;)Z",
+            &[JValue::Object(&alias)],
+        )
+        .and_then(|value| value.z())
+        .map_err(system_error)?;
+    if !present {
+        if !may_create {
+            return Err("The Android Keystore key is missing. Existing identities cannot be opened on this device.".into());
+        }
+        create_vault_key(env, &alias, &provider)?;
+    }
+    let key = env
+        .call_method(
+            &store,
+            "getKey",
+            "(Ljava/lang/String;[C)Ljava/security/Key;",
+            &[JValue::Object(&alias), JValue::Object(&JObject::null())],
+        )
+        .and_then(|value| value.l())
+        .map_err(system_error)?;
+    let encoded = env
+        .call_method(&key, "getEncoded", "()[B", &[])
+        .and_then(|value| value.l())
+        .map_err(system_error)?;
+    if !encoded.is_null() {
+        return Err("Android returned an exportable key instead of a Keystore key.".into());
+    }
+    let algorithm = env.new_string("HmacSHA256").map_err(system_error)?;
+    let mac = env
+        .call_static_method(
+            "javax/crypto/Mac",
+            "getInstance",
+            "(Ljava/lang/String;)Ljavax/crypto/Mac;",
+            &[JValue::Object(&algorithm)],
+        )
+        .and_then(|value| value.l())
+        .map_err(system_error)?;
+    env.call_method(
+        &mac,
+        "init",
+        "(Ljava/security/Key;)V",
+        &[JValue::Object(&key)],
+    )
+    .map_err(system_error)?;
+    let label = env
+        .byte_array_from_slice(VAULT_LABEL)
+        .map_err(system_error)?;
+    let result = env
+        .call_method(&mac, "doFinal", "([B)[B", &[JValue::Object(&label)])
+        .and_then(|value| value.l())
+        .map_err(system_error)?;
+    let result = JByteArray::from(result);
+    let bytes = Zeroizing::new(env.convert_byte_array(&result).map_err(system_error)?);
+    if bytes.len() != 32 {
+        return Err("Android Keystore returned an invalid vault key length.".into());
+    }
+    env.set_byte_array_region(&result, 0, &[0; 32])
+        .map_err(system_error)?;
+    Ok(bytes)
 }
 
 fn create_vault_key(
