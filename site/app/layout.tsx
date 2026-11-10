@@ -1,6 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import type { ReactNode } from "react";
+import Reveals from "@/components/Reveals";
+import SiteFooter from "@/components/SiteFooter";
+import SiteNav from "@/components/SiteNav";
 import "./globals.css";
 
 const display = localFont({
@@ -23,7 +26,7 @@ const mono = localFont({
 });
 
 const description =
-  "A self-hostable Discord alternative where your keypair is your account. Text and voice, screen sharing, bots, roles, and DMs no server can read.";
+  "A Discord alternative you host yourself, where your keypair is your account. Text and voice, screen sharing, bots, roles, and DMs no server can read.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://discordia.world"),
@@ -49,7 +52,15 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${display.variable} ${body.variable} ${mono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <a className="skip button-sm" href="#main">
+          Skip to content
+        </a>
+        <SiteNav />
+        {children}
+        <SiteFooter />
+        <Reveals />
+      </body>
     </html>
   );
 }

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-const GITHUB = "https://github.com/ssotomayor/discordia";
+import { GITHUB } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Privacy · Discordia",
@@ -11,19 +11,11 @@ export const metadata: Metadata = {
 export default function Privacy() {
   return (
     <>
-      <header className="wrap">
-        <nav className="nav" aria-label="Primary">
-          <a className="brand" href="/">
-            <img src="/icon.svg" alt="" width={28} height={28} />
-            Discordia
-          </a>
-        </nav>
-      </header>
 
-      <main className="section">
+      <main id="main" className="page">
         <div className="wrap prose">
-          <h1>Privacy</h1>
-          <p className="muted">Last updated 5 November 2026.</p>
+          <h1 className="heading-3 lg-heading-2">Privacy</h1>
+          <p className="caption-2 muted">Last updated 5 November 2026.</p>
 
           <p>
             Discordia is an open-source app. There is no Discordia account, no analytics and no telemetry: the
@@ -31,14 +23,14 @@ export default function Privacy() {
             your device.
           </p>
 
-          <h2>Servers and relays you connect to</h2>
+          <h2 className="heading-5">Servers and relays you connect to</h2>
           <p>
             A Discordia server stores what you send to it (messages, uploads, your profile) and is run by its
             operator, not by us. Direct messages travel through the Nostr relays you choose, encrypted so that the
             relays cannot read them. GIF searches go from your device to GIPHY.
           </p>
 
-          <h2>Google Drive backup and &ldquo;Sign in with Google&rdquo;</h2>
+          <h2 className="heading-5">Google Drive backup and &ldquo;Sign in with Google&rdquo;</h2>
           <p>
             These are optional. When you use them, the app on your device talks to Google directly; nothing passes
             through any Discordia server.
@@ -75,7 +67,7 @@ export default function Privacy() {
             identity, and is never sold, shared or used for advertising.
           </p>
 
-          <h2>Contact</h2>
+          <h2 className="heading-5">Contact</h2>
           <p>
             Questions or concerns: open an issue at <a href={`${GITHUB}/issues`}>{GITHUB.replace("https://", "")}</a>
             .
