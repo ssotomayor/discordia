@@ -67,7 +67,7 @@ async fn token(
     let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
     let mut g = g.lock().unwrap();
     assert_eq!(claims["iss"], EMAIL);
-    assert_eq!(claims["sub"], EMAIL);
+    assert!(claims.get("sub").is_none());
     assert_eq!(claims["scope"], SCOPE);
     assert_eq!(claims["aud"], g.token_uri.as_str());
     assert_eq!(

@@ -104,7 +104,6 @@ impl FcmSender {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
         let claims = serde_json::json!({
             "iss": self.client_email,
-            "sub": self.client_email,
             "scope": SCOPE,
             "aud": self.token_uri,
             "iat": now,
