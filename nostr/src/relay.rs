@@ -99,6 +99,7 @@ pub enum RelayEvent {
 enum Command {
     Publish(Box<Event>),
     Subscribe { id: String, filters: Vec<Filter> },
+    Unsubscribe { id: String },
 }
 
 /// Standing subscriptions, by the id the relay knows them under.
@@ -179,8 +180,14 @@ impl RelayPool {
 
         tasks.push(tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
-                if let Command::Subscribe { id, filters } = &cmd {
-                    subs.lock().await.insert(id.clone(), filters.clone());
+                match &cmd {
+                    Command::Subscribe { id, filters } => {
+                        subs.lock().await.insert(id.clone(), filters.clone());
+                    }
+                    Command::Unsubscribe { id } => {
+                        subs.lock().await.remove(id);
+                    }
+                    Command::Publish(_) => {}
                 }
                 for s in &senders {
                     let copy = match &cmd {
@@ -189,6 +196,7 @@ impl RelayPool {
                             id: id.clone(),
                             filters: filters.clone(),
                         },
+                        Command::Unsubscribe { id } => Command::Unsubscribe { id: id.clone() },
                     };
                     let _ = s.send(copy);
                 }
@@ -228,6 +236,11 @@ impl RelayPool {
             id: id.to_string(),
             filters,
         });
+    }
+
+    /// Close the subscription `id` on every relay and stop re-issuing it on reconnect.
+    pub fn unsubscribe(&self, id: &str) {
+        let _ = self.cmd.send(Command::Unsubscribe { id: id.to_string() });
     }
 }
 
@@ -428,6 +441,12 @@ async fn serve_with_health(
                         return "send failed".into();
                     }
                 }
+                Some(Command::Unsubscribe { id }) => {
+                    let msg = serde_json::json!(["CLOSE", id]).to_string();
+                    if send_frame(&mut tx, Message::Text(msg)).await.is_err() {
+                        return "send failed".into();
+                    }
+                }
                 None => return "pool shut down".into(),
             },
             msg = rx.next() => {
@@ -568,6 +587,58 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(second[1], "dm");
+        drop(pool);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unsubscribed_id_is_closed_and_not_reissued_on_reconnect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (frames, mut received) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for until in ["CLOSE", "REQ"] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Ok(text) = message.to_text() {
+                        let frame: serde_json::Value = serde_json::from_str(text).unwrap();
+                        let done = frame[0] == until;
+                        frames.send(frame).unwrap();
+                        if done {
+                            break;
+                        }
+                    }
+                }
+                sockets.push(socket);
+            }
+        });
+        let (pool, _events) = RelayPool::connect(vec![url]);
+        for id in ["a", "b"] {
+            pool.subscribe(id, vec![Filter::default()]);
+        }
+        pool.unsubscribe("a");
+        let mut first = Vec::new();
+        while let Ok(Some(frame)) =
+            tokio::time::timeout(Duration::from_secs(2), received.recv()).await
+        {
+            let close = frame[0] == "CLOSE";
+            first.push(frame);
+            if close {
+                break;
+            }
+        }
+        assert_eq!(first.last().unwrap(), &serde_json::json!(["CLOSE", "a"]));
+        pool._refresh.send_modify(|revision| *revision += 1);
+        let reissued = tokio::time::timeout(Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reissued[1], "b",
+            "only the standing subscription comes back"
+        );
         drop(pool);
         server.await.unwrap();
     }
