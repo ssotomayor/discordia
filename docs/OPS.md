@@ -51,6 +51,7 @@ when it exists; a misspelt key or table is refused at start. `LIVEKIT_PORT` is a
 | `DISCORDIA_PUBLISH_DESCRIPTION` | — | one line beside the name. ⚙ |
 | `DISCORDIA_PUBLISH_PUBLIC` | `false` | also list it in each rendezvous's `/discover`; otherwise only the name or code finds it. ⚙ |
 | `DISCORDIA_PUBLISH_LOCATION` | — | `lat,lon` for the globe; self-declared, rounded to a tenth of a degree. ⚙ |
+| `DISCORDIA_PUSH_RELAY` | `https://push.discordia.world` | the relay that wakes a member's phone when a guild message mentions them and none of their clients is being looked at. Only NIP-44 ciphertext under that phone's own key leaves, to the handle it registered; the relay sees this server's address, the time and the size. `off` sends nothing and refuses registrations (an empty variable counts as unset; an empty flag or file key is off). `https://`, or `http://` on loopback only. Registrations (≤ 4 a key, gone 30 days after the last refresh) are never in a guild export |
 
 ⚙ An operator can also set it in the app's **Server Settings** (the server icon beside Agents), which applies at once — a renamed server re-registers on its rendezvous. Set by a flag, variable or the config file, it wins: the dialog shows it read-only and keeps its own value for when the setting is removed. Server Settings also holds what has no variable: the ceilings on every guild's upload sizes, file expiry and message history, who may create guilds, how many each person may own and how many the server holds in all, the guild newcomers land in, and the apps policy.
 
