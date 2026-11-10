@@ -20,6 +20,9 @@ const MAX_BACKDATE: i64 = 2 * 24 * 60 * 60;
 const SINCE_SLACK: i64 = 60;
 /// Wraps are only ever backdated; this is room for a sender's fast clock.
 const FUTURE_SLACK: i64 = 60 * 60;
+/// A live DM reaches every relay within seconds; a relay's first copy this long after
+/// another's is a shifted replay, a re-publish or relay sync, and a push would show nothing.
+pub const LATE_COPY_SECS: i64 = 10 * 60;
 
 pub struct WatcherConfig {
     /// The only relays it dials. A device's own list narrows this, never widens it.
@@ -133,6 +136,8 @@ struct Entry {
     /// Per recipient by `p` tag position: one wrap may name keys baselined on different relays.
     pushed: u64,
     closed: bool,
+    /// Our clock when any relay first delivered it.
+    first_at: i64,
 }
 
 /// What was known of a wrap before this delivery.
@@ -142,6 +147,14 @@ pub struct Prior {
     pub pushed: u64,
     /// Never to be pushed: a call signal.
     pub closed: bool,
+    pub first_at: i64,
+}
+
+impl Prior {
+    /// Whether this delivery may push at all, before baselines and recipients.
+    pub fn is_news(&self, now: i64) -> bool {
+        !self.closed && !self.on_this_relay && now - self.first_at < LATE_COPY_SECS
+    }
 }
 
 /// Which relays delivered each wrap and to whom it was pushed. Bounded by age, since
@@ -194,6 +207,7 @@ impl Seen {
                 on_this_relay: entry.relays & bit != 0,
                 pushed: entry.pushed,
                 closed: entry.closed,
+                first_at: entry.first_at,
             };
             entry.relays |= bit;
             return Some(prior);
@@ -208,6 +222,7 @@ impl Seen {
                 relays: bit,
                 pushed: 0,
                 closed: false,
+                first_at: now,
             },
         );
         self.by_time.insert((created_at, id));
@@ -225,6 +240,7 @@ impl Seen {
             on_this_relay: false,
             pushed: 0,
             closed: false,
+            first_at: now,
         })
     }
 
@@ -537,7 +553,8 @@ impl State {
         else {
             return Vec::new();
         };
-        let Some(prior) = self.seen.arrive(id, event.created_at, i, now_unix() as i64) else {
+        let now = now_unix() as i64;
+        let Some(prior) = self.seen.arrive(id, event.created_at, i, now) else {
             return Vec::new();
         };
         // Only call signals carry one, and a ring needs a design of its own.
@@ -546,8 +563,8 @@ impl State {
             return Vec::new();
         }
         // A copy this relay already sent is its replay; one another relay sent while
-        // still replaying is still news here.
-        if prior.closed || prior.on_this_relay {
+        // still replaying is still news here, if it came moments ago.
+        if !prior.is_news(now) {
             return Vec::new();
         }
         let slot = &self.slots[i];
@@ -643,10 +660,15 @@ mod tests {
     const B: usize = 1;
 
     fn fresh() -> Option<Prior> {
+        fresh_at(NOW)
+    }
+
+    fn fresh_at(now: i64) -> Option<Prior> {
         Some(Prior {
             on_this_relay: false,
             pushed: 0,
             closed: false,
+            first_at: now,
         })
     }
 
@@ -705,5 +727,44 @@ mod tests {
             fresh(),
             "newer than the floor"
         );
+    }
+
+    #[test]
+    fn another_relays_first_copy_is_news_only_soon_after_the_first_delivery() {
+        let mut seen = Seen::new(10);
+        assert!(seen.arrive(id(1), NOW - 100, B, NOW).unwrap().is_news(NOW));
+        let seconds = NOW + 5;
+        assert!(
+            seen.arrive(id(1), NOW - 100, A, seconds)
+                .unwrap()
+                .is_news(seconds),
+            "a copy moments behind is the lost-push case and still news"
+        );
+
+        seen.arrive(id(2), NOW - 100, B, NOW);
+        let nine = NOW + 9 * 60;
+        assert!(
+            seen.arrive(id(2), NOW - 100, A, nine)
+                .unwrap()
+                .is_news(nine)
+        );
+
+        seen.arrive(id(3), NOW - 100, B, NOW);
+        let eleven = NOW + 11 * 60;
+        let late = seen.arrive(id(3), NOW - 100, A, eleven).unwrap();
+        assert!(!late.is_news(eleven));
+        assert_eq!(
+            (late.pushed, late.closed, late.first_at),
+            (0, false, NOW),
+            "not pushed, not closed, and the first delivery's time is kept"
+        );
+        let third = NOW + 12 * 60;
+        assert!(
+            !seen
+                .arrive(id(3), NOW - 100, 2, third)
+                .unwrap()
+                .is_news(third)
+        );
+        assert_eq!(seen.arrive(id(4), NOW - 100, A, eleven), fresh_at(eleven));
     }
 }

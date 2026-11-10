@@ -152,8 +152,8 @@ candidate after the commit and the `deliver`:
 Candidates are the registered pubkeys that are members of the guild, not every member.
 
 **Relay — DM watcher**: wrap carries no `expiration` tag (only call signals do,
-`wrap_with_expiration`), id not seen before *on that relay*, not yet pushed to that
-recipient, (relay, pubkey) already baselined, pubkey under its rate limit (30 per minute).
+`wrap_with_expiration`), id not seen before *on that relay* and first delivered by any
+relay under 10 minutes ago, not yet pushed to that recipient, (relay, pubkey) already baselined, pubkey under its rate limit (30 per minute).
 
 **Phone — `push::headless`**, from disk only:
 
@@ -236,7 +236,7 @@ group (trap 14).
 Relay watcher:
 
 - One `RelayPool` per allow-listed relay a watched key's devices name (or all, if a device names none): a pool's events do not say which relay sent them. Filter `{kinds:[1059], "#p":[…], since: now − 2 d − 60}`, pubkeys chunked, resubscribed (debounced) when the set changes.
-- A wrap's `created_at` is backdated up to 2 days (`nip59::MAX_BACKDATE`), so `since: now` would miss everything, and every resubscribe replays the backlog. Rule: a bounded record keeps, per id, the relays that delivered it and the recipients pushed; a (relay, pubkey) pair is *baselined* at the first EOSE of a subscription that included it; push when the pair is baselined, that relay had not sent the id before, and it is not yet pushed to that pubkey. A copy first seen on a relay still replaying is then pushed from the next baselined one. A restart re-baselines — no storm, and what arrived while down is not pushed.
+- A wrap's `created_at` is backdated up to 2 days (`nip59::MAX_BACKDATE`), so `since: now` would miss everything, and every resubscribe replays the backlog. Rule: a bounded record keeps, per id, the relays that delivered it and the recipients pushed; a (relay, pubkey) pair is *baselined* at the first EOSE of a subscription that included it; push when the pair is baselined, that relay had not sent the id before, any relay first sent it under 10 minutes ago, and it is not yet pushed to that pubkey. A copy first seen on a relay still replaying is then pushed from the next baselined one; a first copy minutes later is a shifted replay or re-publish, not news. A restart re-baselines — no storm, and what arrived while down is not pushed.
 
 Phone:
 
