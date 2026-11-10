@@ -1171,6 +1171,7 @@
   "Loading Discordia…": ["Cargando Discordia…", "Carregando Discordia…", "正在加载 Discordia…", "Discordia を読み込み中…"],
   "Loading guilds…": ["Cargando comunidades…", "Carregando comunidades…", "正在加载社区...", "コミュニティを読み込み中…"],
   "Loading image…": ["Cargando imagen…", "Carregando imagem…", "加载图像...", "画像を読み込み中…"],
+  "Loading messages…": ["Cargando mensajes…", "Carregando mensagens…", "正在加载消息…", "メッセージを読み込み中…"],
   "Loading preview…": ["Cargando vista previa…", "Carregando prévia…", "正在加载预览...", "プレビューを読み込んでいます…"],
   "Loading…": ["Cargando…", "Carregando…", "加载中...", "読み込み中…"],
   "Local camera preview": ["Vista previa local de cámara", "Prévia local da câmera", "本地相机预览", "ローカルカメラのプレビュー"],

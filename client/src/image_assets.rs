@@ -39,6 +39,9 @@ struct AssetEntry {
 struct AssetsInner {
     entries: HashMap<String, AssetEntry>,
     by_hash: HashMap<u64, Vec<String>>,
+    // The media cache hands out one `Arc` per blob; matching its address skips
+    // hashing up to 350 KB per emoji on every render.
+    by_ptr: HashMap<usize, String>,
     clean_counter: usize,
 }
 
@@ -59,6 +62,8 @@ impl AssetsInner {
                 }
             }
         }
+        let entries = &self.entries;
+        self.by_ptr.retain(|_, key| entries.contains_key(key));
     }
 }
 
@@ -109,6 +114,11 @@ impl Assets {
     }
 
     fn source_with_limit(&self, data: Arc<String>, limit: usize) -> ImageSource {
+        if payload(&data, limit).is_some()
+            && let Some(found) = self.same_allocation(&data)
+        {
+            return found;
+        }
         let hash = hash_content(&data);
         self.source_with_hash(data, limit, hash)
     }
@@ -170,11 +180,35 @@ impl Assets {
             },
         );
         inner.by_hash.entry(hash).or_default().push(key.clone());
+        inner
+            .by_ptr
+            .insert(Arc::as_ptr(&data) as usize, key.clone());
         ImageSource {
             uri: Arc::new(format!("/image-data/{key}")),
             _data: data,
             _view: Some(view),
         }
+    }
+
+    fn same_allocation(&self, data: &Arc<String>) -> Option<ImageSource> {
+        let mut inner = self.0.lock();
+        let key = inner.by_ptr.get(&(Arc::as_ptr(data) as usize))?.clone();
+        let entry = inner.entries.get_mut(&key)?;
+        // The entry's `Weak` pins the allocation, so a matching live pointer is this blob.
+        let shared = entry.owner.upgrade().filter(|o| Arc::ptr_eq(o, data))?;
+        let view = entry.view.upgrade().unwrap_or_else(|| {
+            let view = Arc::new(ViewLease {
+                assets: Arc::downgrade(&self.0),
+                key: key.clone(),
+            });
+            entry.view = Arc::downgrade(&view);
+            view
+        });
+        Some(ImageSource {
+            uri: Arc::new(format!("/image-data/{key}")),
+            _data: shared,
+            _view: Some(view),
+        })
     }
 
     #[cfg(test)]
@@ -218,6 +252,21 @@ pub(crate) fn chat_source(data: Arc<String>) -> ImageSource {
             _data: data,
             _view: None,
         },
+    }
+}
+
+/// A cached blob's page path, never its bytes. The cache's `Arc` keeps the path
+/// resolvable after this render; a fresh `Arc` would not outlive it.
+pub(crate) fn cached_uri(cache: &crate::media_cache::MediaCache, address: &str) -> Option<String> {
+    let data = cache.get_shared(address).filter(|d| !d.is_empty())?;
+    Some(source(data).to_string())
+}
+
+/// `AppState::media_src` for a page attribute.
+pub(crate) fn media_uri(state: &crate::state::AppState, raw: &str) -> Option<String> {
+    match raw.strip_prefix("media:") {
+        Some(address) => cached_uri(&state.emoji_images, address),
+        None => Some(raw.to_owned()),
     }
 }
 
@@ -353,6 +402,19 @@ mod tests {
             assets.resolve(&key).unwrap().as_str(),
             second._data.as_str()
         );
+    }
+
+    #[test]
+    fn the_same_cached_blob_keeps_its_url_after_its_views_close() {
+        let assets = Assets::default();
+        let cached = Arc::new("data:image/webp;base64,UklGRg==".to_owned());
+        let uri = assets.source(cached.clone()).to_string();
+        assert_eq!(assets.source(cached.clone()).to_string(), uri);
+        let key = uri.strip_prefix("/image-data/").unwrap();
+        assert!(Arc::ptr_eq(&assets.resolve(key).unwrap(), &cached));
+        drop(cached);
+        let fresh = Arc::new("data:image/webp;base64,UklGRg==".to_owned());
+        assert_ne!(assets.source(fresh).to_string(), uri);
     }
 
     #[test]

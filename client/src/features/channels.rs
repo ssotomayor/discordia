@@ -196,8 +196,7 @@ pub fn ChannelsColumn() -> Element {
     let guild_banner = guild
         .as_ref()
         .and_then(|g| g.banner.as_deref())
-        .and_then(|b| snapshot.media_src(b))
-        .map(str::to_string);
+        .and_then(|b| crate::image_assets::media_uri(&snapshot, b));
     drop(snapshot);
 
     let guild_order = channels.clone();
@@ -1011,7 +1010,8 @@ pub(crate) fn TopicEmojiPicker(
         s.emojis_of(guild_id)
             .iter()
             .map(|e| {
-                let url = s.emoji_images.get(&e.image).cloned().unwrap_or_default();
+                let url =
+                    crate::image_assets::cached_uri(&s.emoji_images, &e.image).unwrap_or_default();
                 (e.shortcode.clone(), url)
             })
             .collect()

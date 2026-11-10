@@ -1077,17 +1077,26 @@ impl AppState {
         })
     }
 
-    pub fn emoji_image(&self, guild_id: Id, shortcode: &str) -> Option<&str> {
-        let image = self
-            .guild_emojis
+    fn emoji_address(&self, guild_id: Id, shortcode: &str) -> Option<&str> {
+        self.guild_emojis
             .get(&guild_id)?
             .iter()
             .find(|e| e.shortcode == shortcode)
-            .map(|e| e.image.as_str())?;
+            .map(|e| e.image.as_str())
+    }
+
+    pub fn emoji_image(&self, guild_id: Id, shortcode: &str) -> Option<&str> {
         self.emoji_images
-            .get(image)
+            .get(self.emoji_address(guild_id, shortcode)?)
             .map(String::as_str)
             .filter(|u| !u.is_empty())
+    }
+
+    pub fn emoji_uri(&self, guild_id: Id, shortcode: &str) -> Option<String> {
+        crate::image_assets::cached_uri(
+            &self.emoji_images,
+            self.emoji_address(guild_id, shortcode)?,
+        )
     }
 
     pub fn saved_emoji_of(&self, image: &str) -> Option<&crate::settings::SavedEmoji> {

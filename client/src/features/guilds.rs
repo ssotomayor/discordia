@@ -188,7 +188,7 @@ pub fn GuildsSidebar() -> Element {
                             GuildIcon {
                                 id: guild.id,
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),
-                                image: guild.icon_image.as_deref().and_then(|i| state.read().media_src(i).map(str::to_string)),
+                                image: guild.icon_image.as_deref().and_then(|i| crate::image_assets::media_uri(&state.read(), i)),
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 unread: unread_guilds.contains(&guild.id),

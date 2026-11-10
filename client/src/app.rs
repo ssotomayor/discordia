@@ -431,6 +431,16 @@ button:active:not(:disabled) { transform: scale(0.985); }
 /* A wait shorter than this needs no word: most pictures arrive before it shows. */
 .dxf-late { animation: dxf-fade-in 0.2s var(--ease) 2s both; }
 
+/* Held back a beat so a page that arrives at once never flashes placeholder rows. */
+.dxf-skeleton { display: flex; flex-direction: column; justify-content: flex-end; gap: 18px; min-height: 100%; animation: dxf-fade-in 0.2s var(--ease) 0.15s both; }
+.dxf-skeleton-row { display: flex; gap: 12px; }
+.dxf-skeleton-bar { background-color: var(--border-strong); border-radius: 6px; animation: dxf-skeleton-pulse 1.4s ease-in-out infinite; }
+.dxf-skeleton-avatar { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
+.dxf-skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+.dxf-skeleton-line { height: 10px; }
+@keyframes dxf-skeleton-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .dxf-skeleton, .dxf-skeleton-bar { animation: none; } }
+
 .dx-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); border-top-color: var(--accent); display: inline-block; margin-right: 8px; animation: dxf-spin 1s linear infinite; }
 @keyframes dxf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
