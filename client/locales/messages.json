@@ -2256,6 +2256,10 @@
   "Finish signing in with Google…": ["Termina de iniciar sesión con Google…", "Termine de entrar com o Google…", "请完成 Google 登录…", "Googleへのログインを完了してください…"],
   "Google sign-in failed. Google Play services may be missing or out of date.": ["Falló el inicio de sesión con Google. Puede que Google Play Services falte o esté desactualizado.", "O login com o Google falhou. O Google Play Services pode estar ausente ou desatualizado.", "Google 登录失败。Google Play 服务可能缺失或版本过旧。", "Googleログインに失敗しました。Google Play開発者サービスがないか、古い可能性があります。"],
   "{0} mentioned you": ["{0} te mencionó", "{0} mencionou você", "{0} 提到了你", "{0} さんがあなたをメンションしました"],
+  "Notifications": ["Notificaciones", "Notificações", "通知", "通知"],
   "Mentions": ["Menciones", "Menções", "提及", "メンション"],
-  "Notifications are working": ["Las notificaciones funcionan", "As notificações estão funcionando", "通知功能正常", "通知は正常に動作しています"]
+  "Notifications are working": ["Las notificaciones funcionan", "As notificações estão funcionando", "通知功能正常", "通知は正常に動作しています"],
+  "Notify about new private messages and mentions, even when Discordia is closed. Some phones delay alerts for apps in the background.": ["Avisar de mensajes privados nuevos y menciones, incluso con Discordia cerrada. Algunos teléfonos retrasan los avisos de apps en segundo plano.", "Avisar sobre novas mensagens privadas e menções, mesmo com o Discordia fechado. Alguns celulares atrasam os avisos de apps em segundo plano.", "即使 Discordia 已关闭，也会通知新的私人消息和提及。部分手机会延迟后台应用的通知。", "Discordia を閉じていても、新しいプライベート メッセージとメンションを通知します。一部のスマートフォンでは、バックグラウンドのアプリの通知が遅れることがあります。"],
+  "When someone mentions you on a server you have opened on this phone.": ["Cuando alguien te menciona en un servidor que abriste en este teléfono.", "Quando alguém menciona você em um servidor que você abriu neste celular.", "当有人在你曾在此手机上打开的服务器中提及你时。", "このスマートフォンで開いたサーバーで誰かがあなたをメンションしたとき。"],
+  "Could not save that choice. Try again.": ["No se pudo guardar esa opción. Volvé a intentarlo.", "Não foi possível salvar essa opção. Tente novamente.", "无法保存该选项。请重试。", "その選択を保存できませんでした。もう一度お試しください。"]
 }

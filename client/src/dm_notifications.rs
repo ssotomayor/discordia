@@ -382,10 +382,41 @@ mod native {
         .await
     }
 
+    /// Optimistic: the box flips at once and flips back only if `push.json` refused.
+    fn flip(
+        mut preferences: Signal<crate::push::device::Preferences>,
+        mut failed: Signal<bool>,
+        dms: bool,
+        on: bool,
+    ) {
+        let mut next = *preferences.peek();
+        if dms {
+            next.dms = on;
+        } else {
+            next.mentions = on;
+        }
+        preferences.set(next);
+        failed.set(false);
+        crate::service_task::spawn(async move {
+            let result = if dms {
+                crate::push::device::set_dms(on).await
+            } else {
+                crate::push::device::set_mentions(on).await
+            };
+            if result.is_err() {
+                preferences.set(crate::push::device::preferences());
+                failed.set(true);
+            }
+        });
+    }
+
     #[component]
     pub(crate) fn NotificationSettings() -> Element {
         let mut status = use_signal(|| "loading".to_string());
         let mut busy = use_signal(|| false);
+        let push = use_hook(crate::android::push_available);
+        let preferences = use_signal(crate::push::device::preferences);
+        let failed = use_signal(|| false);
         use_future(move || async move {
             status.set(
                 notification_state(None)
@@ -400,10 +431,15 @@ mod native {
             "enabled" => "Enabled",
             _ => "Disabled",
         };
+        let description = if push {
+            "Notify about new private messages and mentions, even when Discordia is closed. Some phones delay alerts for apps in the background."
+        } else {
+            "Notify about new private messages while Discordia is running. Notifications may stop if Android closes the app."
+        };
         rsx! {
             section { class: "mt-6 border-t border-[var(--border)] pt-4", aria_busy: busy() || status() == "loading",
-                h3 { class: "font-semibold", {crate::i18n::text("DM notifications", &[])} }
-                p { class: "mt-2 text-sm text-[var(--text-muted)]", {crate::i18n::text("Notify about new private messages while Discordia is running. Notifications may stop if Android closes the app.", &[])} }
+                h3 { class: "font-semibold", {crate::i18n::text("Notifications", &[])} }
+                p { class: "mt-2 text-sm text-[var(--text-muted)]", {crate::i18n::text(description, &[])} }
                 p { role: "status", class: "mt-2 text-sm", {crate::i18n::text(status_label, &[])} }
                 if status() == "blocked" {
                     p { class: "text-sm text-[var(--text-muted)]", {crate::i18n::text("Allow notifications in Android settings to receive DM alerts.", &[])} }
@@ -435,6 +471,34 @@ mod native {
                         });
                     },
                     {crate::i18n::text(if busy() { "Checking…" } else if enabled { "Disable notifications" } else { "Enable notifications" }, &[])}
+                }
+                if enabled {
+                    div { class: "mt-3 flex flex-col",
+                        label { class: "flex items-center gap-2 min-h-[44px] cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                class: "accent-[var(--accent)]",
+                                checked: preferences().dms,
+                                onchange: move |e| flip(preferences, failed, true, e.checked()),
+                            }
+                            span { class: "text-sm", {crate::i18n::text("Direct messages", &[])} }
+                        }
+                        label { class: "flex items-center gap-2 min-h-[44px] cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                class: "accent-[var(--accent)]",
+                                checked: preferences().mentions,
+                                onchange: move |e| flip(preferences, failed, false, e.checked()),
+                            }
+                            span { class: "text-sm", {crate::i18n::text("Mentions", &[])} }
+                        }
+                        if push {
+                            p { class: "ml-6 text-sm text-[var(--text-muted)]", {crate::i18n::text("When someone mentions you on a server you have opened on this phone.", &[])} }
+                        }
+                        if failed() {
+                            p { role: "alert", class: "text-sm", {crate::i18n::text("Could not save that choice. Try again.", &[])} }
+                        }
+                    }
                 }
             }
         }
