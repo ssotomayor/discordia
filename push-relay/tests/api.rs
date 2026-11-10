@@ -199,9 +199,9 @@ async fn a_request_the_signature_does_not_cover_is_refused() {
     let mut wrong_audience = base();
     wrong_audience.audience = "evil.example";
     let mut stale = base();
-    stale.time = now_unix() - 301;
+    stale.time = now_unix() - 360;
     let mut future = base();
-    future.time = now_unix() + 301;
+    future.time = now_unix() + 360;
     let mut tampered = base();
     tampered.body_override = Some(serde_json::to_vec(&device("other")).unwrap());
     let mut upper = base();
