@@ -465,6 +465,30 @@ fn encrypt_plaintext_files() {
     }
 }
 
+/// The pointer as a process woken without the app reads it: `dir` is handed
+/// in, and nothing is migrated or rewritten, unlike `Identity::load`.
+pub(crate) fn active_in(dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(dir.join("identity.json")).ok()?;
+    let active: Active = serde_json::from_str(&content).ok()?;
+    (active.version == ACTIVE_VERSION && crate::protocol::is_canonical_pubkey(&active.active))
+        .then_some(active.active)
+}
+
+/// The locked key of a v2 file under `dir`, read only. Android has no
+/// `identities-dir` override, so the folder is always the default one.
+pub(crate) fn ncryptsec_in(dir: &Path, pubkey: &str) -> Option<String> {
+    if !crate::protocol::is_canonical_pubkey(pubkey) {
+        return None;
+    }
+    let path = dir.join("identities").join(format!("{pubkey}.json"));
+    let stored: Stored = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    if stored.version == FILE_VERSION {
+        stored.ncryptsec
+    } else {
+        None
+    }
+}
+
 fn active_pubkey() -> Option<String> {
     let content = std::fs::read_to_string(active_path()).ok()?;
     serde_json::from_str::<Active>(&content)

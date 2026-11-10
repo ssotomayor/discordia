@@ -241,6 +241,7 @@ pub fn AccountView(
     crate::channel_selection::use_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_dm_standing_persistence(state);
+    crate::push::peers::use_push_peers(state, identity.pubkey.clone());
     crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
     let mut fallback = use_signal(|| None::<Fallback>);

@@ -625,7 +625,7 @@ pub fn load_or_default() -> ClientSettings {
 
 /// One field that no longer parses costs that field, not the file: a whole-file
 /// fallback reset every audio setting, and the next save wrote the defaults over them.
-fn parse(content: &str) -> Option<ClientSettings> {
+pub(crate) fn parse(content: &str) -> Option<ClientSettings> {
     use serde_json::Value;
     let stored: Value = serde_json::from_str(content).ok()?;
     if stored.get("version").and_then(Value::as_u64) != Some(u64::from(FILE_VERSION)) {
