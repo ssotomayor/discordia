@@ -20,6 +20,16 @@ use tokio_tungstenite::tungstenite::Message;
 const DAY: i64 = 24 * 60 * 60;
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    #[default]
+    Nothing,
+    /// Subscriptions wait unanswered until `release`.
+    Answers,
+    /// Replays and forwards live events, but sends no `EOSE` until `release`.
+    Eose,
+}
+
 enum Ctl {
     Live(Event),
     Drop(oneshot::Sender<()>),
@@ -30,12 +40,12 @@ enum Ctl {
 struct Shared {
     stored: Vec<Event>,
     conn: Option<mpsc::UnboundedSender<Ctl>>,
-    held: bool,
+    hold: Hold,
     frames: Vec<Value>,
 }
 
 /// A Nostr relay in-process: replays what it stores then `EOSE`, forwards live
-/// events to matching subscriptions, and can hold its answers or drop the socket.
+/// events to matching subscriptions, and can hold its answers, hold its EOSE, or drop the socket.
 struct FakeRelay {
     url: String,
     shared: Arc<Mutex<Shared>>,
@@ -69,6 +79,7 @@ async fn answer(
     shared: &Mutex<Shared>,
     id: &str,
     filters: &[Filter],
+    eose: bool,
 ) {
     let stored = shared.lock().unwrap().stored.clone();
     for e in stored.iter().filter(|e| matches(filters, e)) {
@@ -76,9 +87,11 @@ async fn answer(
             .send(Message::Text(json!(["EVENT", id, e]).to_string()))
             .await;
     }
-    let _ = tx
-        .send(Message::Text(json!(["EOSE", id]).to_string()))
-        .await;
+    if eose {
+        let _ = tx
+            .send(Message::Text(json!(["EOSE", id]).to_string()))
+            .await;
+    }
 }
 
 async fn serve(ws: Ws, shared: Arc<Mutex<Shared>>) {
@@ -87,6 +100,7 @@ async fn serve(ws: Ws, shared: Arc<Mutex<Shared>>) {
     let (mut tx, mut rx) = ws.split();
     let mut subs: HashMap<String, Vec<Filter>> = HashMap::new();
     let mut pending: Vec<(String, Vec<Filter>)> = Vec::new();
+    let mut eose_pending: Vec<String> = Vec::new();
     loop {
         tokio::select! {
             msg = rx.next() => {
@@ -102,12 +116,18 @@ async fn serve(ws: Ws, shared: Arc<Mutex<Shared>>) {
                             .map(|a| a[2..].iter().filter_map(|f| serde_json::from_value(f.clone()).ok()).collect())
                             .unwrap_or_default();
                         subs.remove(&id);
-                        let held = shared.lock().unwrap().held;
-                        if held {
-                            pending.push((id, filters));
-                        } else {
-                            answer(&mut tx, &shared, &id, &filters).await;
-                            subs.insert(id, filters);
+                        let hold = shared.lock().unwrap().hold;
+                        match hold {
+                            Hold::Answers => pending.push((id, filters)),
+                            Hold::Eose => {
+                                answer(&mut tx, &shared, &id, &filters, false).await;
+                                subs.insert(id.clone(), filters);
+                                eose_pending.push(id);
+                            }
+                            Hold::Nothing => {
+                                answer(&mut tx, &shared, &id, &filters, true).await;
+                                subs.insert(id, filters);
+                            }
                         }
                     }
                     Some("CLOSE") => {
@@ -127,8 +147,13 @@ async fn serve(ws: Ws, shared: Arc<Mutex<Shared>>) {
                 }
                 Some(Ctl::Release) => {
                     for (id, filters) in std::mem::take(&mut pending) {
-                        answer(&mut tx, &shared, &id, &filters).await;
+                        answer(&mut tx, &shared, &id, &filters, true).await;
                         subs.insert(id, filters);
+                    }
+                    for id in std::mem::take(&mut eose_pending) {
+                        if subs.contains_key(&id) {
+                            let _ = tx.send(Message::Text(json!(["EOSE", id]).to_string())).await;
+                        }
                     }
                 }
                 Some(Ctl::Drop(ack)) => {
@@ -145,11 +170,11 @@ async fn serve(ws: Ws, shared: Arc<Mutex<Shared>>) {
 }
 
 impl FakeRelay {
-    async fn start(held: bool) -> Self {
+    async fn start(hold: Hold) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let shared = Arc::new(Mutex::new(Shared {
-            held,
+            hold,
             ..Shared::default()
         }));
         let accepts = Arc::new(AtomicUsize::new(0));
@@ -197,7 +222,7 @@ impl FakeRelay {
 
     fn release(&self) {
         let mut shared = self.shared.lock().unwrap();
-        shared.held = false;
+        shared.hold = Hold::Nothing;
         if let Some(conn) = &shared.conn {
             let _ = conn.send(Ctl::Release);
         }
@@ -227,14 +252,14 @@ impl FakeRelay {
             .collect()
     }
 
-    async fn wait_for_req(&self) {
+    async fn wait_for_subs(&self, n: usize) {
         for _ in 0..500 {
-            if !self.frames("REQ").is_empty() {
+            if self.sub_ids().len() >= n {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("{} was never subscribed", self.url);
+        panic!("{} never got {n} subscriptions", self.url);
     }
 }
 
@@ -301,6 +326,28 @@ fn wrap(to: &[&str], age: i64, extra: &[[&str; 2]]) -> Event {
     )
 }
 
+/// Too big to ride inline, so the push names the relay it came from.
+fn big_wrap(to: &str) -> Event {
+    let mut e = wrap(&[to], 60, &[]);
+    let ephemeral = SecretKey::new(&mut secp256k1::rand::thread_rng());
+    e = sign_with(&ephemeral, e.created_at, e.kind, e.tags, "x".repeat(4000));
+    e
+}
+
+/// The relay each by-id push names.
+fn pushed_from(rec: &RecordingSender) -> Vec<String> {
+    rec.delivered()
+        .into_iter()
+        .filter_map(|r| match r.data {
+            PushData::Dm {
+                wrap: DmWrap::ById { r, .. },
+                ..
+            } => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
 async fn until(
     stats: &mut watch::Receiver<Stats>,
     secs: u64,
@@ -346,7 +393,7 @@ fn pushed(rec: &RecordingSender) -> Vec<(String, String)> {
 
 #[tokio::test]
 async fn backlog_is_not_pushed_and_a_wrap_after_baseline_is_pushed_once() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -371,7 +418,7 @@ async fn backlog_is_not_pushed_and_a_wrap_after_baseline_is_pushed_once() {
 
 #[tokio::test]
 async fn a_key_registered_while_running_skips_its_backlog_and_gets_what_follows() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let (k1, k2) = (person(1), person(2));
     register(&relay, &k1, "t1", &[]);
@@ -394,7 +441,7 @@ async fn a_key_registered_while_running_skips_its_backlog_and_gets_what_follows(
 
 #[tokio::test]
 async fn a_wrap_stored_while_a_relay_was_away_is_pushed_once_when_it_returns() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -415,8 +462,8 @@ async fn a_wrap_stored_while_a_relay_was_away_is_pushed_once_when_it_returns() {
 
 #[tokio::test]
 async fn the_same_wrap_from_two_relays_is_pushed_once() {
-    let a = FakeRelay::start(false).await;
-    let b = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let b = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -435,8 +482,8 @@ async fn the_same_wrap_from_two_relays_is_pushed_once() {
 
 #[tokio::test]
 async fn a_relay_that_answers_late_does_not_push_its_backlog() {
-    let a = FakeRelay::start(false).await;
-    let b = FakeRelay::start(true).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let b = FakeRelay::start(Hold::Answers).await;
     let (relay, rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -446,7 +493,7 @@ async fn a_relay_that_answers_late_does_not_push_its_backlog() {
     b.store(&wrap(&[&k1], 3 * 3600, &[]));
     let (_w, mut st) = start(&relay, &[&a, &b]);
     until(&mut st, 5, "a baselined", |s| s.baselined == 1).await;
-    b.wait_for_req().await;
+    b.wait_for_subs(1).await;
 
     let live = wrap(&[&k1], 60, &[]);
     a.publish(&live);
@@ -467,7 +514,7 @@ async fn a_relay_that_answers_late_does_not_push_its_backlog() {
 
 #[tokio::test]
 async fn a_wrap_naming_several_registered_keys_wakes_each() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let (k1, k2, stranger) = (person(1), person(2), person(3));
     register(&relay, &k1, "t1", &[]);
@@ -487,7 +534,7 @@ async fn a_wrap_naming_several_registered_keys_wakes_each() {
 
 #[tokio::test]
 async fn a_call_signal_with_an_expiration_is_not_pushed() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -505,7 +552,7 @@ async fn a_call_signal_with_an_expiration_is_not_pushed() {
 
 #[tokio::test]
 async fn a_wrap_whose_signature_fails_never_reaches_push() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -524,7 +571,7 @@ async fn a_wrap_whose_signature_fails_never_reaches_push() {
 
 #[tokio::test]
 async fn a_burst_of_registrations_resubscribes_once() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, _rec) = relay();
     register(&relay, &person(1), "t1", &[]);
     let (_w, mut st) = start(&relay, &[&a]);
@@ -562,7 +609,7 @@ async fn a_burst_of_registrations_resubscribes_once() {
 
 #[tokio::test]
 async fn a_refresh_put_does_not_resubscribe() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, _rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -576,8 +623,8 @@ async fn a_refresh_put_does_not_resubscribe() {
 
 #[tokio::test]
 async fn a_relay_outside_the_allow_list_is_never_dialled() {
-    let a = FakeRelay::start(false).await;
-    let outside = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let outside = FakeRelay::start(Hold::Nothing).await;
     let (relay, _rec) = relay();
     let (only_outside, anywhere, both) = (person(1), person(2), person(3));
     register(&relay, &only_outside, "t1", &[&outside.url]);
@@ -601,7 +648,7 @@ async fn a_relay_outside_the_allow_list_is_never_dialled() {
 
 #[tokio::test]
 async fn a_relay_left_with_no_keys_is_hung_up() {
-    let a = FakeRelay::start(false).await;
+    let a = FakeRelay::start(Hold::Nothing).await;
     let (relay, _rec) = relay();
     let k1 = person(1);
     register(&relay, &k1, "t1", &[]);
@@ -610,4 +657,145 @@ async fn a_relay_left_with_no_keys_is_hung_up() {
     relay.store.delete_device(&k1, "t1").unwrap();
     let s = until(&mut st, 5, "hang-up", |s| s.relays == 0).await;
     assert_eq!((s.watched, s.baselined), (0, 0));
+}
+
+#[tokio::test]
+async fn a_wrap_first_seen_on_a_relay_still_replaying_is_pushed_from_the_baselined_one() {
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let b = FakeRelay::start(Hold::Eose).await;
+    let (relay, rec) = relay();
+    let k1 = person(1);
+    register(&relay, &k1, "t1", &[]);
+    let (_w, mut st) = start(&relay, &[&a, &b]);
+    until(&mut st, 5, "a baselined", |s| s.baselined == 1).await;
+    b.wait_for_subs(1).await;
+
+    let fresh = big_wrap(&k1);
+    b.publish(&fresh);
+    until(&mut st, 5, "b's copy", |s| s.wraps == 1).await;
+    assert!(rec.delivered().is_empty(), "b has not baselined");
+    a.publish(&fresh);
+    settled(&mut st, 1).await;
+    assert_eq!(pushed(&rec), [(k1, fresh.id.clone())]);
+    assert_eq!(pushed_from(&rec), [a.url.as_str()]);
+
+    b.release();
+    until(&mut st, 5, "b baselined", |s| s.baselined == 2).await;
+    b.publish(&fresh);
+    let marker = wrap(&[&person(1)], 60, &[]);
+    b.publish(&marker);
+    settled(&mut st, 2).await;
+    assert_eq!(pushed(&rec).len(), 2, "the wrap went once, the marker once");
+}
+
+#[tokio::test]
+async fn a_new_key_baselined_on_one_relay_only_is_pushed_from_that_one() {
+    let a = FakeRelay::start(Hold::Eose).await;
+    let b = FakeRelay::start(Hold::Nothing).await;
+    let (relay, rec) = relay();
+    let (k1, k2) = (person(1), person(2));
+    register(&relay, &k1, "t1", &[]);
+    let (_w, mut st) = start(&relay, &[&a, &b]);
+    until(&mut st, 5, "b baselined k1", |s| s.baselined == 1).await;
+
+    register(&relay, &k2, "t2", &[]);
+    until(&mut st, 5, "b baselined k2", |s| s.baselined == 2).await;
+    a.wait_for_subs(2).await;
+
+    let fresh = big_wrap(&k2);
+    a.publish(&fresh);
+    until(&mut st, 5, "a's copy", |s| s.wraps == 1).await;
+    assert!(rec.delivered().is_empty(), "a has not baselined k2");
+    b.publish(&fresh);
+    settled(&mut st, 1).await;
+    assert_eq!(pushed(&rec), [(k2, fresh.id)]);
+    assert_eq!(pushed_from(&rec), [b.url.as_str()]);
+}
+
+#[tokio::test]
+async fn a_pushed_wrap_replayed_by_another_relay_or_after_a_reconnect_is_not_pushed_again() {
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let b = FakeRelay::start(Hold::Nothing).await;
+    let (relay, rec) = relay();
+    let k1 = person(1);
+    register(&relay, &k1, "t1", &[]);
+    let (_w, mut st) = start(&relay, &[&a, &b]);
+    until(&mut st, 5, "both baselined", |s| s.baselined == 2).await;
+
+    let fresh = wrap(&[&k1], 60, &[]);
+    a.publish(&fresh);
+    settled(&mut st, 1).await;
+    b.publish(&fresh);
+    until(&mut st, 5, "b's copy, new to b", |s| s.wraps == 2).await;
+
+    let reqs = a.frames("REQ").len();
+    a.drop_connection().await;
+    for _ in 0..1500 {
+        if a.frames("REQ").len() > reqs {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let marker = wrap(&[&k1], 60, &[]);
+    a.publish(&marker);
+    settled(&mut st, 2).await;
+    assert_eq!(pushed(&rec), [(k1.clone(), fresh.id), (k1, marker.id)]);
+}
+
+#[tokio::test]
+async fn a_relays_own_backlog_is_never_pushed_even_after_it_reconnects() {
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let b = FakeRelay::start(Hold::Nothing).await;
+    let (relay, rec) = relay();
+    let k1 = person(1);
+    register(&relay, &k1, "t1", &[]);
+    let own = wrap(&[&k1], 5 * 3600, &[]);
+    b.store(&own);
+    let (_w, mut st) = start(&relay, &[&a, &b]);
+    let s = until(&mut st, 5, "both baselined", |s| s.baselined == 2).await;
+    assert_eq!(s.wraps, 1);
+
+    let reqs = b.frames("REQ").len();
+    b.drop_connection().await;
+    for _ in 0..1500 {
+        if b.frames("REQ").len() > reqs {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let marker = wrap(&[&k1], 60, &[]);
+    b.publish(&marker);
+    settled(&mut st, 1).await;
+    assert_eq!(pushed(&rec), [(k1, marker.id)]);
+}
+
+#[tokio::test]
+async fn each_recipient_of_a_shared_wrap_is_pushed_from_the_relay_it_watches() {
+    let a = FakeRelay::start(Hold::Nothing).await;
+    let b = FakeRelay::start(Hold::Nothing).await;
+    let (relay, rec) = relay();
+    let (on_a, on_b) = (person(1), person(2));
+    register(&relay, &on_a, "t1", &[&a.url]);
+    register(&relay, &on_b, "t2", &[&b.url]);
+    let (_w, mut st) = start(&relay, &[&a, &b]);
+    until(&mut st, 5, "both baselined", |s| s.baselined == 2).await;
+
+    let shared = wrap(&[&on_a, &on_b], 60, &[]);
+    a.publish(&shared);
+    settled(&mut st, 1).await;
+    b.publish(&shared);
+    until(&mut st, 5, "both copies", |s| {
+        s.wraps == 2 && s.pushes_started == 2 && s.pushes_done == 2
+    })
+    .await;
+    assert_eq!(
+        pushed(&rec),
+        [(on_a, shared.id.clone()), (on_b, shared.id.clone())]
+    );
+    a.publish(&shared);
+    b.publish(&shared);
+    let marker = wrap(&[&person(1)], 60, &[]);
+    a.publish(&marker);
+    settled(&mut st, 3).await;
+    assert_eq!(pushed(&rec).len(), 3);
 }

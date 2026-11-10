@@ -122,10 +122,32 @@ pub fn relay_keys(allow: &[String], watch_list: &[(String, Vec<String>)]) -> Vec
     out
 }
 
-/// Wrap ids already seen, bounded two ways: by age, since nothing older than the
-/// window is ever pushed, and by count, raising a floor so an evicted id stays seen.
+/// Bit positions in `Seen`: one per allow-listed relay, one per `p` tag of a wrap.
+pub const MAX_RELAYS: usize = 64;
+const MAX_RECIPIENTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Entry {
+    created_at: i64,
+    relays: u64,
+    /// Per recipient by `p` tag position: one wrap may name keys baselined on different relays.
+    pushed: u64,
+    closed: bool,
+}
+
+/// What was known of a wrap before this delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prior {
+    pub on_this_relay: bool,
+    pub pushed: u64,
+    /// Never to be pushed: a call signal.
+    pub closed: bool,
+}
+
+/// Which relays delivered each wrap and to whom it was pushed. Bounded by age, since
+/// nothing older than the window is pushed, and by count, raising a floor under evictions.
 pub struct Seen {
-    ids: HashMap<[u8; 32], i64>,
+    ids: HashMap<[u8; 32], Entry>,
     by_time: BTreeSet<(i64, [u8; 32])>,
     floor: i64,
     cap: usize,
@@ -149,8 +171,15 @@ impl Seen {
         self.ids.is_empty()
     }
 
-    /// Records `id` and says whether it is news: unseen, inside the window and above the floor.
-    pub fn record(&mut self, id: [u8; 32], created_at: i64, now: i64) -> bool {
+    /// Notes that relay `relay` delivered `id`. `None` means it may never be pushed:
+    /// outside the window, or at or under the floor that evictions raised.
+    pub fn arrive(
+        &mut self,
+        id: [u8; 32],
+        created_at: i64,
+        relay: usize,
+        now: i64,
+    ) -> Option<Prior> {
         let oldest = now - MAX_BACKDATE - SINCE_SLACK;
         while let Some(&(t, old)) = self.by_time.first() {
             if t >= oldest {
@@ -159,12 +188,28 @@ impl Seen {
             self.by_time.pop_first();
             self.ids.remove(&old);
         }
+        let bit = 1u64.checked_shl(relay as u32).unwrap_or(0);
+        if let Some(entry) = self.ids.get_mut(&id) {
+            let prior = Prior {
+                on_this_relay: entry.relays & bit != 0,
+                pushed: entry.pushed,
+                closed: entry.closed,
+            };
+            entry.relays |= bit;
+            return Some(prior);
+        }
         if created_at < oldest || created_at > now + FUTURE_SLACK || created_at <= self.floor {
-            return false;
+            return None;
         }
-        if self.ids.insert(id, created_at).is_some() {
-            return false;
-        }
+        self.ids.insert(
+            id,
+            Entry {
+                created_at,
+                relays: bit,
+                pushed: 0,
+                closed: false,
+            },
+        );
         self.by_time.insert((created_at, id));
         while self.ids.len() > self.cap {
             let Some((t, old)) = self.by_time.pop_first() else {
@@ -173,7 +218,26 @@ impl Seen {
             self.ids.remove(&old);
             self.floor = self.floor.max(t);
         }
-        true
+        if !self.ids.contains_key(&id) {
+            return None;
+        }
+        Some(Prior {
+            on_this_relay: false,
+            pushed: 0,
+            closed: false,
+        })
+    }
+
+    pub fn pushed(&mut self, id: &[u8; 32], recipients: u64) {
+        if let Some(entry) = self.ids.get_mut(id) {
+            entry.pushed |= recipients;
+        }
+    }
+
+    pub fn close(&mut self, id: &[u8; 32]) {
+        if let Some(entry) = self.ids.get_mut(id) {
+            entry.closed = true;
+        }
     }
 }
 
@@ -207,6 +271,14 @@ async fn run(relay: Arc<Relay>, config: WatcherConfig, stats: watch::Sender<Stat
         if !allow.iter().any(|a| norm(a) == norm(url)) {
             allow.push(url.clone());
         }
+    }
+    if allow.len() > MAX_RELAYS {
+        tracing::warn!(
+            configured = allow.len(),
+            used = MAX_RELAYS,
+            "DM watcher ignores relays past the first {MAX_RELAYS}"
+        );
+        allow.truncate(MAX_RELAYS);
     }
     let (tx, mut rx) = mpsc::unbounded_channel::<Forwarded>();
     let mut changes = relay.store.changes();
@@ -465,29 +537,48 @@ impl State {
         else {
             return Vec::new();
         };
-        if !self.seen.record(id, event.created_at, now_unix() as i64) {
+        let Some(prior) = self.seen.arrive(id, event.created_at, i, now_unix() as i64) else {
             return Vec::new();
-        }
+        };
         // Only call signals carry one, and a ring needs a design of its own.
         if event.tag("expiration").is_some() {
+            self.seen.close(&id);
+            return Vec::new();
+        }
+        // A copy this relay already sent is its replay; one another relay sent while
+        // still replaying is still news here.
+        if prior.closed || prior.on_this_relay {
             return Vec::new();
         }
         let slot = &self.slots[i];
-        let mut recipients: Vec<&str> = event
+        let mut named: Vec<&str> = Vec::new();
+        let mut pushing = 0u64;
+        let mut recipients: Vec<&str> = Vec::new();
+        let p_tags = event
             .tags
             .iter()
             .filter(|t| t.first().map(String::as_str) == Some("p"))
             .filter_map(|t| t.get(1).map(String::as_str))
-            .filter(|p| slot.baselined.contains(*p))
-            .collect();
-        recipients.sort_unstable();
-        recipients.dedup();
+            .take(MAX_RECIPIENTS);
+        for (n, p) in p_tags.enumerate() {
+            if named.contains(&p) {
+                continue;
+            }
+            named.push(p);
+            let bit = 1u64 << n;
+            if prior.pushed & bit == 0 && slot.baselined.contains(p) {
+                pushing |= bit;
+                recipients.push(p);
+            }
+        }
         if recipients.is_empty() {
             return Vec::new();
         }
         let Ok(json) = serde_json::to_string(event) else {
             return Vec::new();
         };
+        let relay = slot.url.clone();
+        self.seen.pushed(&id, pushing);
         recipients
             .into_iter()
             .map(|p| {
@@ -496,7 +587,7 @@ impl State {
                     Wrap {
                         id: event.id.clone(),
                         json: json.clone(),
-                        relay: slot.url.clone(),
+                        relay: relay.clone(),
                     },
                 )
             })
@@ -548,41 +639,71 @@ mod tests {
 
     const NOW: i64 = 1_800_000_000;
 
+    const A: usize = 0;
+    const B: usize = 1;
+
+    fn fresh() -> Option<Prior> {
+        Some(Prior {
+            on_this_relay: false,
+            pushed: 0,
+            closed: false,
+        })
+    }
+
     #[test]
-    fn an_id_is_news_once() {
+    fn a_relay_repeating_itself_is_known_and_another_relay_is_not() {
         let mut seen = Seen::new(10);
-        assert!(seen.record(id(1), NOW - 100, NOW));
-        assert!(!seen.record(id(1), NOW - 100, NOW));
-        assert!(seen.record(id(2), NOW - 100, NOW));
+        assert_eq!(seen.arrive(id(1), NOW - 100, B, NOW), fresh());
+        let again = seen.arrive(id(1), NOW - 100, B, NOW).unwrap();
+        assert!(again.on_this_relay);
+        let elsewhere = seen.arrive(id(1), NOW - 100, A, NOW).unwrap();
+        assert!(!elsewhere.on_this_relay && elsewhere.pushed == 0);
+        seen.pushed(&id(1), 0b1);
+        let third = seen.arrive(id(1), NOW - 100, 63, NOW).unwrap();
+        assert_eq!((third.on_this_relay, third.pushed), (false, 0b1));
+        seen.arrive(id(2), NOW - 100, A, NOW);
+        seen.close(&id(2));
+        assert!(seen.arrive(id(2), NOW - 100, B, NOW).unwrap().closed);
     }
 
     #[test]
     fn nothing_outside_the_window_is_news_or_kept() {
         let mut seen = Seen::new(10);
-        assert!(!seen.record(id(1), NOW - MAX_BACKDATE - SINCE_SLACK - 1, NOW));
-        assert!(!seen.record(id(2), NOW + FUTURE_SLACK + 1, NOW));
+        assert_eq!(
+            seen.arrive(id(1), NOW - MAX_BACKDATE - SINCE_SLACK - 1, A, NOW),
+            None
+        );
+        assert_eq!(seen.arrive(id(2), NOW + FUTURE_SLACK + 1, A, NOW), None);
         assert!(seen.is_empty());
-        assert!(seen.record(id(3), NOW - MAX_BACKDATE, NOW));
-        assert!(
-            !seen.record(id(4), NOW, NOW + 3 * MAX_BACKDATE),
+        assert_eq!(seen.arrive(id(3), NOW - MAX_BACKDATE, A, NOW), fresh());
+        assert_eq!(
+            seen.arrive(id(4), NOW, A, NOW + 3 * MAX_BACKDATE),
+            None,
             "a stale since replaying the past pushes nothing"
         );
         assert!(seen.len() <= 1, "aged out: {}", seen.len());
     }
 
     #[test]
-    fn past_the_cap_an_evicted_id_is_still_not_news() {
+    fn past_the_cap_an_evicted_id_is_never_news_from_any_relay() {
         let mut seen = Seen::new(3);
         for n in 0..10 {
-            assert!(seen.record(id(n), NOW - 1000 + n as i64, NOW));
+            assert!(seen.arrive(id(n), NOW - 1000 + n as i64, A, NOW).is_some());
         }
         assert_eq!(seen.len(), 3);
-        for n in 0..10 {
-            assert!(
-                !seen.record(id(n), NOW - 1000 + n as i64, NOW),
-                "{n} replayed"
-            );
+        for n in 0..7 {
+            for relay in [A, B] {
+                assert_eq!(
+                    seen.arrive(id(n), NOW - 1000 + n as i64, relay, NOW),
+                    None,
+                    "{n} came back from relay {relay}"
+                );
+            }
         }
-        assert!(seen.record(id(99), NOW - 10, NOW), "newer than the floor");
+        assert_eq!(
+            seen.arrive(id(99), NOW - 10, B, NOW),
+            fresh(),
+            "newer than the floor"
+        );
     }
 }
