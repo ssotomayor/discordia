@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["client", "server", "rendezvous", "grid-layout", "protocol", "bot-sdk", "agent", "image-policy", "nostr"]
+members = ["client", "server", "rendezvous", "grid-layout", "protocol", "bot-sdk", "agent", "image-policy", "nostr", "push-relay"]
 exclude = ["vendor/webrtc-sys", "vendor/webrtc-sys-build", "vendor/livekit", "vendor/dioxus-desktop"]
 
 [patch.crates-io]

@@ -1,0 +1,27 @@
+[package]
+name = "discordia-push-relay"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+discordia-protocol = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+secp256k1 = { workspace = true }
+hex = { workspace = true }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+# RS256 for Google's service-account JWT. Already in the tree under rustls;
+# jsonwebtoken would add either the `rsa` crate (RUSTSEC-2023-0071) or aws-lc.
+ring = "0.17"
+# 0.32 because it links the libsqlite3-sys the server's sqlx does; Cargo allows one.
+rusqlite = { version = "0.32", features = ["bundled"] }
