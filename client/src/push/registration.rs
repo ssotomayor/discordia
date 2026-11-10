@@ -32,6 +32,21 @@ pub fn relay_url() -> String {
         .unwrap_or_else(|| DEFAULT_PUSH_RELAY.to_owned())
 }
 
+/// One relay under two spellings: scheme and host in any case, default port
+/// or not, with or without a trailing `/`.
+pub fn same_relay(a: &str, b: &str) -> bool {
+    fn parts(raw: &str) -> Option<(String, String, u16, String)> {
+        let url = url::Url::parse(raw.trim()).ok()?;
+        Some((
+            url.scheme().to_owned(),
+            url.host_str()?.to_ascii_lowercase(),
+            url.port_or_known_default()?,
+            url.path().trim_end_matches('/').to_owned(),
+        ))
+    }
+    parts(a).is_some_and(|a| parts(b) == Some(a))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayError {
     /// The relay URL cannot be used, or a request could not be signed.
@@ -249,7 +264,7 @@ impl std::fmt::Debug for ServerHandle {
 
 /// `<config_dir>/push.json`. Absent or unreadable reads as empty: the worst
 /// case is a fresh handle per server, never a failed launch.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushState {
     /// The key the device was last registered under; handles belong to it.
     #[serde(default)]
@@ -263,6 +278,28 @@ pub struct PushState {
     /// Server dial origin (the `AppState::server_origin` spelling) → handle.
     #[serde(default)]
     pub servers: BTreeMap<String, ServerHandle>,
+    /// The person's category toggles; install-wide, so they outlive sign-out.
+    #[serde(default = "on")]
+    pub dms: bool,
+    #[serde(default = "on")]
+    pub mentions: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for PushState {
+    fn default() -> Self {
+        Self {
+            account: None,
+            relay: None,
+            token: None,
+            servers: BTreeMap::new(),
+            dms: true,
+            mentions: true,
+        }
+    }
 }
 
 impl std::fmt::Debug for PushState {
@@ -272,6 +309,8 @@ impl std::fmt::Debug for PushState {
             .field("relay", &self.relay)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("servers", &self.servers.keys().collect::<Vec<_>>())
+            .field("dms", &self.dms)
+            .field("mentions", &self.mentions)
             .finish()
     }
 }
@@ -301,6 +340,25 @@ impl PushState {
         self.account.as_deref() == Some(identity.pubkey.as_str())
             && self.relay.as_deref() == Some(relay.url())
     }
+
+    /// Whether anything changed.
+    pub fn set(&mut self, category: Category, on: bool) -> bool {
+        let slot = match category {
+            Category::Dms => &mut self.dms,
+            Category::Mentions => &mut self.mentions,
+        };
+        std::mem::replace(slot, on) != on
+    }
+
+    pub fn wants_any(&self) -> bool {
+        self.dms || self.mentions
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Dms,
+    Mentions,
 }
 
 // One writer at a time: two servers' Ready can mint handles at once.
@@ -399,6 +457,18 @@ pub async fn forget_origin(
     state.save(dir).map_err(RelayError::State)
 }
 
+/// Flips one toggle in `push.json`; `Ok(true)` when it changed. What follows
+/// from it is `push::device`'s, which watches `device::changes()`.
+pub async fn set_category(dir: &Path, category: Category, on: bool) -> Result<bool, RelayError> {
+    let _guard = STATE_LOCK.lock().await;
+    let mut state = PushState::load(dir);
+    if !state.set(category, on) {
+        return Ok(false);
+    }
+    state.save(dir).map_err(RelayError::State)?;
+    Ok(true)
+}
+
 /// Sign-out, account switch, notifications off: call with the outgoing key. Its
 /// handles are dropped locally whatever the relay says; that key is going away.
 pub async fn unregister_device(
@@ -427,7 +497,7 @@ pub async fn unregister_device(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -437,13 +507,13 @@ mod tests {
     use discordia_push_relay::store::{Caps, Store};
     use discordia_push_relay::{Config, Relay, router};
 
-    fn sandbox() -> std::path::PathBuf {
+    pub(crate) fn sandbox() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("discordia-push-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn identity(seed: u8) -> Identity {
+    pub(crate) fn identity(seed: u8) -> Identity {
         Identity::restore_from_private_key(hex::encode([seed; 32]), "phone").unwrap()
     }
 
@@ -460,6 +530,7 @@ mod tests {
                 },
             )]
             .into(),
+            ..PushState::default()
         }
     }
 
@@ -502,6 +573,57 @@ mod tests {
     }
 
     #[test]
+    fn a_relay_matches_itself_under_any_spelling() {
+        let ours = "https://push.discordia.world";
+        for same in [
+            "https://push.discordia.world/",
+            "HTTPS://Push.Discordia.World",
+            "https://push.discordia.world:443",
+            " https://push.discordia.world ",
+        ] {
+            assert!(same_relay(same, ours), "{same}");
+        }
+        for other in [
+            "http://push.discordia.world",
+            "https://push.discordia.world:8443",
+            "https://push.example",
+            "https://push.discordia.world/v2",
+            "",
+            "off",
+        ] {
+            assert!(!same_relay(other, ours), "{other}");
+        }
+        assert!(!same_relay("off", "off"), "only a URL is a relay");
+    }
+
+    #[test]
+    fn toggles_default_on_and_report_a_change() {
+        let old: PushState = serde_json::from_str(r#"{"token":"t"}"#).unwrap();
+        assert!(old.dms && old.mentions, "a file from before the toggles");
+        let mut state = PushState::default();
+        assert!(!state.set(Category::Dms, true));
+        assert!(state.set(Category::Dms, false));
+        assert!(state.wants_any());
+        assert!(state.set(Category::Mentions, false));
+        assert!(!state.wants_any());
+    }
+
+    #[tokio::test]
+    async fn a_toggle_survives_the_writers_beside_it() {
+        let (client, _relay) = spawn_relay().await;
+        let dir = sandbox();
+        let me = identity(7);
+        assert_eq!(set_category(&dir, Category::Dms, true).await, Ok(false));
+        assert_eq!(set_category(&dir, Category::Dms, false).await, Ok(true));
+        register_device(&dir, &client, &me, "tok", "pkg", false, vec![])
+            .await
+            .unwrap();
+        ensure_handle(&dir, &client, &me, "origin").await.unwrap();
+        unregister_device(&dir, &client, &me).await.unwrap();
+        assert!(!PushState::load(&dir).dms);
+    }
+
+    #[test]
     fn debug_output_names_no_token_handle_or_key() {
         let shown = format!("{:?}", sample());
         assert!(!shown.contains("tok\"") && !shown.contains("hh") && !shown.contains("CQkJ"));
@@ -520,7 +642,7 @@ mod tests {
         assert!(RelayClient::new("wss://push.example").is_err());
     }
 
-    async fn spawn_relay() -> (RelayClient, Arc<Relay>) {
+    pub(crate) async fn spawn_relay() -> (RelayClient, Arc<Relay>) {
         let relay = Arc::new(Relay::new(
             Store::in_memory(Caps::default()).unwrap(),
             Arc::new(RecordingSender::default()),

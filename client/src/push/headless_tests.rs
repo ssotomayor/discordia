@@ -67,6 +67,7 @@ fn fixture() -> Fixture {
             },
         )]
         .into(),
+        ..PushState::default()
     }
     .save(&f.dir)
     .unwrap();
@@ -563,6 +564,28 @@ fn a_mention_that_does_not_open_is_quiet() {
         changed[field] = value;
         assert_eq!(f.run(&mention_data(HANDLE, &MENTION_KEY, &changed)).0, None);
     }
+}
+
+#[test]
+fn a_category_switched_off_is_quiet_and_never_unlocks_the_key() {
+    use crate::push::registration::Category;
+    let f = fixture();
+    let set = |category, on| {
+        let mut state = PushState::load(&f.dir);
+        state.set(category, on);
+        state.save(&f.dir).unwrap();
+    };
+    set(Category::Dms, false);
+    none_before_unlock(&f, &f.clean_dm());
+    assert!(f.run(&clean_mention()).0.is_some(), "mentions are separate");
+
+    set(Category::Dms, true);
+    set(Category::Mentions, false);
+    assert_eq!(f.run(&clean_mention()), (None, false));
+    assert!(f.run(&f.clean_dm()).0.is_some(), "DMs are separate");
+
+    set(Category::Mentions, true);
+    assert!(f.run(&clean_mention()).0.is_some());
 }
 
 #[test]

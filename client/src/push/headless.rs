@@ -101,7 +101,7 @@ fn dm(
     fetch: impl FnOnce(&str, &str) -> Result<String, String>,
 ) -> Option<Alert> {
     let account = crate::identity::active_in(dir)?;
-    if recipient != account || is_dnd(dir, &account) {
+    if recipient != account || !PushState::load(dir).dms || is_dnd(dir, &account) {
         return None;
     }
     let gift = gift_wrap(wrap, fetch)?;
@@ -226,7 +226,7 @@ fn decide_dm(
 fn mention(dir: &Path, handle: &str, ciphertext: &str, now: i64) -> Option<Alert> {
     let account = crate::identity::active_in(dir)?;
     let state = PushState::load(dir);
-    if state.account.as_deref() != Some(account.as_str()) {
+    if state.account.as_deref() != Some(account.as_str()) || !state.mentions {
         return None;
     }
     let (origin, key) = state.server_of(handle)?;
