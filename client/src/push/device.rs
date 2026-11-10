@@ -29,6 +29,8 @@ pub struct Platform {
     pub enabled: bool,
     /// The application id the token was issued to.
     pub package: String,
+    // False until the platform first speaks: an empty start must not read as "the token is gone".
+    pub reported: bool,
 }
 
 impl std::fmt::Debug for Platform {
@@ -37,6 +39,7 @@ impl std::fmt::Debug for Platform {
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("enabled", &self.enabled)
             .field("package", &self.package)
+            .field("reported", &self.reported)
             .finish()
     }
 }
@@ -64,6 +67,7 @@ pub fn platform_from(token: &str, package: &str, enabled: bool) -> Platform {
         token: (!token.is_empty() && token.len() <= MAX_TOKEN_BYTES).then(|| token.to_owned()),
         enabled,
         package: package.trim().to_owned(),
+        reported: true,
     }
 }
 
@@ -141,6 +145,9 @@ impl std::fmt::Debug for Want {
 }
 
 pub fn wanted(platform: &Platform, state: &PushState, account: &str, relays: &[String]) -> Want {
+    if !platform.reported {
+        return Want::Nothing;
+    }
     match platform.token.as_deref().filter(|token| !token.is_empty()) {
         Some(token) if platform.enabled && state.wants_any() => Want::Register {
             token: token.to_owned(),

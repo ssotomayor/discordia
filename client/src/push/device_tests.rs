@@ -9,7 +9,12 @@ fn phone(token: &str) -> Platform {
         token: Some(token.into()),
         enabled: true,
         package: PACKAGE.into(),
+        reported: true,
     }
+}
+
+fn withdrawn() -> Platform {
+    platform_from("", PACKAGE, false)
 }
 
 fn relays() -> Vec<String> {
@@ -65,6 +70,11 @@ fn what_the_relay_should_hold() {
     );
     assert_eq!(
         wanted(&Platform::default(), &mine, &me, &relays()),
+        Want::Nothing,
+        "a platform that has not spoken yet has withdrawn nothing"
+    );
+    assert_eq!(
+        wanted(&withdrawn(), &mine, &me, &relays()),
         Want::Unregister,
         "a token the platform withdrew"
     );
