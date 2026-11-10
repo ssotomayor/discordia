@@ -1755,6 +1755,10 @@ pub struct ServerInfo {
     pub name: Option<String>,
     #[serde(default)]
     pub limits: ServerLimits,
+    /// The push relay this server posts mention pushes through; `None`, none.
+    /// A client registers only when it names the relay the client itself uses.
+    #[serde(default)]
+    pub push: Option<String>,
 }
 
 /// Everything the operator sets in Server Settings. The guild newcomers land
@@ -2635,6 +2639,20 @@ pub enum ClientMessage {
     SendSticker {
         channel_id: Id,
         sticker_id: Id,
+    },
+    /// A relay handle and its 32-byte key (base64) for this key's mention
+    /// pushes. Sent again after every Ready, which is what keeps it alive.
+    RegisterPush {
+        handle: String,
+        key: String,
+    },
+    UnregisterPush {
+        handle: String,
+    },
+    /// Whether someone is looking at this client. Per connection; a client
+    /// that never says is taken as attended.
+    SetAttention {
+        attended: bool,
     },
     SendMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3599,6 +3617,56 @@ mod identify_wire_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_server_info_without_push_still_parses() {
+        let mut frame = serde_json::json!({ "op": "server_info", "d": { "name": "Casa" } });
+        let legacy: super::ServerMessage = serde_json::from_value(frame.clone()).unwrap();
+        assert!(
+            matches!(legacy, super::ServerMessage::ServerInfo(ref info) if info.push.is_none())
+        );
+        frame["d"]["push"] = serde_json::json!(super::push::DEFAULT_PUSH_RELAY);
+        let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
+        assert!(matches!(current, super::ServerMessage::ServerInfo(ref info)
+            if info.push.as_deref() == Some(super::push::DEFAULT_PUSH_RELAY)));
+
+        let ready = serde_json::json!({
+            "op": "ready",
+            "d": { "user": { "pubkey": "alice", "username": "Alice" },
+                "guilds": [], "channels": [], "members": [], "voice_states": [],
+                "server": { "name": null } }
+        });
+        let legacy: super::ServerMessage = serde_json::from_value(ready).unwrap();
+        assert!(
+            matches!(legacy, super::ServerMessage::Ready { ref server, .. } if server.push.is_none())
+        );
+    }
+
+    #[test]
+    fn push_registration_and_attention_round_trip() {
+        let cases = [
+            (
+                ClientMessage::RegisterPush {
+                    handle: "h".into(),
+                    key: "k".into(),
+                },
+                r#"{"op":"register_push","d":{"handle":"h","key":"k"}}"#,
+            ),
+            (
+                ClientMessage::UnregisterPush { handle: "h".into() },
+                r#"{"op":"unregister_push","d":{"handle":"h"}}"#,
+            ),
+            (
+                ClientMessage::SetAttention { attended: false },
+                r#"{"op":"set_attention","d":{"attended":false}}"#,
+            ),
+        ];
+        for (msg, wire) in cases {
+            assert_eq!(serde_json::to_string(&msg).unwrap(), wire);
+            let back: ClientMessage = serde_json::from_str(wire).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), wire);
+        }
     }
 
     #[test]

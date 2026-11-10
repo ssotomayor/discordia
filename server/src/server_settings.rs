@@ -81,6 +81,7 @@ pub fn info(state: &AppState) -> ServerInfo {
     ServerInfo {
         name: settings.name,
         limits: settings.limits,
+        push: None,
     }
 }
 

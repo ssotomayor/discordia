@@ -673,6 +673,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                         }
                     }
+                    ClientMessage::RegisterPush { .. }
+                    | ClientMessage::UnregisterPush { .. }
+                    | ClientMessage::SetAttention { .. } => {}
                     ClientMessage::CreateGuild { name, template } => {
                         let Some(creator) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
