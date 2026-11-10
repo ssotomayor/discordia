@@ -107,10 +107,9 @@ pub(crate) fn use_mention_push(state: Signal<AppState>, gateway: GatewayTx, iden
 pub(crate) fn use_attention(state: Signal<AppState>, gateway: GatewayTx) {
     let inputs = use_memo(move || {
         let s = state.read();
-        (
-            (s.status == ConnectionStatus::Ready).then_some(s.readies),
-            s.app_foreground,
-        )
+        // A server without push predates the message and answers it with an error.
+        let listens = s.status == ConnectionStatus::Ready && s.server_info.push.is_some();
+        (listens.then_some(s.readies), s.app_foreground)
     });
     let gate = use_hook(|| {
         Rc::new(RefCell::new(Gate::new(
@@ -491,8 +490,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_server_without_push_is_never_told_about_attention() {
+        let (mut dom, mut state, mut messages) = mount(&[]);
+        state.write().server_info.push = None;
+        dom.render_immediate_to_vec();
+        state.write().app_foreground = false;
+        dom.render_immediate_to_vec();
+        tokio::time::sleep(crate::push::attention::DEBOUNCE * 2).await;
+        dom.render_immediate_to_vec();
+        assert!(drain(&mut messages).is_empty());
+    }
+
+    #[tokio::test]
     async fn attention_follows_focus_after_ready_without_a_message_per_flap() {
         let (mut dom, mut state, mut messages) = mount(&[]);
+        state.write().server_info.push = Some("https://push.example".into());
+        dom.render_immediate_to_vec();
         assert!(
             drain(&mut messages).is_empty(),
             "focused: the default holds"
