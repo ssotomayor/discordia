@@ -26,8 +26,6 @@ moving code is what makes one false.
 **Docs — terse.** Prefer a table or a mermaid chart to prose. No file restates
 another. Deferred work goes in a GitHub issue, never only in a commit message.
 
-**No Claude/AI attribution** in commits, PRs, or generated content.
-
 ## Crates
 
 | Crate | Package | Role |
