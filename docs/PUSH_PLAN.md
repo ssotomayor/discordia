@@ -14,7 +14,7 @@ phase merges — `docs/MAP.md`, `docs/OPS.md` and `CLAUDE.md` carry what stays t
 |---|---|
 | Firebase Cloud Messaging wakes the phone | The only route with one app, no foreground service, delivery after process death. Free. The APK already links Play services (`DioxusDriveAuth.kt`). |
 | One project-run **push relay** holds the Firebase credential | A self-hosted server cannot hold it. Servers and the DM watcher reach phones only through the relay. |
-| Push bodies are ciphertext end to end | The relay and Google see a device, a time and a size. Never a sender, name or text. |
+| Push bodies are ciphertext end to end | The relay and Google see a device, a time and a size; for a DM also the recipient's key and the gift wrap, which any relay subscriber can already read. Never a sender, name or text. |
 | Every filter that needs private state runs **on the phone** | Mutes, read marks, DM standing and DND are device-local or encrypted to the person's key; the relay cannot read them and must not be given them. |
 | A guild server calls one operator-configured relay URL, never a client-supplied one | No SSRF surface. This is server config, not a guild install, so trap 39 is not engaged; say so in the new trap. |
 | DM pushes come from a relay-side watcher on kind 1059, not from the sender | A sender-side "poke" would show the relay the sender's address beside the recipient's key, which gift wraps exist to hide. The watcher sees only what relays already publish. |
@@ -86,18 +86,18 @@ discordia-push-v1\n{method}\n{path}\n{audience}\n{unix_secs}\n{pubkey}\n{sha256_
 ```
 
 Headers `X-Discordia-Pubkey`, `X-Discordia-Time`, `X-Discordia-Signature`. `audience` is
-the relay's host as the client dialed it; the relay accepts only its own
-(`DISCORDIA_PUSH_PUBLIC_HOSTS`). Time window ±300 s. Pubkey must pass `is_canonical_pubkey`.
+the relay's host as the client dialed it. It is not sent: the relay tries each of its own
+names (`DISCORDIA_PUSH_PUBLIC_HOSTS`, plus loopback). Time window ±300 s. Pubkey must pass `is_canonical_pubkey`.
 
 ### Relay API
 
 | Call | Auth | Body → reply | Notes |
 |---|---|---|---|
-| `PUT /v1/devices` | signed | `{token, package, dm, relays, replaces?}` → `{expires_at}` | Upsert by (pubkey, token). `replaces` carries handles from a rotated token. ≤ 4 devices per key, oldest evicted. Expires 30 days after the last PUT. |
+| `PUT /v1/devices` | signed | `{token, package, dm, relays, replaces?}` → `{expires_at}` | Upsert by (pubkey, token). A token belongs to one key: a PUT under another key moves it, since only the install and the relay know a token. `replaces` carries handles from a rotated token. ≤ 4 devices per key, oldest evicted. Expires 30 days after the last PUT. |
 | `DELETE /v1/devices` | signed | `{token}` | Sign-out, account switch, notifications off. Drops its handles. |
 | `POST /v1/handles` | signed | `{token}` → `{handle}` | 32 random bytes, base64url. ≤ 64 per device. One per server the person registers with, so one can be revoked and a noisy one is rate-limited alone. |
 | `DELETE /v1/handles/{handle}` | signed | — | Leaving a server. |
-| `POST /v1/push/{handle}` | the handle | raw ciphertext ≤ 2800 bytes → 202 | 404 unknown or expired (caller deletes its registration), 413, 429. |
+| `POST /v1/push/{handle}` | the handle | raw ciphertext ≤ 2800 bytes → 202 | Answered before the send, so a dead token shows as 404 on the *next* push. 404 unknown or expired (caller deletes its registration), 413, 429. |
 | `GET /` | — | version | Health. |
 
 ### FCM data messages
@@ -217,7 +217,7 @@ group (trap 14).
 | `DISCORDIA_PUSH_ADDR` | Listen address, default `127.0.0.1:7720` behind nginx. |
 | `DISCORDIA_PUSH_DATA_DIR` | SQLite. |
 | `DISCORDIA_PUSH_PUBLIC_HOSTS` | Accepted audiences. |
-| `DISCORDIA_PUSH_TRUSTED_PROXIES` | Whose `X-Forwarded-For` to believe, as the gateway's `DISCORDIA_TRUSTED_PROXIES`. nginx on the VPS fronts the relay, so without it every caller is 127.0.0.1 to the limiter. |
+| `DISCORDIA_PUSH_TRUSTED_PROXIES` | Whose `X-Forwarded-For` to believe, as the gateway's `DISCORDIA_TRUSTED_PROXIES`. nginx on the VPS fronts the relay, so without it every caller is one address to the limiter — under compose that address is the bridge gateway, not 127.0.0.1. |
 | `DISCORDIA_PUSH_FCM_CREDENTIALS` | Path to the service-account JSON (on the VPS: `/opt/discordia/secrets/fcm-service-account.json`, mounted read-only). Unset: the relay starts, accepts registrations and logs sends instead of making them. |
 | `DISCORDIA_PUSH_DM_RELAYS` | Relays the watcher may dial. Default: `relay::DEFAULT_RELAYS`. |
 
