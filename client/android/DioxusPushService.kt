@@ -18,8 +18,10 @@ class DioxusPushService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         try {
-            // A resumed app alerts from its own live connections.
-            if (DioxusNotifier.resumed || !DioxusNotifier.allowed(this)) return
+            // A resumed app shows its own DMs; a server pushes a mention only when
+            // nobody is looking at that server, so one that arrives is still news.
+            val shownLive = DioxusNotifier.resumed && message.data["t"] == "dm"
+            if (shownLive || !DioxusNotifier.allowed(this)) return
             val data = JSONObject(message.data).toString()
             // Only WryActivity loads it otherwise; a second load is a no-op.
             System.loadLibrary("main")
