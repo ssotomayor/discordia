@@ -86,10 +86,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (server crates)
-        run: cargo clippy -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous --all-targets -- -D warnings
+        run: cargo clippy -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous -p discordia-push-relay --all-targets -- -D warnings
 
-      - name: Tests (protocol + server + bot SDK + rendezvous)
-        run: cargo test -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous
+      - name: Tests (protocol + nostr + server + bot SDK + rendezvous + push relay)
+        run: cargo test -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous -p discordia-push-relay
 
   audit:
     name: dependency advisories
@@ -688,7 +688,7 @@ jobs:
           generate_release_notes: true
           files: release/*
   deploy-images:
-    name: deploy images · server+rendezvous (ghcr)
+    name: deploy images · server+rendezvous+push-relay (ghcr)
     # Gated on `test` so a red master never becomes a pullable image. Not gated
     # on the prerelease jobs: those bundle a desktop client this deployment has
     # no part in, and waiting on macOS/Windows runners would delay a server fix.
@@ -705,6 +705,8 @@ jobs:
             dockerfile: Dockerfile
           - crate: rendezvous
             dockerfile: Dockerfile.rendezvous
+          - crate: push-relay
+            dockerfile: Dockerfile.push-relay
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

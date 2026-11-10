@@ -13,6 +13,8 @@
 # directory at run time, not from the build context.
 .env
 .env.local
+google-services*.json
+/discordia-*.json
 
 # No crate is excluded even when only one is built: cargo resolves every
 # workspace member's Cargo.toml for `-p discordia-server`.
@@ -21,6 +23,7 @@
 node_modules/
 discordia-data/
 rendezvous-data/
+push-relay-data/
 client/nsis/MicrosoftEdgeWebview2Setup.exe
 
 .DS_Store

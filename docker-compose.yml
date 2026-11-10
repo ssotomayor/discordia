@@ -49,6 +49,27 @@ services:
     volumes:
       - rendezvous-data:/data
 
+  push-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile.push-relay
+    restart: unless-stopped
+    # Loopback only: trusting the bridge gateway's X-Forwarded-For is safe only while
+    # nothing but nginx on this host can reach 7720.
+    ports:
+      - "127.0.0.1:7720:7720"
+    environment:
+      DISCORDIA_PUSH_ADDR: 0.0.0.0:7720
+      DISCORDIA_PUSH_DATA_DIR: /data
+      DISCORDIA_PUSH_PUBLIC_HOSTS: ${DISCORDIA_PUSH_PUBLIC_HOSTS:-}
+      DISCORDIA_PUSH_TRUSTED_PROXIES: ${DISCORDIA_PUSH_TRUSTED_PROXIES:-}
+      DISCORDIA_PUSH_FCM_CREDENTIALS: ${DISCORDIA_PUSH_FCM_CREDENTIALS:+/run/secrets/fcm-service-account.json}
+      DISCORDIA_PUSH_DM_RELAYS: ${DISCORDIA_PUSH_DM_RELAYS:-}
+    volumes:
+      - push-relay-data:/data
+      # A host path in .env; unset mounts nothing real and the relay only logs its sends.
+      - ${DISCORDIA_PUSH_FCM_CREDENTIALS:-/dev/null}:/run/secrets/fcm-service-account.json:ro
+
   livekit:
     image: livekit/livekit-server:latest
     restart: unless-stopped
@@ -62,3 +83,4 @@ services:
 volumes:
   discordia-data:
   rendezvous-data:
+  push-relay-data:
