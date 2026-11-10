@@ -2254,5 +2254,8 @@
   "Couldn't prepare the backup.": ["No se pudo preparar la copia.", "Não foi possível preparar o backup.", "无法准备备份。", "バックアップを準備できませんでした。"],
   "Couldn't open the backup.": ["No se pudo abrir la copia.", "Não foi possível abrir o backup.", "无法打开备份。", "バックアップを開けませんでした。"],
   "Finish signing in with Google…": ["Termina de iniciar sesión con Google…", "Termine de entrar com o Google…", "请完成 Google 登录…", "Googleへのログインを完了してください…"],
-  "Google sign-in failed. Google Play services may be missing or out of date.": ["Falló el inicio de sesión con Google. Puede que Google Play Services falte o esté desactualizado.", "O login com o Google falhou. O Google Play Services pode estar ausente ou desatualizado.", "Google 登录失败。Google Play 服务可能缺失或版本过旧。", "Googleログインに失敗しました。Google Play開発者サービスがないか、古い可能性があります。"]
+  "Google sign-in failed. Google Play services may be missing or out of date.": ["Falló el inicio de sesión con Google. Puede que Google Play Services falte o esté desactualizado.", "O login com o Google falhou. O Google Play Services pode estar ausente ou desatualizado.", "Google 登录失败。Google Play 服务可能缺失或版本过旧。", "Googleログインに失敗しました。Google Play開発者サービスがないか、古い可能性があります。"],
+  "{0} mentioned you": ["{0} te mencionó", "{0} mencionou você", "{0} 提到了你", "{0} さんがあなたをメンションしました"],
+  "Mentions": ["Menciones", "Menções", "提及", "メンション"],
+  "Notifications are working": ["Las notificaciones funcionan", "As notificações estão funcionando", "通知功能正常", "通知は正常に動作しています"]
 }

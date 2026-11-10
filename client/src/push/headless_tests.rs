@@ -202,6 +202,7 @@ fn the_alert_json_is_the_shape_kotlin_reads() {
         author_name: "n".into(),
         guild_name: "g".into(),
         channel_name: "c".into(),
+        text: "t".into(),
         silent: false,
         at: 6,
     };
@@ -210,7 +211,7 @@ fn the_alert_json_is_the_shape_kotlin_reads() {
         serde_json::to_value(&mention).unwrap(),
         serde_json::json!({"kind": "mention", "account": "a", "origin": "o", "guild": id,
             "channel": id, "message_id": id, "author": "k", "author_name": "n",
-            "guild_name": "g", "channel_name": "c", "silent": false, "at": 6})
+            "guild_name": "g", "channel_name": "c", "text": "t", "silent": false, "at": 6})
     );
     assert_eq!(
         serde_json::to_value(Alert::Ping).unwrap(),
@@ -532,9 +533,48 @@ fn a_mention_under_the_handles_key_alerts() {
             author_name: "Ana\u{202e}".into(),
             guild_name: "Guild".into(),
             channel_name: "general".into(),
+            text: "\u{2068}Ana\u{202e}\u{2069} mentioned you".into(),
             silent: false,
             at: NOW - 5,
         })
+    );
+}
+
+#[test]
+fn the_mention_line_is_in_the_persons_language_and_names_a_nameless_author() {
+    let f = fixture();
+    let text = |f: &Fixture, system: &str, payload: MentionPayload| {
+        let data = mention_data(
+            HANDLE,
+            &MENTION_KEY,
+            &serde_json::to_value(payload).unwrap(),
+        );
+        let alert = handle_push(
+            &f.dir,
+            &data,
+            system,
+            NOW,
+            || Err::<String, _>("a mention never unlocks".into()),
+            |_, _| Err("unused".into()),
+        );
+        match alert {
+            Some(Alert::Mention { text, .. }) => text,
+            other => panic!("expected a mention alert, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        text(&f, "es-AR", payload(NOW - 5)),
+        "\u{2068}Ana\u{202e}\u{2069} te mencionó"
+    );
+    f.settings(|s| s.language = crate::i18n::Language::Portuguese);
+    let nameless = MentionPayload {
+        author_name: " \n".into(),
+        ..payload(NOW - 5)
+    };
+    let short = crate::identity::truncate_pubkey(&xonly_hex(&secret(0x55)));
+    assert_eq!(
+        text(&f, "es-AR", nameless),
+        format!("\u{2068}{short}\u{2069} mencionou você")
     );
 }
 

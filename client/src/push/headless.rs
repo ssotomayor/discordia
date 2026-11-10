@@ -50,6 +50,8 @@ pub enum Alert {
         author_name: String,
         guild_name: String,
         channel_name: String,
+        /// "<author> mentioned you" in the person's language.
+        text: String,
         silent: bool,
         at: i64,
     },
@@ -73,7 +75,7 @@ pub fn handle_push(
     match serde_json::from_str::<PushData>(data).ok()? {
         PushData::Ping => Some(Alert::Ping),
         PushData::Dm { p, wrap } => dm(dir, &p, wrap, system_language, now, passphrase, fetch),
-        PushData::Mention { h, c } => mention(dir, &h, &c, now),
+        PushData::Mention { h, c } => mention(dir, &h, &c, system_language, now),
         PushData::Unknown => None,
     }
 }
@@ -83,6 +85,14 @@ fn settings_in(dir: &Path) -> ClientSettings {
         .ok()
         .and_then(|content| crate::settings::parse(&content))
         .unwrap_or_default()
+}
+
+/// Never `Language::System` out: resolving that reads the Activity's locale.
+fn language_of(settings: &ClientSettings, system_language: &str) -> crate::i18n::Language {
+    match settings.language {
+        crate::i18n::Language::System => crate::i18n::from_tag(system_language),
+        chosen => chosen,
+    }
 }
 
 fn is_dnd(dir: &Path, account: &str) -> bool {
@@ -205,10 +215,7 @@ fn decide_dm(
     {
         return None;
     }
-    let language = match settings.language {
-        crate::i18n::Language::System => crate::i18n::from_tag(system_language),
-        chosen => chosen,
-    };
+    let language = language_of(settings, system_language);
     Some(Alert::Dm {
         account: account.to_owned(),
         peer: peer.to_owned(),
@@ -223,7 +230,13 @@ fn decide_dm(
     })
 }
 
-fn mention(dir: &Path, handle: &str, ciphertext: &str, now: i64) -> Option<Alert> {
+fn mention(
+    dir: &Path,
+    handle: &str,
+    ciphertext: &str,
+    system_language: &str,
+    now: i64,
+) -> Option<Alert> {
     let account = crate::identity::active_in(dir)?;
     let state = PushState::load(dir);
     if state.account.as_deref() != Some(account.as_str()) || !state.mentions {
@@ -235,7 +248,14 @@ fn mention(dir: &Path, handle: &str, ciphertext: &str, now: i64) -> Option<Alert
     }
     let payload: MentionPayload =
         serde_json::from_str(&nip44::decrypt(&key, ciphertext).ok()?).ok()?;
-    decide_mention(&settings_in(dir), &account, origin, &payload, now)
+    decide_mention(
+        &settings_in(dir),
+        &account,
+        origin,
+        &payload,
+        system_language,
+        now,
+    )
 }
 
 /// `channel_read_at` is milliseconds per server origin; the payload's `at` is seconds.
@@ -244,6 +264,7 @@ fn decide_mention(
     account: &str,
     origin: &str,
     payload: &MentionPayload,
+    system_language: &str,
     now: i64,
 ) -> Option<Alert> {
     if payload.v != MENTION_VERSION
@@ -264,6 +285,17 @@ fn decide_mention(
         return None;
     }
     let author_name = clean_name(&payload.author_name);
+    let author_name = if author_name.trim().is_empty() {
+        crate::identity::truncate_pubkey(&payload.author)
+    } else {
+        author_name
+    };
+    // An isolate ends any direction override the name opens, so it cannot reverse the line.
+    let text = crate::i18n::translate(
+        language_of(settings, system_language),
+        "{0} mentioned you",
+        &[format!("\u{2068}{author_name}\u{2069}")],
+    );
     Some(Alert::Mention {
         account: account.to_owned(),
         origin: origin.to_owned(),
@@ -271,13 +303,10 @@ fn decide_mention(
         channel: payload.channel,
         message_id: payload.message,
         author: payload.author.clone(),
-        author_name: if author_name.trim().is_empty() {
-            crate::identity::truncate_pubkey(&payload.author)
-        } else {
-            author_name
-        },
+        author_name,
         guild_name: clean_name(&payload.guild_name),
         channel_name: clean_name(&payload.channel_name),
+        text,
         silent: settings.sfx_volume == 0,
         at: payload.at,
     })
