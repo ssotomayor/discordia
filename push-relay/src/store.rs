@@ -141,11 +141,14 @@ impl Store {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub fn device_exists(&self, pubkey: &str, token: &str) -> Result<bool, StoreError> {
+    /// An expired row the sweep has not reached is no device: putting it again is new.
+    pub fn device_exists(&self, pubkey: &str, token: &str, now: u64) -> Result<bool, StoreError> {
         Ok(self
             .db()
-            .prepare_cached("SELECT 1 FROM devices WHERE pubkey = ?1 AND token = ?2")?
-            .exists(params![pubkey, token])?)
+            .prepare_cached(
+                "SELECT 1 FROM devices WHERE pubkey = ?1 AND token = ?2 AND expires_at > ?3",
+            )?
+            .exists(params![pubkey, token, now as i64])?)
     }
 
     /// Upserts by (pubkey, token) and returns the new expiry.

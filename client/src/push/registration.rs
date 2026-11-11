@@ -686,7 +686,12 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert!(registered.expires_at > 0);
-        assert!(relay.store.device_exists(&me.pubkey, "token-1").unwrap());
+        assert!(
+            relay
+                .store
+                .device_exists(&me.pubkey, "token-1", now_unix())
+                .unwrap()
+        );
 
         let (handle, key) = ensure_handle(&dir, &client, &me, "origin-a").await.unwrap();
         assert_eq!(
@@ -713,7 +718,12 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(relay.store.device_exists(&me.pubkey, "token-2").unwrap());
+        assert!(
+            relay
+                .store
+                .device_exists(&me.pubkey, "token-2", now_unix())
+                .unwrap()
+        );
         assert_eq!(
             PushState::load(&dir).token.as_deref(),
             Some("token-2"),
@@ -730,7 +740,12 @@ pub(crate) mod tests {
         );
 
         unregister_device(&dir, &client, &me).await.unwrap();
-        assert!(!relay.store.device_exists(&me.pubkey, "token-2").unwrap());
+        assert!(
+            !relay
+                .store
+                .device_exists(&me.pubkey, "token-2", now_unix())
+                .unwrap()
+        );
         let after = PushState::load(&dir);
         assert!(after.account.is_none() && after.servers.is_empty());
     }

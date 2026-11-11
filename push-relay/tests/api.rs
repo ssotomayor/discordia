@@ -414,6 +414,32 @@ async fn new_devices_are_limited_per_address_per_day_and_refreshes_are_not() {
 }
 
 #[tokio::test]
+async fn a_lapsed_device_put_again_is_new_to_fcm_and_to_the_limiter() {
+    let limits = Limits {
+        registrations: Limiter::per_day(1),
+        ..Limits::default()
+    };
+    let h = spawn_with(Config::default(), limits).await;
+    let pk = discordia_nostr::event::xonly_hex(&key(1));
+    let req: discordia_protocol::push::RegisterDevice =
+        serde_json::from_value(device("lapsed")).unwrap();
+    let ttl = Caps::default().ttl_secs;
+    h.relay
+        .store
+        .upsert_device(&pk, &req, now_unix() - ttl - 1)
+        .unwrap();
+
+    h.rec.answer(Delivery::TokenGone);
+    assert_eq!(
+        register(&h, 1, "lapsed").await,
+        StatusCode::BAD_REQUEST,
+        "the token is checked again"
+    );
+    h.rec.answer(Delivery::Sent);
+    assert_eq!(register(&h, 2, "b").await, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn a_malformed_registration_is_refused() {
     let h = spawn().await;
     for body in [

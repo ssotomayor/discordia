@@ -221,7 +221,12 @@ async fn mounting_with_a_token_registers_and_refreshes_once_a_day() {
     );
 
     ran_ok(device.step(&phone("tok"), &relays(), t0).await);
-    assert!(relay.store.device_exists(&me.pubkey, "tok").unwrap());
+    assert!(
+        relay
+            .store
+            .device_exists(&me.pubkey, "tok", now_unix())
+            .unwrap()
+    );
     assert_eq!(
         relay
             .store
@@ -239,7 +244,10 @@ async fn mounting_with_a_token_registers_and_refreshes_once_a_day() {
     relay.store.delete_device(&me.pubkey, "tok").unwrap();
     ran_ok(device.step(&phone("tok"), &relays(), t0 + REFRESH).await);
     assert!(
-        relay.store.device_exists(&me.pubkey, "tok").unwrap(),
+        relay
+            .store
+            .device_exists(&me.pubkey, "tok", now_unix())
+            .unwrap(),
         "the daily PUT restores what the relay lost"
     );
 }
@@ -262,12 +270,22 @@ async fn the_dm_toggle_reregisters_and_both_off_unregisters() {
             .unwrap()
             .is_empty()
     );
-    assert!(relay.store.device_exists(&me.pubkey, "tok").unwrap());
+    assert!(
+        relay
+            .store
+            .device_exists(&me.pubkey, "tok", now_unix())
+            .unwrap()
+    );
 
     set_category(&dir, Category::Mentions, false).await.unwrap();
     let action = ran_ok(device.step(&phone("tok"), &relays(), t0).await);
     assert_eq!(action.device, Some(Want::Unregister));
-    assert!(!relay.store.device_exists(&me.pubkey, "tok").unwrap());
+    assert!(
+        !relay
+            .store
+            .device_exists(&me.pubkey, "tok", now_unix())
+            .unwrap()
+    );
     assert!(PushState::load(&dir).account.is_none());
     assert!(matches!(
         device.step(&phone("tok"), &relays(), t0).await,
@@ -276,7 +294,12 @@ async fn the_dm_toggle_reregisters_and_both_off_unregisters() {
 
     set_category(&dir, Category::Dms, true).await.unwrap();
     ran_ok(device.step(&phone("tok"), &relays(), t0).await);
-    assert!(relay.store.device_exists(&me.pubkey, "tok").unwrap());
+    assert!(
+        relay
+            .store
+            .device_exists(&me.pubkey, "tok", now_unix())
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -296,7 +319,12 @@ async fn a_rotated_token_keeps_the_handles_servers_hold() {
         .unwrap()
         .unwrap();
     assert_eq!(target.token, "tok-2");
-    assert!(!relay.store.device_exists(&me.pubkey, "tok-1").unwrap());
+    assert!(
+        !relay
+            .store
+            .device_exists(&me.pubkey, "tok-1", now_unix())
+            .unwrap()
+    );
     assert_eq!(
         PushState::load(&dir).server_of(&handle),
         Some(("origin", key))
@@ -317,7 +345,12 @@ async fn switching_accounts_unregisters_the_old_key_and_registers_the_new() {
     registration::unregister_device(&dir, &client, &old)
         .await
         .unwrap();
-    assert!(!relay.store.device_exists(&old.pubkey, "tok").unwrap());
+    assert!(
+        !relay
+            .store
+            .device_exists(&old.pubkey, "tok", now_unix())
+            .unwrap()
+    );
     assert!(
         relay
             .store
@@ -328,7 +361,12 @@ async fn switching_accounts_unregisters_the_old_key_and_registers_the_new() {
 
     let mut second = Device::new(dir.clone(), client, new.clone());
     ran_ok(second.step(&phone("tok"), &relays(), t0).await);
-    assert!(relay.store.device_exists(&new.pubkey, "tok").unwrap());
+    assert!(
+        relay
+            .store
+            .device_exists(&new.pubkey, "tok", now_unix())
+            .unwrap()
+    );
     let state = PushState::load(&dir);
     assert_eq!(state.account.as_deref(), Some(new.pubkey.as_str()));
     assert!(state.servers.is_empty());
@@ -368,7 +406,12 @@ async fn mentions_off_revokes_every_servers_handle() {
                 .is_none()
         );
     }
-    assert!(relay.store.device_exists(&me.pubkey, "tok").unwrap());
+    assert!(
+        relay
+            .store
+            .device_exists(&me.pubkey, "tok", now_unix())
+            .unwrap()
+    );
     assert!(matches!(
         device.step(&phone("tok"), &relays(), t0).await,
         Outcome::At(_)

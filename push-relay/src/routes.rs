@@ -171,7 +171,7 @@ async fn put_device(
     let pubkey = authenticate(&relay, &method, &uri, &headers, &body)?;
     let req: RegisterDevice = parse(&body)?;
     validate(&req)?;
-    if !relay.store.device_exists(&pubkey, &req.token)? {
+    if !relay.store.device_exists(&pubkey, &req.token, now_unix())? {
         if !relay.limits.registrations.admit(&ip) {
             return Err(ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
