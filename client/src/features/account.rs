@@ -275,8 +275,10 @@ pub fn AccountView(
                     params: params.clone(),
                     display_name: identity.display_name.clone(),
                     on_disconnect: move |reason: String| {
-                        // Only Ready sets `self_user`: without it, this session never got in.
-                        let got_in = state.peek().self_user.is_some();
+                        let got_in = fallback
+                            .peek()
+                            .as_ref()
+                            .is_some_and(|back| state.peek().readies != back.readies);
                         state.write().clear_server_session();
                         if let Some(back) = undo_switch(fallback.take(), got_in, &reason) {
                             let why = reason.split("\n\n").next().unwrap_or(&reason).trim().to_string();
@@ -296,6 +298,7 @@ pub fn AccountView(
                             params: params.clone(),
                             guild: here,
                             target: target.server.label(),
+                            readies: state.peek().readies,
                         }));
                         state.write().prepare_server_switch(target.guild, target.voice_invite);
                         on_connect.call(SessionParams {
@@ -327,6 +330,8 @@ struct Fallback {
     params: SessionParams,
     guild: Option<Id>,
     target: String,
+    /// `AppState::readies` at the switch: only a Ready after it says the new server let us in.
+    readies: u64,
 }
 
 /// Only a server that never let this client in is undone. An empty reason is

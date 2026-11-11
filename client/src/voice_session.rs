@@ -84,6 +84,8 @@ pub enum VoiceEvent {
     LeaveSent,
     /// The server answered with an error, which may have been our join's.
     JoinRefused,
+    /// The session the join was sent on ended; no server is left to answer it.
+    JoinAbandoned,
     /// The server has us in this channel.
     Placed(Id),
     Granted(Id),
@@ -184,7 +186,9 @@ impl VoiceSession {
         let before = (self.call.clone(), self.joining);
         match event {
             VoiceEvent::JoinSent(channel) => self.joining = Some(channel),
-            VoiceEvent::LeaveSent | VoiceEvent::JoinRefused => self.joining = None,
+            VoiceEvent::LeaveSent | VoiceEvent::JoinRefused | VoiceEvent::JoinAbandoned => {
+                self.joining = None
+            }
             VoiceEvent::Placed(channel) => {
                 if self.joining == Some(channel) {
                     self.joining = None;
@@ -475,6 +479,7 @@ mod tests {
             (Some(a), VoiceEvent::JoinSent(b), Some(b), true),
             (Some(a), VoiceEvent::LeaveSent, None, true),
             (Some(a), VoiceEvent::JoinRefused, None, true),
+            (Some(a), VoiceEvent::JoinAbandoned, None, true),
             (Some(a), VoiceEvent::Placed(a), None, true),
             (Some(a), VoiceEvent::Placed(b), Some(a), false),
             (None, VoiceEvent::Placed(a), None, false),

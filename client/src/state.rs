@@ -122,6 +122,7 @@ pub struct VideoReceptionStats {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Default))]
 pub struct ScreenShareStats {
     pub outbound: bool,
     pub capture_width: Option<u32>,
@@ -842,97 +843,297 @@ impl AppState {
         Some(self.voice.join_message(pending.channel_id))
     }
 
+    /// Names every field, so none can be added without saying whether it
+    /// outlives the server (trap 7).
     pub fn clear_server_session(&mut self) {
-        self.voice_invite_on_ready = None;
         crate::channel_selection::remember_current(self);
-        self.channel_unread.clear();
-        self.channel_mentions.clear();
-        self.channel_latest.clear();
-        self.voice_route_revision = 0;
-        self.status = ConnectionStatus::Disconnected;
-        self.self_user = None;
-        self.guilds.clear();
-        self.channels.clear();
         self.accept_guild_mates();
-        self.members.clear();
-        self.voice_states.clear();
         self.end_voice_locally();
-        self.selected_guild = None;
-        self.selected_channel = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
-        self.dm_mode = self.selected_channel.is_some();
-        let dm_channels: HashSet<_> = self.dms.iter().map(|dm| dm.channel_id).collect();
-        self.messages.retain(|id, _| dm_channels.contains(id));
-        self.history_loaded.clear();
-        self.catalog.clear();
-        self.catalog_total = 0;
-        self.guild_join_confirmation = None;
-        self.profiles.clear();
-        self.activities.clear();
-        self.message_search = None;
-        self.message_jump = None;
-        self.pending_edits.clear();
-        self.file_upload_result = None;
-        self.server_chat_tools = false;
-        self.server_image_previews = false;
-        self.server_progressive_image_uploads = false;
-        self.guild_file_policies.clear();
-        self.guild_stickers.clear();
-        self.server_origin = None;
-        self.sfu_tunnel_url = None;
-        self.rendezvous_url = None;
-        self.resolved_share = None;
-        self.host_info = None;
-        self.transport = Transport::Loopback;
-        self.gateway_route = None;
-        self.gateway_failure = None;
-        self.guild_dialog = None;
-        self.rules_prompt = None;
-        self.audio_settings = false;
-        self.topology_open = false;
-        self.channel_access_open = None;
-        self.typing.clear();
-        self.replying_to = None;
-        self.profile_card = None;
-        self.image_viewer = None;
-        self.media_undecryptable = false;
-        self.pending_rekey = false;
-        self.screen_shares.clear();
         self.screen_share.on(ShareEvent::PickerClosed);
-        self.screen_audio_joined = false;
-        self.stream_has_audio = Default::default();
-        self.soundboard_open = false;
-        self.soundboard_adjusting = false;
-        self.recent_sounds.clear();
-        self.voice_menu = None;
-        self.voice_quality.clear();
-        self.voice_stats.clear();
-        self.voice_ping_ms = None;
-        self.voice_uplink_congested = false;
-        self.screen_share_stats = None;
-        self.screen_share_in_stats = None;
-        self.integrations.clear();
-        self.app_manifest_events.clear();
-        self.guild_activities.clear();
-        self.activity_instances.clear();
-        self.guild_blocklists.clear();
-        self.bot_commands.clear();
-        self.command_notes.clear();
-        self.guild_emojis.clear();
-        self.guild_sounds.clear();
-        self.emoji_requested.clear();
-        self.roles.clear();
-        self.bans.clear();
-        self.invites.clear();
-        self.audit_logs.clear();
-        self.is_operator = false;
-        self.server_agents.clear();
-        self.server_apps = None;
-        self.offered_agents.clear();
-        self.default_guild = None;
-        self.server_info = Default::default();
-        self.server_settings = None;
-        self.server_settings_open = false;
-        self.emoji_images.clear();
+        self.voice_event(VoiceEvent::JoinAbandoned);
+        let dm_selected = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
+        let dm_channels: HashSet<_> = self.dms.iter().map(|dm| dm.channel_id).collect();
+        let account_name = self.identity.as_ref().map(|i| i.display_name.clone());
+        let Self {
+            // The server session's: emptied here.
+            status,
+            self_user,
+            guilds,
+            channels,
+            members,
+            messages,
+            history_loaded,
+            message_search,
+            message_jump,
+            file_upload_result,
+            server_chat_tools,
+            server_image_previews,
+            server_progressive_image_uploads,
+            guild_file_policies,
+            guild_stickers,
+            voice_states,
+            selected_guild,
+            selected_channel,
+            dm_mode,
+            channel_unread,
+            channel_mentions,
+            channel_latest,
+            pending_edits,
+            catalog,
+            catalog_total,
+            guild_join_confirmation,
+            profiles,
+            server_origin,
+            rendezvous_url,
+            resolved_share,
+            activities,
+            profile_card,
+            command_form,
+            image_viewer,
+            guild_dialog,
+            rules_prompt,
+            audio_settings,
+            server_settings_open,
+            topology_open,
+            channel_access_open,
+            typing,
+            sfu_tunnel_url,
+            gateway_route,
+            voice_route_revision,
+            screen_audio_joined,
+            ice_servers,
+            screen_shares,
+            replying_to,
+            voice_uplink_congested,
+            voice_ping_ms,
+            voice_quality,
+            voice_stats,
+            screen_share_stats,
+            screen_share_in_stats,
+            soundboard_open,
+            soundboard_adjusting,
+            soundboard_anchor,
+            recent_sounds,
+            voice_menu,
+            stream_has_audio,
+            media_undecryptable,
+            pending_rekey,
+            host_info,
+            transport,
+            integrations,
+            app_manifest_events,
+            guild_activities,
+            activity_instances,
+            guild_blocklists,
+            bot_commands,
+            command_notes,
+            guild_emojis,
+            guild_sounds,
+            emoji_images,
+            emoji_requested,
+            roles,
+            bans,
+            invites,
+            open_guild_on_ready,
+            voice_invite_on_ready,
+            gateway_failure,
+            is_operator,
+            server_agents,
+            server_apps,
+            offered_agents,
+            default_guild,
+            server_info,
+            server_settings,
+            audit_logs,
+
+            // The server session's, ended above through their own writers.
+            voice: _,
+            media_key: _,
+            camera: _,
+            cameras_watching: _,
+            screen_share: _,
+            screen_viewing: _,
+            screen_token: _,
+            screen_audio_token: _,
+            screen_video_token: _,
+            screen_viewer_token: _,
+            voice_endpoint: _,
+            voice_location: _,
+            voice_send_route: _,
+            voice_receive_route: _,
+            peer_routes: _,
+
+            // The account's: DMs, Nostr, devices and preferences outlive every server.
+            identity: _,
+            profile_synced_at: _,
+            account_pictures: _,
+            account_dnd: _,
+            last_text_channels: _,
+            channel_read_at: _,
+            muted_channels: _,
+            muted_guilds: _,
+            unread_from: _,
+            dms: _,
+            dm_emoji: _,
+            saved_emoji: _,
+            dm_unread: _,
+            dm_cleared_at: _,
+            dm_read_at: _,
+            dm_clock_offset: _,
+            nostr_event_ids: _,
+            dm_deleted_ids: _,
+            pending_dm_edits: _,
+            dm_edit_versions: _,
+            pending_dm_deletions: _,
+            dm_delivery: _,
+            dm_pending: _,
+            dm_images: _,
+            dm_call_history: _,
+            dm_call: _,
+            contacts: _,
+            mutes: _,
+            dm_choices: _,
+            nostr_relays_up: _,
+            nostr_names: _,
+            relay_app_manifests: _,
+            relay_blocklists: _,
+            global_xp: _,
+            dm_pane_open: _,
+            app_foreground: _,
+            dm_notification_open: _,
+            mention_tap: _,
+            error_toast: _,
+            agents_open: _,
+            composer_focus_request: _,
+            screen_capture_available: _,
+            camera_capture_available: _,
+            available_cameras: _,
+            available_input_devices: _,
+            available_output_devices: _,
+            active_input_device: _,
+            active_output_device: _,
+            selected_input_device: _,
+            selected_output_device: _,
+            mic_test_active: _,
+            mic_sensitivity: _,
+            mic_volume: _,
+            mic_processing: _,
+            auto_gain_control: _,
+            mic_level: _,
+            mic_gate_level: _,
+            mic_level_pre: _,
+            noise_cancellation: _,
+            denoise_atten_lim_db: _,
+            bypass_system_audio_processing: _,
+            mic_bypass_error: _,
+            denoise_fallback: _,
+            denoise_retry: _,
+            voice_bitrate_kbps: _,
+            user_volumes: _,
+            user_muted: _,
+            stream_volumes: _,
+            stream_muted: _,
+            soundboard_volume: _,
+            // Counters: starting one over would let a stale value equal a new one.
+            voice_session_epoch: _,
+            read_marks_revision: _,
+            catalog_revision: _,
+            notify_tick: _,
+            dm_notify_tick: _,
+            readies: _,
+        } = &mut *self;
+        *status = ConnectionStatus::Disconnected;
+        // We stay ourselves at Home, where DMs and call history read it (`nostr::service` seeds it).
+        if let (Some(me), Some(name)) = (self_user.as_mut(), account_name) {
+            me.username = name;
+        }
+        guilds.clear();
+        channels.clear();
+        members.clear();
+        messages.retain(|id, _| dm_channels.contains(id));
+        history_loaded.clear();
+        *message_search = None;
+        *message_jump = None;
+        *file_upload_result = None;
+        *server_chat_tools = false;
+        *server_image_previews = false;
+        *server_progressive_image_uploads = false;
+        guild_file_policies.clear();
+        guild_stickers.clear();
+        voice_states.clear();
+        *selected_guild = None;
+        *selected_channel = dm_selected;
+        *dm_mode = dm_selected.is_some();
+        channel_unread.clear();
+        channel_mentions.clear();
+        channel_latest.clear();
+        pending_edits.clear();
+        catalog.clear();
+        *catalog_total = 0;
+        *guild_join_confirmation = None;
+        profiles.clear();
+        *server_origin = None;
+        *rendezvous_url = None;
+        *resolved_share = None;
+        activities.clear();
+        *profile_card = None;
+        *command_form = None;
+        *image_viewer = None;
+        *guild_dialog = None;
+        *rules_prompt = None;
+        *audio_settings = false;
+        *server_settings_open = false;
+        *topology_open = false;
+        *channel_access_open = None;
+        typing.clear();
+        *sfu_tunnel_url = None;
+        *gateway_route = None;
+        *voice_route_revision = 0;
+        *screen_audio_joined = false;
+        ice_servers.clear();
+        screen_shares.clear();
+        *replying_to = None;
+        *voice_uplink_congested = false;
+        *voice_ping_ms = None;
+        voice_quality.clear();
+        voice_stats.clear();
+        *screen_share_stats = None;
+        *screen_share_in_stats = None;
+        *soundboard_open = false;
+        *soundboard_adjusting = false;
+        *soundboard_anchor = (0.0, 0.0);
+        recent_sounds.clear();
+        *voice_menu = None;
+        *stream_has_audio = Default::default();
+        *media_undecryptable = false;
+        *pending_rekey = false;
+        *host_info = None;
+        *transport = Transport::Loopback;
+        integrations.clear();
+        app_manifest_events.clear();
+        guild_activities.clear();
+        activity_instances.clear();
+        guild_blocklists.clear();
+        bot_commands.clear();
+        command_notes.clear();
+        guild_emojis.clear();
+        guild_sounds.clear();
+        emoji_images.clear();
+        emoji_requested.clear();
+        roles.clear();
+        bans.clear();
+        invites.clear();
+        *open_guild_on_ready = None;
+        *voice_invite_on_ready = None;
+        *gateway_failure = None;
+        *is_operator = false;
+        server_agents.clear();
+        *server_apps = None;
+        offered_agents.clear();
+        *default_guild = None;
+        *server_info = Default::default();
+        *server_settings = None;
+        audit_logs.clear();
         self.evict_inactive_dm_images(self.selected_channel);
     }
 
@@ -2639,37 +2840,323 @@ mod tests {
         );
     }
 
-    /// Each is what one host answered; an imported guild keeps its id and a bot
-    /// its key on another host, so the next server must not read them.
-    #[test]
-    fn the_next_server_does_not_see_the_last_ones_apps_and_activities() {
-        let mut s = AppState::empty();
-        let guild = uuid::Uuid::new_v4();
-        let channel = uuid::Uuid::new_v4();
-        s.app_manifest_events
-            .insert("bot".into(), Some("{\"from\":\"host a\"}".into()));
-        s.guild_activities.insert(guild, Vec::new());
-        s.activity_instances.insert(
-            channel,
-            vec![crate::protocol::ActivityInstance {
-                id: uuid::Uuid::new_v4(),
-                channel_id: channel,
-                app: crate::protocol::builtin_activity("dice"),
-                max_players: 1,
-                participants: Vec::new(),
-            }],
-        );
-        s.guild_blocklists
-            .insert(guild, (vec!["curator".into()], Vec::new()));
-        s.relay_app_manifests
-            .insert("bot".into(), (1, "{\"from\":\"relay\"}".into()));
+    /// Each session field is filled and must come back empty; the pattern at the
+    /// end names every field, so a new one does not compile until it is listed.
+    macro_rules! after_a_server {
+        (
+            $s:ident;
+            session { $($field:ident = $value:expr => |$v:ident| $emptied:expr;)* }
+            account { $($kept:ident),* $(,)? }
+        ) => {{
+            $( $s.$field = $value; )*
+            let before = $s.clone();
+            $s.clear_server_session();
+            $({
+                let $v = &$s.$field;
+                assert!($emptied, "{} outlived its server", stringify!($field));
+            })*
+            let AppState { $($field: _,)* $($kept: _,)* } = &$s;
+            before
+        }};
+    }
 
-        s.prepare_server_switch(None, None);
-        assert!(s.app_manifest_events.is_empty());
-        assert!(s.guild_activities.is_empty());
-        assert!(s.activity_instances.is_empty());
-        assert!(s.guild_blocklists.is_empty());
-        assert_eq!(s.relay_app_manifests.len(), 1, "relays are the account's");
+    /// An imported guild keeps its id and a bot its key on another host, so
+    /// anything one server said would be read by the next (trap 7).
+    #[test]
+    fn the_next_server_sees_nothing_of_the_last_and_the_account_keeps_everything() {
+        let guild = Id::new_v4();
+        let channel = Id::new_v4();
+        let peer = "peer";
+        let mut s = AppState::empty();
+        let dm = dm_with(&mut s, peer, &[1]);
+        s.identity = Some(crate::identity::Identity::create("Account").unwrap());
+        s.choose_dm(peer, Some(DmChoice::Accepted));
+        s.nostr_relays_up.insert("wss://relay.example".into());
+        s.nostr_names.insert(peer.into(), ("Peer".into(), 1));
+        s.contacts =
+            crate::nostr::nip02::ContactList::default().with(crate::nostr::nip02::Contact {
+                pubkey: peer.into(),
+                relay: None,
+                petname: None,
+            });
+        s.relay_app_manifests.insert("bot".into(), (1, "{}".into()));
+        s.last_text_channels
+            .push(crate::channel_selection::RememberedTextChannel {
+                server: "server-b".into(),
+                guild_id: guild,
+                channel_id: channel,
+            });
+        s.channel_read_at
+            .insert("server-b".into(), BTreeMap::from([(channel, 1)]));
+        s.user_volumes.insert(peer.into(), 50);
+        s.mic_sensitivity = 7;
+        s.selected_input_device = Some("mic".into());
+        s.voice_session_epoch = 9;
+        s.readies = 3;
+        s.error_toast = Some("kept".into());
+        let guild_channel = {
+            let mut other = AppState::empty();
+            text_channel(&mut other, guild);
+            other.channels
+        };
+        let mut camera = crate::local_camera::LocalCamera::default();
+        let _ = camera.on(CameraEvent::Started);
+        let mut share = crate::local_share::ScreenShare::default();
+        share.on(ShareEvent::WebViewStarted {
+            native_audio: false,
+        });
+        let mut watches = crate::stream_placement::StreamWatches::default();
+        watches.watch(peer);
+        let mut voice = VoiceSession::default();
+        voice.force(CallState::Connected(channel));
+        voice.on(VoiceEvent::JoinSent(Id::new_v4()));
+        let mut presence = crate::stream_audio::Presence::default();
+        presence.set(crate::stream_audio::Source::Voice, peer, true);
+        let mut emoji = crate::media_cache::MediaCache::default();
+        emoji.insert("a.png".into(), "data:image/png;base64,AA==".into());
+        let token = || Some(("wss://sfu".to_string(), "token".to_string()));
+        let route = || {
+            Some(crate::connection_routes::MediaRoute {
+                family: "IPv4",
+                relayed: false,
+                protocol: "udp".into(),
+                endpoint: "host".into(),
+            })
+        };
+        fn json<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+            serde_json::from_value(value).unwrap()
+        }
+
+        let before = after_a_server! { s;
+            session {
+                status = ConnectionStatus::Ready => |v| *v == ConnectionStatus::Disconnected;
+                self_user = Some(user("self")) => |v| v.as_ref().is_some_and(|me| me.pubkey == "self" && me.username == "Account");
+                guilds = vec![json(serde_json::json!({ "id": guild, "name": "g", "icon": null }))] => |v| v.is_empty();
+                channels = guild_channel => |v| v.is_empty();
+                members = vec![member(peer, true)] => |v| v.is_empty();
+                messages = BTreeMap::from([(channel, Vec::new()), (dm, s.messages[&dm].clone())]) => |v| v.keys().eq([&dm]);
+                history_loaded = HashSet::from([channel]) => |v| v.is_empty();
+                message_search = Some((channel, Id::new_v4(), Vec::new())) => |v| v.is_none();
+                message_jump = Some((channel, Id::new_v4(), 1)) => |v| v.is_none();
+                file_upload_result = Some((Id::new_v4(), None)) => |v| v.is_none();
+                server_chat_tools = true => |v| !*v;
+                server_image_previews = true => |v| !*v;
+                server_progressive_image_uploads = true => |v| !*v;
+                guild_file_policies = BTreeMap::from([(guild, Default::default())]) => |v| v.is_empty();
+                guild_stickers = BTreeMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                voice_states = vec![VoiceState {
+                    user_pubkey: peer.into(),
+                    guild_id: guild,
+                    channel_id: Some(channel),
+                    muted: false,
+                    deafened: false,
+                    speaking: false,
+                    camera_on: false,
+                    screen_sharing: true,
+                    screen_watching: Vec::new(),
+                    camera_watching: Vec::new(),
+                }] => |v| v.is_empty();
+                selected_guild = Some(guild) => |v| v.is_none();
+                selected_channel = Some(channel) => |v| v.is_none();
+                dm_mode = true => |v| !*v;
+                channel_unread = HashSet::from([channel]) => |v| v.is_empty();
+                channel_mentions = HashMap::from([(channel, 1)]) => |v| v.is_empty();
+                channel_latest = HashMap::from([(channel, 1)]) => |v| v.is_empty();
+                pending_edits = HashSet::from([Id::new_v4()]) => |v| v.is_empty();
+                catalog = vec![GuildSummary { id: guild, name: "g".into(), icon: None, member_count: 1 }] => |v| v.is_empty();
+                catalog_total = 1 => |v| *v == 0;
+                guild_join_confirmation = Some((1, guild)) => |v| v.is_none();
+                profiles = HashMap::from([(peer.to_string(), Profile::default())]) => |v| v.is_empty();
+                server_origin = Some("server-a".into()) => |v| v.is_none();
+                rendezvous_url = Some("wss://rendezvous".into()) => |v| v.is_none();
+                resolved_share = Some("quic://share".into()) => |v| v.is_none();
+                activities = HashMap::from([(peer.to_string(), json(serde_json::json!({ "name": "game" })))]) => |v| v.is_empty();
+                profile_card = Some(peer.into()) => |v| v.is_none();
+                command_form = Some(CommandForm { bot_pubkey: "bot".into(), command: "roll".into() }) => |v| v.is_none();
+                image_viewer = Some(crate::features::image_viewer::ImageView::new(Default::default(), None)) => |v| v.is_none();
+                guild_dialog = Some(GuildDialog::Settings(guild)) => |v| v.is_none();
+                rules_prompt = Some(prompt(None)) => |v| v.is_none();
+                audio_settings = true => |v| !*v;
+                server_settings_open = true => |v| !*v;
+                topology_open = true => |v| !*v;
+                channel_access_open = Some(channel) => |v| v.is_none();
+                typing = HashMap::from([(channel, HashMap::new())]) => |v| v.is_empty();
+                sfu_tunnel_url = Some("ws://127.0.0.1:1/sfu".into()) => |v| v.is_none();
+                gateway_route = Some("direct".into()) => |v| v.is_none();
+                voice_route_revision = 1 => |v| *v == 0;
+                screen_audio_joined = true => |v| !*v;
+                ice_servers = vec![Default::default()] => |v| v.is_empty();
+                screen_shares = HashMap::from([(channel, vec![peer.to_string()])]) => |v| v.is_empty();
+                replying_to = Some(ReplyDraft {
+                    message_id: Id::new_v4(),
+                    channel_id: channel,
+                    author_pubkey: peer.into(),
+                    author_username: "Peer".into(),
+                    excerpt: "hi".into(),
+                }) => |v| v.is_none();
+                voice_uplink_congested = true => |v| !*v;
+                voice_ping_ms = Some(1) => |v| v.is_none();
+                voice_quality = HashMap::from([(peer.to_string(), ConnectionHealth::Good)]) => |v| v.is_empty();
+                voice_stats = HashMap::from([(peer.to_string(), TrackStats::Unavailable)]) => |v| v.is_empty();
+                screen_share_stats = Some(Default::default()) => |v| v.is_none();
+                screen_share_in_stats = Some(Default::default()) => |v| v.is_none();
+                soundboard_open = true => |v| !*v;
+                soundboard_adjusting = true => |v| !*v;
+                soundboard_anchor = (1.0, 2.0) => |v| *v == (0.0, 0.0);
+                recent_sounds = HashMap::from([(peer.to_string(), ("horn".to_string(), std::time::Instant::now()))]) => |v| v.is_empty();
+                voice_menu = Some(VoiceMenu { pubkey: peer.into(), name: "Peer".into(), x: 1.0, y: 1.0 }) => |v| v.is_none();
+                stream_has_audio = presence => |v| !v.contains(peer);
+                media_undecryptable = true => |v| !*v;
+                pending_rekey = true => |v| !*v;
+                host_info = Some(HostInfo {
+                    offered_routes: Vec::new(),
+                    connections: Vec::new(),
+                    gateway_addr: "127.0.0.1:1".parse().unwrap(),
+                    livekit_url: String::new(),
+                    local_url: String::new(),
+                    share: None,
+                    voice_bundled: true,
+                    voice_reason: String::new(),
+                    shortcode: None,
+                    publish_error: None,
+                    listed_public: false,
+                    reachability: crate::host::Reachability::LoopbackOnly,
+                }) => |v| v.is_none();
+                transport = Transport::Quic => |v| *v == Transport::Loopback;
+                integrations = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                app_manifest_events = HashMap::from([("bot".to_string(), Some("{}".to_string()))]) => |v| v.is_empty();
+                guild_activities = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                activity_instances = HashMap::from([(channel, Vec::new())]) => |v| v.is_empty();
+                guild_blocklists = HashMap::from([(guild, (vec!["curator".to_string()], Vec::new()))]) => |v| v.is_empty();
+                bot_commands = HashMap::from([("bot".to_string(), Vec::new())]) => |v| v.is_empty();
+                command_notes = vec![CommandNote {
+                    invocation_id: Id::new_v4(),
+                    bot_pubkey: "bot".into(),
+                    channel_id: channel,
+                    content: "secret".into(),
+                }] => |v| v.is_empty();
+                guild_emojis = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                guild_sounds = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                emoji_images = emoji => |v| v.get("a.png").is_none();
+                emoji_requested = HashMap::from([("a.png".to_string(), std::time::Instant::now())]) => |v| v.is_empty();
+                roles = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                bans = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                invites = HashMap::from([(guild, "code".to_string())]) => |v| v.is_empty();
+                open_guild_on_ready = Some(guild) => |v| v.is_none();
+                voice_invite_on_ready = Some(PendingVoiceInvite {
+                    guild_id: guild,
+                    channel_id: channel,
+                    code: None,
+                    expires_at: None,
+                }) => |v| v.is_none();
+                gateway_failure = Some("refused".into()) => |v| v.is_none();
+                is_operator = true => |v| !*v;
+                server_agents = vec![json(serde_json::json!({
+                    "pubkey": "agent",
+                    "spec": {
+                        "name": "agent",
+                        "provider": "anthropic",
+                        "provider_label": "",
+                        "base_url": "",
+                        "model": "",
+                        "per_member_per_hour": 0,
+                        "daily_tokens": 0,
+                    },
+                }))] => |v| v.is_empty();
+                server_apps = Some(ServerApps {
+                    policy: Default::default(),
+                    approved: Vec::new(),
+                    banned: Vec::new(),
+                    installs: Vec::new(),
+                }) => |v| v.is_none();
+                offered_agents = vec![crate::protocol::OfferedAgent {
+                    pubkey: "agent".into(),
+                    name: "agent".into(),
+                    provider_label: String::new(),
+                    model: String::new(),
+                    guild_daily_tokens: 0,
+                }] => |v| v.is_empty();
+                default_guild = Some(guild) => |v| v.is_none();
+                server_info = crate::protocol::ServerInfo {
+                    name: Some("server a".into()),
+                    ..Default::default()
+                } => |v| *v == Default::default();
+                server_settings = Some(crate::protocol::ServerSettingsView {
+                    settings: Default::default(),
+                    pinned: Default::default(),
+                    source: Default::default(),
+                    publishes: false,
+                    media_used_bytes: 0,
+                }) => |v| v.is_none();
+                audit_logs = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+
+                voice = voice => |v| v.channel_id().is_none() && v.joining_channel_id().is_none();
+                media_key = crate::mediakey::CallKey::force(channel, (1, [7; crate::mediakey::KEY_LEN])) => |v| v.channel().is_none();
+                camera = camera => |v| !v.wanted();
+                cameras_watching = HashSet::from([peer.to_string()]) => |v| v.is_empty();
+                screen_share = share => |v| !v.is_live();
+                screen_viewing = watches => |v| v.is_empty();
+                screen_token = token() => |v| v.is_none();
+                screen_audio_token = token() => |v| v.is_none();
+                screen_video_token = token() => |v| v.is_none();
+                screen_viewer_token = token() => |v| v.is_none();
+                voice_endpoint = Some("wss://sfu".into()) => |v| v.is_none();
+                voice_location = Some("host".into()) => |v| v.is_none();
+                voice_send_route = route() => |v| v.is_none();
+                voice_receive_route = route() => |v| v.is_none();
+                peer_routes = HashMap::from([(peer.to_string(), PeerRoutes {
+                    gateway: "direct".into(),
+                    sent: None,
+                    received: None,
+                })]) => |v| v.is_empty();
+            }
+            account {
+                identity, profile_synced_at, account_pictures, account_dnd,
+                last_text_channels, channel_read_at, muted_channels, muted_guilds,
+                unread_from, dms, dm_emoji, saved_emoji, dm_unread, dm_cleared_at,
+                dm_read_at, dm_clock_offset, nostr_event_ids, dm_deleted_ids,
+                pending_dm_edits, dm_edit_versions, pending_dm_deletions, dm_delivery,
+                dm_pending, dm_images, dm_call_history, dm_call, contacts, mutes,
+                dm_choices, nostr_relays_up, nostr_names, relay_app_manifests,
+                relay_blocklists, global_xp, dm_pane_open, app_foreground,
+                dm_notification_open, mention_tap, error_toast, agents_open,
+                composer_focus_request, screen_capture_available,
+                camera_capture_available, available_cameras, available_input_devices,
+                available_output_devices, active_input_device, active_output_device,
+                selected_input_device, selected_output_device, mic_test_active,
+                mic_sensitivity, mic_volume, mic_processing, auto_gain_control,
+                mic_level, mic_gate_level, mic_level_pre, noise_cancellation,
+                denoise_atten_lim_db, bypass_system_audio_processing, mic_bypass_error,
+                denoise_fallback, denoise_retry, voice_bitrate_kbps, user_volumes,
+                user_muted, stream_volumes, stream_muted, soundboard_volume,
+                voice_session_epoch, read_marks_revision, catalog_revision, notify_tick,
+                dm_notify_tick, readies,
+            }
+        };
+
+        assert_eq!(s.dms, before.dms);
+        assert_eq!(s.messages[&dm], before.messages[&dm]);
+        assert_eq!(s.dm_unread(dm), before.dm_unread(dm));
+        assert_eq!(s.dm_choice(peer), Some(DmChoice::Accepted));
+        assert_eq!(
+            s.identity.as_ref().map(|i| &i.pubkey),
+            before.identity.as_ref().map(|i| &i.pubkey)
+        );
+        assert_eq!(s.nostr_relays_up, before.nostr_relays_up);
+        assert_eq!(s.nostr_names, before.nostr_names);
+        assert!(s.contacts.contains(peer));
+        assert_eq!(s.relay_app_manifests, before.relay_app_manifests);
+        assert_eq!(s.last_text_channels, before.last_text_channels);
+        assert_eq!(s.channel_read_at, before.channel_read_at);
+        assert_eq!(s.user_volumes, before.user_volumes);
+        assert_eq!(s.mic_sensitivity, 7);
+        assert_eq!(s.selected_input_device, before.selected_input_device);
+        assert!(
+            s.voice_session_epoch > before.voice_session_epoch,
+            "a call ended"
+        );
+        assert_eq!(s.readies, 3);
+        assert_eq!(s.error_toast, before.error_toast);
     }
 
     /// `short.png` fails `emoji::safe_name`, so nothing touches the disk.
