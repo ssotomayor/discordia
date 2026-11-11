@@ -261,9 +261,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                             continue;
                         }
+                        let new_user = User { pubkey: pubkey.clone(), username };
+                        // Held from the moment the key holds this socket: a login that
+                        // breaks off below must still be unregistered under that key.
+                        user = Some(new_user.clone());
+                        is_bot = bot;
                         ctx.state
                             .set_progressive_image_uploads(conn_id, progressive_image_uploads);
-                        let new_user = User { pubkey: pubkey.clone(), username };
                         let remembered = if bot {
                             ctx.state.remember_user(&new_user).await.map(|()| Vec::new())
                         } else {
@@ -283,7 +287,6 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 break;
                             }
                         }
-                        is_bot = bot;
                         let gated_default = if is_bot {
                             Ok(None)
                         } else {
@@ -342,7 +345,6 @@ pub(crate) async fn handle_connection_with_route<S>(
                             version = ?client_version,
                             "identified"
                         );
-                        user = Some(new_user);
                     }
                     ClientMessage::FetchMessages { channel_id, limit, before_ms } => {
                         let Some(u) = user.as_ref() else {

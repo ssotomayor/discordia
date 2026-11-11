@@ -36,6 +36,7 @@ async fn gateway() -> (
     UnboundedReceiver<WsMessage>,
     tokio::task::JoinHandle<()>,
     String,
+    Arc<crate::state::AppState>,
 ) {
     let dir = std::env::temp_dir().join(format!("discordia-handshake-{}", Id::new_v4()));
     let store = crate::store::Store::open_in(&dir).await.unwrap();
@@ -44,8 +45,9 @@ async fn gateway() -> (
     let state = crate::state::AppState::load_or_seed(store, media, Default::default())
         .await
         .unwrap();
+    let state = Arc::new(state);
     let ctx = Arc::new(AppContext {
-        state: Arc::new(state),
+        state: state.clone(),
         livekit: crate::livekit::LiveKitConfig::from_env(&dir),
         identities: ["localhost:9000".into()].into_iter().collect(),
         shutdown: Arc::new(tokio::sync::watch::Sender::new(false)),
@@ -71,12 +73,12 @@ async fn gateway() -> (
     let ServerMessage::Hello { nonce } = serde_json::from_str(&hello).unwrap() else {
         panic!("expected nonce")
     };
-    (incoming, outgoing, task, nonce)
+    (incoming, outgoing, task, nonce, state)
 }
 
 #[tokio::test]
 async fn handshake_deadline_closes_an_unidentified_socket_without_waiting_ten_seconds() {
-    let (incoming, mut outgoing, task, _) = gateway().await;
+    let (incoming, mut outgoing, task, _, _) = gateway().await;
     tokio::time::advance(IDENTIFY_TIMEOUT - Duration::from_millis(1)).await;
     incoming.send(WsMessage::Ping(vec![7])).unwrap();
     assert!(matches!(outgoing.recv().await, Some(WsMessage::Pong(_))));
@@ -94,7 +96,7 @@ async fn handshake_deadline_closes_an_unidentified_socket_without_waiting_ten_se
 
 #[tokio::test]
 async fn identified_socket_survives_the_handshake_deadline() {
-    let (incoming, mut outgoing, task, nonce) = gateway().await;
+    let (incoming, mut outgoing, task, nonce, _) = gateway().await;
     tokio::time::resume();
     let identity = discordia_bot::BotIdentity::generate();
     let frame = ClientMessage::Identify {
@@ -137,4 +139,50 @@ async fn identified_socket_survives_the_handshake_deadline() {
     assert!(!task.is_finished());
     incoming.send(WsMessage::Close(None)).unwrap();
     task.await.unwrap();
+}
+
+fn identify_frame(identity: &discordia_bot::BotIdentity, nonce: &str) -> WsMessage {
+    let frame = ClientMessage::Identify {
+        username: "member".into(),
+        pubkey: identity.pubkey().into(),
+        signature: identity.sign_identify(nonce, "localhost:9000", "member"),
+        origin: "localhost:9000".into(),
+        bot: false,
+        client_version: String::new(),
+        progressive_image_uploads: false,
+    };
+    WsMessage::Text(serde_json::to_string(&frame).unwrap())
+}
+
+/// The Ready send fails, so the login stops after `identify_conn` and after the
+/// snapshot marked the key online: both must be undone like any disconnect.
+#[tokio::test]
+async fn a_login_that_fails_before_ready_gives_its_session_back() {
+    let (incoming, outgoing, task, nonce, state) = gateway().await;
+    tokio::time::resume();
+    let identity = discordia_bot::BotIdentity::generate();
+    let pubkey = identity.pubkey().to_string();
+    drop(outgoing);
+    incoming.send(identify_frame(&identity, &nonce)).unwrap();
+    task.await.unwrap();
+
+    assert!(
+        state
+            .members
+            .iter()
+            .any(|guild| guild.contains_key(&pubkey)),
+        "the snapshot joined the lobby, so there is an online flag to clear"
+    );
+    assert!(
+        !state.has_sessions(&pubkey),
+        "the key still holds the dead socket"
+    );
+    assert!(!state.connected_pubkeys().contains(&pubkey));
+    assert!(
+        state
+            .members
+            .iter()
+            .all(|guild| guild.get(&pubkey).is_none_or(|m| !m.online)),
+        "nobody is left online by a login that never finished"
+    );
 }
