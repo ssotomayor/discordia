@@ -16,18 +16,18 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | `server/src/state/mod.rs` | 4809 |
 | `server/src/gateway/connection.rs` | 4547 |
 | `protocol/src/lib.rs` | 4311 |
-| `client/src/state.rs` | 4035 |
+| `client/src/state.rs` | 4072 |
 | `client/src/features/screenshare.rs` | 3853 |
 | `client/src/features/chat.rs` | 3768 |
 | `server/tests/owner_controls.rs` | 3457 |
 | `client/src/net.rs` | 3012 |
 | `client/src/features/channels.rs` | 2648 |
-| `client/src/nostr/service.rs` | 2465 |
+| `client/src/nostr/service.rs` | 2591 |
 | `client/src/features/activities.rs` | 2063 |
 | `server/src/store.rs` | 1844 |
-| `client/src/identity.rs` | 1314 |
+| `client/src/identity.rs` | 1437 |
 | `client/src/features/guild_settings.rs` | 1145 |
-| `client/src/features/discord_import.rs` | 1102 |
+| `client/src/features/discord_import.rs` | 1159 |
 | `client/src/update.rs` | 1075 |
 
 Everything else: `wc -l` answers faster than a list here could stay true.
