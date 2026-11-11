@@ -1021,15 +1021,7 @@ impl AppState {
     pub fn evict_inactive_dm_images(&mut self, active_channel: Option<Id>) {
         for image in self.dm_images.values_mut() {
             if Some(image.channel_id) != active_channel {
-                image.viewers.clear();
-                image.original_viewers.clear();
-                image.original_data = false;
-                if !matches!(image.status, crate::nostr::dm_image::Status::Uploading)
-                    && image.data.is_some()
-                {
-                    image.data = None;
-                    image.status = crate::nostr::dm_image::Status::Waiting;
-                }
+                image.unload();
             }
         }
         let dm_channels: std::collections::HashSet<_> =
@@ -3978,55 +3970,28 @@ mod tests {
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
         ).unwrap();
 
-        s.dm_images.insert(
-            msg_a,
-            crate::nostr::dm_image::Image {
-                channel_id: ch_a,
-                descriptor: descriptor.clone(),
-                status: crate::nostr::dm_image::Status::Ready,
-                upload: false,
-                data: Some(std::sync::Arc::new("data_a".into())),
-                viewers: std::collections::HashSet::from([Id::new_v4()]),
-                original_viewers: Default::default(),
-                original_data: false,
-            },
-        );
-        s.dm_images.insert(
-            msg_b,
-            crate::nostr::dm_image::Image {
-                channel_id: ch_b,
-                descriptor,
-                status: crate::nostr::dm_image::Status::Ready,
-                upload: false,
-                data: Some(std::sync::Arc::new("data_b".into())),
-                viewers: std::collections::HashSet::from([Id::new_v4()]),
-                original_viewers: Default::default(),
-                original_data: false,
-            },
-        );
+        let shown = |channel: Id, data: &str| {
+            let viewer = uuid::Uuid::new_v4();
+            let mut image = crate::nostr::dm_image::Image::received(channel, descriptor.clone());
+            image.see(viewer, false);
+            let (token, _) = image.start(viewer).unwrap();
+            let mut one = HashMap::from([(Id::nil(), image)]);
+            crate::nostr::dm_image::finish_load(&mut one, Id::nil(), token, true, Ok(data.into()));
+            (one.remove(&Id::nil()).unwrap(), viewer)
+        };
+        let (image_a, viewer_a) = shown(ch_a, "data_a");
+        s.dm_images.insert(msg_a, image_a);
+        s.dm_images.insert(msg_b, shown(ch_b, "data_b").0);
+        let waiting = &crate::nostr::dm_image::Status::Waiting;
 
         s.evict_inactive_dm_images(Some(ch_a));
-        assert!(s.dm_images[&msg_a].data.is_some());
-        assert_eq!(
-            s.dm_images[&msg_a].status,
-            crate::nostr::dm_image::Status::Ready
-        );
-        assert!(!s.dm_images[&msg_a].viewers.is_empty());
-
-        assert!(s.dm_images[&msg_b].data.is_none());
-        assert_eq!(
-            s.dm_images[&msg_b].status,
-            crate::nostr::dm_image::Status::Waiting
-        );
-        assert!(s.dm_images[&msg_b].viewers.is_empty());
+        assert!(s.dm_images[&msg_a].ready().is_some());
+        assert_eq!(s.dm_images[&msg_a].wants(viewer_a), Some(false));
+        assert_eq!(s.dm_images[&msg_b].status(), waiting);
 
         s.evict_inactive_dm_images(None);
-        assert!(s.dm_images[&msg_a].data.is_none());
-        assert_eq!(
-            s.dm_images[&msg_a].status,
-            crate::nostr::dm_image::Status::Waiting
-        );
-        assert!(s.dm_images[&msg_a].viewers.is_empty());
+        assert_eq!(s.dm_images[&msg_a].status(), waiting);
+        assert_eq!(s.dm_images[&msg_a].wants(viewer_a), None);
     }
 
     #[test]

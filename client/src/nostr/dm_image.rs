@@ -1228,33 +1228,214 @@ fn sweep_pending(directory: &std::path::Path) {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
-    Waiting,
-    Loading(uuid::Uuid),
+    /// Ours, still going up; the service owns it until the job ends.
     Uploading,
-    Ready,
+    UploadFailed(String),
+    /// Not in memory; a view in an accepted conversation loads it.
+    Waiting,
+    /// `owner` is the view whose task fetches it: its unmount cancels the task, so it hands the load back.
+    Loading {
+        token: uuid::Uuid,
+        owner: uuid::Uuid,
+        original: bool,
+    },
+    Ready {
+        data: std::sync::Arc<String>,
+        original: bool,
+    },
+    /// Dropped to bound memory while other pictures are on screen; loads again on request.
     Evicted,
     Failed(String),
 }
 
+/// One DM picture as this client holds it. Every change is a method below, so the
+/// bytes exist only while `Ready` and the views' wishes are always re-checked.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Image {
     pub channel_id: crate::protocol::Id,
     pub descriptor: Descriptor,
-    pub status: Status,
-    pub upload: bool,
-    pub viewers: std::collections::HashSet<uuid::Uuid>,
-    pub original_viewers: std::collections::HashSet<uuid::Uuid>,
-    pub original_data: bool,
-    pub data: Option<std::sync::Arc<String>>,
+    status: Status,
+    /// Each mounted view, and whether it wants the original rather than the preview.
+    viewers: std::collections::HashMap<uuid::Uuid, bool>,
 }
 
 impl std::fmt::Debug for Image {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let status = match &self.status {
+            Status::Ready { original, .. } => format!("Ready {{ original: {original} }}"),
+            other => format!("{other:?}"),
+        };
         f.debug_struct("PrivateImage")
-            .field("status", &self.status)
-            .field("upload", &self.upload)
-            .field("cached", &self.data.is_some())
+            .field("status", &status)
+            .field("viewers", &self.viewers.len())
             .finish()
+    }
+}
+
+/// Most pictures one conversation keeps decrypted at once.
+const MAX_READY_IMAGES: usize = 8;
+
+impl Image {
+    pub fn uploading(channel_id: crate::protocol::Id, descriptor: Descriptor) -> Self {
+        Self::new(channel_id, descriptor, Status::Uploading)
+    }
+
+    pub fn received(channel_id: crate::protocol::Id, descriptor: Descriptor) -> Self {
+        Self::new(channel_id, descriptor, Status::Waiting)
+    }
+
+    fn new(channel_id: crate::protocol::Id, descriptor: Descriptor, status: Status) -> Self {
+        Self {
+            channel_id,
+            descriptor,
+            status,
+            viewers: Default::default(),
+        }
+    }
+
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
+
+    pub fn is_upload(&self) -> bool {
+        matches!(self.status, Status::Uploading | Status::UploadFailed(_))
+    }
+
+    /// The decrypted picture, and whether it is the original rather than the preview.
+    pub fn ready(&self) -> Option<(&std::sync::Arc<String>, bool)> {
+        match &self.status {
+            Status::Ready { data, original } => Some((data, *original)),
+            _ => None,
+        }
+    }
+
+    pub fn wants(&self, viewer: uuid::Uuid) -> Option<bool> {
+        self.viewers.get(&viewer).copied()
+    }
+
+    fn wants_original(&self) -> bool {
+        self.viewers.values().any(|original| *original)
+    }
+
+    /// Back to `Waiting` when what is held or loading is not the size the views now want.
+    fn recheck(&mut self) {
+        if let Status::Ready { original, .. } | Status::Loading { original, .. } = self.status
+            && original != self.wants_original()
+        {
+            self.status = Status::Waiting;
+        }
+    }
+
+    pub fn see(&mut self, viewer: uuid::Uuid, original: bool) {
+        self.viewers.insert(viewer, original);
+        self.recheck();
+    }
+
+    pub fn leave(&mut self, viewer: uuid::Uuid) {
+        self.viewers.remove(&viewer);
+        match self.status {
+            Status::Loading { owner, .. } if owner == viewer => self.status = Status::Waiting,
+            Status::Ready { .. } if self.viewers.is_empty() => self.status = Status::Waiting,
+            _ => self.recheck(),
+        }
+    }
+
+    /// The token and size of a load `viewer` should now run, if one is due.
+    pub fn start(&mut self, viewer: uuid::Uuid) -> Option<(uuid::Uuid, bool)> {
+        if self.status != Status::Waiting {
+            return None;
+        }
+        let (token, original) = (uuid::Uuid::new_v4(), self.wants_original());
+        self.status = Status::Loading {
+            token,
+            owner: viewer,
+            original,
+        };
+        Some((token, original))
+    }
+
+    /// Leaving its conversation drops the picture. A load in flight is left to its
+    /// owner, whose unmount hands it back, or which lands it for a view still mounted.
+    pub fn unload(&mut self) {
+        self.viewers.clear();
+        if let Status::Ready { .. } = self.status {
+            self.status = Status::Waiting;
+        }
+    }
+
+    pub fn retry(&mut self) {
+        if matches!(self.status, Status::Failed(_) | Status::Evicted) {
+            self.status = Status::Waiting;
+        }
+    }
+
+    pub fn upload_failed(&mut self, error: String) {
+        if self.is_upload() {
+            self.status = Status::UploadFailed(error);
+        }
+    }
+
+    pub fn retry_upload(&mut self) {
+        if self.is_upload() {
+            self.status = Status::Uploading;
+        }
+    }
+}
+
+/// A load's answer. Ignored unless `token` is still the one loading: a newer load,
+/// an unload or an unmount has replaced it. `allowed` is the conversation's standing now.
+pub fn finish_load(
+    images: &mut std::collections::HashMap<crate::protocol::Id, Image>,
+    id: crate::protocol::Id,
+    token: uuid::Uuid,
+    allowed: bool,
+    result: Result<String, String>,
+) {
+    let Some(image) = images.get_mut(&id) else {
+        return;
+    };
+    let Status::Loading {
+        token: current,
+        original,
+        ..
+    } = image.status
+    else {
+        return;
+    };
+    if current != token {
+        return;
+    }
+    let data = match (allowed, result) {
+        (false, _) => {
+            image.status = Status::Waiting;
+            return;
+        }
+        (true, Err(error)) => {
+            image.status = Status::Failed(error);
+            return;
+        }
+        (true, Ok(data)) => data,
+    };
+    image.status = Status::Ready {
+        data: std::sync::Arc::new(data),
+        original,
+    };
+    let channel = image.channel_id;
+    let ready = |image: &Image| image.channel_id == channel && image.ready().is_some();
+    let viewed = images
+        .iter()
+        .filter(|(other, image)| **other != id && ready(image) && !image.viewers.is_empty())
+        .count();
+    let keep_idle = MAX_READY_IMAGES.saturating_sub(viewed + 1);
+    let idle: Vec<_> = images
+        .iter()
+        .filter(|(other, image)| **other != id && ready(image) && image.viewers.is_empty())
+        .map(|(other, _)| *other)
+        .collect();
+    for other in idle.into_iter().skip(keep_idle) {
+        if let Some(image) = images.get_mut(&other) {
+            image.status = Status::Evicted;
+        }
     }
 }
 
@@ -1334,6 +1515,231 @@ impl Queue {
 mod tests {
     use super::*;
     const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    fn view(status: Status) -> Image {
+        let (descriptor, _) = encrypt(PNG).unwrap();
+        Image::new(crate::protocol::Id::nil(), descriptor, status)
+    }
+
+    fn ready(original: bool) -> Status {
+        Status::Ready {
+            data: std::sync::Arc::new("data".into()),
+            original,
+        }
+    }
+
+    #[test]
+    fn a_view_asking_for_another_size_reloads_and_a_repeat_changes_nothing() {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let loading = |original| Status::Loading {
+            token: uuid::Uuid::nil(),
+            owner: a,
+            original,
+        };
+        for (before, wants_original, after) in [
+            (ready(false), false, ready(false)),
+            (ready(false), true, Status::Waiting),
+            (ready(true), true, ready(true)),
+            (loading(false), true, Status::Waiting),
+            (loading(true), true, loading(true)),
+            (Status::Uploading, true, Status::Uploading),
+            (Status::Evicted, true, Status::Evicted),
+        ] {
+            let mut image = view(before.clone());
+            image.see(a, false);
+            image.status = before.clone();
+            image.see(b, wants_original);
+            assert_eq!(
+                image.status, after,
+                "{before:?} + see(original: {wants_original})"
+            );
+            assert_eq!(image.wants(b), Some(wants_original));
+        }
+    }
+
+    #[test]
+    fn leaving_hands_back_a_load_and_unloads_the_last_view() {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        // A view unmounting mid-load cancels its task: another view must take over.
+        let mut image = view(Status::Waiting);
+        image.see(a, false);
+        image.see(b, false);
+        let (token, _) = image.start(a).unwrap();
+        assert_eq!(image.start(b), None);
+        image.leave(a);
+        assert_eq!(image.status, Status::Waiting);
+        let mut images = std::collections::HashMap::from([(image.channel_id, image)]);
+        finish_load(
+            &mut images,
+            crate::protocol::Id::nil(),
+            token,
+            true,
+            Ok("late".into()),
+        );
+        let image = images.get_mut(&crate::protocol::Id::nil()).unwrap();
+        assert_eq!(image.status, Status::Waiting);
+
+        image.start(b).unwrap();
+        image.leave(a);
+        assert!(matches!(image.status, Status::Loading { owner, .. } if owner == b));
+
+        image.status = ready(false);
+        image.leave(b);
+        assert_eq!(image.status, Status::Waiting);
+        assert!(image.ready().is_none());
+
+        let mut upload = view(Status::Uploading);
+        upload.see(a, true);
+        upload.leave(a);
+        assert_eq!(upload.status, Status::Uploading);
+    }
+
+    #[test]
+    fn a_load_lands_only_for_its_own_token_and_standing() {
+        let viewer = uuid::Uuid::new_v4();
+        let id = crate::protocol::Id::nil();
+        for (allowed, result, after) in [
+            (true, Ok("png".to_string()), ready(true)),
+            (true, Err("gone".to_string()), Status::Failed("gone".into())),
+            (false, Ok("png".to_string()), Status::Waiting),
+        ] {
+            let mut image = view(Status::Waiting);
+            image.see(viewer, true);
+            let (token, original) = image.start(viewer).unwrap();
+            assert!(original);
+            let mut images = std::collections::HashMap::from([(id, image)]);
+            finish_load(
+                &mut images,
+                id,
+                uuid::Uuid::new_v4(),
+                allowed,
+                Ok("stale".into()),
+            );
+            assert!(matches!(images[&id].status, Status::Loading { .. }));
+            finish_load(&mut images, id, token, allowed, result);
+            let expected = match after {
+                Status::Ready { original, .. } => Status::Ready {
+                    data: std::sync::Arc::new("png".into()),
+                    original,
+                },
+                other => other,
+            };
+            assert_eq!(images[&id].status, expected);
+        }
+    }
+
+    #[test]
+    fn a_new_picture_evicts_idle_ones_past_the_conversation_limit() {
+        let viewer = uuid::Uuid::new_v4();
+        let mut images: std::collections::HashMap<_, _> = (1..=MAX_READY_IMAGES as u128)
+            .map(|n| (crate::protocol::Id::from_u128(n), view(ready(false))))
+            .collect();
+        let shown = crate::protocol::Id::from_u128(1);
+        images.get_mut(&shown).unwrap().see(viewer, false);
+        let id = crate::protocol::Id::nil();
+        let mut image = view(Status::Waiting);
+        image.see(viewer, false);
+        let (token, _) = image.start(viewer).unwrap();
+        images.insert(id, image);
+        finish_load(&mut images, id, token, true, Ok("png".into()));
+        let evicted = images
+            .values()
+            .filter(|i| i.status == Status::Evicted)
+            .count();
+        assert_eq!(evicted, 1);
+        assert!(images[&shown].ready().is_some() && images[&id].ready().is_some());
+    }
+
+    #[test]
+    fn unloading_a_conversation_drops_pictures_but_not_loads_or_uploads() {
+        let viewer = uuid::Uuid::new_v4();
+        let loading = Status::Loading {
+            token: uuid::Uuid::new_v4(),
+            owner: viewer,
+            original: false,
+        };
+        for (before, after) in [
+            (ready(true), Status::Waiting),
+            (loading.clone(), loading),
+            (Status::Uploading, Status::Uploading),
+            (
+                Status::UploadFailed("x".into()),
+                Status::UploadFailed("x".into()),
+            ),
+            (Status::Failed("x".into()), Status::Failed("x".into())),
+            (Status::Evicted, Status::Evicted),
+        ] {
+            let mut image = view(before.clone());
+            image.see(viewer, true);
+            image.status = before.clone();
+            image.unload();
+            assert_eq!(image.status, after, "{before:?}");
+            assert_eq!(image.wants(viewer), None);
+        }
+    }
+
+    #[test]
+    fn a_load_evicted_in_flight_lands_or_goes_back_with_its_owner() {
+        let viewer = uuid::Uuid::new_v4();
+        let id = crate::protocol::Id::nil();
+        let mut image = view(Status::Waiting);
+        image.see(viewer, true);
+        let (token, _) = image.start(viewer).unwrap();
+        image.unload();
+        let mut images = std::collections::HashMap::from([(id, image.clone())]);
+        finish_load(&mut images, id, token, true, Ok("png".into()));
+        assert_eq!(
+            images[&id].ready().map(|(_, original)| original),
+            Some(true)
+        );
+
+        image.leave(viewer);
+        assert_eq!(image.status, Status::Waiting);
+        let mut images = std::collections::HashMap::from([(id, image)]);
+        finish_load(&mut images, id, token, true, Ok("late".into()));
+        assert_eq!(images[&id].status, Status::Waiting);
+    }
+
+    #[test]
+    fn retries_reach_only_their_own_side() {
+        for (before, retried, upload_retried, upload_failed) in [
+            (
+                Status::Failed("x".into()),
+                Status::Waiting,
+                Status::Failed("x".into()),
+                Status::Failed("x".into()),
+            ),
+            (
+                Status::Evicted,
+                Status::Waiting,
+                Status::Evicted,
+                Status::Evicted,
+            ),
+            (ready(false), ready(false), ready(false), ready(false)),
+            (
+                Status::UploadFailed("x".into()),
+                Status::UploadFailed("x".into()),
+                Status::Uploading,
+                Status::UploadFailed("y".into()),
+            ),
+            (
+                Status::Uploading,
+                Status::Uploading,
+                Status::Uploading,
+                Status::UploadFailed("y".into()),
+            ),
+        ] {
+            let mut image = view(before.clone());
+            image.retry();
+            assert_eq!(image.status, retried, "retry {before:?}");
+            let mut image = view(before.clone());
+            image.retry_upload();
+            assert_eq!(image.status, upload_retried, "retry_upload {before:?}");
+            let mut image = view(before.clone());
+            image.upload_failed("y".into());
+            assert_eq!(image.status, upload_failed, "upload_failed {before:?}");
+        }
+    }
 
     #[test]
     fn authenticated_roundtrip_and_tampering() {

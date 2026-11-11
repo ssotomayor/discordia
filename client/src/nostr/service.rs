@@ -375,7 +375,7 @@ pub fn spawn_nostr(
                         }
                         Err(error) => {
                             images.failed.insert(key.clone());
-                            if let Some(image) = state.write().dm_images.get_mut(&message_id(&key)) { image.status = super::dm_image::Status::Failed(error); }
+                            if let Some(image) = state.write().dm_images.get_mut(&message_id(&key)) { image.upload_failed(error); }
                             advance(&mut state, &mut outbox, message_id(&key), Input::Refuse);
                         }
                     }
@@ -528,7 +528,7 @@ pub fn spawn_nostr(
                             request_names(&pool, &state, &our_pubkey, &mut Vec::new());
                         } else if let Some(key) = images.key(message_id) {
                             images.failed.remove(&key);
-                            if let Some(image) = state.write().dm_images.get_mut(&message_id) { image.status = super::dm_image::Status::Uploading; }
+                            if let Some(image) = state.write().dm_images.get_mut(&message_id) { image.retry_upload(); }
                         } else if let Some((key, draft)) = outbox.held(message_id).map(|(key, draft)| (key.to_owned(), draft.clone())) {
                             send_draft(draft, Some(key), &secret, &our_pubkey, &routes, &mut outbox, &mut state).await;
                         }
@@ -1384,16 +1384,7 @@ fn show_image_job(
     let channel_id = conversation_id(&job.peer);
     state.write().dm_images.insert(
         id,
-        super::dm_image::Image {
-            channel_id,
-            descriptor: job.image.clone(),
-            status: super::dm_image::Status::Uploading,
-            upload: true,
-            viewers: Default::default(),
-            original_viewers: Default::default(),
-            original_data: false,
-            data: None,
-        },
+        super::dm_image::Image::uploading(channel_id, job.image.clone()),
     );
     outbox.hold_upload(id, job.peer.clone());
     show(state, outbox, id);
@@ -1412,16 +1403,9 @@ fn note_image(rumor: &event::Rumor, message: &nip17::ChatMessage, state: &mut Si
         return;
     }
     if let Ok(descriptor) = super::dm_image::Descriptor::parse(rumor) {
-        s.dm_images.entry(id).or_insert(super::dm_image::Image {
-            channel_id: channel,
-            descriptor,
-            status: super::dm_image::Status::Waiting,
-            upload: false,
-            viewers: Default::default(),
-            original_viewers: Default::default(),
-            original_data: false,
-            data: None,
-        });
+        s.dm_images
+            .entry(id)
+            .or_insert_with(|| super::dm_image::Image::received(channel, descriptor));
     }
 }
 
@@ -2017,17 +2001,25 @@ mod tests {
             insert_message(&message, &owner, &mut state, Source::Relay, false);
             note_image(&rumor, &message, &mut state);
             let id = message_id(&rumor.id);
-            let bytes = std::sync::Arc::new(png.to_string());
-            {
+            let bytes = {
                 let mut s = state.write();
+                let viewer = uuid::Uuid::new_v4();
                 let image = s.dm_images.get_mut(&id).unwrap();
-                image.status = super::super::dm_image::Status::Ready;
-                image.data = Some(bytes.clone());
-            }
+                image.see(viewer, false);
+                let (token, _) = image.start(viewer).unwrap();
+                super::super::dm_image::finish_load(
+                    &mut s.dm_images,
+                    id,
+                    token,
+                    true,
+                    Ok(png.into()),
+                );
+                s.dm_images[&id].ready().unwrap().0.clone()
+            };
             insert_message(&message, &owner, &mut state, Source::Relay, false);
             note_image(&rumor, &message, &mut state);
             assert!(std::sync::Arc::ptr_eq(
-                state.peek().dm_images[&id].data.as_ref().unwrap(),
+                state.peek().dm_images[&id].ready().unwrap().0,
                 &bytes
             ));
             state.write().clear_server_session();
