@@ -3075,14 +3075,7 @@ fn Composer(
             .dm_of(channel_id)
             .map(|d| d.other_pubkey.clone());
         if let Some(peer) = dm_peer {
-            if state
-                .peek()
-                .dm_delivery
-                .values()
-                .filter(|status| **status != crate::nostr::delivery::Delivery::Accepted)
-                .count()
-                >= 128
-            {
+            if !crate::nostr::outbox::has_room(state.peek().dm_pending, 1) {
                 state.write().error_toast = Some("Too many messages await delivery. Your draft has been kept; retry a failed message first.".into());
                 return false;
             }

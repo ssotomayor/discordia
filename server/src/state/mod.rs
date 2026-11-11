@@ -18,7 +18,9 @@ mod blocklists;
 mod chat_tools;
 mod commands;
 mod instances;
+mod voice_session;
 pub use apps::ManifestOutcome;
+pub use voice_session::{VoiceCall, VoiceJoin, VoiceSession};
 
 /// A failed write is logged and ignored: the change survives the session but
 /// not a restart, and is never a user-facing error.
@@ -75,6 +77,25 @@ struct Conn {
     /// `SetAttention`. True until told otherwise, so a client that never
     /// says is never pushed while it is connected.
     attended: bool,
+}
+
+/// Why a provisional picture left `Pending` without its original; logged only,
+/// since every way out but the commit ends in the same `MessageDelete`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadCancel {
+    RateLimited,
+    InvalidImage,
+    ChannelGone,
+    NotMember,
+    ReadOnly,
+    Slowmode,
+    Failed,
+    SocketClosed,
+}
+
+enum UploadEnd<'a> {
+    Committed(&'a Message),
+    Cancelled(UploadCancel),
 }
 
 #[derive(Clone)]
@@ -184,8 +205,8 @@ pub struct AppState {
     /// Deliberately not in `profiles`: an activity is ephemeral, so it must not
     /// reach `store` and must not survive the socket that set it.
     pub activities: DashMap<String, crate::protocol::Activity>,
-    pub voice_states: DashMap<String, VoiceState>,
-    voice_owners: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    pub(crate) voice_states: DashMap<String, VoiceState>,
+    voice_sessions: std::sync::Mutex<voice_session::VoiceSessions>,
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     /// Memory only: a bot declares its commands on every connect.
     pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
@@ -276,7 +297,7 @@ impl AppState {
             xp: DashMap::new(),
             xp_cooldown: DashMap::new(),
             voice_states: DashMap::new(),
-            voice_owners: std::sync::Mutex::new(Default::default()),
+            voice_sessions: std::sync::Mutex::new(Default::default()),
             operators,
             default_guild: std::sync::Mutex::new(None),
             conns: DashMap::new(),
@@ -700,6 +721,7 @@ impl AppState {
     pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
         self.drop_conn(conn_id);
         if let Some(pk) = pubkey {
+            self.voice_owner_lost(pk, conn_id);
             self.bump_session_revision(pk);
             let now_empty = if let Some(mut set) = self.conn_ids_by_pubkey.get_mut(pk) {
                 set.remove(&conn_id);
@@ -775,8 +797,13 @@ impl AppState {
     }
 
     pub fn deliver_progressive_images(&self, to: Vec<String>, msg: ServerMessage) {
-        let mut ids = Vec::new();
-        for pubkey in &to {
+        self.deliver_progressive(&to, None, &msg);
+    }
+
+    /// `also` is one more socket, counted once even when `to` already holds it.
+    fn deliver_progressive(&self, to: &[String], also: Option<u64>, msg: &ServerMessage) {
+        let mut ids: Vec<u64> = also.into_iter().collect();
+        for pubkey in to {
             if let Some(sessions) = self.conn_ids_by_pubkey.get(pubkey) {
                 ids.extend(sessions.iter().copied());
             }
@@ -789,7 +816,7 @@ impl AppState {
                 .get(&id)
                 .is_some_and(|conn| conn.progressive_image_uploads)
             {
-                self.route(id, &msg);
+                self.route(id, msg);
             }
         }
     }
@@ -2458,13 +2485,7 @@ impl AppState {
         guild_id: Id,
         pubkey: &str,
     ) -> Option<crate::store::EndedCall> {
-        let previous = self
-            .voice_states
-            .get(pubkey)
-            .filter(|v| v.guild_id == guild_id)
-            .map(|v| v.clone())?;
-        let cleared = self.clear_voice(pubkey)?;
-        Some(crate::store::EndedCall { previous, cleared })
+        self.end_voice(pubkey, |v| v.guild_id == guild_id)
     }
 
     pub async fn kick_member(
@@ -2511,8 +2532,11 @@ impl AppState {
         if !visible {
             return Err("they aren't in a voice channel here".into());
         }
-        self.clear_voice(target_pubkey)
-            .ok_or_else(|| "they aren't in a voice channel here".into())
+        self.end_voice(target_pubkey, |v| {
+            v.guild_id == guild_id && v.channel_id == room
+        })
+        .map(|ended| ended.cleared)
+        .ok_or_else(|| "they aren't in a voice channel here".into())
     }
 
     pub fn move_voice_member(
@@ -2521,7 +2545,7 @@ impl AppState {
         by_pubkey: &str,
         from_channel_id: Id,
         channel_id: Id,
-    ) -> Result<(VoiceState, VoiceState, u64), String> {
+    ) -> Result<(VoiceState, voice_session::VoiceJoin), String> {
         let destination = self.channel(channel_id).ok_or("not a voice channel")?;
         let guild_id = destination.guild_id;
         self.require_permission(guild_id, by_pubkey, Permission::MoveMembers)?;
@@ -2540,24 +2564,7 @@ impl AppState {
         if source.guild_id != guild_id || !self.can_see_channel(by_pubkey, &source) {
             return Err("voice moves must stay in the same guild".into());
         }
-        let owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        let conn_id = *owners
-            .get(target_pubkey)
-            .ok_or("they aren't in a voice channel here")?;
-        if !self.conns.contains_key(&conn_id) {
-            return Err("their voice connection is unavailable".into());
-        }
-        let previous = self
-            .voice_states
-            .get(target_pubkey)
-            .map(|v| v.clone())
-            .ok_or("they aren't in a voice channel here")?;
-        if previous.channel_id != Some(from_channel_id) || previous.guild_id != guild_id {
-            return Err("their voice channel changed before the move".into());
-        }
-        let joined =
-            self.set_voice_channel_unlocked(target_pubkey, guild_id, Some(channel_id), None);
-        Ok((previous, joined, conn_id))
+        self.move_voice_session(target_pubkey, guild_id, from_channel_id, channel_id)
     }
 
     pub async fn ban_member(
@@ -2834,7 +2841,8 @@ impl AppState {
             .collect();
         let cleared: Vec<VoiceState> = occupants
             .iter()
-            .filter_map(|pk| self.clear_voice(pk))
+            .filter_map(|pk| self.end_voice(pk, |v| v.channel_id == Some(channel_id)))
+            .map(|ended| ended.cleared)
             .collect();
         self.channels.remove(&channel_id);
         if let Some(mut ids) = self.channels_by_guild.get_mut(&guild_id) {
@@ -3637,7 +3645,27 @@ impl AppState {
         Ok(message)
     }
 
+    /// Commits and announces the finished message, or takes the provisional one
+    /// back on any failure; either way the upload is no longer pending.
     pub async fn complete_image_upload(
+        &self,
+        conn_id: u64,
+        by_pubkey: &str,
+        upload_id: Id,
+        image: String,
+    ) -> Result<Message, String> {
+        let committed = self
+            .commit_image_upload(conn_id, by_pubkey, upload_id, image)
+            .await;
+        let end = match &committed {
+            Ok(message) => UploadEnd::Committed(message),
+            Err(_) => UploadEnd::Cancelled(UploadCancel::Failed),
+        };
+        self.end_image_upload(conn_id, upload_id, end);
+        committed
+    }
+
+    async fn commit_image_upload(
         &self,
         conn_id: u64,
         by_pubkey: &str,
@@ -3696,14 +3724,38 @@ impl AppState {
                 reply_to: reply_ref,
             })
             .await?;
-        self.pending_image_uploads.remove(&(conn_id, upload_id));
         Ok(message)
     }
 
-    pub fn cancel_image_upload(&self, conn_id: u64, upload_id: Id) -> Option<(Id, Id)> {
-        self.pending_image_uploads
-            .remove(&(conn_id, upload_id))
-            .map(|(_, pending)| (pending.channel_id, upload_id))
+    /// False when nothing was pending, so nothing was shown and nothing is sent.
+    pub fn cancel_image_upload(&self, conn_id: u64, upload_id: Id, why: UploadCancel) -> bool {
+        self.end_image_upload(conn_id, upload_id, UploadEnd::Cancelled(why))
+    }
+
+    /// The only way out of `pending_image_uploads`, so leaving and telling those who saw the
+    /// provisional message cannot come apart. A cancel also reaches the sender, who may have left.
+    fn end_image_upload(&self, conn_id: u64, upload_id: Id, end: UploadEnd<'_>) -> bool {
+        let Some((_, pending)) = self.pending_image_uploads.remove(&(conn_id, upload_id)) else {
+            return false;
+        };
+        let members = self
+            .channel_guild(pending.channel_id)
+            .map(|guild_id| self.guild_member_pubkeys(guild_id))
+            .unwrap_or_default();
+        match end {
+            UploadEnd::Committed(message) => {
+                self.deliver(members, ServerMessage::MessageCreate(message.clone()));
+            }
+            UploadEnd::Cancelled(why) => {
+                tracing::debug!(conn_id, %upload_id, ?why, "progressive image upload cancelled");
+                let delete = ServerMessage::MessageDelete {
+                    channel_id: pending.channel_id,
+                    message_id: upload_id,
+                };
+                self.deliver_progressive(&members, Some(conn_id), &delete);
+            }
+        }
+        true
     }
 
     pub fn pending_image_upload_channel(&self, conn_id: u64, upload_id: Id) -> Option<Id> {
@@ -3712,16 +3764,16 @@ impl AppState {
             .map(|pending| pending.channel_id)
     }
 
-    pub fn cancel_image_uploads_for_connection(&self, conn_id: u64) -> Vec<(Id, Id)> {
+    pub fn cancel_image_uploads_for_connection(&self, conn_id: u64) {
         let ids = self
             .pending_image_uploads
             .iter()
             .filter(|entry| entry.key().0 == conn_id)
             .map(|entry| entry.key().1)
             .collect::<Vec<_>>();
-        ids.into_iter()
-            .filter_map(|id| self.cancel_image_upload(conn_id, id))
-            .collect()
+        for id in ids {
+            self.cancel_image_upload(conn_id, id, UploadCancel::SocketClosed);
+        }
     }
 
     /// One rule for every picture a client may hand the server. A data URL is
@@ -3989,97 +4041,6 @@ impl AppState {
         })
     }
 
-    pub fn set_voice_channel(
-        &self,
-        user_pubkey: &str,
-        guild_id: Id,
-        channel_id: Option<Id>,
-        preferences: Option<crate::protocol::VoicePreferences>,
-    ) -> VoiceState {
-        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        owners.remove(user_pubkey);
-        self.set_voice_channel_unlocked(user_pubkey, guild_id, channel_id, preferences)
-    }
-
-    pub fn set_voice_channel_owned(
-        &self,
-        conn_id: u64,
-        user_pubkey: &str,
-        guild_id: Id,
-        channel_id: Id,
-        preferences: Option<crate::protocol::VoicePreferences>,
-    ) -> VoiceState {
-        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        owners.insert(user_pubkey.to_string(), conn_id);
-        self.set_voice_channel_unlocked(user_pubkey, guild_id, Some(channel_id), preferences)
-    }
-
-    pub fn resume_voice_session(&self, user_pubkey: &str, conn_id: u64) {
-        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(owner) = owners.get_mut(user_pubkey)
-            && !self.conns.contains_key(owner)
-        {
-            *owner = conn_id;
-        }
-    }
-
-    pub fn voice_owned_by(&self, user_pubkey: &str, conn_id: u64) -> bool {
-        self.voice_owners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(user_pubkey)
-            == Some(&conn_id)
-    }
-
-    pub fn update_owned_voice(
-        &self,
-        pubkey: &str,
-        conn_id: u64,
-        update: impl FnOnce(&Self) -> Option<VoiceState>,
-    ) -> Option<VoiceState> {
-        let owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        if owners.get(pubkey) != Some(&conn_id) {
-            return None;
-        }
-        update(self)
-    }
-
-    fn set_voice_channel_unlocked(
-        &self,
-        user_pubkey: &str,
-        guild_id: Id,
-        channel_id: Option<Id>,
-        preferences: Option<crate::protocol::VoicePreferences>,
-    ) -> VoiceState {
-        let prev = self.voice_states.get(user_pubkey).map(|v| v.clone());
-        let deafened = preferences
-            .map(|p| p.deafened)
-            .unwrap_or_else(|| prev.as_ref().is_some_and(|p| p.deafened));
-        let muted = deafened
-            || preferences
-                .map(|p| p.muted)
-                .unwrap_or_else(|| prev.as_ref().is_some_and(|p| p.muted));
-        let state = VoiceState {
-            user_pubkey: user_pubkey.to_string(),
-            guild_id,
-            channel_id,
-            muted,
-            deafened,
-            speaking: false,
-            screen_sharing: false,
-            screen_watching: Vec::new(),
-            camera_watching: Vec::new(),
-            camera_on: false,
-        };
-        if channel_id.is_some() {
-            self.voice_states
-                .insert(user_pubkey.to_string(), state.clone());
-        } else {
-            self.voice_states.remove(user_pubkey);
-        }
-        state
-    }
-
     pub fn update_voice_flags(
         &self,
         user_pubkey: &str,
@@ -4196,40 +4157,6 @@ impl AppState {
         self.voice_states
             .get(user_pubkey)
             .and_then(|v| v.channel_id)
-    }
-
-    pub fn clear_voice(&self, user_pubkey: &str) -> Option<VoiceState> {
-        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        owners.remove(user_pubkey);
-        self.clear_voice_unlocked(user_pubkey)
-    }
-
-    pub fn clear_voice_owned(
-        &self,
-        user_pubkey: &str,
-        conn_id: u64,
-    ) -> Option<(VoiceState, VoiceState)> {
-        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
-        if owners.get(user_pubkey) != Some(&conn_id) {
-            return None;
-        }
-        owners.remove(user_pubkey);
-        let previous = self.voice_states.get(user_pubkey)?.clone();
-        let cleared = self.clear_voice_unlocked(user_pubkey)?;
-        Some((previous, cleared))
-    }
-
-    fn clear_voice_unlocked(&self, user_pubkey: &str) -> Option<VoiceState> {
-        let prev = self.voice_states.remove(user_pubkey)?.1;
-        Some(VoiceState {
-            channel_id: None,
-            speaking: false,
-            camera_on: false,
-            screen_sharing: false,
-            screen_watching: Vec::new(),
-            camera_watching: Vec::new(),
-            ..prev
-        })
     }
 
     pub fn bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Option<BotInstall> {
@@ -4638,6 +4565,10 @@ fn guild_initials(name: &str) -> String {
         initials
     }
 }
+
+#[cfg(test)]
+#[path = "image_upload_tests.rs"]
+mod image_upload_tests;
 
 #[cfg(test)]
 mod cooldown_tests {

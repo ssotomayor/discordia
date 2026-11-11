@@ -15,11 +15,11 @@ const INPUT: &str = "w-full bg-transparent border border-[var(--edge)] rounded-l
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
 #[component]
-pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
+pub fn IdentitySetupView(notice: Option<String>, on_done: EventHandler<Identity>) -> Element {
     let mut step = use_signal(|| Step::Choose);
     let mut display_name = use_signal(String::new);
     let mut draft_identity = use_signal(|| None::<Identity>);
-    let mut error = use_signal(|| None::<String>);
+    let mut error = use_signal(|| notice);
     let mut reveal = use_signal(|| false);
     let mut restore_phrase = use_signal(String::new);
     let mut private_key_input = use_signal(String::new);
@@ -611,9 +611,11 @@ fn FolderSettings(rev: Signal<u32>) -> Element {
                     if let Some(e) = error() {
                         div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(&(e).to_string())} }
                     }
-                    p { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
-                        {crate::i18n::text("Keys in this folder are encrypted for this computer; the passphrase lives in ", &[])}
-                        {crate::i18n::text("{0}. A copy of the folder opens nowhere else.", &[(crate :: keyvault :: backend () . describe ()).to_string()])}
+                    if let Ok(backend) = crate::keyvault::backend() {
+                        p { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
+                            {crate::i18n::text("Keys in this folder are encrypted for this computer; the passphrase lives in ", &[])}
+                            {crate::i18n::text("{0}. A copy of the folder opens nowhere else.", &[backend.describe().to_string()])}
+                        }
                     }
                 }
             }

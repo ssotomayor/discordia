@@ -15,7 +15,7 @@ use crate::push::gateway::Live;
 use crate::push::registration::RelayClient;
 use crate::push::tap::{Here, PendingTap, Route};
 use crate::settings::ClientSettings;
-use crate::state::{AppState, ConnectionStatus, GatewayTx, SessionParams};
+use crate::state::{AppState, GatewayTx, ServerSession, SessionParams};
 
 fn replace<T: PartialEq>(sender: &watch::Sender<T>, next: T) {
     sender.send_if_modified(|current| {
@@ -77,7 +77,7 @@ pub(crate) fn forget_server(identity: Identity, origin: String) {
 pub(crate) fn use_mention_push(state: Signal<AppState>, gateway: GatewayTx, identity: Identity) {
     let session = use_memo(move || {
         let s = state.read();
-        if s.status != ConnectionStatus::Ready {
+        if s.server_session() != ServerSession::Live {
             return None;
         }
         Some(Live {
@@ -108,7 +108,7 @@ pub(crate) fn use_attention(state: Signal<AppState>, gateway: GatewayTx) {
     let inputs = use_memo(move || {
         let s = state.read();
         // A server without push predates the message and answers it with an error.
-        let listens = s.status == ConnectionStatus::Ready && s.server_info.push.is_some();
+        let listens = s.server_session() == ServerSession::Live && s.server_info.push.is_some();
         (listens.then_some(s.readies), s.app_foreground)
     });
     let gate = use_hook(|| {
@@ -237,11 +237,15 @@ pub(crate) fn use_mention_open(
 ) {
     let inputs = use_memo(move || {
         let s = state.read();
-        let in_call = s.voice.channel_id.or(s.voice.joining_channel_id).is_some();
+        let in_call = s
+            .voice
+            .channel_id()
+            .or(s.voice.joining_channel_id())
+            .is_some();
         s.mention_tap.clone().map(|pending| {
             (
                 pending,
-                s.status == ConnectionStatus::Ready,
+                s.server_session() == ServerSession::Live,
                 s.server_origin.clone(),
                 in_call,
             )
@@ -319,6 +323,7 @@ mod tests {
     use super::*;
     use crate::protocol::{Channel, Guild};
     use crate::push::tap::MentionTap;
+    use crate::state::ConnectionStatus;
     use crate::state::SessionMode;
 
     type Export = Rc<RefCell<Option<Signal<AppState>>>>;
@@ -463,7 +468,7 @@ mod tests {
 
         let mut there = tap(Id::from_u128(3));
         there.tap.origin = THERE.into();
-        state.write().voice.channel_id = Some(Id::from_u128(4));
+        state.write().voice.force_channel(Some(Id::from_u128(4)));
         state.write().mention_tap = Some(there);
         dom.render_immediate_to_vec();
         let s = state.peek();
@@ -473,7 +478,7 @@ mod tests {
         drop(s);
         assert!(drain(&mut messages).is_empty());
 
-        state.write().voice.channel_id = None;
+        state.write().voice.force_channel(None);
         let mut there = tap(Id::from_u128(3));
         there.tap.origin = THERE.into();
         state.write().mention_tap = Some(there);

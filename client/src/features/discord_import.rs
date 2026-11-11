@@ -496,13 +496,24 @@ pub enum Progress {
     Failed(String),
 }
 
-async fn pause() {
+const CONNECTION_LOST: &str = "The connection to the server dropped during the import, so the new guild may be missing parts. Check it before importing again.";
+
+/// A reconnect drops every queued command (trap 4) and starts a new Ready, so
+/// what was sent across one may never have reached the server.
+fn session_lost(s: &crate::state::AppState, readies: u64) -> bool {
+    s.status != crate::state::ConnectionStatus::Ready || s.readies != readies
+}
+
+/// `false` once the session the import started on is gone.
+async fn pause(state: Signal<crate::state::AppState>, readies: u64) -> bool {
     tokio::time::sleep(WRITE_GAP).await;
+    !session_lost(&state.peek(), readies)
 }
 
 /// Waits for the server's answer to show up in state, or gives up.
 async fn wait_for<T>(
     state: Signal<crate::state::AppState>,
+    readies: u64,
     mut probe: impl FnMut(&crate::state::AppState) -> Option<T>,
 ) -> Option<T> {
     let deadline = tokio::time::Instant::now() + WAIT_FOR_SERVER;
@@ -510,7 +521,7 @@ async fn wait_for<T>(
         if let Some(found) = probe(&state.read()) {
             return Some(found);
         }
-        if tokio::time::Instant::now() >= deadline {
+        if tokio::time::Instant::now() >= deadline || session_lost(&state.peek(), readies) {
             return None;
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -537,6 +548,13 @@ pub async fn run_import(
         progress.set(Progress::Failed("not signed in".into()));
         return;
     };
+    let readies = state.peek().readies;
+    let lost = move |mut progress: Signal<Progress>| {
+        progress.set(Progress::Failed(CONNECTION_LOST.into()));
+    };
+    if session_lost(&state.peek(), readies) {
+        return lost(progress);
+    }
     let before: HashSet<Id> = state.read().guilds.iter().map(|g| g.id).collect();
 
     step("Creating the guild", done);
@@ -545,7 +563,7 @@ pub async fn run_import(
         template: None,
     });
     done += 1;
-    let Some(gid) = wait_for(state, |s| {
+    let Some(gid) = wait_for(state, readies, |s| {
         s.guilds
             .iter()
             .find(|g| g.owner_pubkey == me && !before.contains(&g.id))
@@ -553,6 +571,9 @@ pub async fn run_import(
     })
     .await
     else {
+        if session_lost(&state.peek(), readies) {
+            return lost(progress);
+        }
         progress.set(Progress::Failed(
             "the server did not create the guild; it may have refused (guild limit?) — see the toast"
                 .into(),
@@ -566,7 +587,9 @@ pub async fn run_import(
         .filter(|c| c.guild_id == gid)
         .map(|c| c.id)
         .collect();
-    pause().await;
+    if !pause(state, readies).await {
+        return lost(progress);
+    }
 
     if plan.description.is_some() || plan.icon.is_some() || plan.banner.is_some() {
         step("Setting name, picture and banner", done);
@@ -578,7 +601,9 @@ pub async fn run_import(
             banner: plan.banner.clone(),
         });
         done += 1;
-        pause().await;
+        if !pause(state, readies).await {
+            return lost(progress);
+        }
     }
 
     for (i, c) in plan.channels.iter().enumerate() {
@@ -594,13 +619,15 @@ pub async fn run_import(
             topic: c.topic.clone(),
         });
         done += 1;
-        pause().await;
+        if !pause(state, readies).await {
+            return lost(progress);
+        }
     }
 
     // Created channels take positions after the template's, in send order,
     // so the n-th new one is the n-th planned one.
     let expected = template_channels.len() + plan.channels.len();
-    let created = wait_for(state, |s| {
+    let created = wait_for(state, readies, |s| {
         let mut mine: Vec<_> = s
             .channels
             .iter()
@@ -615,6 +642,9 @@ pub async fn run_import(
     })
     .await
     .unwrap_or_default();
+    if session_lost(&state.peek(), readies) {
+        return lost(progress);
+    }
 
     let tweaks: Vec<_> = plan
         .channels
@@ -638,7 +668,9 @@ pub async fn run_import(
             markdown: None,
         });
         done += 1;
-        pause().await;
+        if !pause(state, readies).await {
+            return lost(progress);
+        }
     }
 
     let has_text = plan.channels.iter().any(|c| c.kind == ChannelKind::Text);
@@ -654,7 +686,9 @@ pub async fn run_import(
             continue;
         }
         gateway.send(ClientMessage::DeleteChannel { channel_id: *id });
-        pause().await;
+        if !pause(state, readies).await {
+            return lost(progress);
+        }
     }
     done += 2;
 
@@ -670,7 +704,9 @@ pub async fn run_import(
             permissions: r.permissions.clone(),
         });
         done += 1;
-        pause().await;
+        if !pause(state, readies).await {
+            return lost(progress);
+        }
     }
 
     for (i, e) in plan.emojis.iter().enumerate() {
@@ -684,11 +720,16 @@ pub async fn run_import(
             image: e.image.clone(),
         });
         done += 1;
-        pause().await;
+        if !pause(state, readies).await {
+            return lost(progress);
+        }
     }
 
     // Let the last answers land before counting what actually exists.
     tokio::time::sleep(Duration::from_millis(1200)).await;
+    if session_lost(&state.peek(), readies) {
+        return lost(progress);
+    }
     let (channels, roles, emojis) = {
         let s = state.read();
         (
@@ -1090,6 +1131,22 @@ mod tests {
         assert_eq!(planned[1].color.as_deref(), Some("#ff0000"));
         assert_eq!(planned[0].color, None);
         assert_eq!(managed, 1);
+    }
+
+    #[test]
+    fn a_reconnect_or_a_dropped_socket_ends_the_session_an_import_ran_on() {
+        let mut s = crate::state::AppState::empty();
+        s.status = crate::state::ConnectionStatus::Ready;
+        s.readies = 3;
+        assert!(!session_lost(&s, 3));
+        s.status = crate::state::ConnectionStatus::Reconnecting;
+        assert!(session_lost(&s, 3));
+        s.status = crate::state::ConnectionStatus::Ready;
+        s.readies = 4;
+        assert!(
+            session_lost(&s, 3),
+            "back, but queued commands were dropped"
+        );
     }
 
     #[test]

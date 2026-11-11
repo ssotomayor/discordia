@@ -13,7 +13,7 @@ use crate::agents::{AgentEntry, Agents, Preset, RunState, Secrets, ServerRef, st
 use crate::protocol::{
     AppManifest, AppsPolicy, ClientMessage, Id, Permission, ServerAgentSpec, ServerAgentView,
 };
-use crate::state::{ConnectionStatus, SessionMode, use_app_state, use_gateway};
+use crate::state::{ServerSession, SessionMode, use_app_state, use_gateway};
 
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors";
 const LABEL: &str =
@@ -101,7 +101,7 @@ pub fn AgentsDialog() -> Element {
     let open = use_memo(move || state.read().agents_open);
     let operator = use_memo(move || {
         let s = state.read();
-        s.is_operator && s.status == ConnectionStatus::Ready
+        s.is_operator && s.server_session() == ServerSession::Live
     });
     use_effect(move || {
         if open() && operator() {

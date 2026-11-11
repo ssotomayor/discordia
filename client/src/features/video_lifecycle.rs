@@ -14,13 +14,14 @@ pub(super) struct Target {
     pub ice_servers: Vec<crate::protocol::IceServer>,
 }
 
+/// What the page reports for one attempt; serde rejects any other status at the boundary.
 #[derive(serde::Deserialize)]
 pub(super) struct Event {
     pub generation: u64,
     pub status: Status,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum Status {
     Connected,
@@ -33,20 +34,38 @@ pub(super) enum Action {
     Disconnect,
 }
 
-#[derive(Default)]
+/// Where the current target's attempts stand: one value, so a blocked room cannot also await a retry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// An attempt is out, or connected; `attempt` counts the failures before it.
+    Trying { attempt: u8 },
+    /// The last attempt asked for a retry, which the deadline will start.
+    Waiting { attempt: u8 },
+    /// Encryption failed: retrying cannot help until the target changes.
+    Blocked,
+}
+
 struct Lifecycle {
     target: Option<Target>,
     generation: u64,
-    attempt: u8,
-    pending: bool,
-    blocked: bool,
+    phase: Phase,
+}
+
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self {
+            target: None,
+            generation: 0,
+            phase: Phase::Trying { attempt: 0 },
+        }
+    }
 }
 
 impl Lifecycle {
-    fn connect(&mut self) -> Option<Action> {
+    fn connect(&mut self, attempt: u8) -> Option<Action> {
         let target = self.target.clone()?;
         self.generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-        self.pending = false;
+        self.phase = Phase::Trying { attempt };
         Some(Action::Connect {
             target,
             generation: self.generation,
@@ -58,38 +77,46 @@ impl Lifecycle {
             return None;
         }
         self.target = target;
-        self.attempt = 0;
-        self.pending = false;
-        self.blocked = false;
-        self.connect().or(Some(Action::Disconnect))
+        self.phase = Phase::Trying { attempt: 0 };
+        self.connect(0).or(Some(Action::Disconnect))
     }
 
     fn event(&mut self, event: Event) -> Option<Duration> {
-        if self.target.is_none() || event.generation != self.generation || self.blocked {
+        if self.target.is_none() || event.generation != self.generation {
             return None;
         }
-        match event.status {
-            Status::Connected if !self.pending => self.attempt = 0,
-            Status::Retry if !self.pending => {
-                self.pending = true;
-                let delay = Duration::from_millis((1500_u64 << self.attempt.min(4)).min(15000));
-                self.attempt = self.attempt.saturating_add(1);
-                return Some(delay);
-            }
-            Status::Blocked => {
-                self.blocked = true;
-                self.pending = false;
-            }
-            _ => {}
-        }
-        None
+        let (phase, delay) = step(self.phase, event.status);
+        self.phase = phase;
+        delay
     }
 
     fn retry(&mut self) -> Option<Action> {
-        if !self.pending || self.blocked {
-            return None;
+        match self.phase {
+            Phase::Waiting { attempt } => self.connect(attempt),
+            Phase::Trying { .. } | Phase::Blocked => None,
         }
-        self.connect()
+    }
+
+    fn blocked(&self) -> bool {
+        self.phase == Phase::Blocked
+    }
+}
+
+/// One report for the current attempt: the next phase, and the backoff when a retry is due.
+fn step(phase: Phase, status: Status) -> (Phase, Option<Duration>) {
+    match (phase, status) {
+        (Phase::Blocked, _) | (_, Status::Blocked) => (Phase::Blocked, None),
+        (Phase::Trying { .. }, Status::Connected) => (Phase::Trying { attempt: 0 }, None),
+        (Phase::Trying { attempt }, Status::Retry) => {
+            let delay = Duration::from_millis((1500_u64 << attempt.min(4)).min(15000));
+            (
+                Phase::Waiting {
+                    attempt: attempt.saturating_add(1),
+                },
+                Some(delay),
+            )
+        }
+        (Phase::Waiting { .. }, Status::Connected | Status::Retry) => (phase, None),
     }
 }
 
@@ -119,7 +146,7 @@ pub(super) async fn run(
                 if let Some(delay) = lifecycle.event(event) {
                     deadline = Some(Instant::now() + delay);
                 }
-                if lifecycle.blocked { deadline = None; }
+                if lifecycle.blocked() { deadline = None; }
             }
             _ = async {
                 match deadline {
@@ -152,6 +179,76 @@ mod tests {
         match action.unwrap() {
             Action::Connect { generation, .. } => generation,
             Action::Disconnect => panic!("expected connect"),
+        }
+    }
+
+    #[test]
+    fn each_report_moves_the_phase_where_the_table_says() {
+        use Phase::*;
+        let ms = |n| Some(Duration::from_millis(n));
+        let cases = [
+            (
+                Trying { attempt: 0 },
+                Status::Connected,
+                Trying { attempt: 0 },
+                None,
+            ),
+            (
+                Trying { attempt: 3 },
+                Status::Connected,
+                Trying { attempt: 0 },
+                None,
+            ),
+            (
+                Trying { attempt: 0 },
+                Status::Retry,
+                Waiting { attempt: 1 },
+                ms(1500),
+            ),
+            (
+                Trying { attempt: 4 },
+                Status::Retry,
+                Waiting { attempt: 5 },
+                ms(15000),
+            ),
+            (
+                Trying { attempt: 255 },
+                Status::Retry,
+                Waiting { attempt: 255 },
+                ms(15000),
+            ),
+            (Trying { attempt: 2 }, Status::Blocked, Blocked, None),
+            (
+                Waiting { attempt: 2 },
+                Status::Retry,
+                Waiting { attempt: 2 },
+                None,
+            ),
+            (
+                Waiting { attempt: 2 },
+                Status::Connected,
+                Waiting { attempt: 2 },
+                None,
+            ),
+            (Waiting { attempt: 2 }, Status::Blocked, Blocked, None),
+            (Blocked, Status::Retry, Blocked, None),
+            (Blocked, Status::Connected, Blocked, None),
+        ];
+        for (from, status, to, delay) in cases {
+            assert_eq!(step(from, status), (to, delay), "{from:?} + {status:?}");
+        }
+    }
+
+    #[test]
+    fn the_page_reports_only_the_three_statuses() {
+        for (json, ok) in [
+            (r#"{"generation":4,"status":"connected"}"#, true),
+            (r#"{"generation":4,"status":"retry"}"#, true),
+            (r#"{"generation":4,"status":"blocked"}"#, true),
+            (r#"{"generation":4,"status":"Connected"}"#, false),
+            (r#"{"generation":4,"status":"pending"}"#, false),
+        ] {
+            assert_eq!(serde_json::from_str::<Event>(json).is_ok(), ok, "{json}");
         }
     }
 

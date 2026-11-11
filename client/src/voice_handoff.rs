@@ -71,7 +71,7 @@ impl Bridge {
             .borrow()
             .clone()
             .ok_or("The voice channel is no longer available.")?;
-        let channel = state.peek().voice.channel_id;
+        let channel = state.peek().voice.channel_id();
         route
             .gateway
             .0
@@ -106,7 +106,7 @@ impl Bridge {
             if state
                 .peek()
                 .voice
-                .channel_id
+                .channel_id()
                 .is_some_and(|current| Some(current) != channel)
             {
                 return Err(
@@ -159,10 +159,14 @@ mod tests {
                 screen_watching: vec![],
                 camera_watching: Vec::new(),
             });
-            state.voice.phase = VoicePhase::Connected;
-            state.voice.channel_id = Some(channel);
-            state.screen_sharing = true;
-            state.camera_on = true;
+            state.voice.force_phase(VoicePhase::Connected);
+            state.voice.force_channel(Some(channel));
+            state
+                .screen_share
+                .on(crate::local_share::ShareEvent::WebViewStarted {
+                    native_audio: false,
+                });
+            let _ = state.camera.on(crate::local_camera::CameraEvent::Started);
             Signal::new(state)
         });
         let (gateway, messages) = unbounded_channel();
@@ -190,14 +194,14 @@ mod tests {
         };
         done.send(()).unwrap();
         assert!(futures_util::poll!(&mut handoff).is_pending());
-        assert!(state.peek().camera_on);
+        assert!(state.peek().camera.is_on());
         media.send(()).unwrap();
         assert!(futures_util::poll!(&mut handoff).is_pending());
-        assert!(state.peek().screen_sharing);
+        assert!(state.peek().screen_share.is_live());
         state.write().voice_states.clear();
         handoff.await.unwrap();
-        assert_eq!(state.peek().voice.phase, VoicePhase::Idle);
-        assert!(!state.peek().screen_sharing && !state.peek().camera_on);
+        assert_eq!(state.peek().voice.phase(), VoicePhase::Idle);
+        assert!(!state.peek().screen_share.is_live() && !state.peek().camera.is_on());
     }
 
     #[tokio::test]
@@ -219,7 +223,7 @@ mod tests {
                 media.send(Err("media failed".into())).unwrap();
             }
             assert!(handoff.await.is_err());
-            assert_eq!(state.peek().voice.phase, VoicePhase::Connected);
+            assert_eq!(state.peek().voice.phase(), VoicePhase::Connected);
         }
     }
 }

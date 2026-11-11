@@ -19,6 +19,9 @@ pub struct HostEntry {
     pub location: Option<GeoPoint>,
     /// Who registered it, as `origin` spells them: what the per-address caps count.
     pub address: Option<String>,
+    /// The key that started this session, lowercase; `None` when anonymous.
+    /// `claim_host` sets it, whatever the caller put here.
+    pub owner: Option<String>,
     pub last_seen_ms: AtomicI64,
     /// Woken when the same key registers this name from a newer session.
     pub superseded: tokio::sync::Notify,
@@ -171,10 +174,61 @@ fn storage<E>(error: rusqlite::Error, fallback: E) -> E {
     fallback
 }
 
-fn holder(db: &Connection, slug: &str) -> rusqlite::Result<Option<String>> {
-    db.prepare_cached("SELECT owner_pubkey FROM reservations WHERE slug = ?1")?
-        .query_row([slug], |row| row.get(0))
+struct Row {
+    owner: String,
+    last_live: i64,
+}
+
+fn row(db: &Connection, slug: &str) -> rusqlite::Result<Option<Row>> {
+    db.prepare_cached("SELECT owner_pubkey, last_live_unix FROM reservations WHERE slug = ?1")?
+        .query_row([slug], |row| {
+            Ok(Row {
+                owner: row.get(0)?,
+                last_live: row.get(1)?,
+            })
+        })
         .optional()
+}
+
+/// A name, from its reservation row, its live session and the clock. Every
+/// decision about a name starts here, so "expired" means one thing everywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NameState {
+    Free,
+    /// Past its TTL with no session: anyone's, though `expire` has not deleted the row.
+    Expired,
+    ReservedIdle {
+        owner: String,
+    },
+    /// A session started by the row's own key.
+    ReservedLive {
+        owner: String,
+    },
+    /// A session no row of its own key backs: anonymous, or one whose row the
+    /// operator deleted or gave to `owner` while it ran.
+    Unbacked {
+        owner: Option<String>,
+    },
+}
+
+impl NameState {
+    /// Whom the reservations table names, which an operator's edit changes at once.
+    fn holder(&self) -> Option<&str> {
+        match self {
+            Self::ReservedIdle { owner }
+            | Self::ReservedLive { owner }
+            | Self::Unbacked { owner: Some(owner) } => Some(owner),
+            Self::Free | Self::Expired | Self::Unbacked { owner: None } => None,
+        }
+    }
+
+    fn live(&self) -> bool {
+        matches!(self, Self::ReservedLive { .. } | Self::Unbacked { .. })
+    }
+
+    fn held_by(&self, key: &str) -> bool {
+        self.holder().is_some_and(|h| h.eq_ignore_ascii_case(key))
+    }
 }
 
 fn set_live(db: &Connection, slug: &str, now: u64) -> rusqlite::Result<usize> {
@@ -280,20 +334,19 @@ impl Registry {
         now: u64,
     ) -> rusqlite::Result<Result<(), ClaimError>> {
         self.expire(db, now)?;
-        match holder(db, slug)? {
-            Some(held) if !held.eq_ignore_ascii_case(owner) => return Ok(Err(ClaimError::Taken)),
-            Some(_) => {
-                set_live(db, slug, now)?;
-                if let Some(address) = address {
-                    db.prepare_cached("UPDATE reservations SET address = ?2 WHERE slug = ?1")?
-                        .execute(params![slug, address])?;
-                }
-                return Ok(Ok(()));
+        let state = self.state_of(db, slug, now)?;
+        if state.held_by(owner) {
+            set_live(db, slug, now)?;
+            if let Some(address) = address {
+                db.prepare_cached("UPDATE reservations SET address = ?2 WHERE slug = ?1")?
+                    .execute(params![slug, address])?;
             }
-            None => {}
+            return Ok(Ok(()));
         }
-        if self.hosts.contains_key(slug) {
-            return Ok(Err(ClaimError::LiveElsewhere));
+        match state {
+            NameState::Free | NameState::Expired => {}
+            NameState::Unbacked { owner: None } => return Ok(Err(ClaimError::LiveElsewhere)),
+            _ => return Ok(Err(ClaimError::Taken)),
         }
         let total: i64 = db.query_row("SELECT COUNT(*) FROM reservations", [], |row| row.get(0))?;
         if total as usize >= self.caps.total {
@@ -324,15 +377,50 @@ impl Registry {
         Ok(Ok(()))
     }
 
+    /// The latest `last_live_unix` that has lapsed by `now`, if any has.
+    fn lapsed_at(&self, now: u64) -> Option<i64> {
+        now.checked_sub(self.caps.ttl_secs).map(|t| t as i64)
+    }
+
     /// A live name never expires, whatever its timestamp says: that is only
     /// refreshed when a session starts or ends, and by `sweep`.
+    fn name_state(&self, row: Option<Row>, session: Option<&HostEntry>, now: u64) -> NameState {
+        match (row, session) {
+            (None, None) => NameState::Free,
+            (None, Some(_)) => NameState::Unbacked { owner: None },
+            (Some(row), None) if self.lapsed_at(now).is_some_and(|t| row.last_live <= t) => {
+                NameState::Expired
+            }
+            (Some(row), None) => NameState::ReservedIdle { owner: row.owner },
+            (Some(row), Some(live))
+                if live
+                    .owner
+                    .as_deref()
+                    .is_some_and(|k| k.eq_ignore_ascii_case(&row.owner)) =>
+            {
+                NameState::ReservedLive { owner: row.owner }
+            }
+            (Some(row), Some(_)) => NameState::Unbacked {
+                owner: Some(row.owner),
+            },
+        }
+    }
+
+    fn state_of(&self, db: &Connection, slug: &str, now: u64) -> rusqlite::Result<NameState> {
+        let row = row(db, slug)?;
+        // A plain clone, so no map guard outlives this line (trap 27).
+        let live = self.hosts.get(slug).map(|h| h.value().clone());
+        Ok(self.name_state(row, live.as_deref(), now))
+    }
+
+    /// Deletes every `NameState::Expired` row; the caps count rows.
     fn expire(&self, db: &Connection, now: u64) -> rusqlite::Result<()> {
-        let Some(cutoff) = now.checked_sub(self.caps.ttl_secs) else {
+        let Some(cutoff) = self.lapsed_at(now) else {
             return Ok(());
         };
         let stale: Vec<String> = db
             .prepare_cached("SELECT slug FROM reservations WHERE last_live_unix <= ?1")?
-            .query_map([cutoff as i64], |row| row.get(0))?
+            .query_map([cutoff], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for slug in stale.iter().filter(|slug| !self.hosts.contains_key(*slug)) {
             db.execute("DELETE FROM reservations WHERE slug = ?1", [slug])?;
@@ -359,30 +447,41 @@ impl Registry {
     }
 
     pub fn names_of(&self, owner: &str, now: u64) -> Vec<ReservedName> {
-        let ttl = self.caps.ttl_secs;
-        let held: rusqlite::Result<Vec<(String, i64)>> = self
+        let held: rusqlite::Result<Vec<(String, Row)>> = self
             .db()
             .prepare_cached(
-                "SELECT slug, last_live_unix FROM reservations WHERE owner_pubkey = ?1 ORDER BY slug",
+                "SELECT slug, owner_pubkey, last_live_unix FROM reservations WHERE owner_pubkey = ?1 ORDER BY slug",
             )
             .and_then(|mut query| {
                 query
-                    .query_map([owner], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .query_map([owner], |row| {
+                        Ok((
+                            row.get(0)?,
+                            Row {
+                                owner: row.get(1)?,
+                                last_live: row.get(2)?,
+                            },
+                        ))
+                    })?
                     .collect()
             });
         let held = held.unwrap_or_else(|e| storage(e, Vec::new()));
         held.into_iter()
-            .filter_map(|(slug, last_live)| {
-                if self.hosts.contains_key(&slug) {
-                    return Some(ReservedName {
-                        code: slug,
-                        expires_in_secs: None,
-                    });
-                }
-                let left = ttl.checked_sub(now.saturating_sub(last_live as u64))?;
-                (left > 0).then_some(ReservedName {
+            .filter_map(|(slug, row)| {
+                let last_live = row.last_live;
+                let live = self.hosts.get(&slug).map(|h| h.value().clone());
+                let expires_in_secs = match self.name_state(Some(row), live.as_deref(), now) {
+                    NameState::ReservedIdle { .. } => Some(
+                        self.caps
+                            .ttl_secs
+                            .saturating_sub(now.saturating_sub(last_live as u64)),
+                    ),
+                    NameState::Expired | NameState::Free => return None,
+                    NameState::ReservedLive { .. } | NameState::Unbacked { .. } => None,
+                };
+                Some(ReservedName {
                     code: slug,
-                    expires_in_secs: Some(left),
+                    expires_in_secs,
                 })
             })
             .collect()
@@ -391,12 +490,13 @@ impl Registry {
     pub fn release_name(&self, slug: &str, owner: &str) -> Result<(), ReleaseError> {
         let _registration = self.registration();
         let db = self.db();
-        match holder(&db, slug) {
-            Ok(Some(held)) if held.eq_ignore_ascii_case(owner) => {}
-            Ok(_) => return Err(ReleaseError::NotYours),
-            Err(e) => return Err(storage(e, ReleaseError::Storage)),
+        let state = self
+            .state_of(&db, slug, now_unix())
+            .map_err(|e| storage(e, ReleaseError::Storage))?;
+        if !state.held_by(owner) {
+            return Err(ReleaseError::NotYours);
         }
-        if self.hosts.contains_key(slug) {
+        if state.live() {
             return Err(ReleaseError::LiveNow);
         }
         db.execute("DELETE FROM reservations WHERE slug = ?1", [slug])
@@ -405,7 +505,20 @@ impl Registry {
     }
 
     pub fn reservation_owner(&self, slug: &str) -> Option<String> {
-        holder(&self.db(), slug).unwrap_or_else(|e| storage(e, None))
+        self.owner_at(slug, now_unix())
+    }
+
+    fn owner_at(&self, slug: &str, now: u64) -> Option<String> {
+        self.state_of(&self.db(), slug, now)
+            .map(|state| state.holder().map(str::to_string))
+            .unwrap_or_else(|e| storage(e, None))
+    }
+
+    /// Nobody holds it and no session is on it, so an anonymous host may take it.
+    pub fn is_free(&self, slug: &str) -> bool {
+        self.state_of(&self.db(), slug, now_unix())
+            .map(|state| matches!(state, NameState::Free | NameState::Expired))
+            .unwrap_or_else(|e| storage(e, false))
     }
 
     pub fn issue_voice_grant(&self, shortcode: &str) -> String {
@@ -423,11 +536,20 @@ impl Registry {
         &self,
         shortcode: &str,
         owner: Option<&str>,
-        entry: HostEntry,
+        mut entry: HostEntry,
     ) -> Result<Arc<HostEntry>, ClaimError> {
         let _registration = self.registration();
-        // A session replacing its own listing is not one more host.
-        let replacing = owner.is_some() && self.hosts.contains_key(shortcode);
+        let now = now_unix();
+        let state = {
+            let db = self.db();
+            self.expire(&db, now)
+                .and_then(|()| self.state_of(&db, shortcode, now))
+                .map_err(|e| storage(e, ClaimError::Storage))?
+        };
+        // Only the key that started a session replaces it, whatever the row now says;
+        // and that is not one more host.
+        let replacing = matches!(&state, NameState::ReservedLive { .. })
+            && owner.is_some_and(|o| state.held_by(o));
         if !replacing {
             if self.hosts.len() >= self.caps.hosts_total {
                 return Err(ClaimError::Full);
@@ -446,14 +568,15 @@ impl Registry {
                 return Err(ClaimError::AddressLimit);
             }
         }
-        if let Some(owner) = owner {
-            self.claim_name_locked(shortcode, owner, entry.address.as_deref(), now_unix())?;
-        } else if holder(&self.db(), shortcode)
-            .map_err(|e| storage(e, ClaimError::Storage))?
-            .is_some()
-        {
-            return Err(ClaimError::Taken);
+        match (owner, &state) {
+            (Some(owner), _) => {
+                self.claim_name_locked(shortcode, owner, entry.address.as_deref(), now)?
+            }
+            (None, NameState::Free | NameState::Expired) => {}
+            (None, NameState::Unbacked { owner: None }) => return Err(ClaimError::LiveElsewhere),
+            (None, _) => return Err(ClaimError::Taken),
         }
+        entry.owner = owner.map(str::to_ascii_lowercase);
         entry.touch();
         let entry = Arc::new(entry);
         match self.hosts.entry(shortcode.to_string()) {
@@ -461,8 +584,7 @@ impl Registry {
                 slot.insert(entry.clone());
                 Ok(entry)
             }
-            // Only an owner gets here: `claim_name_locked` refused everyone else.
-            Entry::Occupied(mut slot) if owner.is_some() => {
+            Entry::Occupied(mut slot) if replacing => {
                 let old = slot.insert(entry.clone());
                 old.superseded.notify_one();
                 Ok(entry)
@@ -540,6 +662,7 @@ mod tests {
             transport_addrs: Vec::new(),
             location: None,
             address: None,
+            owner: None,
             last_seen_ms: AtomicI64::new(0),
             superseded: Default::default(),
         }
@@ -836,11 +959,16 @@ mod tests {
         reg.hosts.insert("busy".into(), Arc::new(host_entry()));
 
         reg.sweep(1_000 + day - 1);
-        assert!(reg.reservation_owner("idle").is_some());
+        assert!(reg.owner_at("idle", 1_000 + day - 1).is_some());
+        assert_eq!(
+            reg.owner_at("idle", 1_000 + day),
+            None,
+            "lapsed before the sweep"
+        );
         reg.sweep(1_000 + day + 1);
-        assert_eq!(reg.reservation_owner("idle"), None);
+        assert_eq!(reg.owner_at("idle", 0), None, "and gone after it");
         assert!(
-            reg.reservation_owner("busy").is_some(),
+            reg.owner_at("busy", 1_000 + day + 1).is_some(),
             "a live name never expires"
         );
         assert_eq!(
@@ -866,6 +994,79 @@ mod tests {
         );
         assert!(reg.claim_name_at("new", "owner_a", None, day).is_ok());
         assert!(reg.claim_name_at("old", "owner_b", None, day).is_ok());
+    }
+
+    #[test]
+    fn a_lapsed_name_is_free_everywhere_before_any_sweep() {
+        let reg = Registry::new();
+        reg.claim_name_at("old", "owner_a", None, 0).unwrap();
+        assert_eq!(reg.reservation_owner("old"), None);
+        assert!(reg.names_of("owner_a", now_unix()).is_empty());
+        assert_eq!(
+            reg.release_name("old", "owner_a"),
+            Err(ReleaseError::NotYours)
+        );
+        let anon = reg.claim_host("old", None, host_entry()).unwrap();
+        reg.sweep(now_unix());
+        assert_eq!(
+            reg.reservation_owner("old"),
+            None,
+            "the lapsed row went, so the sweep cannot hand it back"
+        );
+        reg.release("old", &anon, None);
+        assert!(reg.claim_name("old", "owner_b").is_ok());
+    }
+
+    #[test]
+    fn a_session_is_superseded_only_by_the_key_that_started_it() {
+        let reg = Registry::new();
+        let first = reg
+            .claim_host("mine", Some("owner_a"), host_entry())
+            .unwrap();
+        reg.db()
+            .execute(
+                "UPDATE reservations SET owner_pubkey = 'owner_b' WHERE slug = 'mine'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            reg.claim_host("mine", Some("owner_b"), host_entry()).err(),
+            Some(ClaimError::LiveElsewhere),
+            "a row given away does not hand over the session on it"
+        );
+        assert_eq!(
+            reg.claim_host("mine", Some("owner_a"), host_entry()).err(),
+            Some(ClaimError::Taken)
+        );
+        assert!(Arc::ptr_eq(reg.hosts.get("mine").unwrap().value(), &first));
+        reg.release("mine", &first, None);
+        assert!(
+            reg.claim_host("mine", Some("owner_b"), host_entry())
+                .is_ok()
+        );
+
+        let anon = reg.claim_host("anon", None, host_entry()).unwrap();
+        reg.db()
+            .execute(
+                "INSERT INTO reservations (slug, owner_pubkey, last_live_unix) VALUES ('anon', 'owner_c', ?1)",
+                [now_unix() as i64],
+            )
+            .unwrap();
+        assert_eq!(
+            reg.claim_host("anon", Some("owner_c"), host_entry()).err(),
+            Some(ClaimError::LiveElsewhere)
+        );
+        assert!(Arc::ptr_eq(reg.hosts.get("anon").unwrap().value(), &anon));
+
+        reg.claim_host("gone", Some("owner_a"), host_entry())
+            .unwrap();
+        reg.db()
+            .execute("DELETE FROM reservations WHERE slug = 'gone'", [])
+            .unwrap();
+        assert_eq!(
+            reg.claim_host("gone", Some("owner_d"), host_entry()).err(),
+            Some(ClaimError::LiveElsewhere)
+        );
     }
 
     #[test]

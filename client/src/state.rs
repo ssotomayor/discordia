@@ -4,10 +4,13 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
+pub use crate::local_camera::CameraEvent;
+pub use crate::local_share::ShareEvent;
 use crate::protocol::{
     BotInstall, Channel, ClientMessage, Guild, GuildSummary, Id, Member, Message, Permission,
     Profile, Role, User, VoiceState,
 };
+pub use crate::voice_session::{CallState, MuteChange, VoiceEvent, VoicePhase, VoiceSession};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -69,12 +72,16 @@ pub enum ConnectionStatus {
     Disconnected,
 }
 
+/// Whether this account is in a server session, for state that outlives one
+/// (`AppState::server_session`). `App::session` is what mounts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoicePhase {
-    Idle,
+pub enum ServerSession {
+    /// Home, or a session whose gateway task has ended.
+    Absent,
+    /// Dialling, or redialling one that was live; nothing of the server is current.
     Connecting,
-    Connected,
-    Error,
+    /// The server let us in and its Ready is applied.
+    Live,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +134,7 @@ pub struct VideoReceptionStats {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Default))]
 pub struct ScreenShareStats {
     pub outbound: bool,
     pub capture_width: Option<u32>,
@@ -155,54 +163,6 @@ pub struct ScreenShareStats {
     pub jitter_ms: Option<f64>,
     pub reception: Option<VideoReceptionStats>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoiceSession {
-    pub phase: VoicePhase,
-    pub channel_id: Option<Id>,
-    pub joining_channel_id: Option<Id>,
-    pub muted: bool,
-    pub deafened: bool,
-    pub muted_before_deafen: bool,
-    pub speaking: bool,
-    pub error: Option<String>,
-}
-
-impl Default for VoiceSession {
-    fn default() -> Self {
-        Self {
-            phase: VoicePhase::Idle,
-            channel_id: None,
-            joining_channel_id: None,
-            muted: false,
-            deafened: false,
-            muted_before_deafen: false,
-            speaking: false,
-            error: None,
-        }
-    }
-}
-
-impl VoiceSession {
-    pub fn join_message(&self, channel_id: Id) -> ClientMessage {
-        ClientMessage::JoinVoice {
-            channel_id,
-            preferences: Some(crate::protocol::VoicePreferences {
-                muted: self.muted || self.deafened,
-                deafened: self.deafened,
-            }),
-        }
-    }
-
-    pub fn toggle_deafen(&mut self) -> (bool, bool) {
-        if self.deafened {
-            (self.muted_before_deafen, false)
-        } else {
-            self.muted_before_deafen = self.muted;
-            (true, true)
-        }
-    }
 }
 
 /// A bot command whose fields are being filled in (`bot_commands::CommandDialog`).
@@ -310,14 +270,14 @@ pub enum AppBadge {
     Count(u32),
 }
 
-/// Which list a conversation belongs in. A bot with `Members` can harvest every
-/// pubkey and DM it over relays, outside any server's reach (#311).
+pub use crate::dm_standing::{DmChoice, DmStanding};
+
+/// How a conversation's unread count may change; see `AppState::change_dm_unread`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DmStanding {
-    Inbox,
-    Request,
-    Ignored,
-    Blocked,
+pub enum UnreadChange {
+    Arrived,
+    Read,
+    Settle,
 }
 
 /// A right-click on someone in a voice channel. Mounted at the workspace root
@@ -368,7 +328,8 @@ pub struct AppState {
     pub dm_emoji: HashMap<Id, Vec<(String, String)>>,
     /// Seeded from settings and written back by `use_saved_emoji_persistence`.
     pub saved_emoji: Vec<crate::settings::SavedEmoji>,
-    pub dm_unread: HashMap<Id, u32>,
+    /// Written only by `change_dm_unread`, read through `dm_unread`.
+    dm_unread: HashMap<Id, u32>,
     pub channel_unread: HashSet<Id>,
     /// Messages naming us since the channel was last read; counted live only,
     /// since Ready carries one timestamp per channel and no content.
@@ -404,6 +365,8 @@ pub struct AppState {
     pub dm_edit_versions: HashMap<Id, (i64, String)>,
     pub pending_dm_deletions: HashSet<(String, String)>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
+    /// `nostr::outbox::Outbox::pending`, for the composer's cap.
+    pub dm_pending: usize,
     pub dm_images: HashMap<Id, crate::nostr::dm_image::Image>,
     pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
@@ -413,8 +376,8 @@ pub struct AppState {
     /// Seeded from `ClientSettings::dm_blocked` until our kind 10000 arrives.
     pub mutes: crate::nostr::nip51::MuteList,
     /// Seeded from `ClientSettings`; written back by `use_dm_standing_persistence`.
-    pub dm_accepted: HashSet<String>,
-    pub dm_ignored: HashSet<String>,
+    /// Changed only by `choose_dm`.
+    dm_choices: HashMap<String, DmChoice>,
     pub nostr_relays_up: std::collections::HashSet<String>,
     /// Names peers published for themselves (kind 0), by pubkey, each with the
     /// `created_at` it came with. Kept because kind 0 is replaceable and the
@@ -424,7 +387,7 @@ pub struct AppState {
     pub dm_mode: bool,
     /// Whether the surface holding the selected conversation is on screen. The
     /// home drawer closes over a DM that stays selected, and a message arriving
-    /// behind it is unread however selected it is.
+    /// behind it is unread however selected it is. Written only by `use_dm_pane`.
     pub dm_pane_open: bool,
     /// Android's resume state; on desktop, whether any of our windows has focus.
     pub app_foreground: bool,
@@ -490,18 +453,13 @@ pub struct AppState {
     /// What every LiveKit room of this session hands its ICE agent; a host
     /// behind NAT sends its rendezvous's relay here so its SFU can be reached.
     pub ice_servers: Vec<crate::protocol::IceServer>,
-    pub screen_share_target: Option<crate::sysvideo::Target>,
-    pub screen_picker: Option<Result<Vec<crate::sysvideo::Source>, String>>,
-    pub screen_sharing: bool,
-    pub screen_native_audio: bool,
+    pub screen_share: crate::local_share::ScreenShare,
     pub screen_shares: HashMap<Id, Vec<String>>,
-    pub screen_viewing: HashSet<String>,
+    pub screen_viewing: crate::stream_placement::StreamWatches,
     pub replying_to: Option<ReplyDraft>,
     pub screen_capture_available: bool,
 
-    pub camera_on: bool,
-    pub camera_starting: bool,
-    pub camera_picker: bool,
+    pub camera: crate::local_camera::LocalCamera,
     pub available_cameras: Vec<CameraDevice>,
     pub cameras_watching: HashSet<String>,
     pub camera_capture_available: bool,
@@ -551,7 +509,7 @@ pub struct AppState {
     pub media_undecryptable: bool,
     pub pending_rekey: bool,
     pub identity: Option<crate::identity::Identity>,
-    pub media_keys: HashMap<Id, (u32, [u8; 32])>,
+    pub media_key: crate::mediakey::CallKey,
     pub host_info: Option<HostInfo>,
     pub transport: Transport,
     pub integrations: HashMap<Id, Vec<BotInstall>>,
@@ -620,7 +578,7 @@ impl AppState {
 
     pub fn empty() -> Self {
         Self {
-            status: ConnectionStatus::Connecting,
+            status: ConnectionStatus::Disconnected,
             self_user: None,
             guilds: Vec::new(),
             channels: Vec::new(),
@@ -665,18 +623,18 @@ impl AppState {
             dm_edit_versions: HashMap::new(),
             pending_dm_deletions: HashSet::new(),
             dm_delivery: HashMap::new(),
+            dm_pending: 0,
             dm_images: HashMap::new(),
             dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
             dm_call: None,
             contacts: Default::default(),
             mutes: Default::default(),
-            dm_accepted: HashSet::new(),
-            dm_ignored: HashSet::new(),
+            dm_choices: HashMap::new(),
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),
             dm_mode: false,
-            dm_pane_open: true,
+            dm_pane_open: false,
             app_foreground: !cfg!(target_os = "android"),
             dm_notification_open: None,
             catalog: Vec::new(),
@@ -714,18 +672,13 @@ impl AppState {
             screen_video_token: None,
             screen_viewer_token: None,
             ice_servers: Vec::new(),
-            screen_share_target: None,
-            screen_picker: None,
+            screen_share: Default::default(),
             screen_audio_joined: false,
-            screen_sharing: false,
-            screen_native_audio: false,
             screen_shares: HashMap::new(),
-            screen_viewing: HashSet::new(),
+            screen_viewing: Default::default(),
             replying_to: None,
             screen_capture_available: false,
-            camera_on: false,
-            camera_starting: false,
-            camera_picker: false,
+            camera: Default::default(),
             available_cameras: Vec::new(),
             cameras_watching: HashSet::new(),
             camera_capture_available: false,
@@ -770,7 +723,7 @@ impl AppState {
             media_undecryptable: false,
             pending_rekey: false,
             identity: None,
-            media_keys: HashMap::new(),
+            media_key: Default::default(),
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),
@@ -826,10 +779,8 @@ impl AppState {
     /// Clear locally before the server echo: retained tokens keep webview rooms alive,
     /// and the process-wide media key must not survive a call.
     pub fn end_voice_locally(&mut self) {
-        self.voice.phase = VoicePhase::Idle;
-        self.voice.channel_id = None;
-        self.media_keys.clear();
-        self.voice.error = None;
+        self.voice_event(VoiceEvent::Ended);
+        self.drop_media_key();
         self.screen_token = None;
         self.voice_endpoint = None;
         self.voice_location = None;
@@ -839,13 +790,22 @@ impl AppState {
         self.screen_audio_token = None;
         self.screen_video_token = None;
         self.screen_viewer_token = None;
-        self.screen_share_target = None;
-        self.screen_sharing = false;
+        self.screen_share.on(ShareEvent::CallEnded);
         self.screen_viewing.clear();
-        self.camera_on = false;
-        self.camera_starting = false;
-        self.camera_picker = false;
+        let _ = self.camera.on(CameraEvent::Released);
         self.cameras_watching.clear();
+    }
+
+    /// Not `self_user` or `server_origin`: Home keeps our own user, and the
+    /// origin is known before Ready.
+    pub fn server_session(&self) -> ServerSession {
+        match self.status {
+            ConnectionStatus::Disconnected => ServerSession::Absent,
+            ConnectionStatus::Connecting | ConnectionStatus::Reconnecting => {
+                ServerSession::Connecting
+            }
+            ConnectionStatus::Ready => ServerSession::Live,
+        }
     }
 
     pub fn prepare_server_switch(&mut self, guild: Option<Id>, invite: Option<PendingVoiceInvite>) {
@@ -867,6 +827,7 @@ impl AppState {
     }
 
     pub fn resume_voice_invite(&mut self, joined: Option<Id>) -> Option<ClientMessage> {
+        let live = self.server_session() == ServerSession::Live;
         let pending = self.voice_invite_on_ready.as_mut()?;
         if pending
             .expires_at
@@ -875,7 +836,7 @@ impl AppState {
             self.voice_invite_on_ready = None;
             return None;
         }
-        if self.status != ConnectionStatus::Ready {
+        if !live {
             return None;
         }
         if self.dm_call.is_some() {
@@ -907,94 +868,297 @@ impl AppState {
         Some(self.voice.join_message(pending.channel_id))
     }
 
+    /// Names every field, so none can be added without saying whether it
+    /// outlives the server (trap 7).
     pub fn clear_server_session(&mut self) {
-        self.voice_invite_on_ready = None;
         crate::channel_selection::remember_current(self);
-        self.channel_unread.clear();
-        self.channel_mentions.clear();
-        self.channel_latest.clear();
-        self.voice_route_revision = 0;
-        self.status = ConnectionStatus::Disconnected;
-        self.self_user = None;
-        self.guilds.clear();
-        self.channels.clear();
-        self.members.clear();
-        self.voice_states.clear();
+        self.accept_guild_mates();
         self.end_voice_locally();
-        self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
-        self.selected_guild = None;
-        self.selected_channel = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
-        self.dm_mode = self.selected_channel.is_some();
-        self.dm_pane_open = false;
+        self.screen_share.on(ShareEvent::PickerClosed);
+        self.voice_event(VoiceEvent::JoinAbandoned);
+        let dm_selected = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
         let dm_channels: HashSet<_> = self.dms.iter().map(|dm| dm.channel_id).collect();
-        self.messages.retain(|id, _| dm_channels.contains(id));
-        self.history_loaded.clear();
-        self.catalog.clear();
-        self.catalog_total = 0;
-        self.guild_join_confirmation = None;
-        self.profiles.clear();
-        self.activities.clear();
-        self.message_search = None;
-        self.message_jump = None;
-        self.pending_edits.clear();
-        self.file_upload_result = None;
-        self.server_chat_tools = false;
-        self.server_image_previews = false;
-        self.server_progressive_image_uploads = false;
-        self.guild_file_policies.clear();
-        self.guild_stickers.clear();
-        self.server_origin = None;
-        self.sfu_tunnel_url = None;
-        self.rendezvous_url = None;
-        self.resolved_share = None;
-        self.host_info = None;
-        self.transport = Transport::Loopback;
-        self.gateway_route = None;
-        self.gateway_failure = None;
-        self.guild_dialog = None;
-        self.rules_prompt = None;
-        self.audio_settings = false;
-        self.topology_open = false;
-        self.channel_access_open = None;
-        self.typing.clear();
-        self.replying_to = None;
-        self.profile_card = None;
-        self.image_viewer = None;
-        self.media_undecryptable = false;
-        self.pending_rekey = false;
-        self.screen_shares.clear();
-        self.screen_picker = None;
-        self.screen_audio_joined = false;
-        self.stream_has_audio = Default::default();
-        self.soundboard_open = false;
-        self.soundboard_adjusting = false;
-        self.recent_sounds.clear();
-        self.voice_menu = None;
-        self.voice_quality.clear();
-        self.voice_stats.clear();
-        self.voice_ping_ms = None;
-        self.voice_uplink_congested = false;
-        self.screen_share_stats = None;
-        self.screen_share_in_stats = None;
-        self.integrations.clear();
-        self.bot_commands.clear();
-        self.command_notes.clear();
-        self.guild_emojis.clear();
-        self.guild_sounds.clear();
-        self.emoji_requested.clear();
-        self.roles.clear();
-        self.bans.clear();
-        self.invites.clear();
-        self.audit_logs.clear();
-        self.is_operator = false;
-        self.server_agents.clear();
-        self.server_apps = None;
-        self.offered_agents.clear();
-        self.default_guild = None;
-        self.server_info = Default::default();
-        self.server_settings = None;
-        self.server_settings_open = false;
-        self.emoji_images.clear();
+        let account_name = self.identity.as_ref().map(|i| i.display_name.clone());
+        let Self {
+            // The server session's: emptied here.
+            status,
+            self_user,
+            guilds,
+            channels,
+            members,
+            messages,
+            history_loaded,
+            message_search,
+            message_jump,
+            file_upload_result,
+            server_chat_tools,
+            server_image_previews,
+            server_progressive_image_uploads,
+            guild_file_policies,
+            guild_stickers,
+            voice_states,
+            selected_guild,
+            selected_channel,
+            dm_mode,
+            channel_unread,
+            channel_mentions,
+            channel_latest,
+            pending_edits,
+            catalog,
+            catalog_total,
+            guild_join_confirmation,
+            profiles,
+            server_origin,
+            rendezvous_url,
+            resolved_share,
+            activities,
+            profile_card,
+            command_form,
+            image_viewer,
+            guild_dialog,
+            rules_prompt,
+            audio_settings,
+            server_settings_open,
+            topology_open,
+            channel_access_open,
+            typing,
+            sfu_tunnel_url,
+            gateway_route,
+            voice_route_revision,
+            screen_audio_joined,
+            ice_servers,
+            screen_shares,
+            replying_to,
+            voice_uplink_congested,
+            voice_ping_ms,
+            voice_quality,
+            voice_stats,
+            screen_share_stats,
+            screen_share_in_stats,
+            soundboard_open,
+            soundboard_adjusting,
+            soundboard_anchor,
+            recent_sounds,
+            voice_menu,
+            stream_has_audio,
+            media_undecryptable,
+            pending_rekey,
+            host_info,
+            transport,
+            integrations,
+            app_manifest_events,
+            guild_activities,
+            activity_instances,
+            guild_blocklists,
+            bot_commands,
+            command_notes,
+            guild_emojis,
+            guild_sounds,
+            emoji_images,
+            emoji_requested,
+            roles,
+            bans,
+            invites,
+            open_guild_on_ready,
+            voice_invite_on_ready,
+            gateway_failure,
+            is_operator,
+            server_agents,
+            server_apps,
+            offered_agents,
+            default_guild,
+            server_info,
+            server_settings,
+            audit_logs,
+
+            // The server session's, ended above through their own writers.
+            voice: _,
+            media_key: _,
+            camera: _,
+            cameras_watching: _,
+            screen_share: _,
+            screen_viewing: _,
+            screen_token: _,
+            screen_audio_token: _,
+            screen_video_token: _,
+            screen_viewer_token: _,
+            voice_endpoint: _,
+            voice_location: _,
+            voice_send_route: _,
+            voice_receive_route: _,
+            peer_routes: _,
+
+            // The account's: DMs, Nostr, devices and preferences outlive every server.
+            identity: _,
+            profile_synced_at: _,
+            account_pictures: _,
+            account_dnd: _,
+            last_text_channels: _,
+            channel_read_at: _,
+            muted_channels: _,
+            muted_guilds: _,
+            unread_from: _,
+            dms: _,
+            dm_emoji: _,
+            saved_emoji: _,
+            dm_unread: _,
+            dm_cleared_at: _,
+            dm_read_at: _,
+            dm_clock_offset: _,
+            nostr_event_ids: _,
+            dm_deleted_ids: _,
+            pending_dm_edits: _,
+            dm_edit_versions: _,
+            pending_dm_deletions: _,
+            dm_delivery: _,
+            dm_pending: _,
+            dm_images: _,
+            dm_call_history: _,
+            dm_call: _,
+            contacts: _,
+            mutes: _,
+            dm_choices: _,
+            nostr_relays_up: _,
+            nostr_names: _,
+            relay_app_manifests: _,
+            relay_blocklists: _,
+            global_xp: _,
+            dm_pane_open: _,
+            app_foreground: _,
+            dm_notification_open: _,
+            mention_tap: _,
+            error_toast: _,
+            agents_open: _,
+            composer_focus_request: _,
+            screen_capture_available: _,
+            camera_capture_available: _,
+            available_cameras: _,
+            available_input_devices: _,
+            available_output_devices: _,
+            active_input_device: _,
+            active_output_device: _,
+            selected_input_device: _,
+            selected_output_device: _,
+            mic_test_active: _,
+            mic_sensitivity: _,
+            mic_volume: _,
+            mic_processing: _,
+            auto_gain_control: _,
+            mic_level: _,
+            mic_gate_level: _,
+            mic_level_pre: _,
+            noise_cancellation: _,
+            denoise_atten_lim_db: _,
+            bypass_system_audio_processing: _,
+            mic_bypass_error: _,
+            denoise_fallback: _,
+            denoise_retry: _,
+            voice_bitrate_kbps: _,
+            user_volumes: _,
+            user_muted: _,
+            stream_volumes: _,
+            stream_muted: _,
+            soundboard_volume: _,
+            // Counters: starting one over would let a stale value equal a new one.
+            voice_session_epoch: _,
+            read_marks_revision: _,
+            catalog_revision: _,
+            notify_tick: _,
+            dm_notify_tick: _,
+            readies: _,
+        } = &mut *self;
+        *status = ConnectionStatus::Disconnected;
+        // We stay ourselves at Home, where DMs and call history read it (`nostr::service` seeds it).
+        if let (Some(me), Some(name)) = (self_user.as_mut(), account_name) {
+            me.username = name;
+        }
+        guilds.clear();
+        channels.clear();
+        members.clear();
+        messages.retain(|id, _| dm_channels.contains(id));
+        history_loaded.clear();
+        *message_search = None;
+        *message_jump = None;
+        *file_upload_result = None;
+        *server_chat_tools = false;
+        *server_image_previews = false;
+        *server_progressive_image_uploads = false;
+        guild_file_policies.clear();
+        guild_stickers.clear();
+        voice_states.clear();
+        *selected_guild = None;
+        *selected_channel = dm_selected;
+        *dm_mode = dm_selected.is_some();
+        channel_unread.clear();
+        channel_mentions.clear();
+        channel_latest.clear();
+        pending_edits.clear();
+        catalog.clear();
+        *catalog_total = 0;
+        *guild_join_confirmation = None;
+        profiles.clear();
+        *server_origin = None;
+        *rendezvous_url = None;
+        *resolved_share = None;
+        activities.clear();
+        *profile_card = None;
+        *command_form = None;
+        *image_viewer = None;
+        *guild_dialog = None;
+        *rules_prompt = None;
+        *audio_settings = false;
+        *server_settings_open = false;
+        *topology_open = false;
+        *channel_access_open = None;
+        typing.clear();
+        *sfu_tunnel_url = None;
+        *gateway_route = None;
+        *voice_route_revision = 0;
+        *screen_audio_joined = false;
+        ice_servers.clear();
+        screen_shares.clear();
+        *replying_to = None;
+        *voice_uplink_congested = false;
+        *voice_ping_ms = None;
+        voice_quality.clear();
+        voice_stats.clear();
+        *screen_share_stats = None;
+        *screen_share_in_stats = None;
+        *soundboard_open = false;
+        *soundboard_adjusting = false;
+        *soundboard_anchor = (0.0, 0.0);
+        recent_sounds.clear();
+        *voice_menu = None;
+        *stream_has_audio = Default::default();
+        *media_undecryptable = false;
+        *pending_rekey = false;
+        *host_info = None;
+        *transport = Transport::Loopback;
+        integrations.clear();
+        app_manifest_events.clear();
+        guild_activities.clear();
+        activity_instances.clear();
+        guild_blocklists.clear();
+        bot_commands.clear();
+        command_notes.clear();
+        guild_emojis.clear();
+        guild_sounds.clear();
+        emoji_images.clear();
+        emoji_requested.clear();
+        roles.clear();
+        bans.clear();
+        invites.clear();
+        *open_guild_on_ready = None;
+        *voice_invite_on_ready = None;
+        *gateway_failure = None;
+        *is_operator = false;
+        server_agents.clear();
+        *server_apps = None;
+        offered_agents.clear();
+        *default_guild = None;
+        *server_info = Default::default();
+        *server_settings = None;
+        audit_logs.clear();
         self.evict_inactive_dm_images(self.selected_channel);
     }
 
@@ -1014,15 +1178,7 @@ impl AppState {
     pub fn evict_inactive_dm_images(&mut self, active_channel: Option<Id>) {
         for image in self.dm_images.values_mut() {
             if Some(image.channel_id) != active_channel {
-                image.viewers.clear();
-                image.original_viewers.clear();
-                image.original_data = false;
-                if !matches!(image.status, crate::nostr::dm_image::Status::Uploading)
-                    && image.data.is_some()
-                {
-                    image.data = None;
-                    image.status = crate::nostr::dm_image::Status::Waiting;
-                }
+                image.unload();
             }
         }
         let dm_channels: std::collections::HashSet<_> =
@@ -1178,9 +1334,27 @@ impl AppState {
     }
 
     pub fn connected_voice_channel(&self) -> Option<Id> {
-        (self.voice.phase == VoicePhase::Connected)
-            .then_some(self.voice.channel_id)
-            .flatten()
+        self.voice.connected_channel()
+    }
+
+    /// `voice_session_epoch` numbers the native rooms: a restart rebuilds the
+    /// screen rooms too, so trap 11's bridge must see a new one and republish.
+    pub fn voice_event(&mut self, event: VoiceEvent) -> bool {
+        let up = matches!(event, VoiceEvent::RoomUp(_));
+        // A rejoin of the same channel is another call: nothing keyed on the epoch may carry over.
+        let ended = matches!(event, VoiceEvent::Ended);
+        let changed = self.voice.on(event);
+        if ended || up && changed {
+            self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
+        }
+        changed
+    }
+
+    pub fn voice_call(&self) -> Option<crate::voice_session::VoiceCall> {
+        Some(crate::voice_session::VoiceCall {
+            channel: self.server_voice_channel()?,
+            route: self.voice_route_revision,
+        })
     }
 
     /// Keys can arrive before the local media token, so the server channel leads the join.
@@ -1194,7 +1368,7 @@ impl AppState {
 
     /// The guild of the voice channel we are in, whose sounds the board offers.
     pub fn voice_guild(&self) -> Option<Id> {
-        let channel = self.voice.channel_id?;
+        let channel = self.voice.channel_id()?;
         self.channels
             .iter()
             .find(|c| c.id == channel)
@@ -1498,18 +1672,55 @@ impl AppState {
     }
 
     pub fn dm_standing(&self, peer: &str) -> DmStanding {
-        if self.mutes.contains(peer) {
-            DmStanding::Blocked
-        } else if self.dm_accepted.contains(peer)
-            || self.contacts.contains(peer)
-            || self.shares_guild(peer)
-        {
-            DmStanding::Inbox
-        } else if self.dm_ignored.contains(peer) {
-            DmStanding::Ignored
-        } else {
-            DmStanding::Request
+        crate::dm_standing::standing(
+            self.mutes.contains(peer),
+            self.dm_choice(peer),
+            self.contacts.contains(peer) || self.shares_guild(peer),
+        )
+    }
+
+    pub fn dm_choice(&self, peer: &str) -> Option<DmChoice> {
+        self.dm_choices.get(peer).copied()
+    }
+
+    /// The one writer of a peer's stored choice.
+    pub fn choose_dm(&mut self, peer: &str, choice: Option<DmChoice>) {
+        match choice {
+            Some(choice) => {
+                self.dm_choices.insert(peer.to_string(), choice);
+            }
+            None => {
+                self.dm_choices.remove(peer);
+            }
         }
+    }
+
+    /// The accepted and ignored lists `settings.json` keeps.
+    pub fn dm_choice_lists(&self) -> (Vec<String>, Vec<String>) {
+        crate::dm_standing::lists_of(&self.dm_choices)
+    }
+
+    pub fn accepted_dms(&self) -> impl Iterator<Item = &str> {
+        self.dm_choices
+            .iter()
+            .filter(|(_, choice)| **choice == DmChoice::Accepted)
+            .map(|(peer, _)| peer.as_str())
+    }
+
+    /// Standing must not depend on the open server (trap 7), so a guild-mate stays in the
+    /// Inbox once the roster is gone. An explicit ignore stands: a shared guild only outranked it.
+    pub fn accept_guild_mates(&mut self) {
+        let mates: Vec<String> = self.guild_mates_to_accept().cloned().collect();
+        for peer in mates {
+            self.choose_dm(&peer, Some(DmChoice::Accepted));
+        }
+    }
+
+    fn guild_mates_to_accept(&self) -> impl Iterator<Item = &String> {
+        self.dms
+            .iter()
+            .map(|d| &d.other_pubkey)
+            .filter(|peer| self.shares_guild(peer) && self.dm_choice(peer).is_none())
     }
 
     pub fn preferred_dm(&self) -> Option<DmInfo> {
@@ -1540,8 +1751,89 @@ impl AppState {
         self.dms
             .iter()
             .filter(|d| self.dm_standing(&d.other_pubkey) == DmStanding::Inbox)
-            .filter_map(|d| self.dm_unread.get(&d.channel_id))
+            .map(|d| self.dm_unread(d.channel_id))
             .sum()
+    }
+
+    /// What a conversation shows as unread: nothing while it is being read.
+    pub fn dm_unread(&self, channel_id: Id) -> u32 {
+        if self.watched_dm() == Some(channel_id) {
+            return 0;
+        }
+        self.dm_unread.get(&channel_id).copied().unwrap_or(0)
+    }
+
+    /// The conversation the screen shows, in front or not. Android's notifier
+    /// needs it apart from focus: it learns of a resume before we do.
+    pub fn dm_in_view(&self) -> Option<Id> {
+        self.selected_channel
+            .filter(|_| self.dm_mode && self.dm_pane_open)
+    }
+
+    /// The one answer to "is this conversation being read right now": what
+    /// counts, rings, badges and dismisses alerts all ask it.
+    pub fn watched_dm(&self) -> Option<Id> {
+        self.dm_in_view().filter(|_| self.app_foreground)
+    }
+
+    /// The watched conversation while it still holds a count, for the effect
+    /// that marks it read.
+    pub fn unread_on_screen(&self) -> Option<Id> {
+        self.watched_dm()
+            .filter(|channel| self.dm_unread.contains_key(channel))
+    }
+
+    /// The one writer of `dm_unread`. `Settle` caps the count at what is past
+    /// the read mark, so a mark moved elsewhere takes the count down with it.
+    pub fn change_dm_unread(&mut self, channel_id: Id, change: UnreadChange) {
+        match change {
+            UnreadChange::Arrived => *self.dm_unread.entry(channel_id).or_insert(0) += 1,
+            UnreadChange::Read => {
+                self.dm_unread.remove(&channel_id);
+            }
+            UnreadChange::Settle => {
+                let Some(&counted) = self.dm_unread.get(&channel_id) else {
+                    return;
+                };
+                let left = counted.min(self.dm_unread_bound(channel_id));
+                if left == 0 {
+                    self.dm_unread.remove(&channel_id);
+                } else {
+                    self.dm_unread.insert(channel_id, left);
+                }
+            }
+        }
+    }
+
+    /// The peer's messages and our missed calls past the read mark. A call's
+    /// row is authored by its caller, so it counts once, as the missed call.
+    fn dm_unread_bound(&self, channel_id: Id) -> u32 {
+        let Some(peer) = self.dm_of(channel_id).map(|dm| dm.other_pubkey.as_str()) else {
+            return 0;
+        };
+        let read = self.dm_read_at.get(peer).copied();
+        let past = |at: i64| read.is_none_or(|mark| at > mark);
+        let messages = self
+            .messages
+            .get(&channel_id)
+            .into_iter()
+            .flatten()
+            .filter(|m| {
+                m.author.pubkey == peer
+                    && !self.dm_call_history.contains_key(&m.id)
+                    && past(m.created_at.timestamp())
+            })
+            .count();
+        let calls = self
+            .dm_call_history
+            .values()
+            .filter(|entry| {
+                entry.confirmed && (entry.record.caller == peer || entry.record.callee == peer)
+            })
+            .filter_map(|entry| entry.missed_at)
+            .filter(|missed| past(*missed))
+            .count();
+        u32::try_from(messages + calls).unwrap_or(u32::MAX)
     }
 
     pub fn dm_request_count(&self) -> usize {
@@ -1554,13 +1846,12 @@ impl AppState {
     /// Moves the read mark too: nothing counted while it was a request, and a
     /// mark left behind would ring for all of it on the next launch's replay.
     pub fn accept_dm(&mut self, peer: &str) {
-        self.dm_accepted.insert(peer.to_string());
-        self.dm_ignored.remove(peer);
+        self.choose_dm(peer, Some(DmChoice::Accepted));
         self.mark_dm_read(crate::nostr::service::conversation_id(peer));
     }
 
     pub fn ignore_dm(&mut self, peer: &str) {
-        self.dm_ignored.insert(peer.to_string());
+        self.choose_dm(peer, Some(DmChoice::Ignored));
         let cid = crate::nostr::service::conversation_id(peer);
         if self.selected_channel == Some(cid) {
             self.selected_channel = None;
@@ -1591,7 +1882,7 @@ impl AppState {
                 self.dm_images.remove(&message.id);
             }
         }
-        self.dm_unread.remove(&cid);
+        self.change_dm_unread(cid, UnreadChange::Read);
         if self.selected_channel == Some(cid) {
             self.selected_channel = None;
         }
@@ -1888,7 +2179,11 @@ impl AppState {
                 continue;
             }
             self.dm_read_at.insert(peer.clone(), at);
-            self.recount_dm_unread(peer, at);
+            // The relays replay a conversation before the marks event may arrive.
+            self.change_dm_unread(
+                crate::nostr::service::conversation_id(peer),
+                UnreadChange::Settle,
+            );
             changed = true;
         }
         for (server, channels) in &marks.channels {
@@ -1926,37 +2221,6 @@ impl AppState {
         }
         if changed {
             self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
-        }
-    }
-
-    /// The relays replay a conversation before the marks event may arrive, so
-    /// its counter can already hold messages another device has read.
-    fn recount_dm_unread(&mut self, peer: &str, read: i64) {
-        let cid = crate::nostr::service::conversation_id(peer);
-        let Some(&counted) = self.dm_unread.get(&cid) else {
-            return;
-        };
-        let messages = self
-            .messages
-            .get(&cid)
-            .into_iter()
-            .flatten()
-            .filter(|m| m.author.pubkey == peer && m.created_at.timestamp() > read)
-            .count();
-        let calls = self
-            .dm_call_history
-            .values()
-            .filter(|entry| {
-                entry.confirmed && (entry.record.caller == peer || entry.record.callee == peer)
-            })
-            .filter_map(|entry| entry.missed_at)
-            .filter(|missed| *missed > read)
-            .count();
-        let left = counted.min(u32::try_from(messages + calls).unwrap_or(u32::MAX));
-        if left == 0 {
-            self.dm_unread.remove(&cid);
-        } else {
-            self.dm_unread.insert(cid, left);
         }
     }
 
@@ -2099,10 +2363,7 @@ impl AppState {
     /// history on every launch and `dm_unread` is rebuilt from it, so a message
     /// only ever read live would come back as unread on the next one.
     pub fn note_dm_arrival(&mut self, channel_id: Id, peer: &str, at: i64) {
-        let viewing = self.app_foreground
-            && self.dm_pane_open
-            && self.selected_channel == Some(channel_id)
-            && self.dm_mode;
+        let viewing = self.watched_dm() == Some(channel_id);
         if viewing {
             use std::collections::hash_map::Entry;
             let changed = match self.dm_read_at.entry(peer.to_string()) {
@@ -2125,7 +2386,7 @@ impl AppState {
         } else if self.dm_standing(peer) == DmStanding::Inbox
             && self.dm_read_at.get(peer).is_none_or(|mark| at > *mark)
         {
-            *self.dm_unread.entry(channel_id).or_insert(0) += 1;
+            self.change_dm_unread(channel_id, UnreadChange::Arrived);
             // Tied to the counter and not merely to `viewing`: the relays replay
             // the whole history on every launch, and ringing for that would be a
             // burst of sound for messages read days ago.
@@ -2142,7 +2403,7 @@ impl AppState {
     /// reads.
     pub fn mark_dm_read(&mut self, channel_id: Id) {
         let unread = self.dm_unread.get(&channel_id).is_some_and(|n| *n > 0);
-        self.dm_unread.remove(&channel_id);
+        self.change_dm_unread(channel_id, UnreadChange::Read);
         let Some(peer) = self.dm_of(channel_id).map(|d| d.other_pubkey.clone()) else {
             return;
         };
@@ -2402,20 +2663,29 @@ pub fn use_channel_read_persistence(state: Signal<AppState>) {
 
 /// A roster exists only while connected, so a guild-mate is accepted for good
 /// once seen; on Home their next DM would otherwise be a request.
+/// The one writer of `dm_pane_open`, mounted by the one component per screen
+/// that holds the conversation; a parent and a child both writing raced on Android.
+pub fn use_dm_pane(mut state: Signal<AppState>, open: impl Fn() -> bool + 'static) {
+    use_effect(move || {
+        let open = open();
+        if state.peek().dm_pane_open != open {
+            state.write().dm_pane_open = open;
+        }
+    });
+    use_drop(move || {
+        // The account's state may be gone first when the whole account unmounts.
+        if let Ok(mut state) = state.try_write() {
+            state.dm_pane_open = false;
+        }
+    });
+}
+
 pub fn use_dm_standing_persistence(mut state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let guild_mates = use_memo(move || {
-        let s = state.read();
-        s.dms
-            .iter()
-            .map(|d| d.other_pubkey.clone())
-            .filter(|peer| s.shares_guild(peer) && !s.dm_accepted.contains(peer))
-            .collect::<Vec<_>>()
-    });
+    let guild_mates = use_memo(move || state.read().guild_mates_to_accept().next().is_some());
     use_effect(move || {
-        let peers = guild_mates();
-        if !peers.is_empty() {
-            state.write().dm_accepted.extend(peers);
+        if guild_mates() {
+            state.write().accept_guild_mates();
         }
     });
     let standing = use_memo(move || {
@@ -2425,9 +2695,10 @@ pub fn use_dm_standing_persistence(mut state: Signal<AppState>) {
             v.sort();
             v
         };
+        let (accepted, ignored) = s.dm_choice_lists();
         (
-            sorted(&mut s.dm_accepted.iter().cloned()),
-            sorted(&mut s.dm_ignored.iter().cloned()),
+            accepted,
+            ignored,
             sorted(&mut s.mutes.pubkeys().map(str::to_string)),
         )
     });
@@ -2591,6 +2862,346 @@ mod tests {
             None,
             "removing the saved image restores the initial"
         );
+    }
+
+    /// Each session field is filled and must come back empty; the pattern at the
+    /// end names every field, so a new one does not compile until it is listed.
+    macro_rules! after_a_server {
+        (
+            $s:ident;
+            session { $($field:ident = $value:expr => |$v:ident| $emptied:expr;)* }
+            account { $($kept:ident),* $(,)? }
+        ) => {{
+            $( $s.$field = $value; )*
+            let before = $s.clone();
+            $s.clear_server_session();
+            $({
+                let $v = &$s.$field;
+                assert!($emptied, "{} outlived its server", stringify!($field));
+            })*
+            let AppState { $($field: _,)* $($kept: _,)* } = &$s;
+            before
+        }};
+    }
+
+    /// An imported guild keeps its id and a bot its key on another host, so
+    /// anything one server said would be read by the next (trap 7).
+    #[test]
+    fn the_next_server_sees_nothing_of_the_last_and_the_account_keeps_everything() {
+        let guild = Id::new_v4();
+        let channel = Id::new_v4();
+        let peer = "peer";
+        let mut s = AppState::empty();
+        let dm = dm_with(&mut s, peer, &[1]);
+        s.identity = Some(crate::identity::Identity::create("Account").unwrap());
+        s.choose_dm(peer, Some(DmChoice::Accepted));
+        s.nostr_relays_up.insert("wss://relay.example".into());
+        s.nostr_names.insert(peer.into(), ("Peer".into(), 1));
+        s.contacts =
+            crate::nostr::nip02::ContactList::default().with(crate::nostr::nip02::Contact {
+                pubkey: peer.into(),
+                relay: None,
+                petname: None,
+            });
+        s.relay_app_manifests.insert("bot".into(), (1, "{}".into()));
+        s.last_text_channels
+            .push(crate::channel_selection::RememberedTextChannel {
+                server: "server-b".into(),
+                guild_id: guild,
+                channel_id: channel,
+            });
+        s.channel_read_at
+            .insert("server-b".into(), BTreeMap::from([(channel, 1)]));
+        s.user_volumes.insert(peer.into(), 50);
+        s.mic_sensitivity = 7;
+        s.selected_input_device = Some("mic".into());
+        s.voice_session_epoch = 9;
+        s.readies = 3;
+        s.error_toast = Some("kept".into());
+        let guild_channel = {
+            let mut other = AppState::empty();
+            text_channel(&mut other, guild);
+            other.channels
+        };
+        let mut camera = crate::local_camera::LocalCamera::default();
+        let _ = camera.on(CameraEvent::Started);
+        let mut share = crate::local_share::ScreenShare::default();
+        share.on(ShareEvent::WebViewStarted {
+            native_audio: false,
+        });
+        let mut watches = crate::stream_placement::StreamWatches::default();
+        watches.watch(peer);
+        let mut voice = VoiceSession::default();
+        voice.force(CallState::Connected(channel));
+        voice.on(VoiceEvent::JoinSent(Id::new_v4()));
+        let mut presence = crate::stream_audio::Presence::default();
+        presence.set(crate::stream_audio::Source::Voice, peer, true);
+        let mut emoji = crate::media_cache::MediaCache::default();
+        emoji.insert("a.png".into(), "data:image/png;base64,AA==".into());
+        let token = || Some(("wss://sfu".to_string(), "token".to_string()));
+        let route = || {
+            Some(crate::connection_routes::MediaRoute {
+                family: "IPv4",
+                relayed: false,
+                protocol: "udp".into(),
+                endpoint: "host".into(),
+            })
+        };
+        fn json<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+            serde_json::from_value(value).unwrap()
+        }
+
+        let before = after_a_server! { s;
+            session {
+                status = ConnectionStatus::Ready => |v| *v == ConnectionStatus::Disconnected;
+                self_user = Some(user("self")) => |v| v.as_ref().is_some_and(|me| me.pubkey == "self" && me.username == "Account");
+                guilds = vec![json(serde_json::json!({ "id": guild, "name": "g", "icon": null }))] => |v| v.is_empty();
+                channels = guild_channel => |v| v.is_empty();
+                members = vec![member(peer, true)] => |v| v.is_empty();
+                messages = BTreeMap::from([(channel, Vec::new()), (dm, s.messages[&dm].clone())]) => |v| v.keys().eq([&dm]);
+                history_loaded = HashSet::from([channel]) => |v| v.is_empty();
+                message_search = Some((channel, Id::new_v4(), Vec::new())) => |v| v.is_none();
+                message_jump = Some((channel, Id::new_v4(), 1)) => |v| v.is_none();
+                file_upload_result = Some((Id::new_v4(), None)) => |v| v.is_none();
+                server_chat_tools = true => |v| !*v;
+                server_image_previews = true => |v| !*v;
+                server_progressive_image_uploads = true => |v| !*v;
+                guild_file_policies = BTreeMap::from([(guild, Default::default())]) => |v| v.is_empty();
+                guild_stickers = BTreeMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                voice_states = vec![VoiceState {
+                    user_pubkey: peer.into(),
+                    guild_id: guild,
+                    channel_id: Some(channel),
+                    muted: false,
+                    deafened: false,
+                    speaking: false,
+                    camera_on: false,
+                    screen_sharing: true,
+                    screen_watching: Vec::new(),
+                    camera_watching: Vec::new(),
+                }] => |v| v.is_empty();
+                selected_guild = Some(guild) => |v| v.is_none();
+                selected_channel = Some(channel) => |v| v.is_none();
+                dm_mode = true => |v| !*v;
+                channel_unread = HashSet::from([channel]) => |v| v.is_empty();
+                channel_mentions = HashMap::from([(channel, 1)]) => |v| v.is_empty();
+                channel_latest = HashMap::from([(channel, 1)]) => |v| v.is_empty();
+                pending_edits = HashSet::from([Id::new_v4()]) => |v| v.is_empty();
+                catalog = vec![GuildSummary { id: guild, name: "g".into(), icon: None, member_count: 1 }] => |v| v.is_empty();
+                catalog_total = 1 => |v| *v == 0;
+                guild_join_confirmation = Some((1, guild)) => |v| v.is_none();
+                profiles = HashMap::from([(peer.to_string(), Profile::default())]) => |v| v.is_empty();
+                server_origin = Some("server-a".into()) => |v| v.is_none();
+                rendezvous_url = Some("wss://rendezvous".into()) => |v| v.is_none();
+                resolved_share = Some("quic://share".into()) => |v| v.is_none();
+                activities = HashMap::from([(peer.to_string(), json(serde_json::json!({ "name": "game" })))]) => |v| v.is_empty();
+                profile_card = Some(peer.into()) => |v| v.is_none();
+                command_form = Some(CommandForm { bot_pubkey: "bot".into(), command: "roll".into() }) => |v| v.is_none();
+                image_viewer = Some(crate::features::image_viewer::ImageView::new(Default::default(), None)) => |v| v.is_none();
+                guild_dialog = Some(GuildDialog::Settings(guild)) => |v| v.is_none();
+                rules_prompt = Some(prompt(None)) => |v| v.is_none();
+                audio_settings = true => |v| !*v;
+                server_settings_open = true => |v| !*v;
+                topology_open = true => |v| !*v;
+                channel_access_open = Some(channel) => |v| v.is_none();
+                typing = HashMap::from([(channel, HashMap::new())]) => |v| v.is_empty();
+                sfu_tunnel_url = Some("ws://127.0.0.1:1/sfu".into()) => |v| v.is_none();
+                gateway_route = Some("direct".into()) => |v| v.is_none();
+                voice_route_revision = 1 => |v| *v == 0;
+                screen_audio_joined = true => |v| !*v;
+                ice_servers = vec![Default::default()] => |v| v.is_empty();
+                screen_shares = HashMap::from([(channel, vec![peer.to_string()])]) => |v| v.is_empty();
+                replying_to = Some(ReplyDraft {
+                    message_id: Id::new_v4(),
+                    channel_id: channel,
+                    author_pubkey: peer.into(),
+                    author_username: "Peer".into(),
+                    excerpt: "hi".into(),
+                }) => |v| v.is_none();
+                voice_uplink_congested = true => |v| !*v;
+                voice_ping_ms = Some(1) => |v| v.is_none();
+                voice_quality = HashMap::from([(peer.to_string(), ConnectionHealth::Good)]) => |v| v.is_empty();
+                voice_stats = HashMap::from([(peer.to_string(), TrackStats::Unavailable)]) => |v| v.is_empty();
+                screen_share_stats = Some(Default::default()) => |v| v.is_none();
+                screen_share_in_stats = Some(Default::default()) => |v| v.is_none();
+                soundboard_open = true => |v| !*v;
+                soundboard_adjusting = true => |v| !*v;
+                soundboard_anchor = (1.0, 2.0) => |v| *v == (0.0, 0.0);
+                recent_sounds = HashMap::from([(peer.to_string(), ("horn".to_string(), std::time::Instant::now()))]) => |v| v.is_empty();
+                voice_menu = Some(VoiceMenu { pubkey: peer.into(), name: "Peer".into(), x: 1.0, y: 1.0 }) => |v| v.is_none();
+                stream_has_audio = presence => |v| !v.contains(peer);
+                media_undecryptable = true => |v| !*v;
+                pending_rekey = true => |v| !*v;
+                host_info = Some(HostInfo {
+                    offered_routes: Vec::new(),
+                    connections: Vec::new(),
+                    gateway_addr: "127.0.0.1:1".parse().unwrap(),
+                    livekit_url: String::new(),
+                    local_url: String::new(),
+                    share: None,
+                    voice_bundled: true,
+                    voice_reason: String::new(),
+                    shortcode: None,
+                    publish_error: None,
+                    listed_public: false,
+                    reachability: crate::host::Reachability::LoopbackOnly,
+                }) => |v| v.is_none();
+                transport = Transport::Quic => |v| *v == Transport::Loopback;
+                integrations = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                app_manifest_events = HashMap::from([("bot".to_string(), Some("{}".to_string()))]) => |v| v.is_empty();
+                guild_activities = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                activity_instances = HashMap::from([(channel, Vec::new())]) => |v| v.is_empty();
+                guild_blocklists = HashMap::from([(guild, (vec!["curator".to_string()], Vec::new()))]) => |v| v.is_empty();
+                bot_commands = HashMap::from([("bot".to_string(), Vec::new())]) => |v| v.is_empty();
+                command_notes = vec![CommandNote {
+                    invocation_id: Id::new_v4(),
+                    bot_pubkey: "bot".into(),
+                    channel_id: channel,
+                    content: "secret".into(),
+                }] => |v| v.is_empty();
+                guild_emojis = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                guild_sounds = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                emoji_images = emoji => |v| v.get("a.png").is_none();
+                emoji_requested = HashMap::from([("a.png".to_string(), std::time::Instant::now())]) => |v| v.is_empty();
+                roles = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                bans = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+                invites = HashMap::from([(guild, "code".to_string())]) => |v| v.is_empty();
+                open_guild_on_ready = Some(guild) => |v| v.is_none();
+                voice_invite_on_ready = Some(PendingVoiceInvite {
+                    guild_id: guild,
+                    channel_id: channel,
+                    code: None,
+                    expires_at: None,
+                }) => |v| v.is_none();
+                gateway_failure = Some("refused".into()) => |v| v.is_none();
+                is_operator = true => |v| !*v;
+                server_agents = vec![json(serde_json::json!({
+                    "pubkey": "agent",
+                    "spec": {
+                        "name": "agent",
+                        "provider": "anthropic",
+                        "provider_label": "",
+                        "base_url": "",
+                        "model": "",
+                        "per_member_per_hour": 0,
+                        "daily_tokens": 0,
+                    },
+                }))] => |v| v.is_empty();
+                server_apps = Some(ServerApps {
+                    policy: Default::default(),
+                    approved: Vec::new(),
+                    banned: Vec::new(),
+                    installs: Vec::new(),
+                }) => |v| v.is_none();
+                offered_agents = vec![crate::protocol::OfferedAgent {
+                    pubkey: "agent".into(),
+                    name: "agent".into(),
+                    provider_label: String::new(),
+                    model: String::new(),
+                    guild_daily_tokens: 0,
+                }] => |v| v.is_empty();
+                default_guild = Some(guild) => |v| v.is_none();
+                server_info = crate::protocol::ServerInfo {
+                    name: Some("server a".into()),
+                    ..Default::default()
+                } => |v| *v == Default::default();
+                server_settings = Some(crate::protocol::ServerSettingsView {
+                    settings: Default::default(),
+                    pinned: Default::default(),
+                    source: Default::default(),
+                    publishes: false,
+                    media_used_bytes: 0,
+                }) => |v| v.is_none();
+                audit_logs = HashMap::from([(guild, Vec::new())]) => |v| v.is_empty();
+
+                voice = voice => |v| v.channel_id().is_none() && v.joining_channel_id().is_none();
+                media_key = crate::mediakey::CallKey::force(channel, (1, [7; crate::mediakey::KEY_LEN])) => |v| v.channel().is_none();
+                camera = camera => |v| !v.wanted();
+                cameras_watching = HashSet::from([peer.to_string()]) => |v| v.is_empty();
+                screen_share = share => |v| !v.is_live();
+                screen_viewing = watches => |v| v.is_empty();
+                screen_token = token() => |v| v.is_none();
+                screen_audio_token = token() => |v| v.is_none();
+                screen_video_token = token() => |v| v.is_none();
+                screen_viewer_token = token() => |v| v.is_none();
+                voice_endpoint = Some("wss://sfu".into()) => |v| v.is_none();
+                voice_location = Some("host".into()) => |v| v.is_none();
+                voice_send_route = route() => |v| v.is_none();
+                voice_receive_route = route() => |v| v.is_none();
+                peer_routes = HashMap::from([(peer.to_string(), PeerRoutes {
+                    gateway: "direct".into(),
+                    sent: None,
+                    received: None,
+                })]) => |v| v.is_empty();
+            }
+            account {
+                identity, profile_synced_at, account_pictures, account_dnd,
+                last_text_channels, channel_read_at, muted_channels, muted_guilds,
+                unread_from, dms, dm_emoji, saved_emoji, dm_unread, dm_cleared_at,
+                dm_read_at, dm_clock_offset, nostr_event_ids, dm_deleted_ids,
+                pending_dm_edits, dm_edit_versions, pending_dm_deletions, dm_delivery,
+                dm_pending, dm_images, dm_call_history, dm_call, contacts, mutes,
+                dm_choices, nostr_relays_up, nostr_names, relay_app_manifests,
+                relay_blocklists, global_xp, dm_pane_open, app_foreground,
+                dm_notification_open, mention_tap, error_toast, agents_open,
+                composer_focus_request, screen_capture_available,
+                camera_capture_available, available_cameras, available_input_devices,
+                available_output_devices, active_input_device, active_output_device,
+                selected_input_device, selected_output_device, mic_test_active,
+                mic_sensitivity, mic_volume, mic_processing, auto_gain_control,
+                mic_level, mic_gate_level, mic_level_pre, noise_cancellation,
+                denoise_atten_lim_db, bypass_system_audio_processing, mic_bypass_error,
+                denoise_fallback, denoise_retry, voice_bitrate_kbps, user_volumes,
+                user_muted, stream_volumes, stream_muted, soundboard_volume,
+                voice_session_epoch, read_marks_revision, catalog_revision, notify_tick,
+                dm_notify_tick, readies,
+            }
+        };
+
+        assert_eq!(s.dms, before.dms);
+        assert_eq!(s.messages[&dm], before.messages[&dm]);
+        assert_eq!(s.dm_unread(dm), before.dm_unread(dm));
+        assert_eq!(s.dm_choice(peer), Some(DmChoice::Accepted));
+        assert_eq!(
+            s.identity.as_ref().map(|i| &i.pubkey),
+            before.identity.as_ref().map(|i| &i.pubkey)
+        );
+        assert_eq!(s.nostr_relays_up, before.nostr_relays_up);
+        assert_eq!(s.nostr_names, before.nostr_names);
+        assert!(s.contacts.contains(peer));
+        assert_eq!(s.relay_app_manifests, before.relay_app_manifests);
+        assert_eq!(s.last_text_channels, before.last_text_channels);
+        assert_eq!(s.channel_read_at, before.channel_read_at);
+        assert_eq!(s.user_volumes, before.user_volumes);
+        assert_eq!(s.mic_sensitivity, 7);
+        assert_eq!(s.selected_input_device, before.selected_input_device);
+        assert!(
+            s.voice_session_epoch > before.voice_session_epoch,
+            "a call ended"
+        );
+        assert_eq!(s.readies, 3);
+        assert_eq!(s.error_toast, before.error_toast);
+    }
+
+    /// Home has our own user and a dialled session has its origin, so neither
+    /// can say whether there is a session.
+    #[test]
+    fn only_the_gateway_status_says_whether_a_session_exists() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        s.server_origin = Some("server-a".into());
+        for (status, session) in [
+            (ConnectionStatus::Disconnected, ServerSession::Absent),
+            (ConnectionStatus::Connecting, ServerSession::Connecting),
+            (ConnectionStatus::Reconnecting, ServerSession::Connecting),
+            (ConnectionStatus::Ready, ServerSession::Live),
+        ] {
+            s.status = status;
+            assert_eq!(s.server_session(), session, "{status:?}");
+        }
+        s.clear_server_session();
+        assert_eq!(s.server_session(), ServerSession::Absent);
+        assert!(s.self_user.is_some(), "we are still ourselves at Home");
     }
 
     /// `short.png` fails `emoji::safe_name`, so nothing touches the disk.
@@ -3250,7 +3861,7 @@ mod tests {
         let marks = desktop.read_marks();
         phone.adopt_read_marks(&marks);
         assert!(!phone.dm_unread.contains_key(&cid));
-        phone.dm_accepted.insert(peer.clone());
+        phone.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
         dm_at(&mut phone, &peer, &peer, 201);
         phone.note_dm_arrival(cid, &peer, 201);
         phone.adopt_read_marks(&marks);
@@ -3465,13 +4076,12 @@ mod tests {
         state.selected_channel = Some(older);
         assert_eq!(state.preferred_dm().unwrap().channel_id, older);
         state.selected_channel = Some(Id::new_v4());
-        state.dm_ignored.insert("recent".into());
-        state.dm_accepted.remove("recent");
+        state.choose_dm("recent", Some(crate::state::DmChoice::Ignored));
         assert_eq!(state.preferred_dm().unwrap().channel_id, older);
     }
 
     fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {
-        s.dm_accepted.insert(peer.to_string());
+        s.choose_dm(peer, Some(crate::state::DmChoice::Accepted));
         let cid = crate::nostr::service::conversation_id(peer);
         if !s.dms.iter().any(|d| d.channel_id == cid) {
             s.dms.push(DmInfo {
@@ -3529,6 +4139,7 @@ mod tests {
         let peer = "abcd";
         let cid = dm_with(&mut s, peer, &[]);
         s.dm_mode = true;
+        s.dm_pane_open = true;
         s.selected_channel = Some(cid);
 
         let rev_before = s.read_marks_revision;
@@ -3561,6 +4172,117 @@ mod tests {
         assert!(s.dm_read_at.is_empty());
     }
 
+    /// Selected, DM mode, the pane shown and the app in front: all four, or no
+    /// conversation is being read.
+    #[test]
+    fn a_conversation_is_watched_only_with_every_fact() {
+        let peer = "abcd";
+        for foreground in [false, true] {
+            for dm_mode in [false, true] {
+                for pane in [false, true] {
+                    for selected in [false, true] {
+                        let mut s = AppState::empty();
+                        let cid = dm_with(&mut s, peer, &[]);
+                        s.app_foreground = foreground;
+                        s.dm_mode = dm_mode;
+                        s.dm_pane_open = pane;
+                        s.selected_channel = selected.then_some(cid);
+                        let shown = dm_mode && pane && selected;
+                        let label = format!("{foreground} {dm_mode} {pane} {selected}");
+                        assert_eq!(s.dm_in_view(), shown.then_some(cid), "{label}");
+                        assert_eq!(
+                            s.watched_dm(),
+                            (shown && foreground).then_some(cid),
+                            "{label}"
+                        );
+                        s.note_dm_arrival(cid, peer, 100);
+                        let counted = !(shown && foreground);
+                        assert_eq!(s.dm_unread.contains_key(&cid), counted, "{label}");
+                        assert_eq!(s.dm_read_at.contains_key(peer), !counted, "{label}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A count left from before the conversation came on screen is not shown
+    /// while it is read, though only marking it read removes it.
+    #[test]
+    fn a_watched_conversation_shows_no_unread() {
+        let peer = "abcd";
+        let mut s = AppState::empty();
+        let cid = dm_with(&mut s, peer, &[100]);
+        s.note_dm_arrival(cid, peer, 100);
+        assert_eq!((s.dm_unread(cid), s.dm_unread_total()), (1, 1));
+        assert_eq!(s.unread_on_screen(), None);
+        s.dm_mode = true;
+        s.dm_pane_open = true;
+        s.selected_channel = Some(cid);
+        assert_eq!((s.dm_unread(cid), s.dm_unread_total()), (0, 0));
+        assert_eq!(s.unread_on_screen(), Some(cid));
+        s.mark_dm_read(cid);
+        assert_eq!(s.unread_on_screen(), None);
+    }
+
+    #[test]
+    fn every_unread_change() {
+        let peer = "abcd";
+        // Held messages at 100, 200 and 300; (counted, read mark, change, after).
+        let table: Vec<(u32, Option<i64>, UnreadChange, u32)> = vec![
+            (0, None, UnreadChange::Arrived, 1),
+            (2, None, UnreadChange::Arrived, 3),
+            (2, None, UnreadChange::Read, 0),
+            (0, None, UnreadChange::Read, 0),
+            (3, None, UnreadChange::Settle, 3),
+            (5, None, UnreadChange::Settle, 3),
+            (3, Some(150), UnreadChange::Settle, 2),
+            (1, Some(150), UnreadChange::Settle, 1),
+            (3, Some(300), UnreadChange::Settle, 0),
+            (0, Some(50), UnreadChange::Settle, 0),
+        ];
+        for (counted, mark, change, after) in table {
+            let mut s = AppState::empty();
+            let cid = dm_with(&mut s, peer, &[100, 200, 300]);
+            if counted > 0 {
+                s.dm_unread.insert(cid, counted);
+            }
+            if let Some(mark) = mark {
+                s.dm_read_at.insert(peer.into(), mark);
+            }
+            s.change_dm_unread(cid, change);
+            assert_eq!(
+                s.dm_unread(cid),
+                after,
+                "{counted} past {mark:?} on {change:?}"
+            );
+            assert_eq!(s.dm_unread.contains_key(&cid), after > 0);
+        }
+    }
+
+    /// The peer's own call rows are counted once, as the missed call.
+    #[test]
+    fn a_settled_count_does_not_count_a_call_row_as_a_message() {
+        use crate::nostr::call_history::{Outcome, Record, merge};
+        let (peer, me) = ("b".repeat(64), "a".repeat(64));
+        let mut s = AppState::empty();
+        s.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
+        let record = Record {
+            version: 1,
+            call_id: uuid::Uuid::new_v4(),
+            caller: peer.clone(),
+            callee: me.clone(),
+            started_at: 100,
+            outcome: Outcome::Missed,
+        };
+        merge(&mut s, &me, record, &peer, 145);
+        let cid = crate::nostr::service::conversation_id(&peer);
+        assert_eq!(s.messages[&cid].len(), 1);
+        assert_eq!(s.dm_unread(cid), 1);
+        s.dm_unread.insert(cid, 2);
+        s.change_dm_unread(cid, UnreadChange::Settle);
+        assert_eq!(s.dm_unread(cid), 1);
+    }
+
     /// The mark must not swallow what came after it.
     #[test]
     fn a_message_newer_than_the_mark_still_counts() {
@@ -3581,12 +4303,45 @@ mod tests {
         }
     }
 
+    /// The roster that made someone a guild-mate is gone at Home; the
+    /// conversation is not (trap 7), so neither is its place in the Inbox.
+    #[test]
+    fn leaving_the_server_keeps_a_guild_mate_in_the_inbox_and_an_ignore_ignored() {
+        let mut s = AppState::empty();
+        for peer in ["mate", "ignored-mate", "bot"] {
+            dm_with(&mut s, peer, &[100]);
+            s.choose_dm(peer, None);
+        }
+        s.choose_dm("ignored-mate", Some(DmChoice::Ignored));
+        s.members.push(member("mate", true));
+        s.members.push(member("ignored-mate", true));
+        s.members.push(Member {
+            bot: true,
+            ..member("bot", true)
+        });
+        let before: Vec<_> = ["mate", "ignored-mate", "bot"]
+            .map(|peer| s.dm_standing(peer))
+            .into();
+        assert_eq!(
+            before,
+            vec![DmStanding::Inbox, DmStanding::Inbox, DmStanding::Request]
+        );
+        s.clear_server_session();
+        assert_eq!(s.dm_standing("mate"), DmStanding::Inbox);
+        assert_eq!(s.dm_standing("ignored-mate"), DmStanding::Ignored);
+        assert_eq!(s.dm_standing("bot"), DmStanding::Request);
+        assert_eq!(
+            s.dm_choice_lists(),
+            (vec!["mate".to_string()], vec!["ignored-mate".to_string()])
+        );
+    }
+
     #[test]
     fn a_stranger_waits_in_requests_without_counting_or_ringing() {
         let mut s = AppState::empty();
         let peer = "stranger";
         let cid = dm_with(&mut s, peer, &[100]);
-        s.dm_accepted.clear();
+        s.choose_dm(peer, None);
 
         s.note_dm_arrival(cid, peer, 100);
         assert_eq!(s.dm_standing(peer), DmStanding::Request);
@@ -3621,12 +4376,12 @@ mod tests {
         let mut s = AppState::empty();
         let peer = "stranger";
         let cid = dm_with(&mut s, peer, &[100, 200]);
-        s.dm_accepted.clear();
-        s.dm_ignored.insert(peer.into());
+        s.choose_dm(peer, None);
+        s.choose_dm(peer, Some(crate::state::DmChoice::Ignored));
 
         s.accept_dm(peer);
         assert_eq!(s.dm_standing(peer), DmStanding::Inbox);
-        assert!(!s.dm_ignored.contains(peer));
+        assert_ne!(s.dm_choice(peer), Some(crate::state::DmChoice::Ignored));
         assert_eq!(s.dms_by_recency(DmStanding::Inbox)[0].channel_id, cid);
         s.note_dm_arrival(cid, peer, 200);
         assert!(s.dm_unread.is_empty());
@@ -3637,7 +4392,7 @@ mod tests {
         let mut s = AppState::empty();
         let peer = "stranger";
         let cid = dm_with(&mut s, peer, &[100]);
-        s.dm_accepted.clear();
+        s.choose_dm(peer, None);
         s.selected_channel = Some(cid);
 
         s.ignore_dm(peer);
@@ -3669,7 +4424,7 @@ mod tests {
         let mut s = AppState::empty();
         let friend = dm_with(&mut s, "friend", &[]);
         let stranger = dm_with(&mut s, "stranger", &[]);
-        s.dm_accepted.remove("stranger");
+        s.choose_dm("stranger", None);
         s.dm_unread.insert(friend, 2);
         s.dm_unread.insert(stranger, 5);
         assert_eq!(s.dm_unread_total(), 2);
@@ -3716,7 +4471,8 @@ mod tests {
     fn only_a_person_leaving_the_calls_guild_changes_the_media_key() {
         let mut s = AppState::empty();
         let (call_guild, other_guild) = (Id::new_v4(), Id::new_v4());
-        s.voice.channel_id = Some(text_channel(&mut s, call_guild));
+        let channel = text_channel(&mut s, call_guild);
+        s.voice.force_channel(Some(channel));
         let mut agent = member("agent", true);
         agent.guild_id = call_guild;
         agent.bot = true;
@@ -3734,20 +4490,26 @@ mod tests {
     fn leaving_a_call_drops_its_media_key_and_everything_published() {
         let mut s = AppState::empty();
         let channel = uuid::Uuid::from_u128(7);
-        s.voice.channel_id = Some(channel);
-        s.voice.phase = VoicePhase::Connected;
-        s.media_keys.insert(channel, (3, [9; 32]));
-        s.screen_sharing = true;
-        s.camera_on = true;
-        s.camera_picker = true;
+        s.voice.force(CallState::Connected(channel));
+        s.media_key = crate::mediakey::CallKey::force(channel, (3, [9; 32]));
+        s.screen_share.on(ShareEvent::Chosen {
+            target: crate::sysvideo::Target::Display(0),
+            audio: true,
+        });
+        let _ = s.camera.on(CameraEvent::Started);
         s.screen_token = Some(("url".into(), "tok".into()));
         s.screen_viewer_token = Some(("url".into(), "viewer".into()));
+        let epoch = s.voice_session_epoch;
         s.end_voice_locally();
-        assert!(s.media_keys.is_empty());
-        assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
-        assert!(!s.camera_picker);
+        assert_ne!(
+            s.voice_session_epoch, epoch,
+            "a rejoin must not pass for this call"
+        );
+        assert_eq!(s.media_key, Default::default());
+        assert!(!s.screen_share.is_live() && s.screen_token.is_none());
+        assert_eq!(s.camera.phase(), crate::local_camera::CameraPhase::Off);
         assert!(s.screen_viewer_token.is_none());
-        assert_eq!(s.voice.channel_id, None);
+        assert_eq!(s.voice.channel_id(), None);
     }
 
     #[test]
@@ -3862,48 +4624,6 @@ mod tests {
     }
 
     #[test]
-    fn deafening_mutes_and_undeafening_restores_the_previous_mute() {
-        let mut v = VoiceSession::default();
-        assert_eq!(v.toggle_deafen(), (true, true));
-        v.muted = true;
-        v.deafened = true;
-        assert_eq!(v.toggle_deafen(), (false, false));
-
-        let mut v = VoiceSession {
-            muted: true,
-            ..VoiceSession::default()
-        };
-        assert_eq!(v.toggle_deafen(), (true, true));
-        v.deafened = true;
-        assert_eq!(v.toggle_deafen(), (true, false));
-    }
-
-    #[test]
-    fn joining_voice_carries_the_local_mute_and_deafen_choices() {
-        let channel_id = Id::new_v4();
-        for muted in [false, true] {
-            for deafened in [false, true] {
-                let voice = VoiceSession {
-                    muted,
-                    deafened,
-                    ..VoiceSession::default()
-                };
-                match voice.join_message(channel_id) {
-                    ClientMessage::JoinVoice {
-                        channel_id: requested,
-                        preferences: Some(prefs),
-                    } => {
-                        assert_eq!(requested, channel_id);
-                        assert_eq!(prefs.muted, muted || deafened);
-                        assert_eq!(prefs.deafened, deafened);
-                    }
-                    other => panic!("unexpected join: {other:?}"),
-                }
-            }
-        }
-    }
-
-    #[test]
     fn display_name_falls_back_to_the_truncated_key() {
         let mut s = AppState::empty();
         let known = "a".repeat(64);
@@ -3938,55 +4658,28 @@ mod tests {
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
         ).unwrap();
 
-        s.dm_images.insert(
-            msg_a,
-            crate::nostr::dm_image::Image {
-                channel_id: ch_a,
-                descriptor: descriptor.clone(),
-                status: crate::nostr::dm_image::Status::Ready,
-                upload: false,
-                data: Some(std::sync::Arc::new("data_a".into())),
-                viewers: std::collections::HashSet::from([Id::new_v4()]),
-                original_viewers: Default::default(),
-                original_data: false,
-            },
-        );
-        s.dm_images.insert(
-            msg_b,
-            crate::nostr::dm_image::Image {
-                channel_id: ch_b,
-                descriptor,
-                status: crate::nostr::dm_image::Status::Ready,
-                upload: false,
-                data: Some(std::sync::Arc::new("data_b".into())),
-                viewers: std::collections::HashSet::from([Id::new_v4()]),
-                original_viewers: Default::default(),
-                original_data: false,
-            },
-        );
+        let shown = |channel: Id, data: &str| {
+            let viewer = uuid::Uuid::new_v4();
+            let mut image = crate::nostr::dm_image::Image::received(channel, descriptor.clone());
+            image.see(viewer, false);
+            let (token, _) = image.start(viewer).unwrap();
+            let mut one = HashMap::from([(Id::nil(), image)]);
+            crate::nostr::dm_image::finish_load(&mut one, Id::nil(), token, true, Ok(data.into()));
+            (one.remove(&Id::nil()).unwrap(), viewer)
+        };
+        let (image_a, viewer_a) = shown(ch_a, "data_a");
+        s.dm_images.insert(msg_a, image_a);
+        s.dm_images.insert(msg_b, shown(ch_b, "data_b").0);
+        let waiting = &crate::nostr::dm_image::Status::Waiting;
 
         s.evict_inactive_dm_images(Some(ch_a));
-        assert!(s.dm_images[&msg_a].data.is_some());
-        assert_eq!(
-            s.dm_images[&msg_a].status,
-            crate::nostr::dm_image::Status::Ready
-        );
-        assert!(!s.dm_images[&msg_a].viewers.is_empty());
-
-        assert!(s.dm_images[&msg_b].data.is_none());
-        assert_eq!(
-            s.dm_images[&msg_b].status,
-            crate::nostr::dm_image::Status::Waiting
-        );
-        assert!(s.dm_images[&msg_b].viewers.is_empty());
+        assert!(s.dm_images[&msg_a].ready().is_some());
+        assert_eq!(s.dm_images[&msg_a].wants(viewer_a), Some(false));
+        assert_eq!(s.dm_images[&msg_b].status(), waiting);
 
         s.evict_inactive_dm_images(None);
-        assert!(s.dm_images[&msg_a].data.is_none());
-        assert_eq!(
-            s.dm_images[&msg_a].status,
-            crate::nostr::dm_image::Status::Waiting
-        );
-        assert!(s.dm_images[&msg_a].viewers.is_empty());
+        assert_eq!(s.dm_images[&msg_a].status(), waiting);
+        assert_eq!(s.dm_images[&msg_a].wants(viewer_a), None);
     }
 
     #[test]

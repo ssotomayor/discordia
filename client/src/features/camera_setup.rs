@@ -1,22 +1,24 @@
 use dioxus::prelude::*;
 
 use crate::camera_quality::CameraQuality;
-use crate::state::{use_app_state, use_gateway};
+use crate::state::{CameraEvent, use_app_state, use_gateway};
 
 type SetupCall = (Option<crate::protocol::Id>, u32);
 
 fn finish_setup(state: &mut crate::state::AppState, call: SetupCall) -> bool {
     // Connecting voice advances the media epoch without changing the call being configured.
-    let start = state.camera_picker && (state.voice.channel_id, state.voice_route_revision) == call;
-    state.camera_picker = false;
+    let start =
+        state.camera.setup_open() && (state.voice.channel_id(), state.voice_route_revision) == call;
+    let _ = state.camera.on(CameraEvent::SetupClosed);
     start
 }
 
 #[component]
 pub fn CameraSourcePicker() -> Element {
     let state = use_app_state();
-    let open =
-        use_memo(move || state.read().camera_picker && state.read().voice.channel_id.is_some());
+    let open = use_memo(move || {
+        state.read().camera.setup_open() && state.read().voice.channel_id().is_some()
+    });
     rsx! { if open() { CameraSetupDialog {} } }
 }
 
@@ -27,7 +29,7 @@ fn CameraSetupDialog() -> Element {
     let gateway = use_gateway();
     let call = use_hook(move || {
         let s = state.read();
-        (s.voice.channel_id, s.voice_route_revision)
+        (s.voice.channel_id(), s.voice_route_revision)
     });
     let mut device = use_signal(move || {
         let cfg = settings.read();
@@ -139,14 +141,14 @@ fn CameraSetupDialog() -> Element {
     }
 
     let close = move |_| {
-        state.write().camera_picker = false;
+        let _ = state.write().camera.on(CameraEvent::SetupClosed);
     };
     let can_start = ready() && !submitting();
     rsx! {
         div {
             class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
             onclick: close,
-            onkeydown: move |e| { if e.key() == Key::Escape { state.write().camera_picker = false; } },
+            onkeydown: move |e| { if e.key() == Key::Escape { let _ = state.write().camera.on(CameraEvent::SetupClosed); } },
             div {
                 id: "camera-setup-dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": "camera-setup-title", tabindex: "-1",
                 class: "dxf-modal-in max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
@@ -241,13 +243,14 @@ mod tests {
     #[test]
     fn first_voice_connection_during_preview_does_not_cancel_camera_start() {
         let mut state = crate::state::AppState::empty();
-        state.voice.channel_id = Some(uuid::Uuid::from_u128(7));
-        state.camera_picker = true;
-        let call = (state.voice.channel_id, state.voice_route_revision);
-        state.voice.phase = crate::state::VoicePhase::Connected;
+        state.voice.force_channel(Some(uuid::Uuid::from_u128(7)));
+        let _ = state.camera.on(CameraEvent::SetupOpened);
+        let call = (state.voice.channel_id(), state.voice_route_revision);
+        state.voice.force_phase(crate::state::VoicePhase::Connected);
         state.voice_session_epoch += 1;
         assert!(finish_setup(&mut state, call));
-        assert!(!state.camera_picker);
+        assert!(!state.camera.setup_open());
+        assert!(!state.camera.wanted());
     }
 
     #[test]
@@ -259,11 +262,12 @@ mod tests {
             (None, 1),
         ] {
             let mut state = crate::state::AppState::empty();
-            state.camera_picker = true;
-            state.voice.channel_id = channel;
+            let _ = state.camera.on(CameraEvent::SetupOpened);
+            state.voice.force_channel(channel);
             state.voice_route_revision = route;
             assert!(!finish_setup(&mut state, (Some(original), 1)));
-            assert!(!state.camera_picker);
+            assert!(!state.camera.setup_open());
+            assert!(!state.camera.wanted());
         }
     }
 }

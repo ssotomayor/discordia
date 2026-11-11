@@ -37,7 +37,8 @@ use rubato::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::{ClientMessage, IceServer, Id};
-use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
+use crate::state::{AppState, CallState, ConnectionHealth, TrackStats, VoiceEvent, VoicePhase};
+use crate::voice_session::VoiceCall;
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
 #[path = "voice_camera.rs"]
@@ -162,10 +163,11 @@ impl AudioControls {
             .into_iter()
             .collect();
         self.watched_streams.send_if_modified(|watched| {
-            if *watched == state.screen_viewing {
+            let now = state.screen_viewing.sharers();
+            if *watched == now {
                 return false;
             }
-            watched.clone_from(&state.screen_viewing);
+            *watched = now;
             true
         });
     }
@@ -181,7 +183,7 @@ impl AudioControls {
             denoise_retry: Arc::new(AtomicU32::new(s.denoise_retry)),
             bitrate_kbps: Arc::new(AtomicU32::new(s.voice_bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
-            deafened: Arc::new(AtomicBool::new(s.voice.deafened)),
+            deafened: Arc::new(AtomicBool::new(s.voice.deafened())),
             // Restored volumes reach the mixer here: nothing sends them again.
             gains: Arc::new(Mutex::new(
                 s.user_volumes
@@ -191,7 +193,7 @@ impl AudioControls {
                     .collect(),
             )),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
-            watched_streams: tokio::sync::watch::channel(s.screen_viewing.clone()).0,
+            watched_streams: tokio::sync::watch::channel(s.screen_viewing.sharers()).0,
             soundboard_pct: Arc::new(AtomicU32::new(s.soundboard_volume.min(100))),
         }
     }
@@ -244,10 +246,9 @@ pub enum VoiceCmd {
     Connect {
         livekit_url: String,
         alternate_urls: Vec<String>,
-        route_revision: u32,
+        call: VoiceCall,
         report_tx: UnboundedSender<ClientMessage>,
         token: String,
-        channel_id: Id,
         ice_servers: Vec<IceServer>,
     },
     /// `done` fires once the rooms are closed and the capture is stopped, so a
@@ -353,7 +354,7 @@ async fn service_loop(
     controls: AudioControls,
 ) -> Result<(), String> {
     let mut session: Option<ActiveVoice> = None;
-    let mut last_connect: Option<(String, String, Id, Vec<IceServer>)> = None;
+    let mut last_connect: Option<LastConnect> = None;
 
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -366,35 +367,35 @@ async fn service_loop(
             VoiceCmd::Connect {
                 livekit_url,
                 alternate_urls,
-                route_revision,
+                call,
                 report_tx,
                 token,
-                channel_id,
                 ice_servers,
             } => {
+                let channel_id = call.channel;
                 eprintln!("[voice] Connect to {livekit_url} channel={channel_id}");
                 last_connect = None;
                 if let Some(prev) = session.take() {
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown(state).await;
                 }
+                // Dropped only now: until its rooms closed, peers there were still decrypting it.
+                if state.peek().media_key_is_stale() {
+                    state.write().drop_media_key();
+                }
                 #[cfg(target_os = "android")]
                 {
-                    if state.peek().server_voice_channel() != Some(channel_id)
-                        || state.peek().voice_route_revision != route_revision {
+                    if !call.is_current(state.peek().voice_call()) {
                         continue;
                     }
                     if let Err(error) = crate::android::prepare_voice().await {
-                        if state.peek().server_voice_channel() == Some(channel_id)
-                            && state.peek().voice_route_revision == route_revision {
+                        if call.is_current(state.peek().voice_call()) {
                             if let Err(send_error) = report_tx.send(ClientMessage::LeaveVoice) {
                                 tracing::debug!(%send_error, "voice gateway closed");
                             }
                             let mut s = state.write();
                             s.error_toast = Some(error.clone());
-                            s.voice.phase = VoicePhase::Error;
-                            s.voice.error = Some(error);
-                            s.voice.channel_id = None;
+                            s.voice_event(VoiceEvent::Failed { channel: channel_id, error });
                         }
                         continue;
                     }
@@ -404,39 +405,39 @@ async fn service_loop(
                     let controls = controls.clone();
                     let ice = ice_servers.clone();
                     async move {
-                        if state.peek().server_voice_channel() != Some(channel_id)
-                            || state.peek().voice_route_revision != route_revision {
+                        if !call.is_current(state.peek().voice_call()) {
                             return Err("voice join cancelled".into());
                         }
                         ActiveVoice::connect(&url, &token, channel_id, ice, state, controls).await
                     }
                 }).await;
-                if state.peek().server_voice_channel() != Some(channel_id)
-                    || state.peek().voice_route_revision != route_revision {
+                if !call.is_current(state.peek().voice_call()) {
                     if let Ok((active, _)) = result { active.shutdown(state).await; }
                     continue;
                 }
                 let _ = report_tx.send(ClientMessage::VoiceConnectionReport {
-                    channel_id, route_revision, connected: result.is_ok(),
+                    channel_id, route_revision: call.route, connected: result.is_ok(),
                 });
                 match result {
                     Ok((active, url)) => {
-                        last_connect = Some((url.clone(), token.clone(), channel_id, ice_servers));
+                        if !state.peek().voice.would_change(&VoiceEvent::RoomUp(channel_id)) {
+                            active.shutdown(state).await;
+                            continue;
+                        }
+                        last_connect = Some(LastConnect {
+                            url: url.clone(),
+                            token,
+                            call,
+                            ice_servers,
+                        });
                         state.write().set_voice_endpoint(url);
                         eprintln!("[voice] connected ok — phase Connected");
-                        {
-                            let mut s = state.write();
-                            s.voice.phase = VoicePhase::Connected;
-                            s.voice_session_epoch += 1;
-                        }
+                        state.write().voice_event(VoiceEvent::RoomUp(channel_id));
                         session = Some(active);
                     }
-                    Err(e) => {
-                        eprintln!("[voice] connect FAILED: {e}");
-                        let mut s = state.write();
-                        s.voice.phase = VoicePhase::Error;
-                        s.voice.error = Some(e);
-                        s.voice.channel_id = None;
+                    Err(error) => {
+                        eprintln!("[voice] connect FAILED: {error}");
+                        voice_event(state, VoiceEvent::Failed { channel: channel_id, error });
                     }
                 }
             }
@@ -449,7 +450,7 @@ async fn service_loop(
                 // token is minting; wiping now would take its key, channel and screen token.
                 let newer_call = {
                     let s = state.peek();
-                    s.voice.phase == VoicePhase::Connecting || s.server_voice_channel().is_some()
+                    matches!(s.voice.call(), CallState::Dialing(_)) || s.server_voice_channel().is_some()
                 };
                 if !newer_call {
                     state.write().end_voice_locally();
@@ -520,12 +521,10 @@ async fn service_loop(
                 if let Some(active) = session.as_mut() {
                     active.set_muted(muted).await;
                 }
-                state.write().voice.muted = muted;
             }
             VoiceCmd::SetDeafen { deafened } => {
                 eprintln!("[voice] SetDeafen deafened={deafened}");
                 controls.deafened.store(deafened, Ordering::Relaxed);
-                state.write().voice.deafened = deafened;
             }
             VoiceCmd::ApplyMicrophone { config } => {
                 config.apply_state(&mut state.write());
@@ -548,11 +547,11 @@ async fn service_loop(
             VoiceCmd::SetSystemAudio { enabled, target } => {
                 if let Some(active) = session.as_mut() {
                     #[cfg(target_os = "android")]
-                    let enabled = enabled && state.peek().screen_sharing && active.screen_video.is_some();
+                    let enabled = enabled && state.peek().screen_share.is_live() && active.screen_video.is_some();
                     if let Err(e) = active.set_system_audio(enabled, target, state).await {
                         eprintln!("[voice] system audio failed: {e}");
                         #[cfg(target_os = "android")]
-                        { state.write().screen_native_audio = false; }
+                        { state.write().screen_share.on(crate::local_share::ShareEvent::SystemAudioLost); }
                         state.write().error_toast = Some(format!(
                             "Sharing video only — couldn't capture this computer's sound: {e}"
                         ));
@@ -574,12 +573,15 @@ async fn service_loop(
                 settings,
             } => {
                 if let Some(active) = session.as_mut() {
+                    let publishing = room.is_some();
                     if let Err(e) = active.set_screen_video(room, target, settings, state).await {
                         eprintln!("[voice] screen video failed: {e}");
                         let mut s = state.write();
-                        s.screen_sharing = false;
-                        s.screen_share_target = None;
-                        s.error_toast = Some(format!("Couldn't share your screen: {e}"));
+                        if publishing
+                            && s.screen_share.on(crate::local_share::ShareEvent::Failed(target))
+                        {
+                            s.error_toast = Some(format!("Couldn't share your screen: {e}"));
+                        }
                     }
                 } else if room.is_some() {
                     eprintln!("[voice] SetScreenVideo ignored — no voice session");
@@ -593,19 +595,19 @@ async fn service_loop(
                 gateway,
             } => {
                 let epoch = state.read().voice_session_epoch;
-                let was_on = state.read().camera_on;
                 if let Some(active) = session.as_mut()
                     && let Err(e) = active
                         .set_camera(room, device, state, settings, gateway.clone())
                         .await
                 {
                     let mut s = state.write();
-                    if s.voice_session_epoch == epoch && (s.camera_on || s.camera_starting) {
-                        s.camera_on = false;
-                        s.camera_starting = false;
-                        s.error_toast = Some(format!("Couldn't start your camera: {e}"));
-                        if was_on {
-                            gateway.send(crate::protocol::ClientMessage::SetCamera { on: false });
+                    if s.voice_session_epoch == epoch {
+                        let followup = s.camera.on(crate::local_camera::CameraEvent::Failed);
+                        if followup.changed {
+                            s.error_toast = Some(format!("Couldn't start your camera: {e}"));
+                        }
+                        if let Some(message) = followup.server() {
+                            gateway.send(message);
                         }
                     }
                 }
@@ -646,6 +648,13 @@ async fn service_loop(
             }
             _ = tick.tick() => {
                 controls.sync_stream_gains(&state.read());
+                if session.as_ref().is_some_and(|active| !active.alive.load(Ordering::Relaxed)) {
+                    eprintln!("[voice] closing a voice room that disconnected");
+                    if let Some(dead) = session.take() {
+                        dead.shutdown(state).await;
+                    }
+                    last_connect = None;
+                }
                 if let Some(active) = session.as_mut() {
                     active.maintain(state, &controls).await;
                 }
@@ -656,39 +665,76 @@ async fn service_loop(
     Ok(())
 }
 
+/// What a device change rebuilds the room from: the grant of the call it was dialled for.
+#[derive(Clone)]
+struct LastConnect {
+    url: String,
+    token: String,
+    call: VoiceCall,
+    ice_servers: Vec<IceServer>,
+}
+
+/// Leaves the state alone when nothing changes, since a write wakes every reader.
+fn voice_event(mut state: Signal<AppState>, event: VoiceEvent) -> bool {
+    if !state.peek().voice.would_change(&event) {
+        return false;
+    }
+    state.write().voice_event(event)
+}
+
 async fn restart_session(
     session: &mut Option<ActiveVoice>,
-    last_connect: &Option<(String, String, Id, Vec<IceServer>)>,
-    mut state: Signal<AppState>,
+    last_connect: &Option<LastConnect>,
+    state: Signal<AppState>,
     controls: &AudioControls,
     why: &str,
 ) {
     if session.is_none() {
         return;
     }
-    let Some((url, tok, cid, ice)) = last_connect.clone() else {
+    let Some(last) = last_connect.clone() else {
         return;
     };
+    let channel = last.call.channel;
+    if !last.call.is_current(state.peek().voice_call())
+        || !voice_event(state, VoiceEvent::RestartBegun(channel))
+    {
+        return;
+    }
     eprintln!("[voice] Reconnecting to apply {why}");
     if let Some(prev) = session.take() {
         prev.shutdown(state).await;
     }
-    match ActiveVoice::connect(&url, &tok, cid, ice, state, controls.clone()).await {
-        Ok(active) => {
+    let result = ActiveVoice::connect(
+        &last.url,
+        &last.token,
+        channel,
+        last.ice_servers,
+        state,
+        controls.clone(),
+    )
+    .await;
+    if !last.call.is_current(state.peek().voice_call()) {
+        if let Ok(active) = result {
+            active.shutdown(state).await;
+        }
+        return;
+    }
+    match result {
+        Ok(active) if voice_event(state, VoiceEvent::RoomUp(channel)) => {
             eprintln!("[voice] reconnected ok");
-            {
-                let mut s = state.write();
-                s.voice.phase = VoicePhase::Connected;
-                s.voice_session_epoch += 1;
-            }
             *session = Some(active);
         }
+        Ok(active) => active.shutdown(state).await,
         Err(e) => {
             eprintln!("[voice] reconnect FAILED: {e}");
-            let mut s = state.write();
-            s.voice.phase = VoicePhase::Error;
-            s.voice.error = Some(format!("reconnect after {why}: {e}"));
-            s.voice.channel_id = None;
+            voice_event(
+                state,
+                VoiceEvent::Failed {
+                    channel,
+                    error: format!("reconnect after {why}: {e}"),
+                },
+            );
         }
     }
 }
@@ -697,6 +743,8 @@ struct ActiveVoice {
     #[cfg(target_os = "android")]
     _background_call: crate::android::BackgroundCall,
     room: Arc<Room>,
+    /// Cleared when LiveKit gives the room up; the service then closes the session.
+    alive: Arc<AtomicBool>,
     mic: Option<MicCapture>,
     muted: Arc<AtomicBool>,
     frame_tx: crate::audio_queue::AudioSender<f32>,
@@ -866,7 +914,7 @@ impl ActiveVoice {
         // DSP initialization yields; a mute changed during that wait must win before capture starts.
         let (start_muted, start_deafened) = {
             let s = state.peek();
-            (s.voice.muted || s.voice.deafened, s.voice.deafened)
+            (s.voice.muted() || s.voice.deafened(), s.voice.deafened())
         };
         controls.deafened.store(start_deafened, Ordering::Relaxed);
         apply_microphone_mute(&local_audio_for_mute, &muted, start_muted);
@@ -925,22 +973,30 @@ impl ActiveVoice {
 
         // The banner's dot follows the room itself, so a silent reconnect shows
         // yellow and the return to green does not wait on anything else.
-        let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel::<VoicePhase>();
+        let alive = Arc::new(AtomicBool::new(true));
+        let (room_tx, mut room_rx) = tokio::sync::mpsc::unbounded_channel::<RoomSignal>();
         {
             let mut state = state;
             crate::service_task::spawn(async move {
-                while let Some(phase) = phase_rx.recv().await {
-                    let current = state.peek().voice.clone();
-                    let ours = current.channel_id == Some(channel_id)
-                        && matches!(
-                            current.phase,
-                            VoicePhase::Connecting | VoicePhase::Connected
-                        );
-                    if ours && current.phase != phase {
-                        eprintln!("[voice] room says {phase:?}");
-                        let mut s = state.write();
-                        s.voice.phase = phase;
-                        if phase != VoicePhase::Connected {
+                while let Some(signal) = room_rx.recv().await {
+                    let event = match signal {
+                        RoomSignal::Reconnecting => VoiceEvent::RoomReconnecting(channel_id),
+                        RoomSignal::Reconnected => VoiceEvent::RoomReconnected(channel_id),
+                        // The server took us out (a move, a kick, another device); its echo says what follows.
+                        RoomSignal::Lost(
+                            livekit::DisconnectReason::ParticipantRemoved
+                            | livekit::DisconnectReason::RoomDeleted
+                            | livekit::DisconnectReason::DuplicateIdentity,
+                        ) => continue,
+                        RoomSignal::Lost(reason) => VoiceEvent::RoomLost {
+                            channel: channel_id,
+                            error: format!("livekit room disconnected: {reason:?}"),
+                        },
+                    };
+                    if voice_event(state, event) {
+                        eprintln!("[voice] room says {:?}", state.peek().voice.call());
+                        if state.peek().voice.phase() != VoicePhase::Connected {
+                            let mut s = state.write();
                             s.voice_send_route = None;
                             s.voice_receive_route = None;
                         }
@@ -994,6 +1050,7 @@ impl ActiveVoice {
             let room = room.clone();
             let local = self_pubkey.clone().unwrap_or_default();
             let mut watched = controls.watched_streams.subscribe();
+            let alive = alive.clone();
             async move {
                 let mut consumers = tokio::task::JoinSet::new();
                 let mut consumer_handles = HashMap::new();
@@ -1074,17 +1131,19 @@ impl ActiveVoice {
                             consumer_handles.clear();
                             eprintln!("[voice] room disconnected: {reason:?}");
                             let _ = quality_tx.send(QualityMsg::Clear);
+                            alive.store(false, Ordering::Relaxed);
+                            let _ = room_tx.send(RoomSignal::Lost(*reason));
                         }
                         RoomEvent::Reconnecting => {
                             eprintln!("[voice] reconnecting");
-                            let _ = phase_tx.send(VoicePhase::Connecting);
+                            let _ = room_tx.send(RoomSignal::Reconnecting);
                         }
                         RoomEvent::Reconnected => {
                             eprintln!("[voice] reconnected");
-                            let _ = phase_tx.send(VoicePhase::Connected);
+                            let _ = room_tx.send(RoomSignal::Reconnected);
                         }
                         RoomEvent::ConnectionStateChanged(ConnectionState::Connected) => {
-                            let _ = phase_tx.send(VoicePhase::Connected);
+                            let _ = room_tx.send(RoomSignal::Reconnected);
                         }
                         RoomEvent::E2eeStateChanged { participant, state } => {
                             use livekit::webrtc::native::frame_cryptor::EncryptionState;
@@ -1159,6 +1218,7 @@ impl ActiveVoice {
             #[cfg(target_os = "android")]
             _background_call: background_call,
             room,
+            alive,
             mic,
             muted,
             frame_tx,
@@ -1240,7 +1300,10 @@ impl ActiveVoice {
                     eprintln!("[voice] system audio died mid-share: {e}");
                     #[cfg(target_os = "android")]
                     {
-                        state.write().screen_native_audio = false;
+                        state
+                            .write()
+                            .screen_share
+                            .on(crate::local_share::ShareEvent::SystemAudioLost);
                     }
                     state.write().error_toast = Some(format!(
                         "This computer's sound stopped being shared: {e}. The screen is still \
@@ -1418,7 +1481,14 @@ impl ActiveVoice {
                 screen.shutdown().await;
             }
             match ScreenVideoRoom::connect(room.room.clone(), target, settings, state).await {
-                Ok(screen) => room.screen = Some(screen),
+                Ok(screen) => {
+                    room.screen = Some(screen);
+                    let mut state = state;
+                    state
+                        .write()
+                        .screen_share
+                        .on(crate::local_share::ShareEvent::Published(target));
+                }
                 Err(e) => {
                     self.close_unused_video_room().await;
                     return Err(e);
@@ -1687,9 +1757,8 @@ impl ActiveVoice {
             (None, Some(output)) => Some(output.to_string()),
             (None, None) => None,
         };
-        let mut s = state.write();
-        if s.voice.error != combined {
-            s.voice.error = combined;
+        if state.peek().voice.device_error() != combined.as_deref() {
+            state.write().voice.set_device_error(combined);
         }
     }
 
@@ -1717,6 +1786,7 @@ impl ActiveVoice {
             s.voice_uplink_congested = false;
             s.voice_send_route = None;
             s.voice_receive_route = None;
+            s.voice.set_device_error(None);
         }
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
             Ok(Ok(())) => {}
@@ -1945,15 +2015,13 @@ impl ScreenVideoRoom {
                 if let Some(e) = fatal_rx.recv().await {
                     eprintln!("[voice] screen capture died mid-share: {e}");
                     let mut s = state.write();
-                    if s.voice_session_epoch != capture_epoch
-                        || s.screen_share_target != Some(target)
+                    if s.voice_session_epoch == capture_epoch
+                        && s.screen_share
+                            .on(crate::local_share::ShareEvent::Failed(target))
                     {
-                        return;
+                        s.error_toast =
+                            Some(format!("Your screen stopped being shared: {e}. Try again."));
                     }
-                    s.screen_sharing = false;
-                    s.screen_share_target = None;
-                    s.error_toast =
-                        Some(format!("Your screen stopped being shared: {e}. Try again."));
                 }
             })
         };
@@ -2190,8 +2258,7 @@ impl ScreenVideoRoom {
                 }
                 let mut s = stats_state.write();
                 if s.voice_session_epoch != capture_epoch
-                    || s.screen_share_target != Some(target)
-                    || !s.screen_sharing
+                    || s.screen_share.native_target() != Some(target)
                 {
                     break;
                 }
@@ -2346,6 +2413,12 @@ struct ScreenAudioRoom {
     event_task: tokio::task::JoinHandle<()>,
     key: (String, String),
     alive: Arc<AtomicBool>,
+}
+
+enum RoomSignal {
+    Reconnecting,
+    Reconnected,
+    Lost(livekit::DisconnectReason),
 }
 
 enum QualityMsg {
@@ -5120,7 +5193,7 @@ mod tests {
     #[test]
     fn rejoining_without_watching_clears_the_previous_stream_gain() {
         let mut state = AppState::empty();
-        state.screen_viewing.insert("alice".into());
+        state.screen_viewing.watch("alice");
         state.stream_volumes.insert("alice".into(), 50);
         let controls = AudioControls::from_state(&state);
         let mut watched = controls.watched_streams.subscribe();

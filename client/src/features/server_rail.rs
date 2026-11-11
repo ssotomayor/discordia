@@ -6,7 +6,9 @@ use futures_util::StreamExt;
 use crate::known_servers::{self, KnownGuild, KnownServer};
 use crate::net::Reach;
 use crate::protocol::Id;
-use crate::state::{AppState, ConnectionStatus, SessionMode, SessionParams, use_app_state};
+use crate::state::{
+    AppState, ConnectionStatus, ServerSession, SessionMode, SessionParams, use_app_state,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Probe {
@@ -28,6 +30,18 @@ pub struct Switch {
     pub guild: Option<Id>,
     pub voice_invite: Option<crate::state::PendingVoiceInvite>,
     stage: Stage,
+}
+
+#[cfg(test)]
+impl Switch {
+    pub(crate) fn to(server: KnownServer) -> Self {
+        Switch {
+            server,
+            guild: None,
+            voice_invite: None,
+            stage: Stage::Checking,
+        }
+    }
 }
 
 /// The servers beside the connected one. Lives in `WorkspaceView`, so it is
@@ -168,7 +182,7 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
     // Only a Ready session says what the server's guilds are.
     let seen = use_memo(move || {
         let s = state.read();
-        (s.status == ConnectionStatus::Ready).then(|| {
+        (s.server_session() == ServerSession::Live).then(|| {
             s.guilds
                 .iter()
                 .map(|g| KnownGuild {
@@ -478,13 +492,17 @@ struct Cost {
 }
 
 fn cost_of(s: &AppState) -> Cost {
-    let call = s.voice.channel_id.or(s.voice.joining_channel_id).map(|id| {
-        s.channels
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "voice".into())
-    });
+    let call = s
+        .voice
+        .channel_id()
+        .or(s.voice.joining_channel_id())
+        .map(|id| {
+            s.channels
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "voice".into())
+        });
     let hosting = s
         .host_info
         .is_some()

@@ -41,7 +41,7 @@ pub(super) fn MicrophoneSettings() -> Element {
         .selected_input_device
         .clone()
         .unwrap_or_default();
-    let reconnecting = state.read().voice.phase == crate::state::VoicePhase::Connecting
+    let reconnecting = state.read().voice.phase() == crate::state::VoicePhase::Connecting
         || state.read().dm_call.as_ref().is_some_and(|c| {
             matches!(
                 c.phase,
@@ -53,7 +53,7 @@ pub(super) fn MicrophoneSettings() -> Element {
     let (active, input_used, output_used, fallback) = {
         let current = state.read();
         let active = current.mic_test_active
-            || current.voice.phase == crate::state::VoicePhase::Connected
+            || current.voice.phase() == crate::state::VoicePhase::Connected
             || current
                 .dm_call
                 .as_ref()

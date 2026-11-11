@@ -70,12 +70,12 @@ pub struct Filter {
 /// What the pool reports back to the app.
 #[derive(Debug, Clone)]
 pub enum RelayEvent {
-    /// An event nobody has delivered before. Which relay carried it is not
-    /// part of this: the pool deduplicates by event id, so "first to arrive"
-    /// is a race rather than a fact about the message. The one place the
-    /// source matters — a relay serving something that does not verify — names
-    /// it at the point of the drop instead.
-    Event(Box<Event>),
+    /// `relay` is whichever copy won the dedup race, not a fact about the message: enough
+    /// to say whether that relay was still replaying, never which relays hold it.
+    Event {
+        relay: String,
+        event: Box<Event>,
+    },
     /// A relay finished replaying stored events for a subscription.
     EndOfStored {
         relay: String,
@@ -512,7 +512,10 @@ async fn handle_relay_message(
             if !seen.lock().await.insert_new(&event.id) {
                 return;
             }
-            let _ = out.send(RelayEvent::Event(Box::new(event)));
+            let _ = out.send(RelayEvent::Event {
+                relay: url.to_string(),
+                event: Box::new(event),
+            });
         }
         "EOSE" => {
             let Some(subscription) = v.get(1).and_then(|s| s.as_str()) else {
@@ -850,7 +853,7 @@ mod tests {
         let out = feed(&[&frame, &frame]).await;
 
         assert_eq!(out.len(), 1, "the duplicate must be dropped");
-        assert!(matches!(out[0], RelayEvent::Event(_)));
+        assert!(matches!(out[0], RelayEvent::Event { .. }));
     }
 
     /// A rejected publish used to be parsed and then discarded by the app. The

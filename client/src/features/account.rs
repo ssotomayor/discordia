@@ -4,7 +4,7 @@ use crate::identity::Identity;
 use crate::protocol::Id;
 use crate::session::SavedSession;
 use crate::settings::ClientSettings;
-use crate::state::{AppState, ConnectionStatus, SessionParams};
+use crate::state::{AppState, ServerSession, SessionParams};
 
 #[derive(Clone, Copy)]
 pub(super) struct RenameAccount(pub Callback<String, Result<(), String>>);
@@ -36,8 +36,9 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();
     s.channel_read_at = saved.channel_read_at.clone();
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
-    s.dm_accepted = saved.dm_accepted.iter().cloned().collect();
-    s.dm_ignored = saved.dm_ignored.iter().cloned().collect();
+    for (peer, choice) in crate::dm_standing::choices_from(&saved.dm_accepted, &saved.dm_ignored) {
+        s.choose_dm(&peer, Some(choice));
+    }
     s.dm_deleted_ids = saved.dm_deleted_ids.iter().cloned().collect();
     s.mutes = crate::nostr::nip51::MuteList::from_pubkeys(saved.dm_blocked.iter().cloned());
     s.saved_emoji = saved.saved_emoji.clone();
@@ -61,7 +62,6 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.stream_volumes = saved.stream_volumes.iter().cloned().collect();
     s.stream_muted = saved.stream_muted.iter().cloned().collect();
     s.voice_bitrate_kbps = crate::settings::normalize_voice_bitrate(saved.voice_bitrate_kbps);
-    s.status = ConnectionStatus::Disconnected;
     s.soundboard_volume = saved.soundboard_volume.min(100) as u32;
     s
 }
@@ -197,7 +197,7 @@ pub fn AccountView(
     let quitting = try_consume_context::<crate::app::QuitRequest>();
     let quit_nostr = nostr.clone();
     use_effect(move || {
-        if quitting.is_some_and(|request| (request.0)()) && state.read().dm_call.is_some() {
+        if quitting.is_some_and(|request| request.requested()) && state.read().dm_call.is_some() {
             quit_nostr.send(crate::nostr::service::NostrCmd::Call(
                 super::dm_call::Action::End,
             ));
@@ -208,7 +208,7 @@ pub fn AccountView(
             let current = state.read();
             let in_call = current.dm_call.is_some()
                 || matches!(
-                    current.voice.phase,
+                    current.voice.phase(),
                     crate::state::VoicePhase::Connecting | crate::state::VoicePhase::Connected
                 );
             if updates.state.peek().in_call != in_call {
@@ -232,7 +232,7 @@ pub fn AccountView(
         (
             current.read_marks_revision,
             current.app_foreground,
-            quitting.is_some_and(|request| (request.0)()),
+            quitting.is_some_and(|request| request.requested()),
         )
     });
     let read_nostr = nostr.clone();
@@ -257,6 +257,14 @@ pub fn AccountView(
     crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
     let mut fallback = use_signal(|| None::<Fallback>);
+    // Armed by a switch, disarmed once the new server lets us in: only a server
+    // that never did is undone.
+    let admitted = use_memo(move || state.read().server_session() == ServerSession::Live);
+    use_effect(move || {
+        if admitted() && fallback.peek().is_some() {
+            fallback.set(None);
+        }
+    });
     rsx! {
         super::sounds::MessageSounds {}
         super::dm_call::CallAlert {}
@@ -267,8 +275,10 @@ pub fn AccountView(
                     params: params.clone(),
                     display_name: identity.display_name.clone(),
                     on_disconnect: move |reason: String| {
-                        // Only Ready sets `self_user`: without it, this session never got in.
-                        let got_in = state.peek().self_user.is_some();
+                        let got_in = fallback
+                            .peek()
+                            .as_ref()
+                            .is_some_and(|back| state.peek().readies != back.readies);
                         state.write().clear_server_session();
                         if let Some(back) = undo_switch(fallback.take(), got_in, &reason) {
                             let why = reason.split("\n\n").next().unwrap_or(&reason).trim().to_string();
@@ -288,6 +298,7 @@ pub fn AccountView(
                             params: params.clone(),
                             guild: here,
                             target: target.server.label(),
+                            readies: state.peek().readies,
                         }));
                         state.write().prepare_server_switch(target.guild, target.voice_invite);
                         on_connect.call(SessionParams {
@@ -319,6 +330,8 @@ struct Fallback {
     params: SessionParams,
     guild: Option<Id>,
     target: String,
+    /// `AppState::readies` at the switch: only a Ready after it says the new server let us in.
+    readies: u64,
 }
 
 /// Only a server that never let this client in is undone. An empty reason is
@@ -330,6 +343,7 @@ fn undo_switch<T>(back: Option<T>, got_in: bool, reason: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ConnectionStatus;
 
     #[test]
     fn a_switch_is_undone_only_when_the_new_server_never_let_us_in() {
@@ -409,8 +423,7 @@ mod tests {
                         phase: Phase::Connected,
                         microphone_error: None,
                     });
-                    s.voice.muted = true;
-                    s.voice.deafened = true;
+                    s.voice.force_mute(true, true);
                     s.mic_volume = 170;
                     let id = crate::protocol::Id::new_v4();
                     s.dms.push(DmInfo {
@@ -440,7 +453,7 @@ mod tests {
             assert!(exported.borrow().unwrap().0 == state);
             let s = state.read();
             assert_eq!(s.dm_call.as_ref().unwrap().phase, Phase::Connected);
-            assert!(s.voice.muted && s.voice.deafened);
+            assert!(s.voice.muted() && s.voice.deafened());
             assert_eq!(s.mic_volume, 170);
             assert_eq!(s.messages.len(), 1);
             assert!(s.dm_mode);

@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::connection_routes::MediaRoute;
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{AppState, ConnectionStatus, GatewayTx, Transport, VoicePhase};
+use crate::state::{AppState, GatewayTx, ServerSession, Transport, VoicePhase};
 
 #[derive(Clone, PartialEq)]
 struct RouteReport {
@@ -25,7 +25,7 @@ struct Snapshot {
 
 impl Snapshot {
     fn from_state(state: &AppState) -> Option<Self> {
-        if state.status != ConnectionStatus::Ready {
+        if state.server_session() != ServerSession::Live {
             return None;
         }
         let channel = state.server_voice_channel()?;
@@ -43,7 +43,7 @@ impl Snapshot {
                 }),
                 sent: state.voice_send_route.clone(),
                 received: state.voice_receive_route.clone(),
-                phase: state.voice.phase,
+                phase: state.voice.phase(),
                 endpoint: state.voice_endpoint.clone(),
                 revision: state.voice_route_revision,
             },
@@ -93,6 +93,7 @@ pub fn use_route_reports(state: Signal<AppState>, gateway: GatewayTx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ConnectionStatus;
 
     fn snapshot() -> Snapshot {
         let route = MediaRoute {

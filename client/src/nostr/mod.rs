@@ -38,6 +38,7 @@ pub mod nip02;
 pub mod nip17;
 pub mod nip51;
 pub mod nip59;
+pub mod outbox;
 pub mod profile;
 pub mod read_marks;
 pub mod service;

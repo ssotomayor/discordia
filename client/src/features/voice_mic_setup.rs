@@ -355,7 +355,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 state.write().mic_test_active = capturing;
             }
             let current = state.peek();
-            let connected = current.voice.phase == VoicePhase::Connected
+            let connected = current.voice.phase() == VoicePhase::Connected
                 || current
                     .dm_call
                     .as_ref()
@@ -372,9 +372,9 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
             }
             let next = if (monitoring || connected) && current.mic_volume == 0 {
                 Status::ZeroVolume
-            } else if connected && current.voice.deafened {
+            } else if connected && current.voice.deafened() {
                 Status::Deafened
-            } else if connected && current.voice.muted {
+            } else if connected && current.voice.muted() {
                 Status::Muted
             } else if connected
                 && (current.active_input_device.is_none()
@@ -528,10 +528,8 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                     button { class: "dxf-mic-adjust-button", r#type: "button", onclick: move |_| {
                         match status() {
                             Status::Muted | Status::Deafened => {
-                                { let mut s = state.write(); s.voice.muted = false; s.voice.deafened = false; }
-                                gateway.send(crate::protocol::ClientMessage::SetVoiceMute { muted: false, deafened: false });
-                                status_voice.send(VoiceCmd::SetDeafen { deafened: false });
-                                status_voice.send(VoiceCmd::SetMute { muted: false });
+                                let followup = state.write().voice.change_mute(crate::state::MuteChange::Unmute);
+                                if let Some(followup) = followup { followup.send(&gateway, &status_voice); }
                             }
                             Status::ZeroVolume | Status::OutputHigh => { let _ = document::eval("document.getElementById('mic-volume')?.scrollIntoView({block:'center'}); document.getElementById('mic-volume')?.focus();"); }
                             _ => { let _ = document::eval("document.getElementById('mic-input')?.scrollIntoView({block:'center'}); document.getElementById('mic-input')?.focus();"); }

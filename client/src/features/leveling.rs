@@ -22,11 +22,9 @@ pub fn XpLedgerService() -> Element {
 
     use_effect(move || {
         let publish = settings.read().publish_global_level;
-        let (origin, earned) = {
-            let s = state.read();
-            (s.server_origin.clone(), s.my_server_xp())
+        let Some((origin, earned)) = this_servers_count(&state.read()) else {
+            return;
         };
-        let Some(origin) = origin else { return };
 
         // The ledger is kept either way: turning publishing back on should not
         // start the count over, and the number is ours before it is anyone's.
@@ -40,6 +38,15 @@ pub fn XpLedgerService() -> Element {
     });
 
     rsx! { Fragment {} }
+}
+
+/// Only once Ready has brought this session's rows: the origin is set at
+/// connect, and before Ready an empty roster reads as having earned nothing.
+fn this_servers_count(s: &crate::state::AppState) -> Option<(String, u64)> {
+    if s.status != crate::state::ConnectionStatus::Ready {
+        return None;
+    }
+    Some((s.server_origin.clone()?, s.my_server_xp()))
 }
 
 /// `Lv 12 · 3 servers`, or `Lv 12` when it all came from one. The caller is
@@ -97,6 +104,36 @@ pub fn progress(rules: &crate::protocol::Leveling, xp: u64) -> Progress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_is_filed_for_a_server_before_its_ready_names_our_rows() {
+        let me = "ab".repeat(32);
+        let mut s = crate::state::AppState::empty();
+        s.status = crate::state::ConnectionStatus::Connecting;
+        s.server_origin = Some("server-b:443".into());
+        assert_eq!(this_servers_count(&s), None, "connected, no Ready yet");
+
+        s.self_user = Some(crate::protocol::User {
+            pubkey: me.clone(),
+            username: "me".into(),
+        });
+        s.members.push(crate::protocol::Member {
+            user: s.self_user.clone().unwrap(),
+            guild_id: crate::protocol::Id::nil(),
+            online: true,
+            bot: false,
+            roles: Vec::new(),
+            xp: 120,
+            look: Default::default(),
+            agent: None,
+            reads: None,
+        });
+        s.status = crate::state::ConnectionStatus::Ready;
+        assert_eq!(
+            this_servers_count(&s),
+            Some(("server-b:443".to_string(), 120))
+        );
+    }
     use crate::nostr::xp::GlobalXp;
 
     #[test]

@@ -128,7 +128,10 @@ pub fn ChannelsColumn() -> Element {
     let has_dm_call = snapshot.dm_call.is_some();
     let dms: Vec<DmInfo> = snapshot.dms_by_recency(crate::state::DmStanding::Inbox);
     let requests = snapshot.dm_request_count();
-    let dm_unread = snapshot.dm_unread.clone();
+    let dm_unread: std::collections::HashMap<Id, u32> = dms
+        .iter()
+        .map(|dm| (dm.channel_id, snapshot.dm_unread(dm.channel_id)))
+        .collect();
     let channel_unread: std::collections::HashSet<Id> = snapshot
         .channels
         .iter()
@@ -441,7 +444,7 @@ pub fn ChannelsColumn() -> Element {
                                     }
                                 }
                             } else if ch.kind == ChannelKind::Voice {
-                                let in_this = self_voice.channel_id == Some(cid);
+                                let in_this = self_voice.channel_id() == Some(cid);
                                 let g_join = gateway.clone();
                                 let occupants: Vec<VoiceState> = voice_states
                                     .iter()
@@ -1237,7 +1240,7 @@ pub(crate) fn ConnectionStats() -> Element {
         (
             s.screen_share_stats.clone(),
             s.screen_share_in_stats.clone(),
-            s.screen_sharing && crate::sysvideo::supported(),
+            s.screen_share.is_live() && crate::sysvideo::supported(),
         )
     };
 
@@ -1837,10 +1840,7 @@ fn VoiceOccupant(
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
                             if can_watch {
-                                let mut s = state.write();
-                                if !s.screen_viewing.remove(&pk_watch) {
-                                    s.screen_viewing.insert(pk_watch.clone());
-                                }
+                                state.write().screen_viewing.toggle(&pk_watch);
                             }
                         },
                         dangerous_inner_html: crate::features::icons::SCREEN,
@@ -1891,9 +1891,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mut state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
-    let sharing = state.read().screen_sharing;
-    let camera_on = state.read().camera_on;
-    let camera_starting = state.read().camera_starting;
+    let sharing = state.read().screen_share.is_live();
+    let camera_on = state.read().camera.is_on();
+    let camera_starting = state.read().camera.is_starting();
     let name = self_username.clone().unwrap_or_else(|| "—".into());
     let (level, xp_pct) = {
         let s = state.read();
@@ -1930,7 +1930,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         _ => self_npub.clone(),
     };
 
-    let voice_channel_id = self_voice.channel_id;
+    let voice_channel_id = self_voice.channel_id();
     let (voice_where, voice_sub) = {
         let s = state.read();
         let ch = voice_channel_id.and_then(|cid| s.channels.iter().find(|c| c.id == cid));
@@ -1955,17 +1955,17 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         )
     };
 
-    let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
-    let (dot_color, phase_text) = match self_voice.phase {
+    let show_banner = !matches!(self_voice.phase(), VoicePhase::Idle);
+    let (dot_color, phase_text) = match self_voice.phase() {
         VoicePhase::Idle => ("var(--text-dim)", "voice idle"),
         VoicePhase::Connecting => ("var(--warn)", "Connecting…"),
         VoicePhase::Connected => ("var(--success)", "voice connected"),
         VoicePhase::Error => ("var(--danger)", "voice error"),
     };
-    let voice_error = self_voice.error.clone();
+    let voice_error = self_voice.error().map(str::to_string);
 
-    let muted = self_voice.muted;
-    let deafened = self_voice.deafened;
+    let muted = self_voice.muted();
+    let deafened = self_voice.deafened();
     let mute_label = if muted { "Unmute mic" } else { "Mute mic" };
     let g_for_mute = gateway.clone();
     let v_for_mute = voice.clone();
@@ -1973,9 +1973,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_deafen = voice.clone();
     let g_for_hang = gateway.clone();
     let v_for_hang = voice.clone();
-    let g_for_share = gateway.clone();
     let g_for_camera = gateway.clone();
-    let voice_channel = self_voice.channel_id;
     let soundboard_open = state.read().soundboard_open;
 
     // The trigger lives in the title bar; this panel only owns the device
@@ -2050,10 +2048,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         },
                         title: crate::i18n::label(mute_label),
                         onclick: move |_| {
-                            let new_muted = !muted || deafened;
-                            state.write().voice.muted = new_muted;
-                            g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
-                            v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
+                            let followup = state.write().voice.change_mute(crate::state::MuteChange::ToggleMute);
+                            if let Some(followup) = followup {
+                                followup.send(&g_for_mute, &v_for_mute);
+                            }
                         },
                         dangerous_inner_html: if muted { crate::features::icons::MIC_OFF } else { crate::features::icons::MIC },
                     }
@@ -2065,15 +2063,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         },
                         title: if deafened { crate::i18n::text("undeafen", &[]) } else { crate::i18n::text("deafen", &[]) },
                         onclick: move |_| {
-                            let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
-                            {
-                                let mut s = state.write();
-                                s.voice.muted = next_muted;
-                                s.voice.deafened = next_deafened;
+                            let followup = state.write().voice.change_mute(crate::state::MuteChange::ToggleDeafen);
+                            if let Some(followup) = followup {
+                                followup.send(&g_for_deafen, &v_for_deafen);
                             }
-                            g_for_deafen.send(ClientMessage::SetVoiceMute { muted: next_muted, deafened: next_deafened });
-                            v_for_deafen.send(VoiceCmd::SetDeafen { deafened: next_deafened });
-                            v_for_deafen.send(VoiceCmd::SetMute { muted: next_muted });
                         },
                         dangerous_inner_html: if deafened {
                             crate::features::icons::HEADPHONES_OFF
@@ -2099,7 +2092,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 if camera_on || camera_starting {
                                     crate::features::camera::toggle_camera(state, settings, &g_for_camera, false);
                                 } else {
-                                    state.write().camera_picker = true;
+                                    let _ = state.write().camera.on(crate::state::CameraEvent::SetupOpened);
                                 }
                             },
                             dangerous_inner_html: if camera_on {
@@ -2120,10 +2113,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             onclick: move |_| {
                                 let now = !sharing;
                                 if !now {
-                                    state.write().screen_sharing = false;
-                                    if let Some(cid) = voice_channel {
-                                        g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: false });
-                                    }
+                                    state.write().screen_share.on(crate::local_share::ShareEvent::Stopped);
                                 }
 
                                                             if native_capture {
@@ -2133,11 +2123,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                          captured screen share.".into()
                                                                     );
                                                                 } else if now {
-                                                                    crate::features::screenshare::open_screen_picker(state, g_for_share.clone(), settings);
-                                                                } else {
-                                                                    let mut s = state.write();
-                                                                    s.screen_native_audio = false;
-                                                                    s.screen_share_target = None;
+                                                                    crate::features::screenshare::open_screen_picker(state, settings);
                                                                 }
                                                             } else if now {
                                                                 let quality = settings.read().screenshare_quality.clone();

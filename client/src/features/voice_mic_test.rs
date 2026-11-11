@@ -113,7 +113,7 @@ fn devices(state: &AppState) -> (Option<String>, Option<String>, bool) {
 
 fn in_call(state: &AppState) -> bool {
     matches!(
-        state.voice.phase,
+        state.voice.phase(),
         VoicePhase::Connecting | VoicePhase::Connected
     ) || state.dm_call.is_some()
 }
@@ -196,11 +196,11 @@ mod tests {
     fn test_is_available_without_a_call_and_after_a_failed_connection() {
         let mut state = AppState::empty();
         assert!(!in_call(&state));
-        state.voice.phase = VoicePhase::Connecting;
+        state.voice.force_phase(VoicePhase::Connecting);
         assert!(in_call(&state));
-        state.voice.phase = VoicePhase::Connected;
+        state.voice.force_phase(VoicePhase::Connected);
         assert!(in_call(&state));
-        state.voice.phase = VoicePhase::Error;
+        state.voice.force_phase(VoicePhase::Error);
         assert!(!in_call(&state));
     }
 }

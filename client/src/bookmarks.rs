@@ -71,9 +71,8 @@ impl SavedMessage {
                     state
                         .dm_images
                         .get(&message.id)?
-                        .data
-                        .as_ref()
-                        .map(|data| data.as_ref().clone())
+                        .ready()
+                        .map(|(data, _)| data.as_ref().clone())
                 }),
             attachment: message.attachment.clone(),
         })

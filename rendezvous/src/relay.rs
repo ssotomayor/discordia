@@ -279,6 +279,7 @@ pub async fn handle_host_control(
         transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
         location,
         address: peer.map(crate::registry::origin),
+        owner: None,
         last_seen_ms: Default::default(),
         superseded: Default::default(),
     };
@@ -383,9 +384,7 @@ pub async fn handle_host_control(
 async fn claim_anonymous_shortcode(registry: &Registry) -> Option<String> {
     for _ in 0..MAX_CLAIM_ATTEMPTS {
         let candidate = shortcode::generate();
-        if !registry.hosts.contains_key(&candidate)
-            && registry.reservation_owner(&candidate).is_none()
-        {
+        if registry.is_free(&candidate) {
             return Some(candidate);
         }
     }

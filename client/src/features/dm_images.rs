@@ -1,6 +1,6 @@
 use crate::{
     nostr::{
-        dm_image::{Image, Status},
+        dm_image::{Status, finish_load},
         service::{NostrCmd, NostrTx},
     },
     protocol::Id,
@@ -13,8 +13,11 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     let mut state = use_app_state();
     let identity = use_context::<crate::identity::Identity>();
     let nostr = use_context::<NostrTx>();
-    let mut attempt = use_signal(|| None::<uuid::Uuid>);
     let viewer = use_hook(uuid::Uuid::new_v4);
+    let allowed = move |s: &crate::state::AppState| {
+        s.dm_of(channel_id)
+            .is_some_and(|dm| s.dm_standing(&dm.other_pubkey) == DmStanding::Inbox)
+    };
     use_effect(move || {
         let Some(previews) = crate::image_assets::preview_density() else {
             return;
@@ -23,24 +26,9 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             .read()
             .dm_images
             .get(&message_id)
-            .is_some_and(|image| {
-                !image.viewers.contains(&viewer)
-                    || image.original_viewers.contains(&viewer) == previews
-            });
+            .is_some_and(|image| image.wants(viewer) != Some(!previews));
         if changed && let Some(image) = state.write().dm_images.get_mut(&message_id) {
-            image.viewers.insert(viewer);
-            if previews {
-                image.original_viewers.remove(&viewer);
-            } else {
-                image.original_viewers.insert(viewer);
-            }
-            if !image.upload
-                && image.original_data != !image.original_viewers.is_empty()
-                && matches!(image.status, Status::Ready | Status::Loading(_))
-            {
-                image.status = Status::Waiting;
-                image.data = None;
-            }
+            image.see(viewer, !previews);
         }
     });
     let effect_owner = identity.pubkey.clone();
@@ -48,108 +36,41 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
         if crate::image_assets::preview_density().is_none() {
             return;
         }
-        let wanted = {
+        let due = {
             let s = state.read();
-            let allowed = s
-                .dm_of(channel_id)
-                .is_some_and(|dm| s.dm_standing(&dm.other_pubkey) == DmStanding::Inbox);
-            s.dm_images
-                .get(&message_id)
-                .filter(|image| !image.upload && image.status == Status::Waiting && allowed)
-                .cloned()
+            allowed(&s)
+                && s.dm_images
+                    .get(&message_id)
+                    .is_some_and(|image| *image.status() == Status::Waiting)
         };
-        let Some(image) = wanted else {
+        if !due {
+            return;
+        }
+        let started = state
+            .write()
+            .dm_images
+            .get_mut(&message_id)
+            .and_then(|image| Some((image.start(viewer)?, image.descriptor.clone())));
+        let Some(((token, original), descriptor)) = started else {
             return;
         };
-        let token = uuid::Uuid::new_v4();
-        let original = !image.original_viewers.is_empty();
-        attempt.set(Some(token));
-        if let Some(image) = state.write().dm_images.get_mut(&message_id) {
-            image.status = Status::Loading(token);
-            image.original_data = original;
-        }
         let account = effect_owner.clone();
         spawn(async move {
             let result = if original {
-                crate::nostr::dm_image::load_original(&account, &image.descriptor).await
+                crate::nostr::dm_image::load_original(&account, &descriptor).await
             } else {
-                crate::nostr::dm_image::receive(&account, &image.descriptor).await
+                crate::nostr::dm_image::receive(&account, &descriptor).await
             };
             let mut s = state.write();
-            if !s
-                .dm_images
-                .get(&message_id)
-                .is_some_and(|image| image.status == Status::Loading(token))
-                || !s
-                    .dm_of(channel_id)
-                    .is_some_and(|dm| s.dm_standing(&dm.other_pubkey) == DmStanding::Inbox)
-            {
-                return;
-            }
-            match result {
-                Ok(data) => {
-                    const MAX_READY_IMAGES: usize = 8;
-                    let active_viewed_count = s
-                        .dm_images
-                        .values()
-                        .filter(|img| {
-                            img.channel_id == channel_id
-                                && img.status == Status::Ready
-                                && !img.viewers.is_empty()
-                        })
-                        .count();
-                    let max_idle = MAX_READY_IMAGES
-                        .saturating_sub(active_viewed_count)
-                        .saturating_sub(1);
-                    let idle_ready: Vec<_> = s
-                        .dm_images
-                        .iter()
-                        .filter(|(id, image)| {
-                            **id != message_id
-                                && image.channel_id == channel_id
-                                && image.status == Status::Ready
-                                && image.viewers.is_empty()
-                        })
-                        .map(|(id, _)| *id)
-                        .collect();
-                    for id in idle_ready.into_iter().skip(max_idle) {
-                        if let Some(image) = s.dm_images.get_mut(&id) {
-                            image.status = Status::Evicted;
-                            image.data = None;
-                        }
-                    }
-                    if let Some(image) = s.dm_images.get_mut(&message_id) {
-                        image.status = Status::Ready;
-                        image.data = Some(std::sync::Arc::new(data));
-                    }
-                }
-                Err(error) => {
-                    if let Some(image) = s.dm_images.get_mut(&message_id) {
-                        image.status = Status::Failed(error);
-                    }
-                }
-            }
+            let allowed = allowed(&s);
+            finish_load(&mut s.dm_images, message_id, token, allowed, result);
         });
     });
     use_drop(move || {
         if let Ok(mut s) = state.try_write()
             && let Some(image) = s.dm_images.get_mut(&message_id)
         {
-            image.viewers.remove(&viewer);
-            image.original_viewers.remove(&viewer);
-            let ours =
-                matches!(image.status, Status::Loading(token) if Some(token) == *attempt.peek());
-            if !image.upload
-                && (ours
-                    || (image.viewers.is_empty() && image.status == Status::Ready)
-                    || (image.original_data != !image.original_viewers.is_empty()
-                        && matches!(image.status, Status::Ready | Status::Loading(_))))
-            {
-                image.status = Status::Waiting;
-            }
-            if image.viewers.is_empty() || image.status == Status::Waiting {
-                image.data = None;
-            }
+            image.leave(viewer);
         }
     });
     let source = use_memo(move || {
@@ -157,24 +78,20 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             .read()
             .dm_images
             .get(&message_id)?
-            .data
-            .clone()
-            .map(crate::image_assets::chat_source)
+            .ready()
+            .map(|(data, _)| crate::image_assets::chat_source(data.clone()))
     });
-    let Some(Image {
-        descriptor,
-        status,
-        upload,
-        ..
-    }) = state.read().dm_images.get(&message_id).cloned()
-    else {
+    let Some(image) = state.read().dm_images.get(&message_id).cloned() else {
         return rsx! {};
     };
+    let upload = image.is_upload();
+    let status = image.status().clone();
+    let descriptor = image.descriptor;
     let account = identity.pubkey.clone();
     let details_name = descriptor.name.clone();
     let details_width = descriptor.width;
     let details_height = descriptor.height;
-    if status == Status::Ready {
+    if let Status::Ready { .. } = status {
         return rsx! {
             if let Some(src) = source() {
                 super::image_attachment::ImageAttachment {
@@ -183,9 +100,9 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                       zoomable:true,
                     onclick: move |_| {
 
-                        let view={let s=state.peek();s.dm_images.get(&message_id).and_then(|image|image.data.clone().map(|data|{
-                            let target=(!image.original_data).then(||super::image_viewer::Original::Dm {owner:account.clone(),descriptor:descriptor.clone()});
-                            super::image_viewer::ImageView::new(data,target)
+                        let view={let s=state.peek();s.dm_images.get(&message_id).and_then(|image|image.ready().map(|(data,original)|{
+                            let target=(!original).then(||super::image_viewer::Original::Dm {owner:account.clone(),descriptor:descriptor.clone()});
+                            super::image_viewer::ImageView::new(data.clone(),target)
                         }))};
                         if let Some(view)=view {state.write().image_viewer=Some(view);}
                     },
@@ -196,11 +113,11 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     }
     let label = match &status {
         Status::Uploading => "Uploading encrypted image…",
-        Status::Loading(_) => "Loading encrypted image…",
+        Status::Loading { .. } => "Loading encrypted image…",
         Status::Waiting => "Encrypted image — accept this conversation to load it.",
         Status::Evicted => "Image ready to load.",
-        Status::Failed(error) => error,
-        Status::Ready => "",
+        Status::Failed(error) | Status::UploadFailed(error) => error,
+        Status::Ready { .. } => "",
     };
     let retry_nostr = nostr.clone();
     rsx! {
@@ -209,8 +126,8 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             // Every state holds the picture's box: leaving a DM unloads its pictures,
             // so each one passes through these on every visit.
             style: "{super::image_attachment::frame(details_width.zip(details_height))} min-width: min(240px, 100%); min-height: 48px;",
-            span { class: if matches!(status, Status::Loading(_)) { "dxf-late" } else { "" }, {crate::i18n::message(label)} }
-            if matches!(status, Status::Failed(_) | Status::Evicted) {
+            span { class: if matches!(status, Status::Loading { .. }) { "dxf-late" } else { "" }, {crate::i18n::message(label)} }
+            if matches!(status, Status::Failed(_) | Status::UploadFailed(_) | Status::Evicted) {
                 button {
                     r#type: "button",
                     class: "ml-3 text-[var(--accent)] hover:underline whitespace-nowrap",
@@ -218,7 +135,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                         if upload {
                             retry_nostr.send(NostrCmd::Retry { message_id });
                         } else if let Some(image) = state.write().dm_images.get_mut(&message_id) {
-                            image.status = Status::Waiting;
+                            image.retry();
                         }
                     },
                     {crate::i18n::text(if status == Status::Evicted { "Load image" } else { "Retry" }, &[])}

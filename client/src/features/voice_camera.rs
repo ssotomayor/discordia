@@ -34,7 +34,7 @@ impl CameraPublisher {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     let s = state.read();
-                    if s.voice_session_epoch != epoch || !(s.camera_on || s.camera_starting) { break; }
+                    if s.voice_session_epoch != epoch || !s.camera.wanted() { break; }
                 }
             } => return Err("camera startup was cancelled".into()),
         };
@@ -51,9 +51,7 @@ impl CameraPublisher {
             }
         };
         // A queued stop or a newer call can supersede startup while the device opens.
-        if state.read().voice_session_epoch != epoch
-            || !(state.read().camera_starting || state.read().camera_on)
-        {
+        if state.read().voice_session_epoch != epoch || !state.read().camera.wanted() {
             capture.stop().await;
             if let Err(e) = room
                 .local_participant()
@@ -69,20 +67,22 @@ impl CameraPublisher {
         next.camera_device_label = Some(capture.device.label.clone());
         settings.set(next.clone());
         crate::settings::save(&next);
-        {
-            let mut s = state.write();
-            s.camera_on = true;
-            s.camera_starting = false;
+        let started = state
+            .write()
+            .camera
+            .on(crate::local_camera::CameraEvent::Started);
+        if let Some(message) = started.server() {
+            gateway.send(message);
         }
-        gateway.send(crate::protocol::ClientMessage::SetCamera { on: true });
         let fatal_task = dioxus::prelude::spawn(async move {
             if let Some(e) = fatal_rx.recv().await {
                 let mut s = state.write();
-                if s.voice_session_epoch == epoch && s.camera_on {
-                    s.camera_on = false;
-                    s.camera_starting = false;
+                if s.voice_session_epoch == epoch && s.camera.is_on() {
+                    let followup = s.camera.on(crate::local_camera::CameraEvent::Failed);
                     s.error_toast = Some(format!("Your camera stopped: {e}"));
-                    gateway.send(crate::protocol::ClientMessage::SetCamera { on: false });
+                    if let Some(message) = followup.server() {
+                        gateway.send(message);
+                    }
                 }
             }
         });

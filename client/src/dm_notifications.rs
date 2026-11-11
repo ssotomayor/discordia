@@ -340,15 +340,11 @@ mod native {
         });
         let viewing = use_memo(move || {
             let current = state.read();
-            let peer = if current.dm_mode && current.dm_pane_open {
-                current
-                    .selected_channel
-                    .and_then(|channel| current.dm_of(channel))
-                    .map(|dm| dm.other_pubkey.clone())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
+            let peer = current
+                .dm_in_view()
+                .and_then(|channel| current.dm_of(channel))
+                .map(|dm| dm.other_pubkey.clone())
+                .unwrap_or_default();
             (peer, current.app_foreground)
         });
         use_effect(move || {
@@ -515,18 +511,18 @@ mod tests {
         state.dm_read_at.insert("peer".into(), 100);
         state.dm_clock_offset.insert("peer".into(), 7);
         assert_eq!(notification_read_marks(&state), vec![("peer".into(), 107)]);
-        state.dm_unread.insert(conversation_id("peer"), 1);
+        state.change_dm_unread(conversation_id("peer"), crate::state::UnreadChange::Arrived);
         assert_eq!(notification_read_marks(&state), vec![("peer".into(), 107)]);
         let mut message = message();
         message.created_at = 108;
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         assert!(notice(&state, &message, "self", true).is_some());
     }
 
     #[test]
     fn do_not_disturb_prevents_native_message_alerts_even_without_a_server() {
         let mut state = AppState::empty();
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         assert!(notice(&state, &message(), "self", true).is_some());
         state.profiles.insert(
             "self".into(),
@@ -567,7 +563,7 @@ mod tests {
         let mut state = AppState::empty();
         let mut message = message();
         assert!(notice(&state, &message, "self", true).is_none());
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         assert!(notice(&state, &message, "self", true).is_some());
         assert!(notice(&state, &message, "self", false).is_none());
         state.dm_read_at.insert("peer".into(), 101);
@@ -583,7 +579,7 @@ mod tests {
     #[test]
     fn notification_payload_never_contains_the_dm_body() {
         let mut state = AppState::empty();
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         let payload =
             serde_json::to_string(&notice(&state, &message(), "self", true).unwrap()).unwrap();
         assert!(!payload.contains("private content"));
@@ -593,13 +589,13 @@ mod tests {
     fn background_chat_does_not_mark_incoming_messages_as_read() {
         let mut state = AppState::empty();
         let channel = conversation_id("peer");
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         state.dm_mode = true;
         state.dm_pane_open = true;
         state.selected_channel = Some(channel);
         state.app_foreground = false;
         state.note_dm_arrival(channel, "peer", 100);
-        assert_eq!(state.dm_unread.get(&channel), Some(&1));
+        assert_eq!(state.dm_unread(channel), 1);
         assert!(!state.dm_read_at.contains_key("peer"));
         state.app_foreground = true;
         state.note_dm_arrival(channel, "peer", 101);
@@ -609,10 +605,10 @@ mod tests {
     #[test]
     fn ignored_or_blocked_peers_do_not_notify() {
         let mut state = AppState::empty();
-        state.dm_ignored.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Ignored));
         assert!(notice(&state, &message(), "self", true).is_none());
-        state.dm_ignored.clear();
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", None);
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         state.mutes = crate::nostr::nip51::MuteList::from_pubkeys(["peer".into()]);
         assert!(notice(&state, &message(), "self", true).is_none());
     }
@@ -620,7 +616,7 @@ mod tests {
     #[test]
     fn a_fresh_message_in_the_same_second_as_the_read_mark_can_notify() {
         let mut state = AppState::empty();
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         state.dm_read_at.insert("peer".into(), 100);
         assert!(notice(&state, &message(), "self", true).is_some());
     }
@@ -629,14 +625,17 @@ mod tests {
     fn opening_a_notification_preserves_voice_and_does_not_accept_strangers() {
         let mut state = AppState::empty();
         let voice = crate::protocol::Id::new_v4();
-        state.voice.channel_id = Some(voice);
+        state.voice.force_channel(Some(voice));
         assert!(!open_inbox(&mut state, "stranger"));
         assert!(state.selected_channel.is_none());
-        state.dm_accepted.insert("peer".into());
+        state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         assert!(open_inbox(&mut state, "peer"));
-        assert_eq!(state.voice.channel_id, Some(voice));
+        assert_eq!(state.voice.channel_id(), Some(voice));
         assert_eq!(state.dm_notification_open, Some(conversation_id("peer")));
         assert!(state.dm_mode);
-        assert!(!state.dm_accepted.contains("stranger"));
+        assert_ne!(
+            state.dm_choice("stranger"),
+            Some(crate::state::DmChoice::Accepted)
+        );
     }
 }

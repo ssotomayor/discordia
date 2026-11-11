@@ -13,9 +13,12 @@ mod tests {
         let mut state = AppState::empty();
         let channel = Id::new_v4();
         state.status = ConnectionStatus::Ready;
-        state.voice.phase = VoicePhase::Connected;
-        state.voice.channel_id = Some(channel);
-        state.screen_sharing = true;
+        state.voice.force_phase(VoicePhase::Connected);
+        state.voice.force_channel(Some(channel));
+        let live = crate::local_share::ShareEvent::WebViewStarted {
+            native_audio: false,
+        };
+        state.screen_share.on(live.clone());
         state.self_user = Some(User {
             pubkey: "me".into(),
             username: "Me".into(),
@@ -53,12 +56,14 @@ mod tests {
             ViewerSnapshot::from_state(&state).changes_from(&bob),
             (false, true)
         );
-        state.screen_sharing = false;
+        state
+            .screen_share
+            .on(crate::local_share::ShareEvent::Stopped);
         assert_eq!(
             ViewerSnapshot::from_state(&state).changes_from(&bob),
             (false, false)
         );
-        state.screen_sharing = true;
+        state.screen_share.on(live);
         state.voice_session_epoch += 1;
         assert_eq!(
             ViewerSnapshot::from_state(&state).changes_from(&bob),
@@ -84,13 +89,13 @@ struct ViewerSnapshot {
 
 impl ViewerSnapshot {
     fn from_state(state: &crate::state::AppState) -> Self {
-        if !state.screen_sharing
+        if !state.screen_share.is_live()
             || state.status != crate::state::ConnectionStatus::Ready
-            || state.voice.phase != crate::state::VoicePhase::Connected
+            || state.voice.phase() != crate::state::VoicePhase::Connected
         {
             return Self::default();
         }
-        let (Some(channel), Some(me)) = (state.voice.channel_id, state.self_user.as_ref()) else {
+        let (Some(channel), Some(me)) = (state.voice.channel_id(), state.self_user.as_ref()) else {
             return Self::default();
         };
         Self {
@@ -127,13 +132,13 @@ struct CameraViewerSnapshot {
 
 impl CameraViewerSnapshot {
     fn from_state(state: &crate::state::AppState) -> Self {
-        if !state.camera_on
+        if !state.camera.is_on()
             || state.status != crate::state::ConnectionStatus::Ready
-            || state.voice.phase != crate::state::VoicePhase::Connected
+            || state.voice.phase() != crate::state::VoicePhase::Connected
         {
             return Self::default();
         }
-        let (Some(channel), Some(me)) = (state.voice.channel_id, state.self_user.as_ref()) else {
+        let (Some(channel), Some(me)) = (state.voice.channel_id(), state.self_user.as_ref()) else {
             return Self::default();
         };
         Self {
@@ -252,11 +257,11 @@ pub fn MessageSounds() -> Element {
 
     let voice_controls = use_memo(move || {
         let s = state.read();
-        (s.voice.muted, s.voice.deafened)
+        (s.voice.muted(), s.voice.deafened())
     });
     let mut last_controls = use_signal(|| {
         let s = state.peek();
-        (s.voice.muted, s.voice.deafened)
+        (s.voice.muted(), s.voice.deafened())
     });
     use_effect(move || {
         let (muted, deafened) = voice_controls();

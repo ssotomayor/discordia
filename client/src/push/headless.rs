@@ -190,10 +190,14 @@ fn decide_dm(
     if message.author == account || message.author != peer || !is_canonical_pubkey(peer) {
         return None;
     }
-    let listed = |list: &[String]| list.iter().any(|key| key == peer);
-    let inbox = listed(&settings.dm_accepted) || peers.name(peer).is_some();
-    if listed(&settings.dm_blocked)
-        || !inbox
+    // The app's own rule, over what a cold process has: `push-peers.json` names
+    // the contacts and guild-mates the app last saw.
+    let standing = crate::dm_standing::standing(
+        settings.dm_blocked.iter().any(|key| key == peer),
+        crate::dm_standing::choice_in(&settings.dm_accepted, &settings.dm_ignored, peer),
+        peers.name(peer).is_some(),
+    );
+    if standing != crate::dm_standing::DmStanding::Inbox
         || settings
             .muted_channels
             .contains(&crate::nostr::service::conversation_id(peer))

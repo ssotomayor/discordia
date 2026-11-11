@@ -71,8 +71,8 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     });
     let can_manage = state.read().can(guild_id, Permission::ManageGuild);
     let adjusting = state.read().soundboard_adjusting;
-    let deafened = state.read().voice.deafened;
-    let connected = state.read().voice.phase == VoicePhase::Connected;
+    let deafened = state.read().voice.deafened();
+    let connected = state.read().voice.phase() == VoicePhase::Connected;
     let blocked = if !connected {
         Some("Waiting for voice to connect…")
     } else if deafened {

@@ -3,8 +3,7 @@ use dioxus::prelude::*;
 use serde_json::Value;
 
 use crate::features::screenshare::{Drag, attach_js, detach_js};
-use crate::protocol::ClientMessage;
-use crate::state::{CameraDevice, use_app_state, use_gateway};
+use crate::state::{CameraDevice, CameraEvent, use_app_state, use_gateway};
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
 use crate::camera_quality::CameraQuality;
@@ -56,28 +55,31 @@ fn resolve_device(
     None
 }
 
+fn camera_event(
+    mut state: Signal<crate::state::AppState>,
+    gateway: &crate::state::GatewayTx,
+    event: CameraEvent,
+) -> bool {
+    let followup = state.write().camera.on(event);
+    if let Some(message) = followup.server() {
+        gateway.send(message);
+    }
+    followup.changed
+}
+
 /// Stopping tells the server here, not when the webview reports the track
-/// ended: that report arrives after `camera_on` is already cleared, and never
+/// ended: that report arrives after the camera is already off, and never
 /// comes at all for a camera that had not reached the room yet.
 pub fn toggle_camera(
-    mut state: Signal<crate::state::AppState>,
+    state: Signal<crate::state::AppState>,
     settings: Signal<crate::settings::ClientSettings>,
     gateway: &crate::state::GatewayTx,
     on: bool,
 ) {
     if !on {
-        let was = {
-            let mut w = state.write();
-            let was = w.camera_on || w.camera_starting;
-            w.camera_on = false;
-            w.camera_starting = false;
-            was
-        };
+        camera_event(state, gateway, CameraEvent::Stopped);
         if !crate::syscamera::supported() {
             let _ = document::eval(&stop_camera_js());
-        }
-        if was {
-            gateway.send(ClientMessage::SetCamera { on: false });
         }
         return;
     }
@@ -90,7 +92,7 @@ pub fn toggle_camera(
             cfg.camera_device_label.as_deref(),
         )
     };
-    state.write().camera_starting = true;
+    camera_event(state, gateway, CameraEvent::StartRequested);
     if crate::syscamera::supported() {
         // The webview cannot capture until the app holds the permission, and
         // asking it there surfaces as a bare denial.
@@ -98,10 +100,10 @@ pub fn toggle_camera(
         if !crate::android::camera_permission_granted() {
             let gateway = gateway.clone();
             spawn(async move {
+                let mut state = state;
                 if let Err(error) = crate::android::prepare_camera().await {
-                    let mut w = state.write();
-                    w.camera_starting = false;
-                    w.error_toast = Some(error);
+                    camera_event(state, &gateway, CameraEvent::Failed);
+                    state.write().error_toast = Some(error);
                     return;
                 }
                 toggle_camera(state, settings, &gateway, true);
@@ -164,8 +166,8 @@ fn NativeCameraBridge() -> Element {
     use_effect(move || {
         let s = state.read();
         let cfg = settings.read();
-        let wanted = s.camera_on || s.camera_starting;
-        let room = (wanted && s.voice.channel_id.is_some())
+        let wanted = s.camera.wanted();
+        let room = (wanted && s.voice.channel_id().is_some())
             .then(|| s.screen_video_token.clone())
             .flatten();
         let device = resolve_device(
@@ -223,7 +225,7 @@ fn BrowserCameraBridge() -> Element {
 
     // Leaving, being moved or dropped from a call releases the camera itself,
     // whatever the screen room is doing: nothing a call started outlives it.
-    let in_call = use_memo(move || state.read().voice.channel_id.is_some());
+    let in_call = use_memo(move || state.read().voice.channel_id().is_some());
     use_effect(move || {
         if !in_call() {
             let _ = document::eval(&stop_camera_js());
@@ -236,8 +238,7 @@ fn BrowserCameraBridge() -> Element {
         if has != *had_token.peek() {
             if !has {
                 let mut w = state.write();
-                w.camera_on = false;
-                w.camera_starting = false;
+                let _ = w.camera.on(CameraEvent::Released);
                 w.cameras_watching.clear();
             }
             had_token.set(has);
@@ -266,11 +267,6 @@ fn BrowserCameraBridge() -> Element {
             while let Ok(msg) = eval.recv::<Value>().await {
                 match msg.get("__dxf").and_then(|v| v.as_str()) {
                     Some("camera-started") => {
-                        {
-                            let mut w = state.write();
-                            w.camera_on = true;
-                            w.camera_starting = false;
-                        }
                         // Persist what actually opened, not what was asked
                         // for, so a fallback is not saved as the choice.
                         let id = msg.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
@@ -283,24 +279,14 @@ fn BrowserCameraBridge() -> Element {
                             settings.set(next.clone());
                             crate::settings::save(&next);
                         }
-                        gateway.send(ClientMessage::SetCamera { on: true });
+                        camera_event(state, &gateway, CameraEvent::Started);
                     }
                     Some("camera-ended") => {
-                        let was = state.read().camera_on;
-                        {
-                            let mut w = state.write();
-                            w.camera_on = false;
-                            w.camera_starting = false;
-                        }
-                        if was {
-                            gateway.send(ClientMessage::SetCamera { on: false });
-                        }
+                        camera_event(state, &gateway, CameraEvent::Ended);
                     }
                     Some("camera-denied") => {
-                        let mut w = state.write();
-                        w.camera_on = false;
-                        w.camera_starting = false;
-                        w.error_toast = Some(
+                        camera_event(state, &gateway, CameraEvent::Failed);
+                        state.write().error_toast = Some(
                             "Camera access was refused. On macOS, allow it under System \
                              Settings › Privacy & Security › Camera, then try again."
                                 .into(),
@@ -312,16 +298,14 @@ fn BrowserCameraBridge() -> Element {
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown error");
                         eprintln!("[camera] start failed: {detail}");
-                        let mut w = state.write();
-                        w.camera_on = false;
-                        w.camera_starting = false;
-                        w.error_toast = Some(format!("Couldn't start your camera: {detail}"));
+                        camera_event(state, &gateway, CameraEvent::Failed);
+                        state.write().error_toast =
+                            Some(format!("Couldn't start your camera: {detail}"));
                     }
                     Some("camera-unavailable") => {
+                        camera_event(state, &gateway, CameraEvent::Failed);
                         let mut w = state.write();
                         w.camera_capture_available = false;
-                        w.camera_on = false;
-                        w.camera_starting = false;
                         w.error_toast = Some("This build's webview has no camera support.".into());
                     }
                     Some("camera-devices") => {
@@ -368,8 +352,8 @@ pub fn CameraSelfPreview() -> Element {
     let mut ph = use_signal(|| 360.0 * 9.0 / 16.0 + SELF_CHROME);
     let mut drag = use_signal(|| None::<Drag>);
 
-    let on = use_memo(move || state.read().camera_on);
-    let starting = use_memo(move || state.read().camera_starting);
+    let on = use_memo(move || state.read().camera.is_on());
+    let starting = use_memo(move || state.read().camera.is_starting());
 
     let mut last = use_signal(|| false);
     use_effect(move || {
@@ -496,7 +480,7 @@ pub fn CameraGridWindow() -> Element {
 
     let others = use_memo(move || {
         let s = state.read();
-        let Some(cid) = s.voice.channel_id else {
+        let Some(cid) = s.voice.channel_id() else {
             return Vec::new();
         };
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use discordia_agent::{
-    AgentConfig, ApiKey, Harness, HarnessError, Limits, Look, ModelConfig, Prompt, Reply,
+    AgentConfig, ApiKey, Harness, HarnessError, Ledger, Limits, Look, ModelConfig, Prompt, Reply,
 };
 use discordia_bot::{Bot, BotIdentity};
 use discordia_server::livekit::LiveKitConfig;
@@ -55,6 +55,8 @@ struct World {
     url: String,
     secret: String,
     _agent: tokio::task::JoinHandle<()>,
+    /// What a supervisor would hand the next connection.
+    ledger: Ledger,
 }
 
 fn config(limits: Limits) -> AgentConfig {
@@ -168,8 +170,10 @@ async fn world_dressed(limits: Limits, owner_only: bool, look: Option<Look>) -> 
     let secret = identity.secret_base58();
     let bot = Bot::connect(&url, &identity, "Helper").await.unwrap();
     let harness = echo.clone();
+    let ledger = Ledger::new(config.limits.clone());
+    let held = ledger.clone();
     let agent = tokio::spawn(async move {
-        discordia_agent::run(bot, &identity, config, harness)
+        discordia_agent::run(bot, &identity, config, harness, held)
             .await
             .unwrap();
     });
@@ -198,6 +202,7 @@ async fn world_dressed(limits: Limits, owner_only: bool, look: Option<Look>) -> 
         url,
         secret,
         _agent: agent,
+        ledger,
     }
 }
 
@@ -306,6 +311,32 @@ async fn past_the_hourly_cap_a_member_is_told_once_and_no_call_is_made() {
     assert_eq!(more.len(), 1, "one notice, then silence: {more:?}");
     assert!(more[0].content.contains("this hour"));
     assert_eq!(w.echo.prompts.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_reconnect_keeps_what_the_ledger_has_counted() {
+    let limits = Limits {
+        per_member_per_hour: 1,
+        ..Limits::default()
+    };
+    let mut w = world(limits.clone()).await;
+    sent(&mut w, "@Helper one").await;
+    assert!(agent_message(&mut w).await.content.starts_with("echo:"));
+
+    w._agent.abort();
+    let identity = BotIdentity::from_base58_secret(&w.secret).unwrap();
+    let bot = Bot::connect(&w.url, &identity, "Helper").await.unwrap();
+    let ledger = w.ledger.clone();
+    let _again = tokio::spawn(async move {
+        let _ = discordia_agent::run(bot, &identity, config(limits), Echo::default(), ledger).await;
+    });
+    while !matches!(
+        next_timeout(&mut w.member).await,
+        ServerMessage::BotCommands(_)
+    ) {}
+    sent(&mut w, "@Helper two").await;
+    let reply = agent_message(&mut w).await;
+    assert!(reply.content.contains("this hour"), "{}", reply.content);
 }
 
 #[tokio::test]
@@ -566,7 +597,8 @@ async fn an_agent_wears_its_look_and_does_not_upload_it_again_on_reconnect() {
     again.look = Some(look);
     let bot = Bot::connect(&w.url, &identity, "Helper").await.unwrap();
     let _again = tokio::spawn(async move {
-        let _ = discordia_agent::run(bot, &identity, again, Echo::default()).await;
+        let ledger = Ledger::new(again.limits.clone());
+        let _ = discordia_agent::run(bot, &identity, again, Echo::default(), ledger).await;
     });
     loop {
         match next_timeout(&mut w.member).await {

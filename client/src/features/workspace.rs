@@ -10,7 +10,9 @@ use crate::features::{
 };
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
+use crate::state::{
+    ConnectionStatus, ServerSession, SessionParams, VoicePhase, use_app_state, use_gateway,
+};
 
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
@@ -140,12 +142,51 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 /// Leaving a session in two beats: ask first when this machine is the host,
 /// then tear the media down before the views that own it are unmounted.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Leaving {
-    /// Waiting on the host's answer. Carries the reason it would leave with.
-    Confirm(String),
-    /// Shutting the media down; `on_disconnect` fires when it is finished.
-    Running(String),
+    /// Waiting on the host's answer before stopping the server here.
+    Confirm,
+    /// Shutting the media down; where the session goes once that is finished.
+    Running(Then),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Then {
+    /// Home, through `on_disconnect`; a non-empty reason is shown there.
+    Home(String),
+    Switch(Box<super::server_rail::Switch>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum LeaveRequest {
+    /// The person pressed Disconnect or Back.
+    Asked,
+    /// The gateway ended the session, with its report.
+    Lost(String),
+    Quit,
+    Switch(Box<super::server_rail::Switch>),
+    /// The host's answer to the confirmation.
+    Confirmed,
+    Stay,
+}
+
+/// What a request to leave does in each state. A lost connection skips the
+/// host's confirmation because the session has already ended.
+fn leave_step(current: Option<Leaving>, request: LeaveRequest, hosting: bool) -> Option<Leaving> {
+    use LeaveRequest::*;
+    let home = |reason| Some(Leaving::Running(Then::Home(reason)));
+    match (current, request) {
+        (None, Asked) if hosting => Some(Leaving::Confirm),
+        (None, Asked) => home(String::new()),
+        (None | Some(Leaving::Confirm), Lost(reason)) => home(reason),
+        (None | Some(Leaving::Confirm), Quit) => home(String::new()),
+        (Some(Leaving::Confirm), Confirmed) => home(String::new()),
+        (Some(Leaving::Confirm), Stay) => None,
+        (None, Switch(target)) => Some(Leaving::Running(Then::Switch(target))),
+        // The teardown under way ends at Home instead of dialing a server only to quit it.
+        (Some(Leaving::Running(Then::Switch(_))), Quit) => home(String::new()),
+        (unchanged, _) => unchanged,
+    }
 }
 
 /// A cap on the teardown, so a wedged webview or SFU cannot trap the session.
@@ -323,49 +364,35 @@ pub fn WorkspaceView(
 ) -> Element {
     super::bookmarks::use_panel();
     let mut state = use_app_state();
-    // A selected DM here is in the chat panel, always on screen; left false by
-    // the last session, every message read here counted as unread.
-    use_effect(move || state.write().dm_pane_open = true);
+    // A selected DM here is in the chat panel, always on screen; Android's tabs decide there.
+    #[cfg(not(target_os = "android"))]
+    crate::state::use_dm_pane(state, || true);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
-    // Set only once the switch is confirmed; the teardown below then ends in
-    // `on_switch` instead of `on_disconnect`.
-    let mut switch_to = use_signal(|| None::<super::server_rail::Switch>);
-    let quitting = use_context::<crate::app::QuitRequest>().0;
+    let leave = move |request: LeaveRequest| {
+        let mut leaving = leaving;
+        let hosting = state.peek().host_info.is_some();
+        let next = leave_step(leaving.peek().clone(), request, hosting);
+        if *leaving.peek() != next {
+            leaving.set(next);
+        }
+    };
+    let quitting = use_context::<crate::app::QuitRequest>();
     use_effect(move || {
-        if quitting() && !matches!(*leaving.peek(), Some(Leaving::Running(_))) {
-            let mut leaving = leaving;
-            leaving.set(Some(Leaving::Running(String::new())));
+        if quitting.requested() {
+            leave(LeaveRequest::Quit);
         }
     });
 
-    // Media outlives this component. A lost connection bypasses the host's
-    // confirmation because the session has already ended.
-    let leave = move |reason: String| {
-        let mut leaving = leaving;
-        let asked = matches!(*leaving.peek(), Some(Leaving::Confirm(_)));
-        let idle = leaving.peek().is_none();
-        if !(idle || (asked && !reason.is_empty())) {
-            return;
-        }
-        let hosting = state.peek().host_info.is_some();
-        leaving.set(Some(if hosting && reason.is_empty() {
-            Leaving::Confirm(reason)
-        } else {
-            Leaving::Running(reason)
-        }));
-    };
-
     crate::mobile_back::use_handler(crate::mobile_back::SCREEN, true, move |_| {
-        leave(String::new())
+        leave(LeaveRequest::Asked)
     });
 
     let (gateway_tx, gateway_shutdown, voice_tx) = use_hook(|| {
-        state.write().status = ConnectionStatus::Connecting;
         let voice_tx = spawn_voice_service(state);
         let (gateway_tx, gateway_shutdown) =
             spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
-                leave(reason);
+                leave(LeaveRequest::Lost(reason));
             });
         (gateway_tx, gateway_shutdown, voice_tx)
     });
@@ -373,7 +400,7 @@ pub fn WorkspaceView(
     let name_gateway = gateway_tx.clone();
     let mut sent_name = use_signal(|| None::<String>);
     use_effect(use_reactive((&display_name,), move |(name,)| {
-        if state.read().status != ConnectionStatus::Ready {
+        if state.read().server_session() != ServerSession::Live {
             sent_name.set(None);
         } else if sent_name.peek().as_ref() != Some(&name) {
             name_gateway.send(ClientMessage::UpdateUsername {
@@ -424,11 +451,7 @@ pub fn WorkspaceView(
                 .send(local.set_profile_message(snapshot.profile_of(&profile_owner.peek())));
         }
     });
-    let streams_visible = use_memo(move || {
-        let s = state.read();
-        let detached = popouts.detached.read();
-        s.screen_viewing.iter().any(|pk| !detached.contains(pk))
-    });
+    let streams_visible = use_memo(move || state.read().screen_viewing.inline().next().is_some());
 
     let layout = use_layout_store(|| {
         let saved = settings.read();
@@ -478,10 +501,12 @@ pub fn WorkspaceView(
     // handshake before quitting can destroy the transport.
     let leave_voice = voice_tx.clone();
     let leave_gateway = gateway_tx.clone();
+    // Only the step into Running starts a teardown; a quit that redirects it must not start another.
+    let tearing_down = use_memo(move || matches!(leaving(), Some(Leaving::Running(_))));
     use_effect(move || {
-        let Some(Leaving::Running(reason)) = leaving() else {
+        if !tearing_down() {
             return;
-        };
+        }
         let voice_tx = leave_voice.clone();
         let gateway_shutdown = gateway_shutdown.clone();
         leave_gateway.send(ClientMessage::LeaveVoice);
@@ -505,9 +530,10 @@ pub fn WorkspaceView(
             {
                 tracing::warn!("gateway teardown timed out; leaving anyway");
             }
-            match switch_to.peek().clone() {
-                Some(target) => on_switch.call(target),
-                None => on_disconnect.call(reason),
+            match leaving.peek().clone() {
+                Some(Leaving::Running(Then::Switch(target))) => on_switch.call(*target),
+                Some(Leaving::Running(Then::Home(reason))) => on_disconnect.call(reason),
+                _ => {}
             }
         });
     });
@@ -522,7 +548,7 @@ pub fn WorkspaceView(
     };
     let mut preview_target = preview_dock.target;
     let preview_docked = !is_mobile() && !settings.read().screen_preview_floating;
-    let preview_occupies_slot = preview_docked && state.read().screen_sharing;
+    let preview_occupies_slot = preview_docked && state.read().screen_share.is_live();
     let preview_on_right =
         layout
             .get("members")
@@ -629,14 +655,20 @@ pub fn WorkspaceView(
                 }
             }
             match leaving() {
-                Some(Leaving::Confirm(_)) => rsx! { StopHostingDialog { leaving } },
-                Some(Leaving::Running(_)) => rsx! {
+                Some(Leaving::Confirm) => rsx! {
+                    StopHostingDialog {
+                        on_answer: move |stop: bool| {
+                            leave(if stop { LeaveRequest::Confirmed } else { LeaveRequest::Stay })
+                        },
+                    }
+                },
+                Some(Leaving::Running(then)) => rsx! {
                     div {
                         class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                         div { class: "text-sm text-[var(--text-muted)]",
-                            match switch_to() {
-                                Some(target) => rsx! { {crate::i18n::text("Switching to {0}…", &[(target . server . label ()).to_string()])} },
-                                None => rsx! { {crate::i18n::text("Disconnecting…", &[])} },
+                            match then {
+                                Then::Switch(target) => rsx! { {crate::i18n::text("Switching to {0}…", &[(target . server . label ()).to_string()])} },
+                                Then::Home(_) => rsx! { {crate::i18n::text("Disconnecting…", &[])} },
                             }
                         }
                     }
@@ -644,13 +676,7 @@ pub fn WorkspaceView(
                 None => rsx! {
                     // The host's own confirmation is the rail's dialog, not StopHostingDialog.
                     super::server_rail::SwitchHost {
-                        on_go: move |target| {
-                            let mut leaving = leaving;
-                            if leaving.peek().is_none() {
-                                switch_to.set(Some(target));
-                                leaving.set(Some(Leaving::Running(String::new())));
-                            }
-                        },
+                        on_go: move |target| leave(LeaveRequest::Switch(Box::new(target))),
                     }
                     super::server_rail::AddServerDialog {}
                 },
@@ -694,7 +720,7 @@ pub fn WorkspaceView(
             crate::features::guilds::RulesPromptDialog {}
 
             if cfg!(target_os = "android") {
-                MobileMenu { open: menu_open, on_disconnect: move |_| leave(String::new()) }
+                MobileMenu { open: menu_open, on_disconnect: move |_| leave(LeaveRequest::Asked) }
             } else {
                 div { class: "dxf-workspace-header dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                     onmousedown: move |_| crate::app::start_window_drag(),
@@ -720,7 +746,7 @@ pub fn WorkspaceView(
                             class: "dxf-server-disconnect h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                             title: crate::i18n::text("Disconnect from this server", &[]),
                             aria_label: crate::i18n::text("Disconnect from this server", &[]),
-                            onclick: move |_| leave(String::new()),
+                            onclick: move |_| leave(LeaveRequest::Asked),
                             span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
                             span { class: "dxf-disconnect-label", {crate::i18n::text("Disconnect", &[])} }
                         }
@@ -945,7 +971,7 @@ pub(crate) fn ErrorToast() -> Element {
 fn VoiceSounds() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let phase = use_memo(move || state.read().voice.phase);
+    let phase = use_memo(move || state.read().voice.phase());
     let mut last_phase = use_signal(|| VoicePhase::Idle);
 
     use_effect(move || {
@@ -966,8 +992,8 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    let viewing = use_memo(move || state.read().screen_viewing.clone());
-    let mut last_viewing = use_signal(|| state.peek().screen_viewing.clone());
+    let viewing = use_memo(move || state.read().screen_viewing.sharers());
+    let mut last_viewing = use_signal(|| state.peek().screen_viewing.sharers());
     use_effect(move || {
         let now = viewing();
         let prev = last_viewing.peek().clone();
@@ -1006,9 +1032,9 @@ fn VoiceSounds() -> Element {
     let camera_watch_report = use_memo(move || {
         let s = state.read();
         (
-            s.status == ConnectionStatus::Ready && s.voice.phase == VoicePhase::Connected,
+            s.server_session() == ServerSession::Live && s.voice.phase() == VoicePhase::Connected,
             s.voice_session_epoch,
-            s.voice.channel_id,
+            s.voice.channel_id(),
             active_camera_watches(&s).into_iter().collect::<Vec<_>>(),
         )
     });
@@ -1049,7 +1075,7 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    let sharing = use_memo(move || state.read().screen_sharing);
+    let sharing = use_memo(move || state.read().screen_share.is_live());
     let mut last_sharing = use_signal(|| false);
     use_effect(move || {
         let now = sharing();
@@ -1064,7 +1090,7 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    let voice_channel = use_memo(move || state.read().voice.channel_id);
+    let voice_channel = use_memo(move || state.read().voice.channel_id());
     let voice_states = use_memo(move || state.read().voice_states.clone());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
     let mut last_peers_channel = use_signal(|| None::<Id>);
@@ -1129,7 +1155,7 @@ fn VoiceSounds() -> Element {
 }
 
 fn active_camera_watches(state: &crate::state::AppState) -> std::collections::BTreeSet<String> {
-    let Some(channel) = state.voice.channel_id else {
+    let Some(channel) = state.voice.channel_id() else {
         return std::collections::BTreeSet::new();
     };
     state
@@ -1183,9 +1209,8 @@ pub(crate) fn others_connected(s: &crate::state::AppState) -> usize {
 /// what "and everyone in them" means here — the member list also carries people
 /// who are merely members and already offline.
 #[component]
-fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
+fn StopHostingDialog(on_answer: EventHandler<bool>) -> Element {
     let state = use_app_state();
-    let mut leaving = leaving;
 
     let (guilds, others) = {
         let s = state.read();
@@ -1205,8 +1230,8 @@ fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
         ),
     };
 
-    let cancel = move |_| leaving.set(None);
-    let confirm = move |_| leaving.set(Some(Leaving::Running(String::new())));
+    let cancel = move |_| on_answer.call(false);
+    let confirm = move |_| on_answer.call(true);
 
     rsx! {
         div {
@@ -1359,7 +1384,7 @@ fn MobileMenu(mut open: Signal<bool>, on_disconnect: EventHandler<()>) -> Elemen
     });
     let s = state.read();
     let hosting = s.host_info.is_some();
-    let operator = s.is_operator && s.status == ConnectionStatus::Ready;
+    let operator = s.is_operator && s.server_session() == ServerSession::Live;
     drop(s);
     let mut act = move |f: fn(&mut crate::state::AppState)| {
         open.set(false);
@@ -1480,11 +1505,11 @@ fn EncryptionBadge() -> Element {
     }
     let mut state = use_app_state();
     let snapshot = state.read();
-    let in_voice = snapshot.voice.channel_id.is_some();
+    let in_voice = snapshot.voice.channel_id().is_some();
     let has_key = snapshot
         .voice
-        .channel_id
-        .is_some_and(|c| snapshot.media_keys.contains_key(&c));
+        .channel_id()
+        .is_some_and(|c| snapshot.media_key.held_for(c).is_some());
     let broken = snapshot.media_undecryptable;
     drop(snapshot);
 
@@ -1573,7 +1598,7 @@ fn VoiceRouteBadge() -> Element {
     let state = use_app_state();
     let mut open = use_signal(|| false);
     let s = state.read();
-    if s.voice.phase == crate::state::VoicePhase::Idle {
+    if s.voice.phase() == crate::state::VoicePhase::Idle {
         return rsx! {};
     }
     let location = match s.voice_location.as_deref() {
@@ -1583,7 +1608,7 @@ fn VoiceRouteBadge() -> Element {
         _ => "server unknown",
     };
     let location = crate::i18n::label(location);
-    let phase = match s.voice.phase {
+    let phase = match s.voice.phase() {
         crate::state::VoicePhase::Connecting => crate::i18n::text("Connecting…", &[]),
         crate::state::VoicePhase::Error => crate::i18n::text("Error", &[]),
         _ => {
@@ -1606,7 +1631,7 @@ fn VoiceRouteBadge() -> Element {
     };
     let phase = crate::i18n::label(&phase).to_owned();
     let mobile_phase = crate::i18n::text(
-        match s.voice.phase {
+        match s.voice.phase() {
             crate::state::VoicePhase::Connecting => "Connecting…",
             crate::state::VoicePhase::Connected => "Connected",
             _ => "Error",
@@ -1931,6 +1956,54 @@ mod rail_layout_tests {
         for id in ["channels", "chat", "members"] {
             let panel = of(&back, id);
             assert!(panel.y.abs() < 1e-6 && (panel.h - 1.0).abs() < 1e-6, "{id}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod leave_tests {
+    use super::*;
+    use LeaveRequest::*;
+
+    fn switch(host: &str) -> Box<super::super::server_rail::Switch> {
+        Box::new(super::super::server_rail::Switch::to(
+            crate::known_servers::KnownServer::new(crate::state::SessionMode::Remote {
+                server_url: format!("wss://{host}.example"),
+            }),
+        ))
+    }
+
+    #[test]
+    fn what_a_leave_request_does_in_each_state() {
+        let confirm = || Some(Leaving::Confirm);
+        let home = |reason: &str| Some(Leaving::Running(Then::Home(reason.into())));
+        let going = |host| Some(Leaving::Running(Then::Switch(switch(host))));
+        let table = [
+            (None, Asked, false, home("")),
+            (None, Asked, true, confirm()),
+            (None, Lost("gone".into()), true, home("gone")),
+            (None, Quit, true, home("")),
+            (None, Switch(switch("b")), true, going("b")),
+            (None, Confirmed, true, None),
+            (None, Stay, true, None),
+            (confirm(), Asked, true, confirm()),
+            (confirm(), Lost("gone".into()), true, home("gone")),
+            (confirm(), Quit, true, home("")),
+            (confirm(), Confirmed, true, home("")),
+            (confirm(), Stay, true, None),
+            (confirm(), Switch(switch("b")), true, confirm()),
+            (home(""), Asked, true, home("")),
+            (home(""), Lost("closed".into()), true, home("")),
+            (home("gone"), Quit, true, home("gone")),
+            (home(""), Switch(switch("b")), false, home("")),
+            (going("b"), Lost("closed".into()), false, going("b")),
+            (going("b"), Asked, false, going("b")),
+            (going("b"), Switch(switch("c")), false, going("b")),
+            (going("b"), Quit, false, home("")),
+        ];
+        for (from, request, hosting, to) in table {
+            let label = format!("{from:?} + {request:?} (hosting: {hosting})");
+            assert_eq!(leave_step(from, request, hosting), to, "{label}");
         }
     }
 }

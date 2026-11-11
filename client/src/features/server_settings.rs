@@ -8,7 +8,7 @@ use crate::protocol::{
     ClientMessage, GuildCreation, GuildVisibility, LaunchSource, ServerLimits, ServerSettings,
     ServerSettingsView,
 };
-use crate::state::{ConnectionStatus, use_app_state, use_gateway};
+use crate::state::{ServerSession, use_app_state, use_gateway};
 
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors disabled:opacity-60";
 const LABEL: &str =
@@ -165,7 +165,7 @@ pub fn ServerSettingsButton() -> Element {
     let mut state = use_app_state();
     let shown = {
         let s = state.read();
-        s.is_operator && s.status == ConnectionStatus::Ready
+        s.is_operator && s.server_session() == ServerSession::Live
     };
     if !shown {
         return rsx! {};
@@ -187,7 +187,7 @@ pub fn ServerSettingsDialog() -> Element {
     let gateway = use_gateway();
     let open = use_memo(move || {
         let s = state.read();
-        s.server_settings_open && s.is_operator && s.status == ConnectionStatus::Ready
+        s.server_settings_open && s.is_operator && s.server_session() == ServerSession::Live
     });
     {
         let gateway = gateway.clone();

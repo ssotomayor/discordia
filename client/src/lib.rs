@@ -33,6 +33,7 @@ mod text_menu;
 mod devlog;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod dm_notifications;
+mod dm_standing;
 mod emoji;
 mod features;
 #[doc(hidden)]
@@ -53,6 +54,8 @@ mod known_servers;
 #[cfg(test)]
 #[path = "../../vendor/livekit/src/rtc_engine/start_bitrate.rs"]
 mod livekit_start_bitrate_tests;
+mod local_camera;
+mod local_share;
 mod media_cache;
 mod mediakey;
 mod native_sounds;
@@ -77,6 +80,7 @@ mod single_instance;
 mod sound_decode;
 mod state;
 mod stream_audio;
+mod stream_placement;
 mod sysaudio;
 mod syscamera;
 mod sysvideo;
@@ -86,6 +90,7 @@ mod update;
 mod version;
 mod voice_handoff;
 mod voice_record;
+mod voice_session;
 #[cfg(target_os = "windows")]
 mod webview2;
 #[cfg(target_os = "windows")]

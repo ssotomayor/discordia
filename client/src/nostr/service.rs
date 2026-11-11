@@ -25,6 +25,7 @@
 use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
+use super::outbox::{Draft, Effect, Input, Kind, Outbox, Wraps};
 use super::relay::{Filter, RelayEvent, RelayPool};
 use super::{event, metadata, nip02, nip17, nip51, nip59, profile, read_marks, xp};
 use crate::identity::Identity;
@@ -250,8 +251,8 @@ pub fn spawn_nostr(
         request_names(&pool, &state, &our_pubkey, &mut named);
 
         let mut xp_publisher = xp::Publisher::new(xp::PUBLISH_COOLDOWN);
-        // Nothing goes out before every relay has replayed: a fresh device
-        // would otherwise replace the account's marks with its own few.
+        // Nothing goes out before the relays have replayed (`Replay::settled`):
+        // a fresh device would otherwise replace the account's marks with its own few.
         let mut marks_checked = false;
         let mut marks_publisher = read_marks::Publisher::default();
         let mut marks_held_at = i64::MIN;
@@ -264,8 +265,7 @@ pub fn spawn_nostr(
         let (profile_tx, mut profile_rx) = unbounded_channel::<profile::SyncedProfile>();
         let mut routes = super::delivery::Routes::default();
         let mut senders = super::delivery::Senders::new();
-        let mut outbox = super::delivery::Outbox::new();
-        let mut system_deliveries = std::collections::HashMap::<Id, u8>::new();
+        let mut outbox = Outbox::default();
         for (peer, theirs, ours) in super::delivery::load(&our_pubkey).await {
             if let Ok(rumor) = nip59::unwrap(&secret, &ours)
                 && theirs
@@ -310,23 +310,10 @@ pub fn spawn_nostr(
                 if let Ok(message) = nip17::open_rumor(&our_pubkey, &rumor) {
                     note_image(&rumor, &message, &mut state);
                 }
-                if system {
-                    system_deliveries.insert(id, 0);
-                }
-                state
-                    .write()
-                    .dm_delivery
-                    .insert(id, super::delivery::Delivery::Failed);
-                outbox.insert(
-                    id,
-                    super::delivery::Pending {
-                        peer,
-                        theirs,
-                        ours,
-                        due: std::time::Instant::now(),
-                        started: !system,
-                    },
-                );
+                let waits = !state.peek().dm_images.contains_key(&id);
+                let wraps = Wraps { peer, theirs, ours };
+                outbox.recover(id, wraps, system, waits, std::time::Instant::now());
+                show(&mut state, &outbox, id);
             }
         }
         let (delivery_tx, mut delivery_rx) = unbounded_channel();
@@ -337,19 +324,37 @@ pub fn spawn_nostr(
             .await
             .unwrap_or_default()
         {
-            show_image_job(&job, &our_pubkey, &mut state);
+            show_image_job(&job, &our_pubkey, &mut state, &mut outbox);
             images.jobs.insert(job.id.clone(), job);
         }
         let mut delivery_tick = tokio::time::interval(std::time::Duration::from_millis(100));
         delivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // Relays that have said they finished replaying since they connected.
-        // A message arriving once every connected relay has is one that was
-        // sent moments ago, which is the only kind whose delivery time says
-        // anything about the sender's clock.
-        let mut replayed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut replay = Replay::default();
 
         loop {
+            if (!marks_checked || !profile_checked) && replay.settled(&state.peek().nostr_relays_up)
+            {
+                if !marks_checked {
+                    marks_checked = true;
+                    marks_tick.reset_immediately();
+                }
+                // Saved here while no relay answered, or before profiles synced.
+                if !profile_checked {
+                    profile_checked = true;
+                    let local = crate::profile::load(&our_pubkey);
+                    let synced_at = synced.as_ref().map_or(0, |s| s.updated_at);
+                    let newest_name = newest_name(local.as_ref(), synced.as_ref());
+                    if let Some(local) = local
+                        && local.updated_at > synced_at
+                    {
+                        share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
+                    }
+                    if let Some(name) = newest_name.or(own_name.pending.take()) {
+                        own_name.publish(&pool, &secret, state, &our_pubkey, name);
+                    }
+                }
+            }
             images.pump(secret, &image_tx);
             tokio::select! {
                 Some((key, result)) = image_rx.recv() => {
@@ -365,20 +370,20 @@ pub fn spawn_nostr(
                     match result {
                         Ok(()) => {
                             if let Some(job) = images.remove(&key, &our_pubkey) {
-                                withdraw_held(&mut state, &job.peer, &job.id);
+                                release(&mut state, &mut outbox, &job.peer, &job.id);
                             }
                         }
                         Err(error) => {
                             images.failed.insert(key.clone());
-                            if let Some(image) = state.write().dm_images.get_mut(&message_id(&key)) { image.status = super::dm_image::Status::Failed(error); }
-                            state.write().dm_delivery.insert(message_id(&key), super::delivery::Delivery::Failed);
+                            if let Some(image) = state.write().dm_images.get_mut(&message_id(&key)) { image.upload_failed(error); }
+                            advance(&mut state, &mut outbox, message_id(&key), Input::Refuse);
                         }
                     }
                 }
                 cmd = rx.recv() => match cmd {
                     Some(NostrCmd::Image { peer, server, data_url, file_name, preview_data_url, text, reply_to, queued, permit }) => {
                         let _permit = permit;
-                        if images.jobs.len() >= super::dm_image::MAX_JOBS || outbox.len() + (images.jobs.len() + 1) * 2 > 128 || state.peek().mutes.contains(&peer) {
+                        if images.jobs.len() >= super::dm_image::MAX_JOBS || !outbox.fits(2, 0) || state.peek().mutes.contains(&peer) {
                             let _ = queued.send(Err("Image queue is full or this contact is blocked. Your draft was kept.".into()));
                             continue;
                         }
@@ -396,7 +401,7 @@ pub fn spawn_nostr(
                         )).await;
                         match prepared {
                             Ok(Ok(job)) => {
-                                show_image_job(&job, &our_pubkey, &mut state);
+                                show_image_job(&job, &our_pubkey, &mut state, &mut outbox);
                                 images.jobs.insert(job.id.clone(), job);
                                 let _ = queued.send(Ok(()));
                             }
@@ -404,7 +409,7 @@ pub fn spawn_nostr(
                         }
                     }
                     Some(NostrCmd::CancelImage { message_id: id }) => {
-                        if let Some(key) = images.key(id) && let Some(job) = images.remove(&key, &our_pubkey) { withdraw_held(&mut state, &job.peer, &job.id); }
+                        if let Some(key) = images.key(id) && let Some(job) = images.remove(&key, &our_pubkey) { release(&mut state, &mut outbox, &job.peer, &job.id); }
                     }
                     Some(NostrCmd::Call(action)) => {
                         if calls.send(crate::features::dm_call::Command::Action(action)).is_err() {
@@ -422,10 +427,10 @@ pub fn spawn_nostr(
                             emoji,
                         };
                         insert_message_with_settings(&held, &our_pubkey, &mut state, Some(&mut settings), Source::Ours, false);
-                        state
-                            .write()
-                            .dm_delivery
-                            .insert(message_id(&held.id), super::delivery::Delivery::Pending);
+                        let id = message_id(&held.id);
+                        let nip17::ChatMessage { id: key, peer, content: text, reply_to, emoji, .. } = held;
+                        outbox.hold(id, key, Draft { peer, text, reply_to, emoji });
+                        show(&mut state, &outbox, id);
                     }
                     Some(NostrCmd::Edit { channel_id, message_id: mid, text, emoji }) => {
                         let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
@@ -434,8 +439,9 @@ pub fn spawn_nostr(
                             let previous = state.peek().messages.get(&channel_id)
                                 .and_then(|messages| messages.iter().find(|m| m.id == mid && m.author.pubkey == our_pubkey))
                                 .map(|m| m.edited_at);
-                            let Some(previous) = previous else { continue; };
-                            if outbox.len() >= 128 { state.write().error_toast = Some("Too many pending messages to edit.".into()); continue; }
+                            // A held message has no event yet for an edit to name.
+                            let Some(previous) = previous.filter(|_| outbox.held(mid).is_none()) else { continue; };
+                            if !outbox.fits(1, 0) { state.write().error_toast = Some("Too many pending messages to edit.".into()); continue; }
                             let ts = next_dm_edit_time(previous, now());
                             let rumor = nip17::chat_edit_rumor(&our_pubkey, &peer, &orig_id, &text, &emoji, ts);
                             match nip17::wrap_both(&secret, &peer, &rumor, ts) {
@@ -446,17 +452,9 @@ pub fn spawn_nostr(
                                     if emoji.is_empty() { state.write().dm_emoji.remove(&mid); }
                                     else { state.write().dm_emoji.insert(mid, emoji); }
                                     let id = message_id(&rumor.id);
-                                    system_deliveries.insert(id, 0);
-                                    outbox.insert(
-                                        id,
-                                        super::delivery::Pending {
-                                            peer: peer.clone(),
-                                            theirs,
-                                            ours,
-                                            due: routes.ready_at(&peer, std::time::Instant::now()),
-                                            started: false,
-                                        },
-                                    );
+                                    let due = routes.ready_at(&peer, std::time::Instant::now());
+                                    outbox.queue(id, Wraps { peer, theirs, ours }, Kind::System { attempts: 0 }, due, true);
+                                    show(&mut state, &outbox, id);
                                     if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                         state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
                                     }
@@ -469,14 +467,19 @@ pub fn spawn_nostr(
                     }
                     Some(NostrCmd::Delete { channel_id, message_id: mid }) => {
                         if let Some(key) = images.key(mid) {
-                            if let Some(job) = images.remove(&key, &our_pubkey) { withdraw_held(&mut state, &job.peer, &job.id); }
+                            if let Some(job) = images.remove(&key, &our_pubkey) { release(&mut state, &mut outbox, &job.peer, &job.id); }
+                            continue;
+                        }
+                        // Never sent, so nothing to retract; its `Send` finds the hold gone and drops.
+                        if let Some((key, peer)) = outbox.held(mid).map(|(key, draft)| (key.to_owned(), draft.peer.clone())) {
+                            release(&mut state, &mut outbox, &peer, &key);
                             continue;
                         }
                         let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
                         let original_rumor_id = state.peek().nostr_event_ids.get(&mid).cloned();
                         if let (Some(peer), Some(orig_id)) = (peer, original_rumor_id) {
                             if !state.peek().messages.get(&channel_id).is_some_and(|messages| messages.iter().any(|m| m.id == mid && m.author.pubkey == our_pubkey)) { continue; }
-                            if outbox.len() >= 128 { state.write().error_toast = Some("Too many pending messages to delete.".into()); continue; }
+                            if !outbox.fits(1, 0) { state.write().error_toast = Some("Too many pending messages to delete.".into()); continue; }
                             let ts = now();
                             let mut rumor = nip17::chat_deletion_rumor(&our_pubkey, &peer, &orig_id, ts);
                             if state.peek().dm_images.contains_key(&mid) {
@@ -485,7 +488,7 @@ pub fn spawn_nostr(
                             }
                             match nip17::wrap_both(&secret, &peer, &rumor, ts) {
                                 Ok((theirs, ours)) => {
-                                    outbox.remove(&mid);
+                                    outbox.withdraw(mid);
                                     state.write().delete_message_locally(channel_id, mid);
                                     state.write().dm_deleted_ids.insert(orig_id.clone());
                                     let mut next = settings.peek().clone();
@@ -494,17 +497,9 @@ pub fn spawn_nostr(
                                     crate::settings::save(&next);
 
                                     let id = message_id(&rumor.id);
-                                    system_deliveries.insert(id, 0);
-                                    outbox.insert(
-                                        id,
-                                        super::delivery::Pending {
-                                            peer: peer.clone(),
-                                            theirs,
-                                            ours,
-                                            due: routes.ready_at(&peer, std::time::Instant::now()),
-                                            started: false,
-                                        },
-                                    );
+                                    let due = routes.ready_at(&peer, std::time::Instant::now());
+                                    outbox.queue(id, Wraps { peer, theirs, ours }, Kind::System { attempts: 0 }, due, true);
+                                    show(&mut state, &outbox, id);
                                     if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                         state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
                                     }
@@ -516,20 +511,8 @@ pub fn spawn_nostr(
                         }
                     }
                     Some(NostrCmd::Send { peer, text, reply_to, emoji, replaces }) => {
-                        if let Some(key) = replaces {
-                            withdraw_held(&mut state, &peer, &key);
-                        }
-                        if outbox.len() + images.jobs.len() * 2 >= 128 {
-                            state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
-                            continue;
-                        }
-                        if let Some((id, mut pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, emoji, &mut state) {
-                            pending.due = routes.ready_at(&peer, std::time::Instant::now());
-                            outbox.insert(id, pending);
-                            if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
-                                state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
-                            }
-                        }
+                        let draft = Draft { peer, text, reply_to, emoji };
+                        send_draft(draft, replaces, &secret, &our_pubkey, &routes, &mut outbox, &mut state).await;
                         // Speaking first also introduces somebody: this is the
                         // path a pasted npub takes when the composer is used
                         // before the conversation exists.
@@ -540,19 +523,14 @@ pub fn spawn_nostr(
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     Some(NostrCmd::Retry { message_id }) => {
-                        if let Some(key) = images.key(message_id) {
-                            images.failed.remove(&key);
-                            if let Some(image) = state.write().dm_images.get_mut(&message_id) { image.status = super::dm_image::Status::Uploading; }
-                            state.write().dm_delivery.insert(message_id, super::delivery::Delivery::Pending);
-                            continue;
-                        }
-                        if state.peek().dm_delivery.get(&message_id) == Some(&super::delivery::Delivery::Failed)
-                            && let Some(pending) = outbox.get_mut(&message_id)
-                        {
-                            pending.started = false;
-                            pending.due = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                            state.write().dm_delivery.insert(message_id, super::delivery::Delivery::Pending);
+                        let Some(change) = advance(&mut state, &mut outbox, message_id, Input::Retry) else { continue; };
+                        if change.effect != Effect::Resubmit {
                             request_names(&pool, &state, &our_pubkey, &mut Vec::new());
+                        } else if let Some(key) = images.key(message_id) {
+                            images.failed.remove(&key);
+                            if let Some(image) = state.write().dm_images.get_mut(&message_id) { image.retry_upload(); }
+                        } else if let Some((key, draft)) = outbox.held(message_id).map(|(key, draft)| (key.to_owned(), draft.clone())) {
+                            send_draft(draft, Some(key), &secret, &our_pubkey, &routes, &mut outbox, &mut state).await;
                         }
                     }
                     Some(NostrCmd::SetContact { peer, keep }) => {
@@ -637,26 +615,23 @@ pub fn spawn_nostr(
                 record = call_records.recv() => {
                     if let Some(record) = record {
                         insert_call_record(record.clone(), &our_pubkey, &our_pubkey, &mut state, Source::Ours, now());
-                        if outbox.len() >= 128 {
+                        if !outbox.fits(1, 0) {
                             state.write().error_toast = Some("Too many pending messages to save call history.".into());
                             continue;
                         }
                         let result = super::call_history::rumor(&our_pubkey, &record, now()).and_then(|rumor| {
                             let peer = record.peer(&our_pubkey).ok_or("Invalid call participants")?.to_owned();
                             let (theirs, ours) = nip17::wrap_both(&secret, &peer, &rumor, now())?;
-                            Ok((message_id(&rumor.id), super::delivery::Pending {
-                                peer, theirs, ours, due: std::time::Instant::now(), started: false,
-                            }))
+                            Ok((message_id(&rumor.id), Wraps { peer, theirs, ours }))
                         });
                         match result {
-                            Ok((id, pending)) => {
-                                outbox.insert(id, pending);
-                                system_deliveries.insert(id, 0);
+                            Ok((id, wraps)) => {
+                                outbox.queue(id, wraps, Kind::System { attempts: 0 }, std::time::Instant::now(), true);
                                 if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
-                                    outbox.remove(&id);
-                                    system_deliveries.remove(&id);
+                                    outbox.withdraw(id);
                                     state.write().error_toast = Some(format!("Could not save call history: {error}"));
                                 }
+                                show(&mut state, &outbox, id);
                             }
                             Err(error) => state.write().error_toast = Some(error),
                         }
@@ -694,19 +669,12 @@ pub fn spawn_nostr(
                         }
                     }
                 }
-                _ = delivery_tick.tick(), if outbox.values().any(|pending| !pending.started) => {
-                    let active = outbox.iter().filter(|(id, pending)| pending.started && state.peek().dm_delivery.get(id) == Some(&super::delivery::Delivery::Pending)).count();
-                    let mut slots = 8usize.saturating_sub(active);
-                    for (id, pending) in &mut outbox {
-                        if slots == 0 { break; }
-                        if pending.started || pending.due > std::time::Instant::now() || (!state.peek().dm_images.contains_key(id) && images.jobs.values().any(|job| job.peer == pending.peer)) { continue; }
-                        pending.started = true;
-                        state.write().dm_delivery.insert(*id, super::delivery::Delivery::Pending);
-                        slots -= 1;
-                        let delivery = senders.publish(pending.theirs.clone(), routes.targets(&pending.peer, &relays));
-                        let id = *id;
+                _ = delivery_tick.tick(), if outbox.queued() => {
+                    for (id, wraps) in outbox.dispatch(std::time::Instant::now()) {
+                        show(&mut state, &outbox, id);
+                        let delivery = senders.publish(wraps.theirs, routes.targets(&wraps.peer, &relays));
                         let result_tx = delivery_tx.clone();
-                        pool.publish(pending.ours.clone());
+                        pool.publish(wraps.ours);
                         spawn(async move {
                             let _ = result_tx.send((id, delivery.await));
                         });
@@ -725,25 +693,19 @@ pub fn spawn_nostr(
                 }
                 result = delivery_rx.recv() => {
                     if let Some((id, status)) = result {
-                        state.write().dm_delivery.insert(id, status);
-                        if status == super::delivery::Delivery::Failed
-                            && let Some(attempt) = system_deliveries.get_mut(&id)
-                            && *attempt < 5
-                            && let Some(pending) = outbox.get_mut(&id)
+                        let answer = Input::Answer { accepted: status == super::delivery::Delivery::Accepted };
+                        if advance(&mut state, &mut outbox, id, answer).is_some_and(|change| change.effect == Effect::Accepted)
+                            && let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await
                         {
-                            *attempt += 1;
-                            pending.started = false;
-                            pending.due = std::time::Instant::now() + std::time::Duration::from_secs(15 << *attempt);
+                            state.write().error_toast = Some(format!("Could not update pending messages: {error}"));
                         }
-                        if status == super::delivery::Delivery::Accepted {
-                            outbox.remove(&id);
-                            if system_deliveries.remove(&id).is_some() {
-                                state.write().dm_delivery.remove(&id);
-                            }
-                            if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
-                                state.write().error_toast = Some(format!("Could not update pending messages: {error}"));
-                            }
-                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(replay.next_due().unwrap_or_else(std::time::Instant::now))
+                ), if replay.next_due().is_some() => {
+                    for relay in replay.give_up_on_overdue(std::time::Instant::now()) {
+                        eprintln!("[nostr] {relay}: no end of stored events after {}s; not waiting for it", REPLAY_PATIENCE.as_secs());
                     }
                 }
                 _ = marks_tick.tick(), if marks_checked => {
@@ -762,7 +724,7 @@ pub fn spawn_nostr(
                     }
                 }
                 ev = events.recv() => match ev {
-                    Some(RelayEvent::Event(event)) => match event.kind {
+                    Some(RelayEvent::Event { relay: from, event }) => match event.kind {
                         nip17::KIND_DM_RELAYS => routes.note(&event),
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
@@ -894,7 +856,7 @@ pub fn spawn_nostr(
                             if apply_dm_change(&rumor, &our_pubkey, &mut state, &mut settings) {
                                 continue;
                             }
-                            let live = every_relay_replayed(&state, &replayed);
+                            let live = replay.live(&state.peek().nostr_relays_up, &from);
                             if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
                                 insert_message_with_settings(
                                     &msg,
@@ -914,23 +876,15 @@ pub fn spawn_nostr(
                         eprintln!("[nostr] {url}: connected");
                         // A reconnect re-issues the subscriptions, so this relay
                         // is replaying again until it says otherwise.
-                        replayed.remove(&url);
+                        replay.connected(&url, std::time::Instant::now());
                         state.write().nostr_relays_up.insert(url);
-                        for (id, attempt) in &mut system_deliveries {
-                            if state.peek().dm_delivery.get(id) == Some(&super::delivery::Delivery::Failed)
-                                && let Some(pending) = outbox.get_mut(id)
-                            {
-                                *attempt = 0;
-                                pending.started = false;
-                                pending.due = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                            }
-                        }
+                        outbox.reconnected(std::time::Instant::now());
                     }
                     Some(RelayEvent::Disconnected { relay, why }) => {
                         // Pool retries automatically; this is the only source
                         // of the disconnect reason for status.
                         eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
-                        replayed.remove(&relay);
+                        replay.disconnected(&relay);
                         state.write().nostr_relays_up.remove(&relay);
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
@@ -954,26 +908,7 @@ pub fn spawn_nostr(
                     Some(RelayEvent::EndOfStored { relay, subscription }) => {
                         if subscription != SUB_DM { continue; }
                         eprintln!("[nostr] {relay}: finished replaying stored events");
-                        replayed.insert(relay);
-                        if !marks_checked && every_relay_replayed(&state, &replayed) {
-                            marks_checked = true;
-                            marks_tick.reset_immediately();
-                        }
-                        // Saved here while no relay answered, or before profiles synced.
-                        if !profile_checked && every_relay_replayed(&state, &replayed) {
-                            profile_checked = true;
-                            let local = crate::profile::load(&our_pubkey);
-                            let synced_at = synced.as_ref().map_or(0, |s| s.updated_at);
-                            let newest_name = newest_name(local.as_ref(), synced.as_ref());
-                            if let Some(local) = local
-                                && local.updated_at > synced_at
-                            {
-                                share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
-                            }
-                            if let Some(name) = newest_name.or(own_name.pending.take()) {
-                                own_name.publish(&pool, &secret, state, &our_pubkey, name);
-                            }
-                        }
+                        replay.finished(&relay);
                     }
                     None => break,
                 },
@@ -1163,7 +1098,7 @@ fn request_names(
 fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     let cid = conversation_id(peer);
     let mut s = state.write();
-    s.dm_accepted.insert(peer.to_string());
+    s.choose_dm(peer, Some(crate::state::DmChoice::Accepted));
     if !s.dms.iter().any(|d| d.channel_id == cid) {
         s.dms.push(DmInfo {
             channel_id: cid,
@@ -1179,67 +1114,180 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     s.mark_dm_read(cid);
 }
 
-fn send_message(
+/// Wraps and queues what the person wrote. A refused send leaves the `Hold` it
+/// `replaces` failed with its draft, so Retry can send it again.
+async fn send_draft(
+    draft: Draft,
+    replaces: Option<String>,
     secret: &secp256k1::SecretKey,
     our_pubkey: &str,
-    peer: &str,
-    text: &str,
-    reply_to: Option<String>,
-    emoji: Vec<(String, String)>,
+    routes: &super::delivery::Routes,
+    outbox: &mut Outbox,
     state: &mut Signal<AppState>,
-) -> Option<(Id, super::delivery::Pending)> {
+) {
+    let held = replaces.as_deref().map(message_id);
+    if held.is_some_and(|held| outbox.held(held).is_none()) {
+        return;
+    }
+    let refuse = |why: String, draft: Draft, outbox: &mut Outbox, state: &mut Signal<AppState>| {
+        state.write().error_toast = Some(why);
+        if let (Some(held), Some(key)) = (held, &replaces) {
+            outbox.hold(held, key.clone(), draft);
+            advance(state, outbox, held, Input::Refuse);
+        }
+    };
+    if !outbox.fits(1, usize::from(held.is_some())) {
+        let why = "Too many messages await delivery. Retry a failed message first.";
+        return refuse(why.into(), draft, outbox, state);
+    }
     let ts = now();
-    let rumor = nip17::chat_rumor(our_pubkey, peer, text, reply_to.as_deref(), &emoji, ts);
-    match nip17::wrap_both(secret, peer, &rumor, ts) {
-        Ok((theirs, ours)) => {
-            let msg = nip17::ChatMessage {
-                id: rumor.id.clone(),
-                author: our_pubkey.to_string(),
-                peer: peer.to_string(),
-                content: text.to_string(),
-                created_at: ts,
-                reply_to,
-                emoji,
-            };
-            insert_message(&msg, our_pubkey, state, Source::Ours, false);
-            let id = message_id(&rumor.id);
-            state
-                .write()
-                .dm_delivery
-                .insert(id, super::delivery::Delivery::Pending);
-            Some((
-                id,
-                super::delivery::Pending {
-                    peer: peer.to_string(),
-                    theirs,
-                    ours,
-                    due: std::time::Instant::now(),
-                    started: false,
-                },
-            ))
-        }
-        Err(e) => {
-            // Refused rather than sent in the clear — there is no cleartext
-            // path here to fall back to, so the only honest outcome is to say
-            // it did not go.
-            state.write().error_toast = Some(format!("Not sent — {e}"));
-            None
-        }
+    let (peer, reply_to) = (&draft.peer, draft.reply_to.as_deref());
+    let rumor = nip17::chat_rumor(our_pubkey, peer, &draft.text, reply_to, &draft.emoji, ts);
+    // Refused rather than sent in the clear: there is no cleartext path to fall back to.
+    let (theirs, ours) = match nip17::wrap_both(secret, peer, &rumor, ts) {
+        Ok(wraps) => wraps,
+        Err(e) => return refuse(format!("Not sent — {e}"), draft, outbox, state),
+    };
+    if let Some(key) = &replaces {
+        release(state, outbox, &draft.peer, key);
+    }
+    let Draft {
+        peer,
+        text,
+        reply_to,
+        emoji,
+    } = draft;
+    let msg = nip17::ChatMessage {
+        id: rumor.id.clone(),
+        author: our_pubkey.to_string(),
+        peer: peer.clone(),
+        content: text,
+        created_at: ts,
+        reply_to,
+        emoji,
+    };
+    insert_message(&msg, our_pubkey, state, Source::Ours, false);
+    let id = message_id(&rumor.id);
+    let due = routes.ready_at(&peer, std::time::Instant::now());
+    outbox.queue(id, Wraps { peer, theirs, ours }, Kind::Chat, due, true);
+    show(state, outbox, id);
+    if let Err(error) = super::delivery::persist(our_pubkey, outbox).await {
+        state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
     }
 }
 
-/// Whether every relay we are connected to has finished replaying.
-///
-/// Conservative on purpose: with one relay still replaying, a stored event
-/// could arrive next, and dating that by our clock would say the sender's is
-/// wrong by however old the message is. No relays up at all is not "live"
-/// either — it is nothing to conclude from.
-fn every_relay_replayed(
-    state: &Signal<AppState>,
-    replayed: &std::collections::HashSet<String>,
-) -> bool {
-    let up = &state.read().nostr_relays_up;
-    !up.is_empty() && up.iter().all(|relay| replayed.contains(relay))
+/// Writes a row's mark and the composer's count from the outbox, their one source.
+fn show(state: &mut Signal<AppState>, outbox: &Outbox, id: Id) {
+    mark(state, outbox, id, outbox.shown(id));
+}
+
+fn mark(
+    state: &mut Signal<AppState>,
+    outbox: &Outbox,
+    id: Id,
+    mark: Option<super::delivery::Delivery>,
+) {
+    let pending = outbox.pending();
+    {
+        let s = state.peek();
+        if s.dm_delivery.get(&id) == mark.as_ref() && s.dm_pending == pending {
+            return;
+        }
+    }
+    let mut s = state.write();
+    match mark {
+        Some(mark) => {
+            s.dm_delivery.insert(id, mark);
+        }
+        None => {
+            s.dm_delivery.remove(&id);
+        }
+    }
+    s.dm_pending = pending;
+}
+
+fn advance(
+    state: &mut Signal<AppState>,
+    outbox: &mut Outbox,
+    id: Id,
+    input: Input,
+) -> Option<super::outbox::Change> {
+    let change = outbox.apply(id, input, std::time::Instant::now())?;
+    mark(state, outbox, id, change.mark);
+    Some(change)
+}
+
+/// Takes a held row away: its message was wrapped, or its image went out or was cancelled.
+fn release(state: &mut Signal<AppState>, outbox: &mut Outbox, peer: &str, key: &str) {
+    outbox.withdraw(message_id(key));
+    withdraw_held(state, peer, key);
+    show(state, outbox, message_id(key));
+}
+
+/// How long a connected relay may go without ending its replay before the
+/// others stop waiting for it.
+const REPLAY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Which relays have finished replaying the DM subscription since they
+/// connected, and which ran out of patience first.
+#[derive(Default)]
+struct Replay {
+    done: std::collections::HashSet<String>,
+    due: std::collections::HashMap<String, std::time::Instant>,
+    given_up: std::collections::HashSet<String>,
+}
+
+impl Replay {
+    /// A reconnect re-issues the subscriptions, so the relay replays again.
+    fn connected(&mut self, relay: &str, now: std::time::Instant) {
+        self.disconnected(relay);
+        self.due.insert(relay.to_string(), now + REPLAY_PATIENCE);
+    }
+
+    fn disconnected(&mut self, relay: &str) {
+        self.done.remove(relay);
+        self.due.remove(relay);
+        self.given_up.remove(relay);
+    }
+
+    fn finished(&mut self, relay: &str) {
+        self.due.remove(relay);
+        self.given_up.remove(relay);
+        self.done.insert(relay.to_string());
+    }
+
+    fn next_due(&self) -> Option<std::time::Instant> {
+        self.due.values().min().copied()
+    }
+
+    fn give_up_on_overdue(&mut self, now: std::time::Instant) -> Vec<String> {
+        let overdue: Vec<String> = self
+            .due
+            .iter()
+            .filter(|(_, due)| **due <= now)
+            .map(|(relay, _)| relay.clone())
+            .collect();
+        for relay in &overdue {
+            self.due.remove(relay);
+            self.given_up.insert(relay.clone());
+        }
+        overdue
+    }
+
+    /// Every connected relay has replayed or been given up on, and one at
+    /// least replayed: having read nothing is not the account's state.
+    fn settled(&self, up: &std::collections::HashSet<String>) -> bool {
+        up.iter().any(|relay| self.done.contains(relay))
+            && up
+                .iter()
+                .all(|relay| self.done.contains(relay) || self.given_up.contains(relay))
+    }
+
+    /// Only an event sent moments ago says anything about its sender's clock (trap 18).
+    /// A relay given up on is still replaying: what it brings is backlog.
+    fn live(&self, up: &std::collections::HashSet<String>, from: &str) -> bool {
+        self.done.contains(from) && self.settled(up)
+    }
 }
 
 /// Where a message came from. Only a relay can be replaying deleted history;
@@ -1310,13 +1358,17 @@ fn withdraw_held(state: &mut Signal<AppState>, peer: &str, key: &str) {
     if let Some(held) = s.messages.get_mut(&cid) {
         held.retain(|m| m.id != mid);
     }
-    s.dm_delivery.remove(&mid);
     s.nostr_event_ids.remove(&mid);
     s.dm_emoji.remove(&mid);
     s.dm_images.remove(&mid);
 }
 
-fn show_image_job(job: &super::dm_image::Job, owner: &str, state: &mut Signal<AppState>) {
+fn show_image_job(
+    job: &super::dm_image::Job,
+    owner: &str,
+    state: &mut Signal<AppState>,
+    outbox: &mut Outbox,
+) {
     let message = nip17::ChatMessage {
         id: job.id.clone(),
         author: owner.into(),
@@ -1331,21 +1383,10 @@ fn show_image_job(job: &super::dm_image::Job, owner: &str, state: &mut Signal<Ap
     let channel_id = conversation_id(&job.peer);
     state.write().dm_images.insert(
         id,
-        super::dm_image::Image {
-            channel_id,
-            descriptor: job.image.clone(),
-            status: super::dm_image::Status::Uploading,
-            upload: true,
-            viewers: Default::default(),
-            original_viewers: Default::default(),
-            original_data: false,
-            data: None,
-        },
+        super::dm_image::Image::uploading(channel_id, job.image.clone()),
     );
-    state
-        .write()
-        .dm_delivery
-        .insert(id, super::delivery::Delivery::Pending);
+    outbox.hold_upload(id, job.peer.clone());
+    show(state, outbox, id);
 }
 
 fn note_image(rumor: &event::Rumor, message: &nip17::ChatMessage, state: &mut Signal<AppState>) {
@@ -1361,16 +1402,9 @@ fn note_image(rumor: &event::Rumor, message: &nip17::ChatMessage, state: &mut Si
         return;
     }
     if let Ok(descriptor) = super::dm_image::Descriptor::parse(rumor) {
-        s.dm_images.entry(id).or_insert(super::dm_image::Image {
-            channel_id: channel,
-            descriptor,
-            status: super::dm_image::Status::Waiting,
-            upload: false,
-            viewers: Default::default(),
-            original_viewers: Default::default(),
-            original_data: false,
-            data: None,
-        });
+        s.dm_images
+            .entry(id)
+            .or_insert_with(|| super::dm_image::Image::received(channel, descriptor));
     }
 }
 
@@ -1379,7 +1413,7 @@ async fn queue_image_message(
     secret: &secp256k1::SecretKey,
     owner: &str,
     routes: &super::delivery::Routes,
-    outbox: &mut super::delivery::Outbox,
+    outbox: &mut Outbox,
     state: &mut Signal<AppState>,
 ) -> Result<(), String> {
     let rumor = job
@@ -1396,28 +1430,24 @@ async fn queue_image_message(
             job.created_at,
         ));
     }
-    if outbox.len() + rumors.len() > 128 {
+    // The upload's own two places are already counted.
+    if !outbox.fits(rumors.len(), 2) {
         return Err("Too many messages await delivery.".into());
     }
     let mut inserted = Vec::new();
-    for rumor in &rumors {
+    for (index, rumor) in rumors.iter().enumerate() {
         let (theirs, ours) = nip17::wrap_both(secret, &job.peer, rumor, now())?;
         let id = message_id(&rumor.id);
-        // Recovery may see both the durable upload and its already-persisted wraps.
-        if let std::collections::hash_map::Entry::Vacant(entry) = outbox.entry(id) {
-            entry.insert(super::delivery::Pending {
-                peer: job.peer.clone(),
-                theirs,
-                ours,
-                due: routes.ready_at(&job.peer, std::time::Instant::now()),
-                started: false,
-            });
+        let peer = job.peer.clone();
+        let due = routes.ready_at(&job.peer, std::time::Instant::now());
+        // Only the caption waits behind other uploads; the picture is one of them.
+        if outbox.queue(id, Wraps { peer, theirs, ours }, Kind::Chat, due, index > 0) {
             inserted.push(id);
         }
     }
     if let Err(error) = super::delivery::persist(owner, outbox).await {
         for id in inserted {
-            outbox.remove(&id);
+            outbox.withdraw(id);
         }
         return Err(error);
     }
@@ -1425,10 +1455,7 @@ async fn queue_image_message(
         let message = nip17::open_rumor(owner, &rumor)?;
         insert_message(&message, owner, state, Source::Ours, false);
         note_image(&rumor, &message, state);
-        state
-            .write()
-            .dm_delivery
-            .insert(message_id(&rumor.id), super::delivery::Delivery::Pending);
+        show(state, outbox, message_id(&rumor.id));
     }
     Ok(())
 }
@@ -1589,7 +1616,7 @@ fn insert_message_with_settings(
     let mid = message_id(&msg.id);
     let mut s = state.write();
     if msg.author == our_pubkey {
-        s.dm_accepted.insert(msg.peer.clone());
+        s.choose_dm(&msg.peer, Some(crate::state::DmChoice::Accepted));
     }
 
     // A DM carries the time its sender wrote on it, and nothing keeps two
@@ -1697,6 +1724,56 @@ fn insert_message_with_settings(
 
 #[cfg(test)]
 mod tests {
+    fn relays(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn a_silent_relay_stops_blocking_the_others_but_what_it_brings_stays_backlog() {
+        let t0 = std::time::Instant::now();
+        let up = relays(&["a", "b"]);
+        let mut replay = super::Replay::default();
+        replay.connected("a", t0);
+        replay.connected("b", t0);
+        replay.finished("a");
+        assert!(!replay.settled(&up));
+        assert!(!replay.live(&up, "a"));
+
+        let second = std::time::Duration::from_secs(1);
+        assert!(
+            replay
+                .give_up_on_overdue(t0 + super::REPLAY_PATIENCE - second)
+                .is_empty()
+        );
+        assert_eq!(
+            replay.give_up_on_overdue(t0 + super::REPLAY_PATIENCE),
+            vec!["b".to_string()]
+        );
+        assert_eq!(replay.next_due(), None, "nothing left to wait for");
+        assert!(replay.settled(&up));
+        assert!(replay.live(&up, "a"));
+        assert!(!replay.live(&up, "b"), "b never ended its replay");
+
+        replay.finished("b");
+        assert!(replay.live(&up, "b"));
+    }
+
+    #[test]
+    fn a_reconnect_replays_again_and_having_read_nothing_is_not_settled() {
+        let t0 = std::time::Instant::now();
+        let up = relays(&["a"]);
+        let mut replay = super::Replay::default();
+        replay.connected("a", t0);
+        replay.give_up_on_overdue(t0 + super::REPLAY_PATIENCE);
+        assert!(!replay.settled(&up), "no relay replayed anything");
+
+        replay.finished("a");
+        assert!(replay.live(&up, "a"));
+        replay.connected("a", t0 + super::REPLAY_PATIENCE);
+        assert!(!replay.live(&up, "a"));
+        assert!(replay.next_due().is_some());
+    }
+
     #[test]
     fn the_newest_edit_names_the_account_and_an_unnamed_one_defers() {
         let local = |at, name: Option<&str>| crate::profile::LocalProfile {
@@ -1808,19 +1885,84 @@ mod tests {
             };
             insert_message(&held, &me, &mut state, Source::Ours, false);
             let mid = message_id("held-1");
-            state
-                .write()
-                .dm_delivery
-                .insert(mid, super::super::delivery::Delivery::Pending);
+            let mut outbox = Outbox::default();
+            outbox.hold(mid, "held-1".into(), draft(&peer));
+            show(&mut state, &outbox, mid);
             assert_eq!(state.read().messages[&conversation_id(&peer)].len(), 1);
             assert!(state.read().dm_emoji.contains_key(&mid));
+            assert_eq!(state.read().dm_pending, 1);
 
-            withdraw_held(&mut state, &peer, "held-1");
+            release(&mut state, &mut outbox, &peer, "held-1");
             let s = state.read();
             assert!(s.messages[&conversation_id(&peer)].is_empty());
             assert!(!s.dm_delivery.contains_key(&mid));
             assert!(!s.dm_emoji.contains_key(&mid));
             assert!(!s.nostr_event_ids.contains_key(&mid));
+            assert_eq!(s.dm_pending, 0);
+        });
+    }
+
+    fn draft(peer: &str) -> Draft {
+        Draft {
+            peer: peer.into(),
+            text: "hi".into(),
+            reply_to: None,
+            emoji: vec![],
+        }
+    }
+
+    #[test]
+    fn a_held_message_ends_failed_when_its_send_is_refused_and_drops_once_deleted() {
+        use super::super::delivery::{Delivery, Routes};
+        use dioxus::prelude::*;
+        use futures_util::FutureExt;
+        let mut dom = VirtualDom::new(|| rsx! {});
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, || {
+            let secret = secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
+            let (me, peer) = (event::xonly_hex(&secret), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            let routes = Routes::default();
+            let mut outbox = Outbox::default();
+            let mid = message_id("held-1");
+            outbox.hold(mid, "held-1".into(), draft(&peer));
+            state.write().nostr_event_ids.insert(mid, "held-1".into());
+            for n in 1..super::super::outbox::CAP as u128 {
+                outbox.hold(Id::from_u128(n), n.to_string(), draft(&peer));
+            }
+            let mut sent = draft(&peer);
+            sent.text = "final".into();
+            send_draft(
+                sent.clone(),
+                Some("held-1".into()),
+                &secret,
+                &me,
+                &routes,
+                &mut outbox,
+                &mut state,
+            )
+            .now_or_never()
+            .unwrap();
+            assert_eq!(state.read().dm_delivery[&mid], Delivery::Failed);
+            assert_eq!(outbox.held(mid), Some(("held-1", &sent)));
+            assert!(state.read().error_toast.is_some());
+
+            // Deleted while its emoji uploaded: the late `Send` must not resurrect it.
+            outbox.withdraw(Id::from_u128(7));
+            outbox.withdraw(mid);
+            send_draft(
+                draft(&peer),
+                Some("held-1".into()),
+                &secret,
+                &me,
+                &routes,
+                &mut outbox,
+                &mut state,
+            )
+            .now_or_never()
+            .unwrap();
+            assert!(outbox.wrapped().next().is_none());
+            assert!(state.read().messages.is_empty());
         });
     }
 
@@ -1858,17 +2000,25 @@ mod tests {
             insert_message(&message, &owner, &mut state, Source::Relay, false);
             note_image(&rumor, &message, &mut state);
             let id = message_id(&rumor.id);
-            let bytes = std::sync::Arc::new(png.to_string());
-            {
+            let bytes = {
                 let mut s = state.write();
+                let viewer = uuid::Uuid::new_v4();
                 let image = s.dm_images.get_mut(&id).unwrap();
-                image.status = super::super::dm_image::Status::Ready;
-                image.data = Some(bytes.clone());
-            }
+                image.see(viewer, false);
+                let (token, _) = image.start(viewer).unwrap();
+                super::super::dm_image::finish_load(
+                    &mut s.dm_images,
+                    id,
+                    token,
+                    true,
+                    Ok(png.into()),
+                );
+                s.dm_images[&id].ready().unwrap().0.clone()
+            };
             insert_message(&message, &owner, &mut state, Source::Relay, false);
             note_image(&rumor, &message, &mut state);
             assert!(std::sync::Arc::ptr_eq(
-                state.peek().dm_images[&id].data.as_ref().unwrap(),
+                state.peek().dm_images[&id].ready().unwrap().0,
                 &bytes
             ));
             state.write().clear_server_session();
@@ -1928,7 +2078,7 @@ mod tests {
             );
             let s = state.read();
             assert_eq!(s.dm_standing(&peer), crate::state::DmStanding::Inbox);
-            assert_eq!(s.dm_unread.get(&conversation_id(&peer)), Some(&1));
+            assert_eq!(s.dm_unread(conversation_id(&peer)), 1);
         });
     }
 
@@ -1946,7 +2096,7 @@ mod tests {
             );
             let s = state.read();
             assert_eq!(s.dm_request_count(), 1);
-            assert!(s.dm_unread.is_empty());
+            assert_eq!(s.dm_unread(conversation_id(&peer)), 0);
             assert_eq!(s.dm_notify_tick, 0);
         });
     }

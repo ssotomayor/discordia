@@ -15,10 +15,60 @@ pub struct MintRequest {
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
+/// Which SFU a self-host's calls use. Leaves `Undecided` once, for the whole
+/// session, and never comes back: a room must not be split across SFUs (trap 26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Placement {
+    Undecided = 0,
+    /// A remote caller got through locally, so no later failure moves anyone.
+    Local = 1,
+    Shared = 2,
+}
+
+impl Placement {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Placement::Local,
+            2 => Placement::Shared,
+            _ => Placement::Undecided,
+        }
+    }
+
+    /// On the wire: a client drops a grant whose revision is older than one it holds.
+    pub fn route_revision(self) -> u32 {
+        match self {
+            Placement::Shared => 1,
+            Placement::Undecided | Placement::Local => 0,
+        }
+    }
+}
+
+/// Where a grant sends a call, as `VoiceToken::voice_location` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceLocation {
+    /// A rendezvous mints and evicts: its SFU, its keys.
+    Rendezvous,
+    /// This host's bundled SFU on `port`.
+    Host,
+    /// An SFU at `explicit_url`, signed with this server's keys.
+    Configured,
+}
+
+impl VoiceLocation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VoiceLocation::Rendezvous => "rendezvous",
+            VoiceLocation::Host => "host",
+            VoiceLocation::Configured => "configured",
+        }
+    }
+}
+
 pub struct VoiceFallback {
     pub url: String,
     pub minter: std::sync::Arc<dyn VoiceTokenMinter>,
-    selection: std::sync::atomic::AtomicU8,
+    placement: std::sync::atomic::AtomicU8,
 }
 
 impl VoiceFallback {
@@ -26,33 +76,32 @@ impl VoiceFallback {
         Self {
             url,
             minter,
-            selection: std::sync::atomic::AtomicU8::new(0),
+            placement: std::sync::atomic::AtomicU8::new(Placement::Undecided as u8),
         }
     }
 
-    pub fn confirmed_local(&self) {
-        let _ = self.selection.compare_exchange(
-            0,
-            1,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        );
+    pub fn placement(&self) -> Placement {
+        Placement::from_u8(self.placement.load(std::sync::atomic::Ordering::Acquire))
     }
 
-    pub fn use_shared(&self) -> bool {
-        // Once a remote caller verified local media, a later caller cannot move the session.
-        self.selection
+    /// Whether this call decided it; only the first decision counts.
+    fn decide(&self, to: Placement) -> bool {
+        self.placement
             .compare_exchange(
-                0,
-                2,
+                Placement::Undecided as u8,
+                to as u8,
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
             )
             .is_ok()
     }
 
-    fn shared(&self) -> bool {
-        self.selection.load(std::sync::atomic::Ordering::Acquire) == 2
+    pub fn confirmed_local(&self) {
+        self.decide(Placement::Local);
+    }
+
+    pub fn use_shared(&self) -> bool {
+        self.decide(Placement::Shared)
     }
 }
 
@@ -171,6 +220,25 @@ impl LiveKitConfig {
     /// Whether voice may go to the SFU on `port`.
     pub fn local_refused(&self) -> bool {
         self.explicit_url.is_none() && !self.local_sfu.ours()
+    }
+
+    pub fn location(&self) -> VoiceLocation {
+        match (&self.minter, &self.explicit_url) {
+            (Some(_), _) => VoiceLocation::Rendezvous,
+            (None, None) => VoiceLocation::Host,
+            (None, Some(_)) => VoiceLocation::Configured,
+        }
+    }
+
+    pub fn placement(&self) -> Placement {
+        self.fallback
+            .as_ref()
+            .map_or(Placement::Undecided, |f| f.placement())
+    }
+
+    /// The revision `route` would return, without cloning the config for it.
+    pub fn route_revision(&self) -> u32 {
+        self.placement().route_revision()
     }
 
     /// Over QUIC the `Host` header is a fixed loopback placeholder, so the
@@ -345,19 +413,18 @@ pub async fn screen_token_as(
 }
 
 impl LiveKitConfig {
+    /// The config a grant is minted with, and its revision: the one place the
+    /// placement becomes URLs and signing authority.
     pub fn route(&self) -> (Self, u32) {
+        let placement = self.placement();
         let mut cfg = self.clone();
         cfg.fallback = None;
-        if let Some(fallback) = &self.fallback
-            && fallback.shared()
-        {
+        if let (Placement::Shared, Some(fallback)) = (placement, &self.fallback) {
             cfg.explicit_url = Some(fallback.url.clone());
             cfg.minter = Some(fallback.minter.clone());
             cfg.alternate_hosts.clear();
-            (cfg, 1)
-        } else {
-            (cfg, 0)
         }
+        (cfg, placement.route_revision())
     }
 
     /// `None` when a rendezvous mints the tokens: its SFU, its keys.
@@ -374,11 +441,23 @@ impl LiveKitConfig {
     }
 }
 
+pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+    evict_unless(cfg, channel_id, user_pubkey, || false).await
+}
+
 /// Every identity one person can hold in a channel's two rooms (trap 10). One
 /// that is not there is the usual answer, not a failure.
-pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+pub async fn evict_unless(
+    cfg: &LiveKitConfig,
+    channel_id: Id,
+    user_pubkey: &str,
+    rejoined: impl Fn() -> bool,
+) {
     let (cfg, _) = cfg.route();
     if let Some(minter) = &cfg.minter {
+        if rejoined() {
+            return;
+        }
         if let Err(error) = minter.evict(channel_id, user_pubkey).await {
             tracing::warn!(%channel_id, %error, "delegated SFU eviction failed");
         }
@@ -399,6 +478,11 @@ pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
         (screen, screen_viewer_identity(user_pubkey)),
     ];
     for (room, identity) in seats {
+        // Asked per seat, not once: these calls take long enough for a rejoin.
+        if rejoined() {
+            tracing::debug!(%channel_id, "back in the call; its remaining seats stay");
+            return;
+        }
         match client.remove_participant(&room, &identity).await {
             Ok(()) => tracing::info!(%room, %identity, "evicted from the SFU"),
             Err(e) => tracing::debug!(%room, %identity, error = %e, "nothing to evict"),
@@ -475,6 +559,41 @@ mod tests {
                 .is_ok(),
             "a shared SFU is unaffected"
         );
+    }
+
+    /// A rejoin while the seats go keeps the seats it took: the eviction stops at
+    /// the next one instead of finishing the list it started with.
+    #[tokio::test]
+    async fn an_eviction_stops_at_the_seat_after_a_rejoin() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let removed = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = removed.clone();
+        let app = axum::Router::new().fallback(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { axum::http::StatusCode::OK }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let cfg = LiveKitConfig {
+            explicit_url: Some(format!("ws://{addr}")),
+            fallback: None,
+            ..direct_routes()
+        };
+        let channel = Id::new_v4();
+        let seats = |after: Option<usize>| {
+            let removed = removed.clone();
+            let cfg = cfg.clone();
+            async move {
+                removed.store(0, Ordering::SeqCst);
+                let rejoined = || after.is_some_and(|n| removed.load(Ordering::SeqCst) >= n);
+                evict_unless(&cfg, channel, "pk", rejoined).await;
+                removed.load(Ordering::SeqCst)
+            }
+        };
+        for (rejoined_after, expected) in [(None, 5), (Some(0), 0), (Some(1), 1), (Some(3), 3)] {
+            assert_eq!(seats(rejoined_after).await, expected, "{rejoined_after:?}");
+        }
     }
 
     fn direct_routes() -> LiveKitConfig {
@@ -559,6 +678,53 @@ mod tests {
         assert!(
             before.minter.is_none(),
             "an in-flight mint keeps its original signing authority"
+        );
+    }
+
+    /// Each placement and decision, from a fresh session: only the first decision
+    /// lands, and nothing leaves `Shared` or `Local`.
+    #[tokio::test]
+    async fn placement_is_decided_once_and_sets_urls_signing_and_revision_together() {
+        type Decision = fn(&VoiceFallback) -> bool;
+        let local: Decision = |f| {
+            f.confirmed_local();
+            f.placement() == Placement::Local
+        };
+        let shared: Decision = VoiceFallback::use_shared;
+        use {Placement::*, VoiceLocation::*};
+        const LOCAL_URL: &str = "ws://203.0.113.5:7880";
+        const SHARED_URL: &str = "wss://last-option";
+        let table: [(&[Decision], Placement, u32, &str, VoiceLocation); 5] = [
+            (&[], Undecided, 0, LOCAL_URL, Host),
+            (&[local], Local, 0, LOCAL_URL, Host),
+            (&[local, shared], Local, 0, LOCAL_URL, Host),
+            (&[shared], Shared, 1, SHARED_URL, Rendezvous),
+            (&[shared, local, shared], Shared, 1, SHARED_URL, Rendezvous),
+        ];
+        for (row, (decisions, placement, revision, url, location)) in table.into_iter().enumerate()
+        {
+            let cfg = direct_routes();
+            let fallback = cfg.fallback.clone().unwrap();
+            let landed: Vec<bool> = decisions.iter().map(|d| d(&fallback)).collect();
+            assert!(
+                landed.iter().skip(1).all(|l| !l),
+                "row {row}: a second decision landed"
+            );
+            assert_eq!(cfg.placement(), placement, "row {row}");
+            let (routed, routed_revision) = cfg.clone().route();
+            assert_eq!(
+                (routed_revision, cfg.route_revision()),
+                (revision, revision)
+            );
+            assert_eq!(
+                routed.urls_for_client(None, Some("203.0.113.9".parse().unwrap()))[0],
+                url
+            );
+            assert_eq!(routed.location(), location, "row {row}");
+        }
+        assert_eq!(
+            [Rendezvous, Host, Configured].map(VoiceLocation::as_str),
+            ["rendezvous", "host", "configured"]
         );
     }
 

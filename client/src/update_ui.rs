@@ -31,6 +31,16 @@ pub enum Phase {
     Failed(String),
 }
 
+impl Phase {
+    /// An install under way: the app must not close before it does.
+    pub fn prevents_close(&self) -> bool {
+        matches!(
+            self,
+            Phase::Leaving(_) | Phase::Installing | Phase::Finished
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub offer: Option<Update>,
@@ -160,11 +170,9 @@ impl Updates {
         self.commands.send(Command::Install(path));
     }
 
+    #[cfg(test)]
     pub fn prevents_close(self) -> bool {
-        matches!(
-            self.state.read().phase,
-            Phase::Leaving(_) | Phase::Installing | Phase::Finished
-        )
+        self.state.read().phase.prevents_close()
     }
 
     pub fn open(mut self) {

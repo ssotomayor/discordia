@@ -183,6 +183,37 @@ async fn failing_local_routes_moves_all_callers_to_one_shared_sfu() {
     ));
 }
 
+/// A second socket of the caller's key is not in the call: a grant there would
+/// connect it as the caller and take the caller's seat in the room.
+#[tokio::test]
+async fn the_move_to_the_shared_sfu_reaches_only_the_socket_in_the_call() {
+    let cfg = local_with_fallback();
+    let (url, _handle) = remote_gateway(cfg.clone()).await;
+    let owner_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (_, channel) = voice_channel(&mut owner).await;
+    let mut sibling = connect_user(&url, &owner_id, "owner").await;
+    join_voice(&mut owner, channel).await;
+    drain_quiet(&mut sibling).await;
+    owner
+        .send(&ClientMessage::VoiceConnectionReport {
+            channel_id: channel,
+            route_revision: 0,
+            connected: false,
+        })
+        .await
+        .unwrap();
+    shared_voice_token(&mut owner, channel).await;
+    assert_eq!(cfg.route().1, 1);
+    let seen = drain_quiet(&mut sibling).await;
+    assert!(
+        seen.iter()
+            .any(|f| matches!(f, ServerMessage::VoiceRouteChanged { .. })),
+        "{seen:?}"
+    );
+    assert!(!has_voice_token(&seen), "{seen:?}");
+}
+
 #[tokio::test]
 async fn a_working_remote_local_call_is_not_moved_by_another_failure() {
     let cfg = local_with_fallback();
@@ -627,6 +658,40 @@ async fn a_token_minted_after_leaving_is_not_delivered() {
         !has_voice_token(&after),
         "a join answered after the leave: {after:?}"
     );
+}
+
+/// Each join has its own grant: the one minted for a join that was left is
+/// stale even when the rejoin is to the same room on the same socket.
+#[tokio::test]
+async fn a_rejoin_before_the_first_grant_arrives_gets_only_its_own() {
+    let (cfg, release) = stalling();
+    let (url, _handle) = spawn_gateway(cfg).await;
+    let mut user = connect_user(&url, &BotIdentity::generate(), "rejoiner").await;
+    let (guild_id, _text) = text_channel_of(&mut user).await;
+    let voice = create_voice_channel(&mut user, guild_id).await;
+    let join = ClientMessage::JoinVoice {
+        channel_id: voice,
+        preferences: None,
+    };
+    user.send(&join).await.unwrap();
+    user.send(&ClientMessage::LeaveVoice).await.unwrap();
+    user.send(&join).await.unwrap();
+    drain_quiet(&mut user).await;
+
+    release.send(true).unwrap();
+    let after = drain_quiet(&mut user).await;
+    let grants = |frames: &[ServerMessage]| {
+        let voice = frames
+            .iter()
+            .filter(|m| matches!(m, ServerMessage::VoiceToken { .. }))
+            .count();
+        let screen = frames
+            .iter()
+            .filter(|m| matches!(m, ServerMessage::ScreenToken { .. }))
+            .count();
+        (voice, screen)
+    };
+    assert_eq!(grants(&after), (1, 1), "{after:?}");
 }
 
 #[tokio::test]

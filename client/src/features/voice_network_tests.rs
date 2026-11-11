@@ -259,7 +259,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
     dom.rebuild_in_place();
     let (controls, task) = dom.in_scope(ScopeId::ROOT, || {
         let mut initial = AppState::empty();
-        initial.voice.phase = VoicePhase::Connected;
+        initial.voice.force_phase(VoicePhase::Connected);
         initial.voice_bitrate_kbps = 64;
         let controls = AudioControls::from_state(&initial);
         let task = spawn_stats_task(

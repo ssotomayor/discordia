@@ -181,6 +181,59 @@ pub fn judge(held: Option<Held>, offered: Held) -> Verdict {
     }
 }
 
+/// The key of the call we are in. One slot, because the key in use is global to the
+/// process (trap 29): only the methods below move it, together with the provider's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallKey(Option<(Id, Held)>);
+
+impl CallKey {
+    pub fn held_for(&self, channel: Id) -> Option<Held> {
+        self.0.filter(|(c, _)| *c == channel).map(|(_, held)| held)
+    }
+
+    pub fn channel(&self) -> Option<Id> {
+        self.0.map(|(channel, _)| channel)
+    }
+}
+
+impl crate::state::AppState {
+    /// Generating and accepting both ask the server which call we are in, since
+    /// keys can arrive before the local media token.
+    pub fn key_channel(&self) -> Option<Id> {
+        self.voice_call().map(|call| call.channel)
+    }
+
+    /// Refuses a key for any call but the current one: a late key, or one made
+    /// after a wait that outlasted the call, would otherwise be the one in use.
+    pub fn adopt_media_key(&mut self, channel: Id, key: Held) -> bool {
+        if self.key_channel() != Some(channel) {
+            return false;
+        }
+        self.media_key = CallKey(Some((channel, key)));
+        crate::e2ee::apply_key(&key.1, key.0);
+        true
+    }
+
+    pub fn drop_media_key(&mut self) {
+        self.media_key = CallKey(None);
+        crate::e2ee::clear_key();
+    }
+
+    /// True once the held key belongs to a call we are no longer in.
+    pub fn media_key_is_stale(&self) -> bool {
+        self.media_key
+            .channel()
+            .is_some_and(|channel| Some(channel) != self.key_channel())
+    }
+}
+
+#[cfg(test)]
+impl CallKey {
+    pub fn force(channel: Id, key: Held) -> Self {
+        Self(Some((channel, key)))
+    }
+}
+
 /// What each member was last sent, by key rather than generation: a new key
 /// at the same generation is still owed.
 type Ledger = std::collections::HashMap<(Id, String), Held>;
@@ -258,7 +311,7 @@ pub fn MediaKeyBridge() -> Element {
 
     let roster = use_memo(move || {
         let s = state.read();
-        let channel = s.voice.channel_id?;
+        let channel = s.key_channel()?;
         let mut present = present_in(&s, channel);
         present.sort();
         Some((channel, present))
@@ -274,7 +327,7 @@ pub fn MediaKeyBridge() -> Element {
             (
                 s.identity.clone(),
                 s.self_user.as_ref().map(|u| u.pubkey.clone()),
-                s.media_keys.get(&channel).copied(),
+                s.media_key.held_for(channel),
             )
         };
         let (Some(identity), Some(me)) = (identity, me) else {
@@ -333,7 +386,7 @@ pub fn MediaKeyBridge() -> Element {
                 spawn(async move {
                     if !alone {
                         tokio::time::sleep(KEY_WAIT).await;
-                        if state.peek().media_keys.contains_key(&channel) {
+                        if state.peek().media_key.held_for(channel).is_some() {
                             return;
                         }
                         tracing::info!(
@@ -347,8 +400,10 @@ pub fn MediaKeyBridge() -> Element {
                         alone,
                         "generating a media key — nobody else offered one"
                     );
-                    state.write().media_keys.insert(channel, (1, key));
-                    crate::e2ee::apply_key(&key, 1);
+                    if !state.write().adopt_media_key(channel, (1, key)) {
+                        tracing::info!(%channel, "the call ended while waiting for its key");
+                        return;
+                    }
                     for to in present_in(&state.peek(), channel) {
                         if to == me || !needs_send(channel, &to, (1, key)) {
                             continue;
@@ -377,7 +432,7 @@ pub fn rekey_after_removal(
 ) {
     let (channel, identity, me, epoch) = {
         let s = state.read();
-        let Some(channel) = s.voice.channel_id else {
+        let Some(channel) = s.key_channel() else {
             return;
         };
         let Some(identity) = s.identity.clone() else {
@@ -386,7 +441,7 @@ pub fn rekey_after_removal(
         let Some(me) = s.self_user.as_ref().map(|u| u.pubkey.clone()) else {
             return;
         };
-        let Some((epoch, _)) = s.media_keys.get(&channel).copied() else {
+        let Some((epoch, _)) = s.media_key.held_for(channel) else {
             return;
         };
         (channel, identity, me, epoch)
@@ -418,8 +473,7 @@ pub fn rekey_after_removal(
             Err(e) => tracing::warn!(%to, error = %e, "could not seal the rekey"),
         }
     }
-    state.write().media_keys.insert(channel, (next, key));
-    crate::e2ee::apply_key(&key, next);
+    state.write().adopt_media_key(channel, (next, key));
 }
 
 #[cfg(test)]
@@ -789,5 +843,75 @@ mod convergence {
             assert!(call.agreed(), "seed {seed}: after a rekey");
             assert_eq!(call.members[2].held.unwrap().0, next);
         }
+    }
+}
+
+#[cfg(test)]
+mod ownership {
+    use super::CallKey;
+    use crate::protocol::{Id, User, VoiceState};
+    use crate::state::AppState;
+
+    const KEY: super::Held = (2, [7; super::KEY_LEN]);
+
+    fn placed_in(channel: Option<Id>) -> AppState {
+        let mut s = AppState::empty();
+        s.self_user = Some(User {
+            pubkey: "me".into(),
+            username: "me".into(),
+        });
+        s.voice_states.push(VoiceState {
+            user_pubkey: "me".into(),
+            guild_id: Id::nil(),
+            channel_id: channel,
+            muted: false,
+            deafened: false,
+            speaking: false,
+            camera_on: false,
+            screen_sharing: false,
+            screen_watching: Vec::new(),
+            camera_watching: Vec::new(),
+        });
+        s
+    }
+
+    #[test]
+    fn a_key_is_kept_only_for_the_call_the_server_has_us_in() {
+        let (a, b) = (Id::from_u128(1), Id::from_u128(2));
+        for (server, offered, adopted) in
+            [(Some(a), a, true), (Some(b), a, false), (None, a, false)]
+        {
+            let mut s = placed_in(server);
+            assert_eq!(s.adopt_media_key(offered, KEY), adopted, "{server:?}");
+            assert_eq!(s.media_key.held_for(offered).is_some(), adopted);
+            s.drop_media_key();
+            assert_eq!(s.media_key, CallKey::default());
+        }
+    }
+
+    #[test]
+    fn a_held_key_goes_stale_once_the_call_is_another_or_none() {
+        let (a, b) = (Id::from_u128(1), Id::from_u128(2));
+        for (held, server, stale) in [
+            (None, Some(a), false),
+            (Some(a), Some(a), false),
+            (Some(a), Some(b), true),
+            (Some(a), None, true),
+        ] {
+            let mut s = placed_in(server);
+            if let Some(channel) = held {
+                s.media_key = CallKey::force(channel, KEY);
+            }
+            assert_eq!(s.media_key_is_stale(), stale, "{held:?} in {server:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_answers_only_for_its_own_channel() {
+        let (a, b) = (Id::from_u128(1), Id::from_u128(2));
+        let key = CallKey::force(a, KEY);
+        assert_eq!(key.held_for(a), Some(KEY));
+        assert_eq!(key.held_for(b), None);
+        assert_eq!(CallKey::default().held_for(a), None);
     }
 }

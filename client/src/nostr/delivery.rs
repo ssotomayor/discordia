@@ -5,21 +5,12 @@ use tokio::sync::broadcast;
 
 use super::event::Event;
 use super::relay::{RelayEvent, RelayPool};
-use crate::protocol::Id;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
     Pending,
     Accepted,
     Failed,
-}
-
-pub struct Pending {
-    pub peer: String,
-    pub theirs: Event,
-    pub ours: Event,
-    pub due: Instant,
-    pub started: bool,
 }
 
 #[derive(Default)]
@@ -248,8 +239,6 @@ async fn await_answers(
     }
 }
 
-pub type Outbox = HashMap<Id, Pending>;
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Stored {
     peer: String,
@@ -289,9 +278,9 @@ fn load_from(path: std::path::PathBuf) -> Vec<(String, Event, Event)> {
         .collect()
 }
 
-pub async fn persist(pubkey: &str, outbox: &Outbox) -> Result<(), String> {
+pub async fn persist(pubkey: &str, outbox: &super::outbox::Outbox) -> Result<(), String> {
     let stored: Vec<_> = outbox
-        .values()
+        .wrapped()
         .map(|entry| Stored {
             peer: entry.peer.clone(),
             theirs: entry.theirs.clone(),

@@ -72,57 +72,96 @@ fn key_file_path() -> PathBuf {
 /// Where the passphrase lives. Decided once and remembered, because a backend
 /// that quietly changed between runs would leave every key on disk unreadable.
 #[cfg(target_os = "android")]
-pub fn backend() -> Backend {
-    Backend::Keychain
+pub fn backend() -> Result<Backend, String> {
+    Ok(Backend::Keychain)
 }
 
 #[cfg(not(target_os = "android"))]
-pub fn backend() -> Backend {
-    if let Some(forced) = std::env::var(ENV_BACKEND)
+pub fn backend() -> Result<Backend, String> {
+    let marker = std::fs::read_to_string(marker_path())
         .ok()
-        .and_then(|v| Backend::from_marker(&v))
-    {
-        return forced;
+        .and_then(|s| Backend::from_marker(&s));
+    let forced = std::env::var(ENV_BACKEND)
+        .ok()
+        .and_then(|v| Backend::from_marker(&v));
+    if let Some(chosen) = settled(forced, marker)? {
+        return Ok(chosen);
     }
     if cfg!(test) {
-        return Backend::File;
+        return Ok(Backend::File);
     }
-    if let Some(chosen) = std::fs::read_to_string(marker_path())
-        .ok()
-        .and_then(|s| Backend::from_marker(&s))
-    {
-        return chosen;
+    if let Some(chosen) = marker {
+        return Ok(chosen);
     }
-    let chosen = if keychain_usable() {
+    // A key file without its marker is still the passphrase in use; probing the
+    // keychain would mint a rival one.
+    if key_file_path().exists() {
+        return Ok(Backend::File);
+    }
+    Ok(if keychain_usable()? {
         Backend::Keychain
     } else {
         Backend::File
-    };
-    if let Err(e) = crate::identity::write_private(&marker_path(), chosen.marker()) {
-        tracing::warn!(error = %e, "could not remember the vault backend");
-    }
-    chosen
+    })
 }
 
-fn keychain_usable() -> bool {
+#[cfg(not(target_os = "android"))]
+fn settled(forced: Option<Backend>, marker: Option<Backend>) -> Result<Option<Backend>, String> {
+    match (forced, marker) {
+        (Some(forced), Some(marker)) if forced != marker => Err(format!(
+            "{ENV_BACKEND}={} disagrees with vault.backend ({}), which locked this machine's identities. Unset it or make them match.",
+            forced.marker(),
+            marker.marker()
+        )),
+        (forced, _) => Ok(forced),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn keychain_usable() -> Result<bool, String> {
     let Ok(entry) = keyring::Entry::new(SERVICE, ACCOUNT) else {
-        return false;
+        return Ok(false);
     };
     match entry.get_password() {
-        Ok(_) => true,
+        Ok(_) => Ok(true),
+        // Usable, but empty where keys already exist: `passphrase` refuses, never mints.
+        Err(keyring::Error::NoEntry) if vault_state_exists()? => Ok(true),
         Err(keyring::Error::NoEntry) => match entry.set_password(&fresh_passphrase()) {
-            Ok(()) => true,
+            Ok(()) => Ok(true),
             Err(e) => {
                 tracing::warn!(error = %e, "keychain refused a write; keys fall back to a file");
-                false
+                Ok(false)
             }
         },
         Err(e) => {
             tracing::warn!(error = %e, "keychain unavailable; keys fall back to a file");
-            false
+            Ok(false)
         }
     }
 }
+
+/// Anything already locked under a passphrase. A new one would orphan it for
+/// good, and the old one could never be put back.
+#[cfg(not(target_os = "android"))]
+fn vault_state_exists() -> Result<bool, String> {
+    Ok(marker_path().exists()
+        || key_file_path().exists()
+        || crate::identity::encrypted_keys_exist()?)
+}
+
+#[cfg(not(target_os = "android"))]
+fn missing(backend: Backend) -> String {
+    match backend {
+        Backend::Keychain => MISSING_FROM_KEYCHAIN,
+        Backend::File => MISSING_FROM_FILE,
+    }
+    .to_string()
+}
+
+#[cfg(not(target_os = "android"))]
+const MISSING_FROM_KEYCHAIN: &str = "The vault key for this machine's identities is missing from the system keychain. Nothing was replaced: restore it, or move the identities folder and vault.backend out of the config folder to start over.";
+#[cfg(not(target_os = "android"))]
+const MISSING_FROM_FILE: &str = "The vault key for this machine's identities (vault.key) is missing from the config folder. Nothing was replaced: restore it, or move the identities folder and vault.backend out of the config folder to start over.";
 
 fn fresh_passphrase() -> Zeroizing<String> {
     let mut bytes = Zeroizing::new([0u8; 32]);
@@ -130,7 +169,8 @@ fn fresh_passphrase() -> Zeroizing<String> {
     Zeroizing::new(hex::encode(bytes.as_ref()))
 }
 
-/// The machine passphrase, created on first use.
+/// The machine passphrase, created only on a first run: once anything is
+/// locked under one, a missing passphrase is an error, never a fresh one.
 #[cfg(target_os = "android")]
 pub fn passphrase() -> Result<Zeroizing<String>, String> {
     crate::android::vault_passphrase()
@@ -138,38 +178,55 @@ pub fn passphrase() -> Result<Zeroizing<String>, String> {
 
 #[cfg(not(target_os = "android"))]
 pub fn passphrase() -> Result<Zeroizing<String>, String> {
-    match backend() {
+    let backend = backend()?;
+    let passphrase = match backend {
         Backend::Keychain => {
             let entry =
                 keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| format!("keychain: {e}"))?;
             match entry.get_password() {
-                Ok(p) => Ok(Zeroizing::new(p)),
+                Ok(p) => Zeroizing::new(p),
+                Err(keyring::Error::NoEntry) if vault_state_exists()? => {
+                    return Err(missing(backend));
+                }
                 Err(keyring::Error::NoEntry) => {
                     let p = fresh_passphrase();
                     entry
                         .set_password(&p)
                         .map_err(|e| format!("keychain would not store the vault key: {e}"))?;
-                    Ok(p)
+                    p
                 }
-                Err(e) => Err(format!(
-                    "the vault key is in {} and it could not be opened: {e}",
-                    Backend::Keychain.describe()
-                )),
+                Err(e) => {
+                    return Err(format!(
+                        "the vault key is in {} and it could not be opened: {e}",
+                        Backend::Keychain.describe()
+                    ));
+                }
             }
         }
         Backend::File => {
             let path = key_file_path();
             match std::fs::read_to_string(&path) {
-                Ok(p) => Ok(Zeroizing::new(p.trim().to_string())),
+                Ok(p) => Zeroizing::new(p.trim().to_string()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if vault_state_exists()? {
+                        return Err(missing(backend));
+                    }
                     let p = fresh_passphrase();
                     crate::identity::write_private(&path, &p)?;
-                    Ok(p)
+                    p
                 }
-                Err(e) => Err(format!("read vault key: {e}")),
+                Err(e) => return Err(format!("read vault key: {e}")),
             }
         }
+    };
+    // Written only once a passphrase is in hand, so a first run that failed
+    // halfway is not mistaken next time for a vault that lost its key.
+    if !marker_path().exists()
+        && let Err(e) = crate::identity::write_private(&marker_path(), backend.marker())
+    {
+        tracing::warn!(error = %e, "could not remember the vault backend");
     }
+    Ok(passphrase)
 }
 
 #[cfg(test)]
@@ -325,6 +382,50 @@ pub fn decrypt(ncryptsec: &str, passphrase: &str) -> Result<Zeroizing<[u8; 32]>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_first_run_makes_the_passphrase_and_later_runs_reuse_it() {
+        let dir = crate::identity::test_config_dir();
+        let first = passphrase().expect("first run");
+        assert_eq!(*passphrase().expect("second run"), *first);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(BACKEND_MARKER)).unwrap(),
+            "file"
+        );
+    }
+
+    #[test]
+    fn a_lost_vault_key_is_refused_rather_than_replaced() {
+        let dir = crate::identity::test_config_dir();
+        let id = crate::identity::Identity::restore_from_private_key("44".repeat(32), "kept")
+            .expect("identity");
+        id.save().expect("save");
+        let original = std::fs::read_to_string(dir.join(KEY_FILE)).unwrap();
+        std::fs::remove_file(dir.join(KEY_FILE)).unwrap();
+
+        assert_eq!(passphrase().unwrap_err(), MISSING_FROM_FILE);
+        assert!(!dir.join(KEY_FILE).exists(), "no rival passphrase minted");
+
+        std::fs::write(dir.join(KEY_FILE), original).unwrap();
+        let back = crate::identity::Identity::load().unwrap().unwrap();
+        assert_eq!(back.pubkey, id.pubkey);
+    }
+
+    #[test]
+    fn a_marker_without_its_passphrase_is_refused() {
+        let dir = crate::identity::test_config_dir();
+        std::fs::write(dir.join(BACKEND_MARKER), "file").unwrap();
+        assert_eq!(passphrase().unwrap_err(), MISSING_FROM_FILE);
+    }
+
+    #[test]
+    fn an_env_backend_must_agree_with_the_marker() {
+        use Backend::{File, Keychain};
+        assert!(settled(Some(File), Some(Keychain)).is_err());
+        assert_eq!(settled(Some(File), Some(File)), Ok(Some(File)));
+        assert_eq!(settled(Some(Keychain), None), Ok(Some(Keychain)));
+        assert_eq!(settled(None, Some(Keychain)), Ok(None));
+    }
 
     #[test]
     fn a_key_survives_the_round_trip_and_nothing_else_opens_it() {

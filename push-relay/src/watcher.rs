@@ -1,7 +1,7 @@
 //! Gift wraps to registered keys, turned into pushes. Every subscription replays two
 //! days of backdated wraps, so a (relay, key) pair pushes only after its first EOSE.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -135,7 +135,6 @@ struct Entry {
     relays: u64,
     /// Per recipient by `p` tag position: one wrap may name keys baselined on different relays.
     pushed: u64,
-    closed: bool,
     /// Our clock when any relay first delivered it.
     first_at: i64,
 }
@@ -145,15 +144,67 @@ struct Entry {
 pub struct Prior {
     pub on_this_relay: bool,
     pub pushed: u64,
-    /// Never to be pushed: a call signal.
-    pub closed: bool,
     pub first_at: i64,
 }
 
-impl Prior {
-    /// Whether this delivery may push at all, before baselines and recipients.
-    pub fn is_news(&self, now: i64) -> bool {
-        !self.closed && !self.on_this_relay && now - self.first_at < LATE_COPY_SECS
+/// A key missing from `RelaySlot::watch` is unwatched there. A redial or forced resubscribe
+/// keeps the state: `Seen` knows that relay's replay, and what it gained while away is news.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watch {
+    Replaying,
+    Baselined,
+}
+
+/// Everything `check` reads about one recipient of one delivered wrap.
+#[derive(Debug, Clone, Copy)]
+pub struct Facts {
+    /// `None`: outside the window, or at or under the floor evictions raised.
+    pub prior: Option<Prior>,
+    pub call_signal: bool,
+    pub now: i64,
+    /// This relay's state for the recipient.
+    pub watch: Option<Watch>,
+    /// The recipient's bit in `Prior::pushed`.
+    pub recipient: u64,
+}
+
+/// Which rule said no, in the order `check` asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Skip {
+    Forgotten,
+    CallSignal,
+    /// This relay sent it before: its own replay.
+    Repeated,
+    /// Another relay first sent it `LATE_COPY_SECS` or more ago.
+    LateCopy,
+    AlreadyPushed,
+    Unwatched,
+    Replaying,
+}
+
+/// Whether one delivery of a wrap is pushed to one of the keys it names.
+pub fn check(f: &Facts) -> Result<(), Skip> {
+    let Some(prior) = f.prior else {
+        return Err(Skip::Forgotten);
+    };
+    // Only call signals carry an expiration, and a ring needs a design of its own.
+    if f.call_signal {
+        return Err(Skip::CallSignal);
+    }
+    // Only this relay's own repeat is its replay; another relay's first copy is news while moments old.
+    if prior.on_this_relay {
+        return Err(Skip::Repeated);
+    }
+    if f.now - prior.first_at >= LATE_COPY_SECS {
+        return Err(Skip::LateCopy);
+    }
+    if prior.pushed & f.recipient != 0 {
+        return Err(Skip::AlreadyPushed);
+    }
+    match f.watch {
+        None => Err(Skip::Unwatched),
+        Some(Watch::Replaying) => Err(Skip::Replaying),
+        Some(Watch::Baselined) => Ok(()),
     }
 }
 
@@ -206,7 +257,6 @@ impl Seen {
             let prior = Prior {
                 on_this_relay: entry.relays & bit != 0,
                 pushed: entry.pushed,
-                closed: entry.closed,
                 first_at: entry.first_at,
             };
             entry.relays |= bit;
@@ -221,7 +271,6 @@ impl Seen {
                 created_at,
                 relays: bit,
                 pushed: 0,
-                closed: false,
                 first_at: now,
             },
         );
@@ -239,7 +288,6 @@ impl Seen {
         Some(Prior {
             on_this_relay: false,
             pushed: 0,
-            closed: false,
             first_at: now,
         })
     }
@@ -249,12 +297,6 @@ impl Seen {
             entry.pushed |= recipients;
         }
     }
-
-    pub fn close(&mut self, id: &[u8; 32]) {
-        if let Some(entry) = self.ids.get_mut(id) {
-            entry.closed = true;
-        }
-    }
 }
 
 struct RelaySlot {
@@ -262,10 +304,9 @@ struct RelaySlot {
     pool: Option<RelayPool>,
     /// Which pool a forwarded event came from, so a dropped pool's stragglers are ignored.
     epoch: u64,
-    keys: BTreeSet<String>,
     /// The current generation's subscription ids and the keys each covers.
     subs: HashMap<String, Vec<String>>,
-    baselined: HashSet<String>,
+    watch: BTreeMap<String, Watch>,
 }
 
 type Forwarded = (usize, u64, RelayEvent);
@@ -305,9 +346,8 @@ async fn run(relay: Arc<Relay>, config: WatcherConfig, stats: watch::Sender<Stat
                 url,
                 pool: None,
                 epoch: 0,
-                keys: BTreeSet::new(),
                 subs: HashMap::new(),
-                baselined: HashSet::new(),
+                watch: BTreeMap::new(),
             })
             .collect(),
         seen: Seen::new(config.seen_cap),
@@ -411,7 +451,7 @@ impl State {
         let since = now_unix() as i64 - MAX_BACKDATE - SINCE_SLACK;
         let mut changed = 0;
         for (i, keys) in wanted.into_iter().enumerate() {
-            if !force && self.slots[i].keys == keys {
+            if !force && self.slots[i].watch.keys().eq(keys.iter()) {
                 continue;
             }
             if keys.is_empty() && self.slots[i].pool.is_none() {
@@ -440,8 +480,7 @@ impl State {
             let slot = &mut self.slots[i];
             slot.pool = None;
             slot.subs.clear();
-            slot.baselined.clear();
-            slot.keys.clear();
+            slot.watch.clear();
             return;
         }
         if self.slots[i].pool.is_none() {
@@ -490,13 +529,24 @@ impl State {
             pool.subscribe(&id, filters);
             slot.subs.insert(id, covered);
         }
-        slot.baselined.retain(|k| keys.contains(k));
-        slot.keys = keys;
+        let held = std::mem::take(&mut slot.watch);
+        slot.watch = keys
+            .into_iter()
+            .map(|k| {
+                let state = held.get(&k).copied().unwrap_or(Watch::Replaying);
+                (k, state)
+            })
+            .collect();
     }
 
     fn publish_counts(&self, watched: usize) {
         let relays = self.slots.iter().filter(|s| s.pool.is_some()).count();
-        let baselined = self.slots.iter().map(|s| s.baselined.len()).sum();
+        let baselined = self
+            .slots
+            .iter()
+            .flat_map(|s| s.watch.values())
+            .filter(|w| **w == Watch::Baselined)
+            .count();
         self.stats.send_modify(|s| {
             s.relays = relays;
             s.watched = watched;
@@ -515,12 +565,17 @@ impl State {
         match event {
             RelayEvent::EndOfStored { subscription, .. } => {
                 if let Some(keys) = slot.subs.get(&subscription) {
-                    let before = slot.baselined.len();
-                    slot.baselined.extend(keys.iter().cloned());
-                    if slot.baselined.len() != before {
+                    let mut fresh = 0;
+                    for key in keys {
+                        if let Some(state @ Watch::Replaying) = slot.watch.get_mut(key) {
+                            *state = Watch::Baselined;
+                            fresh += 1;
+                        }
+                    }
+                    if fresh > 0 {
                         tracing::debug!(
                             relay = %slot.url,
-                            keys = slot.baselined.len() - before,
+                            keys = fresh,
                             "DM watcher baselined"
                         );
                         let watched = self.stats.borrow().watched;
@@ -529,7 +584,7 @@ impl State {
                 }
                 Vec::new()
             }
-            RelayEvent::Event(event) => self.on_wrap(i, &event),
+            RelayEvent::Event { event, .. } => self.on_wrap(i, &event),
             RelayEvent::Connected(url) => {
                 tracing::debug!(relay = %url, "DM watcher connected");
                 Vec::new()
@@ -554,19 +609,8 @@ impl State {
             return Vec::new();
         };
         let now = now_unix() as i64;
-        let Some(prior) = self.seen.arrive(id, event.created_at, i, now) else {
-            return Vec::new();
-        };
-        // Only call signals carry one, and a ring needs a design of its own.
-        if event.tag("expiration").is_some() {
-            self.seen.close(&id);
-            return Vec::new();
-        }
-        // A copy this relay already sent is its replay; one another relay sent while
-        // still replaying is still news here, if it came moments ago.
-        if !prior.is_news(now) {
-            return Vec::new();
-        }
+        let prior = self.seen.arrive(id, event.created_at, i, now);
+        let call_signal = event.tag("expiration").is_some();
         let slot = &self.slots[i];
         let mut named: Vec<&str> = Vec::new();
         let mut pushing = 0u64;
@@ -582,10 +626,19 @@ impl State {
                 continue;
             }
             named.push(p);
-            let bit = 1u64 << n;
-            if prior.pushed & bit == 0 && slot.baselined.contains(p) {
-                pushing |= bit;
-                recipients.push(p);
+            let facts = Facts {
+                prior,
+                call_signal,
+                now,
+                watch: slot.watch.get(p).copied(),
+                recipient: 1u64 << n,
+            };
+            match check(&facts) {
+                Ok(()) => {
+                    pushing |= facts.recipient;
+                    recipients.push(p);
+                }
+                Err(skip) => tracing::trace!(id = short(&event.id), ?skip, "DM wrap not pushed"),
             }
         }
         if recipients.is_empty() {
@@ -667,9 +720,79 @@ mod tests {
         Some(Prior {
             on_this_relay: false,
             pushed: 0,
-            closed: false,
             first_at: now,
         })
+    }
+
+    /// Everything but the delivery's own history says push.
+    fn facts(prior: Option<Prior>, now: i64) -> Facts {
+        Facts {
+            prior,
+            call_signal: false,
+            now,
+            watch: Some(Watch::Baselined),
+            recipient: 0b10,
+        }
+    }
+
+    fn news(prior: Option<Prior>, now: i64) -> bool {
+        check(&facts(prior, now)).is_ok()
+    }
+
+    #[test]
+    fn each_rule_says_no_on_its_own_and_in_order() {
+        type Change = fn(&mut Facts);
+        let rows: [(&str, Change, Skip); 7] = [
+            ("1 forgotten", |f| f.prior = None, Skip::Forgotten),
+            (
+                "2 a call signal",
+                |f| f.call_signal = true,
+                Skip::CallSignal,
+            ),
+            (
+                "3 this relay's own replay",
+                |f| f.prior.as_mut().unwrap().on_this_relay = true,
+                Skip::Repeated,
+            ),
+            (
+                "4 a late copy",
+                |f| f.now = NOW + LATE_COPY_SECS,
+                Skip::LateCopy,
+            ),
+            (
+                "5 pushed to this key",
+                |f| f.prior.as_mut().unwrap().pushed = 0b11,
+                Skip::AlreadyPushed,
+            ),
+            ("6 not watched here", |f| f.watch = None, Skip::Unwatched),
+            (
+                "7 still replaying here",
+                |f| f.watch = Some(Watch::Replaying),
+                Skip::Replaying,
+            ),
+        ];
+        let pushes = facts(fresh(), NOW);
+        assert_eq!(check(&pushes), Ok(()));
+        let mut other = pushes;
+        other.prior.as_mut().unwrap().pushed = 0b01;
+        assert_eq!(check(&other), Ok(()), "pushed to another key only");
+        let mut moments = pushes;
+        moments.now = NOW + LATE_COPY_SECS - 1;
+        assert_eq!(check(&moments), Ok(()));
+        for (rule, change, skip) in rows {
+            let mut f = pushes;
+            change(&mut f);
+            assert_eq!(check(&f), Err(skip), "rule {rule}");
+        }
+        let mut everything = pushes;
+        everything.call_signal = true;
+        everything.watch = None;
+        everything.prior.as_mut().unwrap().on_this_relay = true;
+        assert_eq!(
+            check(&everything),
+            Err(Skip::CallSignal),
+            "the first rule wins"
+        );
     }
 
     #[test]
@@ -683,9 +806,6 @@ mod tests {
         seen.pushed(&id(1), 0b1);
         let third = seen.arrive(id(1), NOW - 100, 63, NOW).unwrap();
         assert_eq!((third.on_this_relay, third.pushed), (false, 0b1));
-        seen.arrive(id(2), NOW - 100, A, NOW);
-        seen.close(&id(2));
-        assert!(seen.arrive(id(2), NOW - 100, B, NOW).unwrap().closed);
     }
 
     #[test]
@@ -732,39 +852,28 @@ mod tests {
     #[test]
     fn another_relays_first_copy_is_news_only_soon_after_the_first_delivery() {
         let mut seen = Seen::new(10);
-        assert!(seen.arrive(id(1), NOW - 100, B, NOW).unwrap().is_news(NOW));
+        assert!(news(seen.arrive(id(1), NOW - 100, B, NOW), NOW));
         let seconds = NOW + 5;
         assert!(
-            seen.arrive(id(1), NOW - 100, A, seconds)
-                .unwrap()
-                .is_news(seconds),
+            news(seen.arrive(id(1), NOW - 100, A, seconds), seconds),
             "a copy moments behind is the lost-push case and still news"
         );
 
         seen.arrive(id(2), NOW - 100, B, NOW);
         let nine = NOW + 9 * 60;
-        assert!(
-            seen.arrive(id(2), NOW - 100, A, nine)
-                .unwrap()
-                .is_news(nine)
-        );
+        assert!(news(seen.arrive(id(2), NOW - 100, A, nine), nine));
 
         seen.arrive(id(3), NOW - 100, B, NOW);
         let eleven = NOW + 11 * 60;
-        let late = seen.arrive(id(3), NOW - 100, A, eleven).unwrap();
-        assert!(!late.is_news(eleven));
+        let late = seen.arrive(id(3), NOW - 100, A, eleven);
+        assert!(!news(late, eleven));
         assert_eq!(
-            (late.pushed, late.closed, late.first_at),
-            (0, false, NOW),
-            "not pushed, not closed, and the first delivery's time is kept"
+            late.map(|l| (l.pushed, l.first_at)),
+            Some((0, NOW)),
+            "not pushed, and the first delivery's time is kept"
         );
         let third = NOW + 12 * 60;
-        assert!(
-            !seen
-                .arrive(id(3), NOW - 100, 2, third)
-                .unwrap()
-                .is_news(third)
-        );
+        assert!(!news(seen.arrive(id(3), NOW - 100, 2, third), third));
         assert_eq!(seen.arrive(id(4), NOW - 100, A, eleven), fresh_at(eleven));
     }
 }

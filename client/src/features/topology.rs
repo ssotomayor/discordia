@@ -196,11 +196,11 @@ pub fn TopologyDialog(on_close: EventHandler<()>) -> Element {
     let origin = snapshot.server_origin.clone().unwrap_or_default();
     let rendezvous = snapshot.rendezvous_url.clone();
     let relays: Vec<String> = snapshot.nostr_relays_up.iter().cloned().collect();
-    let in_voice = snapshot.voice.channel_id.is_some();
+    let in_voice = snapshot.voice.channel_id().is_some();
     let voice_sealed = snapshot
         .voice
-        .channel_id
-        .is_some_and(|c| snapshot.media_keys.contains_key(&c));
+        .channel_id()
+        .is_some_and(|c| snapshot.media_key.held_for(c).is_some());
     drop(snapshot);
 
     let self_hosting = host.is_some();

@@ -281,7 +281,7 @@ pub fn SettingsDialog() -> Element {
                                         .filter(|l| !l.is_empty());
                                     settings.set(next.clone());
                                     crate::settings::save(&next);
-                                    if state.read().camera_on {
+                                    if state.read().camera.is_on() {
                                         crate::features::camera::toggle_camera(state, settings, &gw_camera, false);
                                         crate::features::camera::toggle_camera(state, settings, &gw_camera, true);
                                     }

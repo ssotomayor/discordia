@@ -6,7 +6,8 @@ use std::time::Instant;
 
 use chrono::Utc;
 use discordia_agent::{
-    AgentConfig, Harness, HarnessError, Ledger, Prompt, Reply, Role, Status, Turn, system_prompt,
+    AgentConfig, Harness, HarnessError, Ledger, Prompt, Reply, Role, Slot, Status, Turn,
+    system_prompt,
 };
 use secp256k1::SecretKey;
 use tokio::task::JoinSet;
@@ -62,10 +63,10 @@ pub async fn answer_dms<H: Harness + Clone>(
         }],
     );
 
-    let mut ledger = Ledger::new(config.limits.clone());
+    let ledger = Ledger::new(config.limits.clone());
     let mut history: HashMap<String, VecDeque<Turn>> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut replies: JoinSet<(String, String, Result<Reply, HarnessError>)> = JoinSet::new();
+    let mut replies: JoinSet<(String, String, Result<Reply, HarnessError>, Slot)> = JoinSet::new();
     let mut online = false;
     loop {
         tokio::select! {
@@ -76,7 +77,7 @@ pub async fn answer_dms<H: Harness + Clone>(
                         online = true;
                         report(Status::Online);
                     }
-                    RelayEvent::Event(gift) if gift.kind == nip59::KIND_GIFT_WRAP => {
+                    RelayEvent::Event { event: gift, .. } if gift.kind == nip59::KIND_GIFT_WRAP => {
                         let Ok(rumor) = nip59::unwrap(&secret, &gift) else { continue };
                         if rumor.kind != nip17::KIND_CHAT
                             || rumor.pubkey == me
@@ -90,28 +91,31 @@ pub async fn answer_dms<H: Harness + Clone>(
                         let turns = history.entry(msg.author.clone()).or_default();
                         remember(turns, Role::User, format!("{name}: {}", msg.content));
                         let today = Utc::now().date_naive();
-                        if let Err((refusal, notify)) = ledger.admit(&msg.author, None, Instant::now(), today) {
-                            if notify {
-                                send(&pool, &secret, &me, &msg.author, refusal.notice(), &msg.id);
+                        let slot = match ledger.admit(&msg.author, None, Instant::now(), today) {
+                            Ok(slot) => slot,
+                            Err((refusal, notify)) => {
+                                if notify {
+                                    send(&pool, &secret, &me, &msg.author, refusal.notice(), &msg.id);
+                                }
+                                continue;
                             }
-                            continue;
-                        }
+                        };
                         let prompt = Prompt {
                             system: system_prompt(&config),
                             turns: alternating(turns),
                         };
                         let (h, peer, id) = (harness.clone(), msg.author.clone(), msg.id.clone());
-                        replies.spawn(async move { (peer, id, h.reply(prompt).await) });
+                        replies.spawn(async move { (peer, id, h.reply(prompt).await, slot) });
                     }
                     _ => {}
                 }
             }
-            Some(Ok((peer, id, result))) = replies.join_next(), if !replies.is_empty() => {
+            Some(Ok((peer, id, result, slot))) = replies.join_next(), if !replies.is_empty() => {
                 let tokens = match &result {
                     Ok(r) => r.tokens,
                     Err(e) => e.tokens(),
                 };
-                ledger.finish(tokens, None, Utc::now().date_naive());
+                slot.finish(tokens, None, Utc::now().date_naive());
                 let text = match result {
                     Ok(r) => r.text,
                     Err(HarnessError::Refused { .. }) => "I can't help with that one.".to_string(),

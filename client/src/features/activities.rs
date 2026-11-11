@@ -10,7 +10,7 @@ use crate::protocol::{
     ActivityCapability, ActivityInstance, ActivityRole, ClientMessage, GuildActivity, Id,
     bundle_blob,
 };
-use crate::state::{AppState, ConnectionStatus, GatewayTx, use_app_state, use_gateway};
+use crate::state::{AppState, GatewayTx, ServerSession, use_app_state, use_gateway};
 
 /// The whole guild, not the open channel: a game started elsewhere must still
 /// be joinable, and pushes keep every visible channel current after this.
@@ -18,7 +18,7 @@ fn use_activity_instance_watch(state: Signal<AppState>, gateway: GatewayTx) {
     // Replies mutate AppState; subscribing to it directly would request another reply.
     let guild = use_memo(move || {
         let s = state.read();
-        (s.status == ConnectionStatus::Ready && !s.dm_mode)
+        (s.server_session() == ServerSession::Live && !s.dm_mode)
             .then_some(s.selected_guild)
             .flatten()
     });
@@ -1560,6 +1560,7 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ConnectionStatus;
 
     #[tokio::test]
     async fn failed_window_reopens_picker_and_leaves_shared_instance() {

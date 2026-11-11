@@ -265,6 +265,7 @@ pub fn merge(
     if outcome == Outcome::Missed {
         entry.expired = true;
     }
+    let mut withdrawn = false;
     if outcome == Outcome::Missed
         && entry.record.callee == account
         && state.dm_standing(&peer) == DmStanding::Inbox
@@ -276,31 +277,21 @@ pub fn merge(
         };
         if let Some(previous) = entry.missed_at {
             if missed_at < previous {
-                if state
-                    .dm_read_at
-                    .get(&peer)
-                    .is_some_and(|read| missed_at <= *read && *read < previous)
-                    && let Some(unread) = state.dm_unread.get_mut(&cid)
-                {
-                    *unread = unread.saturating_sub(1);
-                }
                 entry.missed_at = Some(missed_at);
+                withdrawn = true;
             }
         } else {
             entry.missed_at = Some(missed_at);
             state.note_dm_arrival(cid, &peer, missed_at);
         }
-    } else if outcome > Outcome::Missed
-        && let Some(missed_at) = entry.missed_at.take()
-        && state
-            .dm_read_at
-            .get(&peer)
-            .is_none_or(|read| missed_at > *read)
-        && let Some(unread) = state.dm_unread.get_mut(&cid)
-    {
-        *unread = unread.saturating_sub(1);
+    } else if outcome > Outcome::Missed {
+        withdrawn = entry.missed_at.take().is_some();
     }
     state.dm_call_history.insert(id, entry);
+    // A missed call moved under the read mark, or answered after all, may no longer count.
+    if withdrawn {
+        state.change_dm_unread(cid, crate::state::UnreadChange::Settle);
+    }
 }
 
 pub fn next_expiry(state: &crate::state::AppState) -> Option<i64> {
@@ -439,15 +430,24 @@ mod tests {
         event.tags.push(vec![TAG.into(), "{}".into()]);
         assert!(open(&record.callee, &event).is_err());
     }
+    fn unread(state: &crate::state::AppState) -> u32 {
+        state
+            .dms
+            .iter()
+            .map(|dm| state.dm_unread(dm.channel_id))
+            .sum()
+    }
+
     fn inbox(record: &Record, account: &str) -> crate::state::AppState {
         let mut state = crate::state::AppState::empty();
         state.self_user = Some(crate::protocol::User {
             pubkey: account.into(),
             username: String::new(),
         });
-        state
-            .dm_accepted
-            .insert(record.peer(account).unwrap().into());
+        state.choose_dm(
+            record.peer(account).unwrap(),
+            Some(crate::state::DmChoice::Accepted),
+        );
         state
     }
 
@@ -466,7 +466,7 @@ mod tests {
         }
         let cid = super::super::service::conversation_id(&record.caller);
         assert_eq!(state.messages[&cid].len(), 1);
-        assert_eq!(state.dm_unread[&cid], 1);
+        assert_eq!(state.dm_unread(cid), 1);
         state.mark_dm_read(cid);
         assert_eq!(state.dm_read_at[&record.caller], 145);
         state.dm_call_history.clear();
@@ -478,7 +478,7 @@ mod tests {
             &record.caller,
             145,
         );
-        assert!(state.dm_unread.is_empty());
+        assert_eq!(unread(&state), 0);
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(state.dm_call_history[&missed.id()].record, answered);
         let cid = super::super::service::conversation_id(&missed.caller);
         assert_eq!(state.messages[&cid].len(), 1);
-        assert_eq!(state.dm_unread[&cid], 0);
+        assert_eq!(state.dm_unread(cid), 0);
     }
 
     #[test]
@@ -564,11 +564,11 @@ mod tests {
         );
         assert_eq!(next_expiry(&state), Some(145));
         expire(&mut state, &started.callee, 144);
-        assert!(state.dm_unread.is_empty());
+        assert_eq!(unread(&state), 0);
         expire(&mut state, &started.callee, 145);
         expire(&mut state, &started.callee, 146);
         assert_eq!(next_expiry(&state), None);
-        assert_eq!(state.dm_unread.values().sum::<u32>(), 1);
+        assert_eq!(unread(&state), 1);
         let failed = Record {
             outcome: Outcome::Failed,
             ..started.clone()
@@ -580,7 +580,7 @@ mod tests {
             &started.caller,
             147,
         );
-        assert_eq!(state.dm_unread.values().sum::<u32>(), 0);
+        assert_eq!(unread(&state), 0);
         assert_eq!(
             state.dm_call_history[&started.id()].outcome(200, 0),
             Outcome::Failed
@@ -602,7 +602,7 @@ mod tests {
             &started.caller,
             1000,
         );
-        assert!(state.dm_unread.is_empty());
+        assert_eq!(unread(&state), 0);
         assert_eq!(state.dm_call_history[&started.id()].missed_at, Some(145));
     }
 
@@ -624,7 +624,7 @@ mod tests {
         };
         merge(&mut state, &record.callee, forged, &record.callee, 145);
         assert_eq!(state.dm_call_history[&record.id()].record, record);
-        state.dm_accepted.clear();
+        state.choose_dm(&record.caller, None);
         state.mutes = state.mutes.with(&record.caller);
         state.dm_call_history.clear();
         state.messages.clear();
@@ -667,7 +667,7 @@ mod tests {
             &started.caller,
             1000,
         );
-        assert_eq!(state.dm_unread.values().sum::<u32>(), 1);
+        assert_eq!(unread(&state), 1);
         let missed = Record {
             outcome: Outcome::Missed,
             ..started.clone()
@@ -679,7 +679,7 @@ mod tests {
             &started.caller,
             110,
         );
-        assert_eq!(state.dm_unread.values().sum::<u32>(), 0);
+        assert_eq!(unread(&state), 0);
         assert_eq!(state.dm_call_history[&started.id()].missed_at, Some(110));
     }
     #[test]
@@ -690,7 +690,13 @@ mod tests {
         };
         let mut state = inbox(&started, &started.caller);
         let cid = super::super::service::conversation_id(&started.callee);
-        state.dm_unread.insert(cid, 2);
+        state.dms.push(crate::state::DmInfo {
+            channel_id: cid,
+            other_pubkey: started.callee.clone(),
+        });
+        for _ in 0..2 {
+            state.change_dm_unread(cid, crate::state::UnreadChange::Arrived);
+        }
         merge(
             &mut state,
             &started.caller,
@@ -705,7 +711,7 @@ mod tests {
             ..started.clone()
         };
         merge(&mut state, &started.caller, answered, &started.callee, 146);
-        assert_eq!(state.dm_unread[&cid], 2);
+        assert_eq!(state.dm_unread(cid), 2);
     }
 
     #[test]
@@ -734,7 +740,7 @@ mod tests {
     fn history_received_before_contacts_replay_is_retained_without_ringing() {
         let record = record();
         let mut state = inbox(&record, &record.callee);
-        state.dm_accepted.clear();
+        state.choose_dm(&record.caller, None);
         merge(
             &mut state,
             &record.callee,
@@ -742,12 +748,12 @@ mod tests {
             &record.caller,
             145,
         );
-        assert!(state.dm_unread.is_empty());
+        assert_eq!(unread(&state), 0);
         assert_eq!(state.dm_notify_tick, 0);
         assert_eq!(next_expiry(&state), None);
-        state.dm_accepted.insert(record.caller.clone());
+        state.choose_dm(&record.caller, Some(crate::state::DmChoice::Accepted));
         reconcile(&mut state, &record.callee, 145);
-        assert_eq!(state.dm_unread.values().sum::<u32>(), 1);
+        assert_eq!(unread(&state), 1);
         let cid = super::super::service::conversation_id(&record.caller);
         assert_eq!(state.messages[&cid].len(), 1);
     }
