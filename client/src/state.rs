@@ -404,6 +404,8 @@ pub struct AppState {
     pub dm_edit_versions: HashMap<Id, (i64, String)>,
     pub pending_dm_deletions: HashSet<(String, String)>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
+    /// `nostr::outbox::Outbox::pending`, for the composer's cap.
+    pub dm_pending: usize,
     pub dm_images: HashMap<Id, crate::nostr::dm_image::Image>,
     pub dm_call_history: HashMap<Id, crate::nostr::call_history::Entry>,
     /// Edits shown before the server answered; its `MessageUpdate` settles each.
@@ -665,6 +667,7 @@ impl AppState {
             dm_edit_versions: HashMap::new(),
             pending_dm_deletions: HashSet::new(),
             dm_delivery: HashMap::new(),
+            dm_pending: 0,
             dm_images: HashMap::new(),
             dm_call_history: HashMap::new(),
             pending_edits: HashSet::new(),
