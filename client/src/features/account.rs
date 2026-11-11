@@ -4,7 +4,7 @@ use crate::identity::Identity;
 use crate::protocol::Id;
 use crate::session::SavedSession;
 use crate::settings::ClientSettings;
-use crate::state::{AppState, SessionParams};
+use crate::state::{AppState, ConnectionStatus, SessionParams};
 
 #[derive(Clone, Copy)]
 pub(super) struct RenameAccount(pub Callback<String, Result<(), String>>);
@@ -256,6 +256,14 @@ pub fn AccountView(
     crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
     let mut fallback = use_signal(|| None::<Fallback>);
+    // Armed by a switch, disarmed once the new server lets us in: only a server
+    // that never did is undone.
+    let admitted = use_memo(move || state.read().status == ConnectionStatus::Ready);
+    use_effect(move || {
+        if admitted() && fallback.peek().is_some() {
+            fallback.set(None);
+        }
+    });
     rsx! {
         super::sounds::MessageSounds {}
         super::dm_call::CallAlert {}
@@ -329,7 +337,6 @@ fn undo_switch<T>(back: Option<T>, got_in: bool, reason: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::ConnectionStatus;
 
     #[test]
     fn a_switch_is_undone_only_when_the_new_server_never_let_us_in() {

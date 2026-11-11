@@ -30,6 +30,18 @@ pub struct Switch {
     stage: Stage,
 }
 
+#[cfg(test)]
+impl Switch {
+    pub(crate) fn to(server: KnownServer) -> Self {
+        Switch {
+            server,
+            guild: None,
+            voice_invite: None,
+            stage: Stage::Checking,
+        }
+    }
+}
+
 /// The servers beside the connected one. Lives in `WorkspaceView`, so it is
 /// re-read from disk on every session and never outlives one.
 #[derive(Clone, Copy)]

@@ -140,12 +140,51 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 /// Leaving a session in two beats: ask first when this machine is the host,
 /// then tear the media down before the views that own it are unmounted.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Leaving {
-    /// Waiting on the host's answer. Carries the reason it would leave with.
-    Confirm(String),
-    /// Shutting the media down; `on_disconnect` fires when it is finished.
-    Running(String),
+    /// Waiting on the host's answer before stopping the server here.
+    Confirm,
+    /// Shutting the media down; where the session goes once that is finished.
+    Running(Then),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Then {
+    /// Home, through `on_disconnect`; a non-empty reason is shown there.
+    Home(String),
+    Switch(Box<super::server_rail::Switch>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum LeaveRequest {
+    /// The person pressed Disconnect or Back.
+    Asked,
+    /// The gateway ended the session, with its report.
+    Lost(String),
+    Quit,
+    Switch(Box<super::server_rail::Switch>),
+    /// The host's answer to the confirmation.
+    Confirmed,
+    Stay,
+}
+
+/// What a request to leave does in each state. A lost connection skips the
+/// host's confirmation because the session has already ended.
+fn leave_step(current: Option<Leaving>, request: LeaveRequest, hosting: bool) -> Option<Leaving> {
+    use LeaveRequest::*;
+    let home = |reason| Some(Leaving::Running(Then::Home(reason)));
+    match (current, request) {
+        (None, Asked) if hosting => Some(Leaving::Confirm),
+        (None, Asked) => home(String::new()),
+        (None | Some(Leaving::Confirm), Lost(reason)) => home(reason),
+        (None | Some(Leaving::Confirm), Quit) => home(String::new()),
+        (Some(Leaving::Confirm), Confirmed) => home(String::new()),
+        (Some(Leaving::Confirm), Stay) => None,
+        (None, Switch(target)) => Some(Leaving::Running(Then::Switch(target))),
+        // The teardown under way ends at Home instead of dialing a server only to quit it.
+        (Some(Leaving::Running(Then::Switch(_))), Quit) => home(String::new()),
+        (unchanged, _) => unchanged,
+    }
 }
 
 /// A cap on the teardown, so a wedged webview or SFU cannot trap the session.
@@ -328,43 +367,30 @@ pub fn WorkspaceView(
     use_effect(move || state.write().dm_pane_open = true);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
-    // Set only once the switch is confirmed; the teardown below then ends in
-    // `on_switch` instead of `on_disconnect`.
-    let mut switch_to = use_signal(|| None::<super::server_rail::Switch>);
+    let leave = move |request: LeaveRequest| {
+        let mut leaving = leaving;
+        let hosting = state.peek().host_info.is_some();
+        let next = leave_step(leaving.peek().clone(), request, hosting);
+        if *leaving.peek() != next {
+            leaving.set(next);
+        }
+    };
     let quitting = use_context::<crate::app::QuitRequest>().0;
     use_effect(move || {
-        if quitting() && !matches!(*leaving.peek(), Some(Leaving::Running(_))) {
-            let mut leaving = leaving;
-            leaving.set(Some(Leaving::Running(String::new())));
+        if quitting() {
+            leave(LeaveRequest::Quit);
         }
     });
 
-    // Media outlives this component. A lost connection bypasses the host's
-    // confirmation because the session has already ended.
-    let leave = move |reason: String| {
-        let mut leaving = leaving;
-        let asked = matches!(*leaving.peek(), Some(Leaving::Confirm(_)));
-        let idle = leaving.peek().is_none();
-        if !(idle || (asked && !reason.is_empty())) {
-            return;
-        }
-        let hosting = state.peek().host_info.is_some();
-        leaving.set(Some(if hosting && reason.is_empty() {
-            Leaving::Confirm(reason)
-        } else {
-            Leaving::Running(reason)
-        }));
-    };
-
     crate::mobile_back::use_handler(crate::mobile_back::SCREEN, true, move |_| {
-        leave(String::new())
+        leave(LeaveRequest::Asked)
     });
 
     let (gateway_tx, gateway_shutdown, voice_tx) = use_hook(|| {
         let voice_tx = spawn_voice_service(state);
         let (gateway_tx, gateway_shutdown) =
             spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
-                leave(reason);
+                leave(LeaveRequest::Lost(reason));
             });
         (gateway_tx, gateway_shutdown, voice_tx)
     });
@@ -477,10 +503,12 @@ pub fn WorkspaceView(
     // handshake before quitting can destroy the transport.
     let leave_voice = voice_tx.clone();
     let leave_gateway = gateway_tx.clone();
+    // Only the step into Running starts a teardown; a quit that redirects it must not start another.
+    let tearing_down = use_memo(move || matches!(leaving(), Some(Leaving::Running(_))));
     use_effect(move || {
-        let Some(Leaving::Running(reason)) = leaving() else {
+        if !tearing_down() {
             return;
-        };
+        }
         let voice_tx = leave_voice.clone();
         let gateway_shutdown = gateway_shutdown.clone();
         leave_gateway.send(ClientMessage::LeaveVoice);
@@ -504,9 +532,10 @@ pub fn WorkspaceView(
             {
                 tracing::warn!("gateway teardown timed out; leaving anyway");
             }
-            match switch_to.peek().clone() {
-                Some(target) => on_switch.call(target),
-                None => on_disconnect.call(reason),
+            match leaving.peek().clone() {
+                Some(Leaving::Running(Then::Switch(target))) => on_switch.call(*target),
+                Some(Leaving::Running(Then::Home(reason))) => on_disconnect.call(reason),
+                _ => {}
             }
         });
     });
@@ -628,14 +657,20 @@ pub fn WorkspaceView(
                 }
             }
             match leaving() {
-                Some(Leaving::Confirm(_)) => rsx! { StopHostingDialog { leaving } },
-                Some(Leaving::Running(_)) => rsx! {
+                Some(Leaving::Confirm) => rsx! {
+                    StopHostingDialog {
+                        on_answer: move |stop: bool| {
+                            leave(if stop { LeaveRequest::Confirmed } else { LeaveRequest::Stay })
+                        },
+                    }
+                },
+                Some(Leaving::Running(then)) => rsx! {
                     div {
                         class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                         div { class: "text-sm text-[var(--text-muted)]",
-                            match switch_to() {
-                                Some(target) => rsx! { {crate::i18n::text("Switching to {0}…", &[(target . server . label ()).to_string()])} },
-                                None => rsx! { {crate::i18n::text("Disconnecting…", &[])} },
+                            match then {
+                                Then::Switch(target) => rsx! { {crate::i18n::text("Switching to {0}…", &[(target . server . label ()).to_string()])} },
+                                Then::Home(_) => rsx! { {crate::i18n::text("Disconnecting…", &[])} },
                             }
                         }
                     }
@@ -643,13 +678,7 @@ pub fn WorkspaceView(
                 None => rsx! {
                     // The host's own confirmation is the rail's dialog, not StopHostingDialog.
                     super::server_rail::SwitchHost {
-                        on_go: move |target| {
-                            let mut leaving = leaving;
-                            if leaving.peek().is_none() {
-                                switch_to.set(Some(target));
-                                leaving.set(Some(Leaving::Running(String::new())));
-                            }
-                        },
+                        on_go: move |target| leave(LeaveRequest::Switch(Box::new(target))),
                     }
                     super::server_rail::AddServerDialog {}
                 },
@@ -693,7 +722,7 @@ pub fn WorkspaceView(
             crate::features::guilds::RulesPromptDialog {}
 
             if cfg!(target_os = "android") {
-                MobileMenu { open: menu_open, on_disconnect: move |_| leave(String::new()) }
+                MobileMenu { open: menu_open, on_disconnect: move |_| leave(LeaveRequest::Asked) }
             } else {
                 div { class: "dxf-workspace-header dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                     onmousedown: move |_| crate::app::start_window_drag(),
@@ -719,7 +748,7 @@ pub fn WorkspaceView(
                             class: "dxf-server-disconnect h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                             title: crate::i18n::text("Disconnect from this server", &[]),
                             aria_label: crate::i18n::text("Disconnect from this server", &[]),
-                            onclick: move |_| leave(String::new()),
+                            onclick: move |_| leave(LeaveRequest::Asked),
                             span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
                             span { class: "dxf-disconnect-label", {crate::i18n::text("Disconnect", &[])} }
                         }
@@ -1182,9 +1211,8 @@ pub(crate) fn others_connected(s: &crate::state::AppState) -> usize {
 /// what "and everyone in them" means here — the member list also carries people
 /// who are merely members and already offline.
 #[component]
-fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
+fn StopHostingDialog(on_answer: EventHandler<bool>) -> Element {
     let state = use_app_state();
-    let mut leaving = leaving;
 
     let (guilds, others) = {
         let s = state.read();
@@ -1204,8 +1232,8 @@ fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
         ),
     };
 
-    let cancel = move |_| leaving.set(None);
-    let confirm = move |_| leaving.set(Some(Leaving::Running(String::new())));
+    let cancel = move |_| on_answer.call(false);
+    let confirm = move |_| on_answer.call(true);
 
     rsx! {
         div {
@@ -1930,6 +1958,54 @@ mod rail_layout_tests {
         for id in ["channels", "chat", "members"] {
             let panel = of(&back, id);
             assert!(panel.y.abs() < 1e-6 && (panel.h - 1.0).abs() < 1e-6, "{id}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod leave_tests {
+    use super::*;
+    use LeaveRequest::*;
+
+    fn switch(host: &str) -> Box<super::super::server_rail::Switch> {
+        Box::new(super::super::server_rail::Switch::to(
+            crate::known_servers::KnownServer::new(crate::state::SessionMode::Remote {
+                server_url: format!("wss://{host}.example"),
+            }),
+        ))
+    }
+
+    #[test]
+    fn what_a_leave_request_does_in_each_state() {
+        let confirm = || Some(Leaving::Confirm);
+        let home = |reason: &str| Some(Leaving::Running(Then::Home(reason.into())));
+        let going = |host| Some(Leaving::Running(Then::Switch(switch(host))));
+        let table = [
+            (None, Asked, false, home("")),
+            (None, Asked, true, confirm()),
+            (None, Lost("gone".into()), true, home("gone")),
+            (None, Quit, true, home("")),
+            (None, Switch(switch("b")), true, going("b")),
+            (None, Confirmed, true, None),
+            (None, Stay, true, None),
+            (confirm(), Asked, true, confirm()),
+            (confirm(), Lost("gone".into()), true, home("gone")),
+            (confirm(), Quit, true, home("")),
+            (confirm(), Confirmed, true, home("")),
+            (confirm(), Stay, true, None),
+            (confirm(), Switch(switch("b")), true, confirm()),
+            (home(""), Asked, true, home("")),
+            (home(""), Lost("closed".into()), true, home("")),
+            (home("gone"), Quit, true, home("gone")),
+            (home(""), Switch(switch("b")), false, home("")),
+            (going("b"), Lost("closed".into()), false, going("b")),
+            (going("b"), Asked, false, going("b")),
+            (going("b"), Switch(switch("c")), false, going("b")),
+            (going("b"), Quit, false, home("")),
+        ];
+        for (from, request, hosting, to) in table {
+            let label = format!("{from:?} + {request:?} (hosting: {hosting})");
+            assert_eq!(leave_step(from, request, hosting), to, "{label}");
         }
     }
 }
