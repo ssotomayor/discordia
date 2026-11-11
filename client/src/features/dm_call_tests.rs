@@ -30,11 +30,35 @@ fn harness(
             outgoing,
             records: unbounded_channel().0,
             tx,
+            handoff: Default::default(),
             session: None,
             finished: HashMap::new(),
         };
         test(&mut actor, &mut output);
     });
+}
+
+fn expire(actor: &mut Actor) {
+    let session = actor.session.as_mut().unwrap();
+    session.stage = match session.stage {
+        Stage::Incoming { .. } => Stage::Incoming {
+            deadline: Instant::now(),
+        },
+        Stage::Ringing { .. } => Stage::Ringing {
+            deadline: Instant::now(),
+        },
+        Stage::Switching { handoff, .. } => Stage::Switching {
+            deadline: Instant::now(),
+            handoff,
+        },
+        Stage::Connecting { step, .. } => Stage::Connecting {
+            deadline: Instant::now(),
+            step,
+        },
+        Stage::Connected | Stage::Reconnecting { .. } => Stage::Reconnecting {
+            deadline: Instant::now(),
+        },
+    };
 }
 
 fn incoming(id: Uuid, device: Uuid, body: Body) -> Incoming {
@@ -84,7 +108,10 @@ fn incoming_uses_learned_sender_clock_without_accepting_expired_calls() {
             actor.state.write().note_clock_offset(&event.author, offset);
             event.signal.sent_at += offset;
             actor.incoming(event);
-            assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Incoming);
+            assert_eq!(
+                actor.session.as_ref().unwrap().stage.phase(),
+                Phase::Incoming
+            );
         });
         harness(|actor, _| {
             let mut event = incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite);
@@ -130,15 +157,18 @@ fn incoming_requires_consent_and_duplicate_invites_do_not_extend_deadline() {
         let id = Uuid::new_v4();
         let device = Uuid::new_v4();
         actor.incoming(incoming(id, device, Body::Invite));
-        assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Incoming);
-        assert!(actor.session.as_ref().unwrap().audio.is_none());
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Incoming
+        );
+        assert!(actor.session.as_ref().unwrap().media.is_none());
         assert!(output.try_recv().is_err());
-        let deadline = actor.session.as_ref().unwrap().deadline;
+        let deadline = actor.session.as_ref().unwrap().stage.deadline();
         actor.incoming(incoming(id, device, Body::Invite));
-        assert_eq!(actor.session.as_ref().unwrap().deadline, deadline);
+        assert_eq!(actor.session.as_ref().unwrap().stage.deadline(), deadline);
         actor.action(Action::Accept);
         assert_eq!(output.try_recv().unwrap().1.body, Body::Accept);
-        assert!(actor.session.as_ref().unwrap().audio.is_none());
+        assert!(actor.session.as_ref().unwrap().media.is_none());
     });
 }
 
@@ -224,6 +254,7 @@ fn cancellation_and_decline_dismiss_both_peers_and_replayed_invites() {
             outgoing,
             records: unbounded_channel().0,
             tx: actor.tx.clone(),
+            handoff: Default::default(),
             session: None,
             finished: HashMap::new(),
         };
@@ -314,7 +345,10 @@ fn incoming_call_rings_while_in_guild_but_starting_outgoing_is_still_blocked() {
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
         actor.tick();
-        assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Incoming);
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Incoming
+        );
         assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Connected);
         assert!(output.try_recv().is_err());
         actor.action(Action::End);
@@ -327,7 +361,7 @@ fn incoming_call_rings_while_in_guild_but_starting_outgoing_is_still_blocked() {
         );
         actor.state.write().voice.force_phase(VoicePhase::Idle);
         actor.action(Action::Start("22".repeat(32)));
-        actor.session.as_mut().unwrap().deadline = Some(Instant::now());
+        expire(actor);
         actor.tick();
         assert!(actor.session.is_none());
         assert!(actor.state.peek().dm_call.is_none());
@@ -340,16 +374,25 @@ fn accepting_waits_for_handoff_and_duplicate_accept_does_not_restart_it() {
         actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
-        assert_eq!(actor.prepare_handoff(), Some(id));
-        assert_eq!(actor.prepare_handoff(), None);
+        assert!(!actor.press_accept());
+        let switching = actor.session.as_ref().unwrap().stage;
+        assert!(switching.job().is_some());
+        assert!(!actor.press_accept());
+        assert_eq!(actor.session.as_ref().unwrap().stage, switching);
         actor.tick();
-        assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Switching);
-        assert!(actor.session.as_ref().unwrap().audio.is_none());
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Switching
+        );
+        assert!(actor.session.as_ref().unwrap().media.is_none());
         assert!(output.try_recv().is_err());
         actor.state.write().end_voice_locally();
         assert!(actor.complete_handoff(id, Ok(())));
         actor.action(Action::Accept);
-        assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Connecting);
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Connecting
+        );
         assert_eq!(output.try_recv().unwrap().1.body, Body::Accept);
     });
 }
@@ -357,10 +400,11 @@ fn accepting_waits_for_handoff_and_duplicate_accept_does_not_restart_it() {
 #[test]
 fn cancelled_replaced_failed_or_expired_handoffs_cannot_accept() {
     harness(|actor, output| {
+        actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         let device = Uuid::new_v4();
         actor.incoming(incoming(id, device, Body::Invite));
-        actor.prepare_handoff();
+        actor.press_accept();
         actor.incoming(incoming(
             id,
             device,
@@ -371,7 +415,7 @@ fn cancelled_replaced_failed_or_expired_handoffs_cannot_accept() {
         assert!(!actor.complete_handoff(id, Ok(())));
         let next = Uuid::new_v4();
         actor.incoming(incoming(next, device, Body::Invite));
-        actor.prepare_handoff();
+        actor.press_accept();
         assert!(!actor.complete_handoff(id, Ok(())));
         assert_eq!(actor.session.as_ref().unwrap().id, next);
         assert!(output.try_recv().is_err());
@@ -384,8 +428,8 @@ fn cancelled_replaced_failed_or_expired_handoffs_cannot_accept() {
         );
         let expired = Uuid::new_v4();
         actor.incoming(incoming(expired, device, Body::Invite));
-        actor.prepare_handoff();
-        actor.session.as_mut().unwrap().deadline = Some(Instant::now());
+        actor.press_accept();
+        expire(actor);
         assert!(!actor.complete_handoff(expired, Ok(())));
         assert_eq!(
             output.try_recv().unwrap().1.body,
@@ -402,7 +446,7 @@ fn handoff_completion_refuses_a_still_active_guild_call() {
         actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
-        actor.prepare_handoff();
+        actor.press_accept();
         assert!(!actor.complete_handoff(id, Ok(())));
         assert_eq!(
             output.try_recv().unwrap().1.body,
@@ -449,7 +493,10 @@ fn simultaneous_calls_have_a_deterministic_winner() {
         let winning_id = Uuid::new_v4();
         actor.incoming(incoming(winning_id, Uuid::new_v4(), Body::Invite));
         assert_eq!(actor.session.as_ref().unwrap().id, winning_id);
-        assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Incoming);
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Incoming
+        );
         let messages: Vec<_> = std::iter::from_fn(|| output.try_recv().ok()).collect();
         assert!(
             messages.iter().any(|(_, message)| message.call_id == old_id
@@ -461,7 +508,10 @@ fn simultaneous_calls_have_a_deterministic_winner() {
         let winning_id = actor.session.as_ref().unwrap().id;
         actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
         assert_eq!(actor.session.as_ref().unwrap().id, winning_id);
-        assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Ringing);
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Ringing
+        );
         assert_eq!(output.try_recv().unwrap().1.body, Body::Invite);
         assert_eq!(
             output.try_recv().unwrap().1.body,
@@ -693,11 +743,12 @@ fn unanswered_outgoing_call_emits_one_durable_missed_outcome() {
         let started = output.try_recv().unwrap();
         assert_eq!(started.outcome, Outcome::Started);
         assert_eq!(signals.try_recv().unwrap().1.sent_at, started.started_at);
-        actor.finish(EndReason::Timeout, None);
+        expire(actor);
+        actor.tick();
         let missed = output.try_recv().unwrap();
         assert_eq!(missed.outcome, Outcome::Missed);
         assert_eq!(started.id(), missed.id());
-        actor.finish(EndReason::Timeout, None);
+        actor.tick();
         assert!(output.try_recv().is_err());
     });
 }
@@ -721,7 +772,9 @@ fn rejecting_or_accepting_an_incoming_call_is_never_published_as_missed() {
                 }
             );
             if accept {
-                actor.finish(EndReason::Timeout, None);
+                expire(actor);
+                actor.tick();
+                assert!(actor.session.is_none());
             }
             assert!(output.try_recv().is_err());
         });
@@ -736,7 +789,7 @@ fn failed_signaling_ends_with_a_failure_record_instead_of_a_missed_call() {
         actor.records = records;
         actor.action(Action::Start("22".repeat(32)));
         assert_eq!(output.try_recv().unwrap().outcome, Outcome::Started);
-        actor.finish(EndReason::Failed, None);
+        actor.handle(Event::Unpublished);
         assert_eq!(output.try_recv().unwrap().outcome, Outcome::Failed);
         assert!(output.try_recv().is_err());
     });
@@ -747,7 +800,7 @@ fn unanswered_incoming_call_keeps_the_existing_voice_channel() {
     harness(|actor, output| {
         actor.state.write().voice.force_phase(VoicePhase::Connected);
         actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
-        actor.session.as_mut().unwrap().deadline = Some(Instant::now());
+        expire(actor);
         actor.tick();
         assert!(actor.session.is_none());
         assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Connected);
@@ -766,7 +819,11 @@ fn ending_private_call_during_handoff_does_not_rejoin_or_accept_it_later() {
         actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
-        assert_eq!(actor.prepare_handoff(), Some(id));
+        assert!(!actor.press_accept());
+        assert_eq!(
+            actor.session.as_ref().unwrap().stage.phase(),
+            Phase::Switching
+        );
         actor.state.write().end_voice_locally();
         actor.action(Action::End);
         assert!(actor.session.is_none());

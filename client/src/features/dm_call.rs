@@ -19,6 +19,10 @@ use uuid::Uuid;
 
 use crate::nostr::calls::{Body, EndReason, Signal as CallSignal};
 use crate::state::{AppState, VoicePhase, use_app_state};
+use stage::{Effect, Event, Job, Next, Stage, Transition};
+
+#[path = "dm_call_stage.rs"]
+mod stage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -92,28 +96,40 @@ struct Session {
     started_at: i64,
     peer: String,
     remote_device: Option<Uuid>,
-    phase: Phase,
-    deadline: Option<Instant>,
-    connection: Option<PeerConnection>,
-    audio: Option<super::voice::direct::Audio>,
-    job: Option<Task>,
-    remote_answer_set: bool,
+    stage: Stage,
+    media: Option<Media>,
     #[cfg(target_os = "android")]
     _background_call: Option<crate::android::BackgroundCall>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if let Some(job) = self.job.take() {
+        if let Some(job) = self.stage.job() {
             job.cancel();
         }
-        self.audio.take();
-        if let Some(connection) = self.connection.take() {
-            connection.on_track(None);
-            connection.on_connection_state_change(None);
-            connection.close();
-        }
     }
+}
+
+struct Media {
+    connection: PeerConnection,
+    audio: Option<super::voice::direct::Audio>,
+}
+
+impl Drop for Media {
+    fn drop(&mut self) {
+        self.audio.take();
+        self.connection.on_track(None);
+        self.connection.on_connection_state_change(None);
+        self.connection.close();
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handled {
+    Refused,
+    Applied,
+    /// Applied, and the call is to be answered once the voice service is ready.
+    Answer,
 }
 
 pub fn spawn_service(
@@ -133,6 +149,7 @@ pub fn spawn_service(
             outgoing,
             records,
             tx: service_tx,
+            handoff,
             session: None,
             finished: HashMap::new(),
         };
@@ -141,23 +158,12 @@ pub fn spawn_service(
         loop {
             tokio::select! {
                 command = rx.recv() => match command {
-                    Some(Command::Action(action)) => {
-                        if matches!(action, Action::Accept) && actor.session.as_ref().is_some_and(|s| s.phase == Phase::Switching) { continue; }
-                        if matches!(action, Action::Accept) && guild_busy(&actor.state.peek()) {
-                            if let Some(call_id) = actor.prepare_handoff() {
-                                let bridge = handoff.clone();
-                                let state = actor.state;
-                                let tx = actor.tx.clone();
-                                let job = crate::service_task::spawn(async move {
-                                    let result = bridge.leave(state).await;
-                                    let _ = tx.send(Command::HandoffReady { call_id, result });
-                                });
-                                if let Some(session) = &mut actor.session { session.job = Some(job); }
-                            }
-                        } else {
-                            actor.perform_action(action).await;
+                    Some(Command::Action(Action::Accept)) => {
+                        if actor.press_accept() {
+                            actor.perform_action(Action::Accept).await;
                         }
                     },
+                    Some(Command::Action(action)) => actor.perform_action(action).await,
                     Some(Command::HandoffReady { call_id, result }) => {
                         if actor.complete_handoff(call_id, result) {
                             actor.perform_action(Action::Accept).await;
@@ -165,7 +171,9 @@ pub fn spawn_service(
                     },
                     Some(Command::Incoming(incoming)) => actor.incoming(incoming),
                     Some(Command::Native { call_id, event }) => actor.native(call_id, event),
-                    Some(Command::Published { call_id, accepted: false }) if actor.session.as_ref().is_some_and(|s| s.id == call_id) => actor.finish(EndReason::Failed, Some("The call signal could not reach a relay.")),
+                    Some(Command::Published { call_id, accepted: false }) if actor.session.as_ref().is_some_and(|s| s.id == call_id) => {
+                        actor.handle(Event::Unpublished);
+                    },
                     Some(Command::Published { .. }) => {},
                     None => break,
                 },
@@ -183,6 +191,7 @@ struct Actor {
     outgoing: UnboundedSender<(String, CallSignal)>,
     records: UnboundedSender<crate::nostr::call_history::Record>,
     tx: UnboundedSender<Command>,
+    handoff: crate::voice_handoff::Bridge,
     session: Option<Session>,
     finished: HashMap<(String, Uuid), Instant>,
 }
@@ -197,13 +206,96 @@ fn guild_busy(state: &AppState) -> bool {
 }
 
 impl Actor {
+    /// Every change to the current call's stage passes through here.
+    fn handle(&mut self, event: Event) -> Handled {
+        let Some(current) = self.session.as_ref().map(|s| s.stage) else {
+            return Handled::Refused;
+        };
+        let Some(Transition { effects, next }) =
+            stage::transition(current, event, Instant::now(), &mut |job| self.start(job))
+        else {
+            return Handled::Refused;
+        };
+        let mut handled = Handled::Applied;
+        for effect in effects {
+            match effect {
+                Effect::Record(outcome) => self.history(outcome),
+                Effect::Send(body) => self.send(body),
+                Effect::Bind(device) => {
+                    if let Some(s) = &mut self.session {
+                        s.remote_device = Some(device);
+                    }
+                }
+                Effect::Answer => handled = Handled::Answer,
+            }
+        }
+        match next {
+            Next::Stay => {}
+            Next::To(stage) => {
+                if let Some(s) = &mut self.session {
+                    s.stage = stage;
+                }
+            }
+            Next::End(ending) => {
+                if let Some(outcome) = ending.record {
+                    self.history(outcome);
+                }
+                if let Some(reason) = ending.signal {
+                    self.send(Body::End { reason });
+                }
+                if let Some(s) = self.session.take() {
+                    self.remember(s.peer.clone(), s.id);
+                }
+                if let Some(toast) = ending.toast {
+                    self.state.write().error_toast = Some(toast);
+                }
+            }
+        }
+        self.update_view();
+        handled
+    }
+
+    fn start(&mut self, job: Job) -> Result<Task, String> {
+        match job {
+            Job::Handoff => {
+                let call_id = self.session.as_ref().ok_or("Call ended")?.id;
+                let bridge = self.handoff.clone();
+                let state = self.state;
+                let tx = self.tx.clone();
+                Ok(crate::service_task::spawn(async move {
+                    let result = bridge.leave(state).await;
+                    let _ = tx.send(Command::HandoffReady { call_id, result });
+                }))
+            }
+            Job::Describe(offer) => self.describe(offer),
+            Job::ApplyAnswer(sdp) => {
+                let s = self.session.as_ref().ok_or("Call ended")?;
+                let peer = s.media.as_ref().ok_or("Call ended")?.connection.clone();
+                let tx = self.tx.clone();
+                let id = s.id;
+                Ok(spawn(async move {
+                    let result = apply_description(&peer, &sdp, SdpType::Answer).await;
+                    if tx
+                        .send(Command::Native {
+                            call_id: id,
+                            event: NativeEvent::RemoteDescription(result),
+                        })
+                        .is_err()
+                    {
+                        peer.close();
+                    }
+                }))
+            }
+        }
+    }
+
     async fn perform_action(&mut self, action: Action) {
         #[cfg(target_os = "android")]
         let start_voice = self.needs_voice_start(&action);
         #[cfg(target_os = "android")]
         if start_voice && let Err(error) = crate::android::prepare_voice().await {
             if matches!(action, Action::Accept) {
-                self.finish(EndReason::Failed, Some(&error));
+                self.handle(Event::Fail(error));
             } else {
                 self.state.write().error_toast = Some(error);
             }
@@ -213,7 +305,7 @@ impl Actor {
         #[cfg(target_os = "android")]
         if start_voice
             && self.session.as_ref().is_some_and(|session| {
-                matches!(session.phase, Phase::Ringing | Phase::Connecting)
+                matches!(session.stage.phase(), Phase::Ringing | Phase::Connecting)
                     && session._background_call.is_none()
             })
         {
@@ -223,49 +315,25 @@ impl Actor {
                         session._background_call = Some(guard);
                     }
                 }
-                Err(error) => self.finish(EndReason::Failed, Some(&error)),
+                Err(error) => {
+                    self.handle(Event::Fail(error));
+                }
             }
         }
     }
 
-    fn prepare_handoff(&mut self) -> Option<Uuid> {
-        let session = self.session.as_mut()?;
-        if session.phase != Phase::Incoming {
-            return None;
-        }
-        session.phase = Phase::Switching;
-        let id = session.id;
-        self.update_view();
-        Some(id)
+    /// Whether to go on and answer; in guild voice this starts the handoff instead.
+    fn press_accept(&mut self) -> bool {
+        let guild_busy = guild_busy(&self.state.peek());
+        self.handle(Event::Press { guild_busy }) == Handled::Answer
     }
 
     fn complete_handoff(&mut self, call_id: Uuid, result: Result<(), String>) -> bool {
-        let Some(session) = &mut self.session else {
-            return false;
-        };
-        if session.id != call_id || session.phase != Phase::Switching {
+        if self.session.as_ref().is_none_or(|s| s.id != call_id) {
             return false;
         }
-        session.job = None;
-        if session
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            self.finish(EndReason::Timeout, None);
-            return false;
-        }
-        if let Err(error) = result {
-            self.finish(EndReason::Failed, Some(&error));
-            return false;
-        }
-        if guild_busy(&self.state.peek()) {
-            self.finish(
-                EndReason::Failed,
-                Some("Could not leave the voice channel."),
-            );
-            return false;
-        }
-        true
+        let guild_busy = guild_busy(&self.state.peek());
+        self.handle(Event::HandoffDone { result, guild_busy }) == Handled::Answer
     }
 
     #[cfg(any(target_os = "android", test))]
@@ -283,7 +351,7 @@ impl Actor {
             Action::Accept => self
                 .session
                 .as_ref()
-                .is_some_and(|s| matches!(s.phase, Phase::Incoming | Phase::Switching)),
+                .is_some_and(|s| matches!(s.stage.phase(), Phase::Incoming | Phase::Switching)),
             Action::End => false,
         }
     }
@@ -319,10 +387,11 @@ impl Actor {
         self.state.write().dm_call = self.session.as_ref().map(|s| CallView {
             call_id: s.id,
             peer: s.peer.clone(),
-            phase: s.phase,
+            phase: s.stage.phase(),
             microphone_error: s
-                .audio
+                .media
                 .as_ref()
+                .and_then(|media| media.audio.as_ref())
                 .and_then(|audio| audio.microphone_error.clone()),
         });
     }
@@ -367,35 +436,6 @@ impl Actor {
         }
     }
 
-    fn finish(&mut self, reason: EndReason, error: Option<&str>) {
-        use crate::nostr::call_history::Outcome;
-        if let Some(session) = &self.session {
-            match (session.phase, reason) {
-                (_, EndReason::Failed) => self.history(Outcome::Failed),
-                (Phase::Ringing, EndReason::Timeout | EndReason::Hangup) => {
-                    self.history(Outcome::Missed)
-                }
-                (Phase::Incoming, EndReason::Declined) => self.history(Outcome::Declined),
-                (Phase::Incoming | Phase::Switching, EndReason::Timeout) => {
-                    self.history(Outcome::Missed)
-                }
-                _ => {}
-            }
-        }
-        self.send(Body::End { reason });
-        self.clear();
-        if let Some(error) = error {
-            self.state.write().error_toast = Some(error.into());
-        }
-    }
-
-    fn clear(&mut self) {
-        if let Some(s) = self.session.take() {
-            self.remember(s.peer.clone(), s.id);
-        }
-        self.update_view();
-    }
-
     fn remember(&mut self, peer: String, id: Uuid) {
         if self.finished.len() >= 256
             && let Some(oldest) = self
@@ -407,6 +447,11 @@ impl Actor {
             self.finished.remove(&oldest);
         }
         self.finished.insert((peer, id), Instant::now());
+    }
+
+    fn begin(&mut self, session: Session) {
+        self.session = Some(session);
+        self.history(crate::nostr::call_history::Outcome::Started);
     }
 
     fn action(&mut self, action: Action) {
@@ -421,51 +466,26 @@ impl Actor {
                     return;
                 }
                 self.state.write().dm_accepted.insert(peer.clone());
-                self.session = Some(Session {
+                self.begin(Session {
                     id: Uuid::new_v4(),
                     incoming: false,
                     started_at: chrono::Utc::now().timestamp(),
                     peer,
                     remote_device: None,
-                    phase: Phase::Ringing,
-                    deadline: Some(Instant::now() + Duration::from_secs(45)),
-                    connection: None,
-                    audio: None,
-                    job: None,
-                    remote_answer_set: false,
+                    stage: Stage::ringing(Instant::now()),
+                    media: None,
                     #[cfg(target_os = "android")]
                     _background_call: None,
                 });
-                self.history(crate::nostr::call_history::Outcome::Started);
                 self.send(Body::Invite);
                 self.update_view();
             }
             Action::Accept => {
-                if guild_busy(&self.state.peek()) {
-                    self.finish(EndReason::Busy, None);
-                    return;
-                }
-                if let Some(s) = &mut self.session
-                    && matches!(s.phase, Phase::Incoming | Phase::Switching)
-                {
-                    s.phase = Phase::Connecting;
-                    s.deadline = Some(Instant::now() + Duration::from_secs(60));
-                    self.history(crate::nostr::call_history::Outcome::Answered);
-                    self.send(Body::Accept);
-                    self.update_view();
-                }
+                let guild_busy = guild_busy(&self.state.peek());
+                self.handle(Event::Accept { guild_busy });
             }
             Action::End => {
-                let reason = if self
-                    .session
-                    .as_ref()
-                    .is_some_and(|s| s.phase == Phase::Incoming)
-                {
-                    EndReason::Declined
-                } else {
-                    EndReason::Hangup
-                };
-                self.finish(reason, None);
+                self.handle(Event::Hangup);
             }
         }
     }
@@ -490,18 +510,13 @@ impl Actor {
         if !known {
             return;
         }
+        let ours = self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.id == signal.call_id && s.peer == author);
         if signal.target.is_some_and(|target| target != self.device) {
-            if matches!(signal.body, Body::Offer { .. })
-                && self.session.as_ref().is_some_and(|s| {
-                    s.id == signal.call_id
-                        && s.peer == author
-                        && matches!(
-                            s.phase,
-                            Phase::Incoming | Phase::Switching | Phase::Connecting
-                        )
-                })
-            {
-                self.clear();
+            if matches!(signal.body, Body::Offer { .. }) && ours {
+                self.handle(Event::AnsweredElsewhere);
             }
             return;
         }
@@ -512,24 +527,17 @@ impl Actor {
             return;
         }
         if matches!(signal.body, Body::Invite) {
-            if self.finished.len() >= 256 {
-                return;
-            }
-            if self
-                .session
-                .as_ref()
-                .is_some_and(|s| s.peer == author && s.id == signal.call_id)
-            {
+            if self.finished.len() >= 256 || ours {
                 return;
             }
             // A simultaneous outgoing call yields on the same key ordering at both ends.
             if self
                 .session
                 .as_ref()
-                .is_some_and(|s| s.peer == author && s.phase == Phase::Ringing)
+                .is_some_and(|s| s.peer == author && s.stage.phase() == Phase::Ringing)
                 && self.our_key > author
             {
-                self.finish(EndReason::Hangup, None);
+                self.handle(Event::Hangup);
             }
             if self.session.is_some() {
                 let _ = self.records.send(crate::nostr::call_history::Record {
@@ -551,117 +559,48 @@ impl Actor {
                 self.remember(author, signal.call_id);
                 return;
             }
-            self.session = Some(Session {
+            self.begin(Session {
                 id: signal.call_id,
                 incoming: true,
                 started_at: signal.sent_at,
                 peer: author,
                 remote_device: Some(signal.device),
-                phase: Phase::Incoming,
-                deadline: Some(Instant::now() + Duration::from_secs(45)),
-                connection: None,
-                audio: None,
-                job: None,
-                remote_answer_set: false,
+                stage: Stage::incoming(Instant::now()),
+                media: None,
                 #[cfg(target_os = "android")]
                 _background_call: None,
             });
-            self.history(crate::nostr::call_history::Outcome::Started);
             self.update_view();
             return;
         }
-        let Some(s) = &mut self.session else {
-            if matches!(signal.body, Body::End { .. }) {
-                self.remember(author, signal.call_id);
-            }
-            return;
-        };
-        if s.id != signal.call_id || s.peer != author {
+        if !ours {
             if matches!(signal.body, Body::End { .. }) {
                 self.remember(author, signal.call_id);
             }
             return;
         }
-        if s.remote_device
+        if self
+            .session
+            .as_ref()
+            .and_then(|s| s.remote_device)
             .is_some_and(|device| device != signal.device)
         {
             return;
         }
-        match signal.body {
-            Body::Accept if s.phase == Phase::Ringing => {
-                s.remote_device = Some(signal.device);
-                s.phase = Phase::Connecting;
-                s.deadline = Some(Instant::now() + Duration::from_secs(60));
-                self.history(crate::nostr::call_history::Outcome::Answered);
-                self.negotiate(None);
-            }
-            Body::Offer { sdp } if s.phase == Phase::Connecting && s.connection.is_none() => {
-                self.negotiate(Some(sdp))
-            }
-            Body::Answer { sdp }
-                if s.phase == Phase::Connecting
-                    && s.connection.is_some()
-                    && s.job.is_none()
-                    && !s.remote_answer_set =>
-            {
-                if let Some(peer) = s.connection.clone() {
-                    s.remote_answer_set = true;
-                    let tx = self.tx.clone();
-                    let id = s.id;
-                    s.job = Some(spawn(async move {
-                        let result = apply_description(&peer, &sdp, SdpType::Answer).await;
-                        if tx
-                            .send(Command::Native {
-                                call_id: id,
-                                event: NativeEvent::RemoteDescription(result),
-                            })
-                            .is_err()
-                        {
-                            peer.close();
-                        }
-                    }));
-                }
-            }
-            Body::End { reason } => {
-                use crate::nostr::call_history::Outcome;
-                match reason {
-                    EndReason::Failed => self.history(Outcome::Failed),
-                    EndReason::Busy => self.history(Outcome::Busy),
-                    EndReason::Declined => self.history(Outcome::Declined),
-                    EndReason::Hangup | EndReason::Timeout
-                        if matches!(s.phase, Phase::Incoming | Phase::Switching) =>
-                    {
-                        self.history(Outcome::Missed)
-                    }
-                    _ => {}
-                }
-                self.clear();
-                if matches!(
-                    reason,
-                    EndReason::Busy | EndReason::Declined | EndReason::Failed
-                ) {
-                    self.state.write().error_toast = Some(
-                        match reason {
-                            EndReason::Busy => "This contact is busy.",
-                            EndReason::Declined => "The call was declined.",
-                            _ => "The contact could not connect.",
-                        }
-                        .into(),
-                    );
-                }
-            }
-            _ => {}
-        }
-        self.update_view();
+        let event = match signal.body {
+            Body::Invite => return,
+            Body::Accept => Event::Accepted {
+                device: signal.device,
+            },
+            Body::Offer { sdp } => Event::Offer(sdp),
+            Body::Answer { sdp } => Event::Answer(sdp),
+            Body::End { reason } => Event::Ended(reason),
+        };
+        self.handle(event);
     }
 
-    fn negotiate(&mut self, offer: Option<String>) {
-        if let Err(error) = self.prepare(offer) {
-            self.finish(EndReason::Failed, Some(&error));
-        }
-    }
-
-    fn prepare(&mut self, offer: Option<String>) -> Result<(), String> {
+    /// Creates the call's media and starts making our offer, or the answer to `offer`.
+    fn describe(&mut self, offer: Option<String>) -> Result<Task, String> {
         #[cfg(target_os = "android")]
         crate::android::check_voice_ready()?;
         let factory = PeerConnectionFactory::default();
@@ -709,10 +648,12 @@ impl Actor {
                 tracing::debug!("DM call receiver stopped");
             }
         })));
-        s.audio = Some(audio);
-        s.connection = Some(connection.clone());
+        s.media = Some(Media {
+            connection: connection.clone(),
+            audio: Some(audio),
+        });
         let tx = self.tx.clone();
-        s.job = Some(spawn(async move {
+        Ok(spawn(async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(20),
                 local_description(&connection, offer),
@@ -729,9 +670,7 @@ impl Actor {
             {
                 connection.close();
             }
-        }));
-        self.update_view();
-        Ok(())
+        }))
     }
 
     fn native(&mut self, id: Uuid, event: NativeEvent) {
@@ -741,78 +680,40 @@ impl Actor {
         if s.id != id {
             return;
         }
-        match event {
-            NativeEvent::State(PeerConnectionState::Connected) => {
-                s.phase = Phase::Connected;
-                s.deadline = None;
+        let event = match event {
+            NativeEvent::State(PeerConnectionState::Connected) => Event::Connected,
+            NativeEvent::State(PeerConnectionState::Disconnected) => Event::Disconnected,
+            NativeEvent::State(PeerConnectionState::Failed | PeerConnectionState::Closed) => {
+                Event::Lost
             }
-            NativeEvent::State(PeerConnectionState::Disconnected) => {
-                if s.phase != Phase::Reconnecting {
-                    s.phase = Phase::Reconnecting;
-                    s.deadline = Some(Instant::now() + Duration::from_secs(15));
-                }
-            }
-            NativeEvent::State(PeerConnectionState::Failed | PeerConnectionState::Closed) => self
-                .finish(
-                    EndReason::Failed,
-                    Some("Voice connection ended. Check your network and TURN configuration."),
-                ),
+            NativeEvent::State(_) => return,
             NativeEvent::Track(track) => {
-                if let Some(audio) = &mut s.audio {
+                if let Some(audio) = s.media.as_mut().and_then(|media| media.audio.as_mut()) {
                     audio.receive(track, s.peer.clone());
                 }
+                return;
             }
-            NativeEvent::Description(result) => {
-                s.job = None;
-                match result {
-                    Ok((answer, sdp)) => self.send(if answer {
-                        Body::Answer { sdp }
-                    } else {
-                        Body::Offer { sdp }
-                    }),
-                    Err(error) => self.finish(EndReason::Failed, Some(&error)),
-                }
-            }
-            NativeEvent::RemoteDescription(result) => {
-                s.job = None;
-                if let Err(error) = result {
-                    self.finish(EndReason::Failed, Some(&error));
-                }
-            }
-            _ => {}
-        }
-        self.update_view();
+            NativeEvent::Description(result) => Event::Described(result),
+            NativeEvent::RemoteDescription(result) => Event::AnswerApplied(result),
+        };
+        self.handle(event);
     }
 
     fn tick(&mut self) {
         self.finished
             .retain(|_, ended| ended.elapsed() < Duration::from_secs(120));
-        if self.session.as_ref().is_some_and(|s| {
-            s.deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-        }) {
-            self.finish(
-                EndReason::Timeout,
-                Some("The call timed out. The contact may be offline or unreachable."),
-            );
-        } else if self
-            .session
-            .as_ref()
-            .is_some_and(|s| !matches!(s.phase, Phase::Incoming | Phase::Switching))
-            && guild_busy(&self.state.peek())
-        {
-            self.finish(
-                EndReason::Busy,
-                Some("DM call ended because a voice channel was joined."),
-            );
-        } else if let Some(s) = &mut self.session
-            && let Some(audio) = &mut s.audio
+        let guild_busy = guild_busy(&self.state.peek());
+        if self.handle(Event::Tick { guild_busy }) != Handled::Refused {
+            return;
+        }
+        if let Some(s) = &mut self.session
+            && let Some(media) = &mut s.media
+            && let Some(audio) = &mut media.audio
         {
             let previous_error = audio.microphone_error.clone();
             audio.update(self.state);
-            if let Some(connection) = &s.connection
-                && let Err(error) =
-                    sync_voice_bitrate(connection, self.state.peek().voice_bitrate_kbps)
+            if let Err(error) =
+                sync_voice_bitrate(&media.connection, self.state.peek().voice_bitrate_kbps)
             {
                 tracing::debug!(%error, "DM voice bitrate update will retry");
             }
