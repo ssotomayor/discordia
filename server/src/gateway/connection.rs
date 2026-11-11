@@ -452,30 +452,21 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CompleteImageUpload { upload_id, image } => {
+                        use crate::state::UploadCancel;
                         let Some(author) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
                             continue;
                         };
                         if !limiter.allow() {
-                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id)
-                                && let Some(guild_id) = ctx.state.channel_guild(channel_id)
-                            {
-                                let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
-                            }
+                            ctx.state.cancel_image_upload(conn_id, upload_id, UploadCancel::RateLimited);
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "rate limited: too many messages, slow down".into() }).await;
                             continue;
                         }
                         if !image.starts_with("data:image/")
                             || image.len() > crate::protocol::MAX_GUILD_UPLOAD_DATA_LEN
                         {
+                            ctx.state.cancel_image_upload(conn_id, upload_id, UploadCancel::InvalidImage);
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "image must be a data:image/* URL under the size limit".into() }).await;
-                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id)
-                                && let Some(guild_id) = ctx.state.channel_guild(channel_id)
-                            {
-                                let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
-                            }
                             continue;
                         }
                         let Some(channel_id) = ctx.state.pending_image_upload_channel(conn_id, upload_id) else {
@@ -483,35 +474,26 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         };
                         let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
-                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
-                                ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
-                            }
+                            ctx.state.cancel_image_upload(conn_id, upload_id, UploadCancel::ChannelGone);
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "can't post to this channel".into() }).await;
                             continue;
                         };
                         let mod_exempt = ctx
                             .state
                             .slowmode_exempt(guild_id, &author.pubkey, phase.is_bot());
-                        let is_member = ctx.state.is_guild_member(guild_id, &author.pubkey);
-                        let rejection = if !is_member {
-                            Some("you're not a member of this guild".to_string())
+                        let rejection = if !ctx.state.is_guild_member(guild_id, &author.pubkey) {
+                            Some((UploadCancel::NotMember, "you're not a member of this guild"))
                         } else if phase.is_bot()
                             || (ctx.state.channel_read_only(channel_id)
                                 && !ctx.state.writes_when_read_only(guild_id, &author.pubkey, phase.is_bot()))
                         {
-                            Some("this channel is read-only".to_string())
+                            Some((UploadCancel::ReadOnly, "this channel is read-only"))
                         } else {
                             None
                         };
-                        if let Some(message) = rejection {
-                            if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
-                                let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
-                                if !is_member {
-                                    ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
-                                }
-                            }
-                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                        if let Some((why, message)) = rejection {
+                            ctx.state.cancel_image_upload(conn_id, upload_id, why);
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: message.into() }).await;
                             continue;
                         }
                         let slowmode_reservation = if mod_exempt {
@@ -520,11 +502,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             match ctx.state.reserve_slowmode(channel_id, &author.pubkey) {
                                 Ok(reservation) => Some(reservation),
                                 Err(wait) => {
-                                    if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id) {
-                                        let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                        ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
-                                        ctx.state.deliver_to_conn(conn_id, &ServerMessage::MessageDelete { channel_id, message_id });
-                                    }
+                                    ctx.state.cancel_image_upload(conn_id, upload_id, UploadCancel::Slowmode);
                                     let _ = send(&mut ws_tx, &ServerMessage::Error { message: format!("slowmode: wait {wait}s before posting again") }).await;
                                     continue;
                                 }
@@ -535,14 +513,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 if let Some(reservation) = slowmode_reservation {
                                     reservation.commit();
                                 }
-                                let guild_id = ctx.state.channel_guild(message.channel_id);
-                                let targets = guild_id.map(|guild_id| ctx.state.guild_member_pubkeys(guild_id)).unwrap_or_default();
-                                ctx.state.deliver(targets, ServerMessage::MessageCreate(message.clone()));
-                                if let Some(guild_id) = guild_id {
-                                    ctx.state.notify_offline_mentions(guild_id, &message);
-                                }
+                                let Some(guild_id) = ctx.state.channel_guild(message.channel_id) else { continue };
+                                ctx.state.notify_offline_mentions(guild_id, &message);
                                 if !phase.is_bot()
-                                    && let Some(guild_id) = guild_id
                                     && let Some(member) = ctx.state.award_xp(
                                         guild_id,
                                         Some(message.channel_id),
@@ -556,12 +529,6 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                             Err(message) => {
                                 drop(slowmode_reservation);
-                                if let Some((channel_id, message_id)) = ctx.state.cancel_image_upload(conn_id, upload_id)
-                                    && let Some(guild_id) = ctx.state.channel_guild(channel_id)
-                                {
-                                    let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                    ctx.state.deliver_progressive_images(targets, ServerMessage::MessageDelete { channel_id, message_id });
-                                }
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             }
                         }
@@ -2991,18 +2958,7 @@ pub(crate) async fn handle_connection_with_route<S>(
     dog.abort();
     watch.finish(&who);
     tracing::debug!(%who, "gateway socket loop ended");
-    for (channel_id, message_id) in ctx.state.cancel_image_uploads_for_connection(conn_id) {
-        if let Some(guild_id) = ctx.state.channel_guild(channel_id) {
-            let targets = ctx.state.guild_member_pubkeys(guild_id);
-            ctx.state.deliver_progressive_images(
-                targets,
-                ServerMessage::MessageDelete {
-                    channel_id,
-                    message_id,
-                },
-            );
-        }
-    }
+    ctx.state.cancel_image_uploads_for_connection(conn_id);
     if let Some(u) = phase.end(&ctx.state, conn_id) {
         cleanup_session(&ctx, conn_id, u, graceful).await;
     }

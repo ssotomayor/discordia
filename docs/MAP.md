@@ -13,8 +13,8 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 5377 |
-| `server/src/state/mod.rs` | 4667 |
-| `server/src/gateway/connection.rs` | 4502 |
+| `server/src/state/mod.rs` | 4809 |
+| `server/src/gateway/connection.rs` | 4547 |
 | `protocol/src/lib.rs` | 4311 |
 | `client/src/state.rs` | 4035 |
 | `client/src/features/screenshare.rs` | 3853 |
@@ -47,6 +47,7 @@ Everything else: `wc -l` answers faster than a list here could stay true.
 | Native image transport | `client/src/image_assets.rs`, `features/profiles.rs`, `features/chat.rs`, `client/src/app.rs` | Avatars, banners and chat images use per-window asset URLs, not base64 in DOM edits. Equal payloads share storage; registrations hold weak references; expired ones return 404. Base64 conversion runs off the UI thread. GIF bytes are preserved |
 | Image memory measurement | `tools/image-memory-probe`, `tools/image-memory-probe/dm_server.rs`, `scripts/measure-image-memory.cjs`, `scripts/check-image-memory.cjs`, `scripts/summarize-image-memory.cjs`, `scripts/measure-unified-images.cjs`, `scripts/check-unified-images.cjs`, `scripts/summarize-unified-images.cjs`, `scripts/check-progressive-images.cjs`, `scripts/summarize-dm-server-images.cjs` | Windows/WebView2 A/B probes on the PID-scoped profiler; `dm_server.rs` runs the production `chat_image` helpers. Reports go to `target/image-reports/`. GPU process private commit is not VRAM |
 | Shared chat previews | `image-policy/`, `client/src/features/image_attachment.rs`, `features/chat.rs`, `features/dm_images.rs`, `server/src/media.rs`, `gateway/connection.rs`, `docs/UNIFIED_IMAGE_POLICY.md` | Policy in the doc. Communities negotiate `FetchImagePreviews` and cache quota-accounted sidecars; DMs make encrypted local previews after decrypting originals. The full viewer requests the original explicitly. Preview/original keys share `MediaCache` limits. Server conversions run outside the socket loop under global and per-connection caps |
+| Progressive picture upload (server) | `server/src/state/mod.rs`, `gateway/connection.rs`, `state/image_upload_tests.rs` | `BeginImageUpload` stores the preview and shows progressive sessions a provisional `MessageCreate`; no row until `CompleteImageUpload` commits. Every exit from `pending_image_uploads` is `end_image_upload`: a commit sends `MessageCreate` to all, an `UploadCancel` sends `MessageDelete` to progressive sessions and the sender's socket. No expiry; a socket's end cancels its own |
 | Image header bounds | `image-policy/src/bounds.rs`, `server/src/media.rs` (`decode`) | Every image upload (chat, avatar, banner, icon, emoji, sticker) is read from its headers, never decoded: ≤16384 px a side, ≤2²⁸ px, ≤2000 frames, ≤2³⁰ px×frames → `StoreError::ImageBounds`. GIF canvas includes frames drawn past the screen; APNG takes the larger of `acTL`/`fcTL`; AVIF reads `ispe`/`tkhd`/`stsz`. Blobs stored before it are not rechecked |
 | Expanded image zoom | `client/src/features/image_viewer.rs`, `client/assets/image-viewer.js`, `image-viewer.css`, `scripts/test-image-viewer.cjs` | One desktop/Android viewer. Progressive sessions show the preview while the original loads and keep zoom/pan; session/attempt tokens reject stale replies |
 | Speaking indicator visibility | `client/src/state.rs`, `features/channels.rs`, `features/members.rs` | `connected_voice_channel` gates speaking/quality rings to the connected media channel; member rows show mute/deafen badges without a speaking ring |

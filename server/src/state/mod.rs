@@ -77,6 +77,25 @@ struct Conn {
     attended: bool,
 }
 
+/// Why a provisional picture left `Pending` without its original; logged only,
+/// since every way out but the commit ends in the same `MessageDelete`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadCancel {
+    RateLimited,
+    InvalidImage,
+    ChannelGone,
+    NotMember,
+    ReadOnly,
+    Slowmode,
+    Failed,
+    SocketClosed,
+}
+
+enum UploadEnd<'a> {
+    Committed(&'a Message),
+    Cancelled(UploadCancel),
+}
+
 #[derive(Clone)]
 struct PendingImageUpload {
     author: User,
@@ -775,8 +794,13 @@ impl AppState {
     }
 
     pub fn deliver_progressive_images(&self, to: Vec<String>, msg: ServerMessage) {
-        let mut ids = Vec::new();
-        for pubkey in &to {
+        self.deliver_progressive(&to, None, &msg);
+    }
+
+    /// `also` is one more socket, counted once even when `to` already holds it.
+    fn deliver_progressive(&self, to: &[String], also: Option<u64>, msg: &ServerMessage) {
+        let mut ids: Vec<u64> = also.into_iter().collect();
+        for pubkey in to {
             if let Some(sessions) = self.conn_ids_by_pubkey.get(pubkey) {
                 ids.extend(sessions.iter().copied());
             }
@@ -789,7 +813,7 @@ impl AppState {
                 .get(&id)
                 .is_some_and(|conn| conn.progressive_image_uploads)
             {
-                self.route(id, &msg);
+                self.route(id, msg);
             }
         }
     }
@@ -3637,7 +3661,27 @@ impl AppState {
         Ok(message)
     }
 
+    /// Commits and announces the finished message, or takes the provisional one
+    /// back on any failure; either way the upload is no longer pending.
     pub async fn complete_image_upload(
+        &self,
+        conn_id: u64,
+        by_pubkey: &str,
+        upload_id: Id,
+        image: String,
+    ) -> Result<Message, String> {
+        let committed = self
+            .commit_image_upload(conn_id, by_pubkey, upload_id, image)
+            .await;
+        let end = match &committed {
+            Ok(message) => UploadEnd::Committed(message),
+            Err(_) => UploadEnd::Cancelled(UploadCancel::Failed),
+        };
+        self.end_image_upload(conn_id, upload_id, end);
+        committed
+    }
+
+    async fn commit_image_upload(
         &self,
         conn_id: u64,
         by_pubkey: &str,
@@ -3696,14 +3740,39 @@ impl AppState {
                 reply_to: reply_ref,
             })
             .await?;
-        self.pending_image_uploads.remove(&(conn_id, upload_id));
         Ok(message)
     }
 
-    pub fn cancel_image_upload(&self, conn_id: u64, upload_id: Id) -> Option<(Id, Id)> {
-        self.pending_image_uploads
-            .remove(&(conn_id, upload_id))
-            .map(|(_, pending)| (pending.channel_id, upload_id))
+    /// False when nothing was pending, so nothing was shown and nothing is sent.
+    pub fn cancel_image_upload(&self, conn_id: u64, upload_id: Id, why: UploadCancel) -> bool {
+        self.end_image_upload(conn_id, upload_id, UploadEnd::Cancelled(why))
+    }
+
+    /// The only way out of `pending_image_uploads`, so leaving it and telling
+    /// whoever saw the provisional message cannot come apart. A cancel also goes
+    /// to the sender's socket, which may have stopped being a member.
+    fn end_image_upload(&self, conn_id: u64, upload_id: Id, end: UploadEnd<'_>) -> bool {
+        let Some((_, pending)) = self.pending_image_uploads.remove(&(conn_id, upload_id)) else {
+            return false;
+        };
+        let members = self
+            .channel_guild(pending.channel_id)
+            .map(|guild_id| self.guild_member_pubkeys(guild_id))
+            .unwrap_or_default();
+        match end {
+            UploadEnd::Committed(message) => {
+                self.deliver(members, ServerMessage::MessageCreate(message.clone()));
+            }
+            UploadEnd::Cancelled(why) => {
+                tracing::debug!(conn_id, %upload_id, ?why, "progressive image upload cancelled");
+                let delete = ServerMessage::MessageDelete {
+                    channel_id: pending.channel_id,
+                    message_id: upload_id,
+                };
+                self.deliver_progressive(&members, Some(conn_id), &delete);
+            }
+        }
+        true
     }
 
     pub fn pending_image_upload_channel(&self, conn_id: u64, upload_id: Id) -> Option<Id> {
@@ -3712,16 +3781,16 @@ impl AppState {
             .map(|pending| pending.channel_id)
     }
 
-    pub fn cancel_image_uploads_for_connection(&self, conn_id: u64) -> Vec<(Id, Id)> {
+    pub fn cancel_image_uploads_for_connection(&self, conn_id: u64) {
         let ids = self
             .pending_image_uploads
             .iter()
             .filter(|entry| entry.key().0 == conn_id)
             .map(|entry| entry.key().1)
             .collect::<Vec<_>>();
-        ids.into_iter()
-            .filter_map(|id| self.cancel_image_upload(conn_id, id))
-            .collect()
+        for id in ids {
+            self.cancel_image_upload(conn_id, id, UploadCancel::SocketClosed);
+        }
     }
 
     /// One rule for every picture a client may hand the server. A data URL is
@@ -4638,6 +4707,10 @@ fn guild_initials(name: &str) -> String {
         initials
     }
 }
+
+#[cfg(test)]
+#[path = "image_upload_tests.rs"]
+mod image_upload_tests;
 
 #[cfg(test)]
 mod cooldown_tests {
