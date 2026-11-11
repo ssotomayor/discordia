@@ -977,6 +977,10 @@ impl AppState {
         self.screen_share_stats = None;
         self.screen_share_in_stats = None;
         self.integrations.clear();
+        self.app_manifest_events.clear();
+        self.guild_activities.clear();
+        self.activity_instances.clear();
+        self.guild_blocklists.clear();
         self.bot_commands.clear();
         self.command_notes.clear();
         self.guild_emojis.clear();
@@ -2591,6 +2595,39 @@ mod tests {
             None,
             "removing the saved image restores the initial"
         );
+    }
+
+    /// Each is what one host answered; an imported guild keeps its id and a bot
+    /// its key on another host, so the next server must not read them.
+    #[test]
+    fn the_next_server_does_not_see_the_last_ones_apps_and_activities() {
+        let mut s = AppState::empty();
+        let guild = uuid::Uuid::new_v4();
+        let channel = uuid::Uuid::new_v4();
+        s.app_manifest_events
+            .insert("bot".into(), Some("{\"from\":\"host a\"}".into()));
+        s.guild_activities.insert(guild, Vec::new());
+        s.activity_instances.insert(
+            channel,
+            vec![crate::protocol::ActivityInstance {
+                id: uuid::Uuid::new_v4(),
+                channel_id: channel,
+                app: crate::protocol::builtin_activity("dice"),
+                max_players: 1,
+                participants: Vec::new(),
+            }],
+        );
+        s.guild_blocklists
+            .insert(guild, (vec!["curator".into()], Vec::new()));
+        s.relay_app_manifests
+            .insert("bot".into(), (1, "{\"from\":\"relay\"}".into()));
+
+        s.prepare_server_switch(None, None);
+        assert!(s.app_manifest_events.is_empty());
+        assert!(s.guild_activities.is_empty());
+        assert!(s.activity_instances.is_empty());
+        assert!(s.guild_blocklists.is_empty());
+        assert_eq!(s.relay_app_manifests.len(), 1, "relays are the account's");
     }
 
     /// `short.png` fails `emoji::safe_name`, so nothing touches the disk.
