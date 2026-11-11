@@ -4,7 +4,7 @@ use crate::identity::Identity;
 use crate::protocol::Id;
 use crate::session::SavedSession;
 use crate::settings::ClientSettings;
-use crate::state::{AppState, ConnectionStatus, SessionParams};
+use crate::state::{AppState, SessionParams};
 
 #[derive(Clone, Copy)]
 pub(super) struct RenameAccount(pub Callback<String, Result<(), String>>);
@@ -61,7 +61,6 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.stream_volumes = saved.stream_volumes.iter().cloned().collect();
     s.stream_muted = saved.stream_muted.iter().cloned().collect();
     s.voice_bitrate_kbps = crate::settings::normalize_voice_bitrate(saved.voice_bitrate_kbps);
-    s.status = ConnectionStatus::Disconnected;
     s.soundboard_volume = saved.soundboard_volume.min(100) as u32;
     s
 }
@@ -330,6 +329,7 @@ fn undo_switch<T>(back: Option<T>, got_in: bool, reason: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ConnectionStatus;
 
     #[test]
     fn a_switch_is_undone_only_when_the_new_server_never_let_us_in() {

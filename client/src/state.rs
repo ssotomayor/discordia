@@ -620,7 +620,7 @@ impl AppState {
 
     pub fn empty() -> Self {
         Self {
-            status: ConnectionStatus::Connecting,
+            status: ConnectionStatus::Disconnected,
             self_user: None,
             guilds: Vec::new(),
             channels: Vec::new(),

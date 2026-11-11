@@ -10,6 +10,9 @@ use url::Url;
 
 #[cfg(any(target_os = "android", test))]
 mod background_socket;
+mod link;
+
+use link::{Event, Link};
 
 use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
@@ -78,6 +81,8 @@ pub fn spawn_gateway(
     let gateway_tx = GatewayTx(tx.clone());
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    // Before the task runs, so the first render already shows a connection under way.
+    publish(&mut state, Link::Resolving);
 
     crate::service_task::spawn(async move {
         let reason = match run(params, &tx, rx, state, &voice_tx, shutdown_rx).await {
@@ -85,7 +90,7 @@ pub fn spawn_gateway(
             Err(e) => e,
         };
         tracing::warn!(%reason, transport = ?state.peek().transport, "gateway session ended");
-        state.write().status = ConnectionStatus::Disconnected;
+        publish(&mut state, Link::Ended);
         let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
         let report = {
             let s = state.peek();
@@ -422,14 +427,16 @@ async fn run(
     let host_monitor = host_handle
         .as_ref()
         .and_then(HostHandle::connection_monitor);
-    let mut failures = 0u32;
+    let mut link = Link::Resolving.step(Event::Resolved);
     loop {
+        publish(&mut state, link);
         let connected = tokio::select! {
             _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
             connected = connect_gateway(&dial) => connected,
         };
         let outcome = match connected {
             Ok((socket, transport, origin)) => {
+                link = link.step(Event::Connected);
                 {
                     let mut s = state.write();
                     s.transport = transport;
@@ -437,6 +444,7 @@ async fn run(
                     s.server_origin = Some(origin.clone());
                 }
                 let links = Links {
+                    link: &mut link,
                     host_monitor: host_monitor.clone(),
                     tx,
                     rx: &mut rx,
@@ -501,24 +509,25 @@ async fn run(
             }
             Err(error) => Err(error),
         };
-        if *shutdown.borrow() {
-            return Ok(());
-        }
-        if state.peek().status == ConnectionStatus::Connecting {
-            return outcome;
-        }
-        if state.peek().status == ConnectionStatus::Ready {
-            failures = 0;
-        }
         let reason = outcome.err().unwrap_or_else(|| "connection closed".into());
+        let was_live = link == Link::Live;
+        link = link.step(if *shutdown.borrow() {
+            Event::Shutdown
+        } else {
+            Event::Failed(link::refusal(&reason))
+        });
+        let retry = match link {
+            Link::Backoff(retry) => retry,
+            Link::Closing => return Ok(()),
+            _ => return Err(reason),
+        };
         {
             let mut s = state.write();
-            record_gateway_interruption(&mut s, &reason);
+            record_gateway_interruption(&mut s, &reason, was_live);
         }
+        publish(&mut state, link);
         tracing::warn!(%reason, "gateway lost; reconnecting in place");
-        let delay = reconnect_delay(failures);
-        failures = failures.saturating_add(1);
-        let until = tokio::time::Instant::now() + delay;
+        let until = tokio::time::Instant::now() + reconnect_delay(retry);
         loop {
             tokio::select! {
                 _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
@@ -541,6 +550,16 @@ async fn run(
             }
         }
         while rx.try_recv().is_ok() {}
+        link = link.step(Event::Waited);
+    }
+}
+
+/// The gateway task is the only writer of `status` while it runs.
+fn publish(state: &mut Signal<AppState>, link: Link) {
+    if let Some(status) = link.status()
+        && state.peek().status != status
+    {
+        state.write().status = status;
     }
 }
 
@@ -609,6 +628,7 @@ enum Socket {
 
 /// The channels a session talks over, apart from the socket itself.
 struct Links<'a> {
+    link: &'a mut Link,
     host_monitor: Option<discordia_server::GatewayShutdown>,
     tx: &'a UnboundedSender<ClientMessage>,
     rx: &'a mut UnboundedReceiver<ClientMessage>,
@@ -636,6 +656,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let Links {
+        link,
         host_monitor,
         tx,
         rx,
@@ -672,6 +693,7 @@ where
         }
         }) => nonce.map_err(|_| "server did not send Hello before the deadline".to_string())??,
     };
+    *link = link.step(Event::Hello);
 
     let username = crate::protocol::canonical_username(&params.identity.display_name);
     let pubkey = params.identity.pubkey.clone();
@@ -696,12 +718,14 @@ where
             close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
             return Ok(());
         }
-        admitted = gateway_ready(&mut ws_rx) => admitted.map_err(|reason| format!("gateway admission: {reason}"))?,
+        admitted = gateway_ready(&mut ws_rx) => admitted?,
     };
     while rx.try_recv().is_ok() {}
     state.write().gateway_failure = None;
     gateway_diagnostic(format_args!("admission accepted; applying Ready"));
-    apply(&mut state, admitted, tx, voice_tx);
+    let recovering = link.recovering();
+    *link = link.step(Event::Ready);
+    apply_ready(&mut state.write(), admitted, recovering, tx, voice_tx);
     gateway_diagnostic(format_args!("Ready applied"));
 
     #[cfg(target_os = "android")]
@@ -847,18 +871,20 @@ where
 {
     tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT, async {
         while let Some(frame) = rx.next().await {
-            match frame.map_err(|e| format!("gateway admission: {e}"))? {
+            match frame.map_err(|e| format!("recv: {e}"))? {
                 WsMessage::Text(text) => {
                     let message: ServerMessage = serde_json::from_str(&text)
                         .map_err(|e| format!("bad server frame before Ready: {e}"))?;
                     match message {
                         ready @ ServerMessage::Ready { .. } => return Ok(ready),
-                        ServerMessage::Error { message } => return Err(message),
+                        ServerMessage::Error { message } => {
+                            return Err(format!("gateway admission: {message}"));
+                        }
                         other => return Err(format!("expected Ready, got {other:?}")),
                     }
                 }
                 WsMessage::Close(Some(frame)) if !frame.reason.is_empty() => {
-                    return Err(frame.reason.to_string());
+                    return Err(format!("gateway admission: {}", frame.reason));
                 }
                 WsMessage::Close(_) => break,
                 _ => {}
@@ -949,29 +975,42 @@ mod graceful_shutdown_tests {
         dom.rebuild_in_place();
         dom.in_scope(ScopeId::ROOT, || {
             let mut state = AppState::empty();
-            state.status = ConnectionStatus::Ready;
-            record_gateway_interruption(&mut state, discordia_server::gateway::HOST_STOPPED);
-            assert_eq!(state.status, ConnectionStatus::Reconnecting);
+            record_gateway_interruption(&mut state, discordia_server::gateway::HOST_STOPPED, true);
             assert!(state.gateway_failure.is_none());
-            record_gateway_interruption(
-                &mut state,
-                "gateway admission: server closed before Hello",
-            );
+            record_gateway_interruption(&mut state, "server closed before Hello", false);
             assert!(state.gateway_failure.is_none());
 
-            state.status = ConnectionStatus::Ready;
             record_gateway_interruption(
                 &mut state,
-                "gateway admission: identify rejected: wrong origin",
+                "gateway send: stopped\nServer reason: message too large",
+                true,
             );
             let original = state.gateway_failure.clone();
             assert!(original.is_some());
-            record_gateway_interruption(&mut state, "connect failed: connection refused");
+            record_gateway_interruption(&mut state, "connect failed: connection refused", false);
             assert_eq!(state.gateway_failure, original);
 
-            state.status = ConnectionStatus::Ready;
-            record_gateway_interruption(&mut state, "recv: connection reset by peer");
+            record_gateway_interruption(&mut state, "recv: connection reset by peer", true);
             assert!(state.gateway_failure.is_none());
+        });
+    }
+
+    #[test]
+    fn a_retry_refused_by_the_server_shows_its_current_reason() {
+        let mut dom = VirtualDom::new(|| rsx! {});
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, || {
+            let mut state = AppState::empty();
+            record_gateway_interruption(&mut state, "recv: connection reset by peer", true);
+            assert!(state.gateway_failure.is_none());
+            let busy = "gateway admission: this key already has 8 open sessions";
+            record_gateway_interruption(&mut state, busy, false);
+            assert!(state.gateway_failure.as_ref().unwrap().contains(busy));
+            let full = "gateway admission: this server is full";
+            record_gateway_interruption(&mut state, full, false);
+            assert!(state.gateway_failure.as_ref().unwrap().contains(full));
+            record_gateway_interruption(&mut state, "connect failed: refused", false);
+            assert!(state.gateway_failure.as_ref().unwrap().contains(full));
         });
     }
 
@@ -991,7 +1030,7 @@ mod graceful_shutdown_tests {
         drop(server);
         assert_eq!(
             gateway_ready(&mut client).await.unwrap_err(),
-            "identify rejected: wrong origin"
+            "gateway admission: identify rejected: wrong origin"
         );
     }
 
@@ -1081,49 +1120,103 @@ mod graceful_shutdown_tests {
         assert!(report.contains("No readable server reason was received"));
     }
 
+    /// Accepts one session, admits it, then drops it.
+    async fn admit_once_then_drop(listener: tokio::net::TcpListener) {
+        let (socket, _) = listener.accept().await.expect("accept");
+        let mut ws = tokio_tungstenite::accept_async(socket)
+            .await
+            .expect("upgrade");
+        let hello = ServerMessage::Hello {
+            nonce: "nonce".into(),
+        };
+        ws.send(WsMessage::Text(serde_json::to_string(&hello).unwrap()))
+            .await
+            .expect("hello");
+        let _identify = ws.next().await;
+        let ready = serde_json::json!({
+            "op": "ready", "d": { "user": {"pubkey": "11".repeat(32), "username": "Alice"},
+                "guilds": [], "channels": [], "members": [], "voice_states": [] }
+        });
+        ws.send(WsMessage::Text(ready.to_string()))
+            .await
+            .expect("ready");
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Peer {
+        Silent,
+        Absent,
+        AdmitsThenDrops,
+    }
+
+    /// Runs a session against `peer`, asking it to stop after `quit_after`.
+    async fn run_against(
+        peer: Peer,
+        quit_after: Option<std::time::Duration>,
+    ) -> (Result<(), String>, ConnectionStatus) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listen");
+        let address = listener.local_addr().expect("address");
+        let _held = match peer {
+            Peer::Silent => Some(listener),
+            Peer::Absent => {
+                drop(listener);
+                None
+            }
+            Peer::AdmitsThenDrops => {
+                tokio::spawn(admit_once_then_drop(listener));
+                None
+            }
+        };
+        let mut dom = VirtualDom::new(|| rsx! {});
+        dom.rebuild_in_place();
+        let state = dom.in_scope(ScopeId::ROOT, || Signal::new(AppState::empty()));
+        let params = SessionParams {
+            mode: SessionMode::Remote {
+                server_url: format!("ws://{address}"),
+            },
+            identity: crate::identity::Identity::restore_from_private_key("11".repeat(32), "Alice")
+                .expect("identity"),
+        };
+        let (tx, rx) = unbounded_channel();
+        let (voice_tx, _voice_rx) = unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut running = Box::pin(run(params, &tx, rx, state, &voice_tx, shutdown_rx));
+        let session =
+            std::future::poll_fn(|cx| dom.in_scope(ScopeId::ROOT, || running.as_mut().poll(cx)));
+        let quit = async {
+            if let Some(after) = quit_after {
+                tokio::time::sleep(after).await;
+                shutdown_tx.send_replace(true);
+            }
+        };
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(session, quit)
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{peer:?}: quit interrupts connection/retry"));
+        let status = dom.in_scope(ScopeId::ROOT, || state.peek().status);
+        (outcome, status)
+    }
+
     #[tokio::test]
     async fn quitting_cancels_both_a_pending_connection_and_reconnect_backoff() {
-        for keep_listener in [true, false] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("listen");
-            let address = listener.local_addr().expect("address");
-            let _listener = keep_listener.then_some(listener);
-            let mut dom = VirtualDom::new(|| rsx! {});
-            dom.rebuild_in_place();
-            let state = dom.in_scope(ScopeId::ROOT, || {
-                let mut initial = AppState::empty();
-                initial.status = ConnectionStatus::Reconnecting;
-                Signal::new(initial)
-            });
-            let params = SessionParams {
-                mode: SessionMode::Remote {
-                    server_url: format!("ws://{address}"),
-                },
-                identity: crate::identity::Identity::restore_from_private_key(
-                    "11".repeat(32),
-                    "Alice",
-                )
-                .expect("identity"),
-            };
-            let (tx, rx) = unbounded_channel();
-            let (voice_tx, _voice_rx) = unbounded_channel();
-            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-            let mut running = Box::pin(run(params, &tx, rx, state, &voice_tx, shutdown_rx));
-            let session = std::future::poll_fn(|cx| {
-                dom.in_scope(ScopeId::ROOT, || running.as_mut().poll(cx))
-            });
-            let quit = async {
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                shutdown_tx.send_replace(true);
-            };
-            let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                tokio::join!(session, quit)
-            })
-            .await
-            .expect("quit interrupts connection/retry");
-            assert!(outcome.is_ok());
-        }
+        let quit = Some(std::time::Duration::from_millis(300));
+        let (outcome, status) = run_against(Peer::Silent, quit).await;
+        assert!(outcome.is_ok());
+        assert_eq!(status, ConnectionStatus::Connecting);
+
+        let (outcome, status) = run_against(Peer::AdmitsThenDrops, quit).await;
+        assert!(outcome.is_ok());
+        assert_eq!(status, ConnectionStatus::Reconnecting);
+    }
+
+    #[tokio::test]
+    async fn a_session_that_never_got_in_ends_on_its_first_failure() {
+        let (outcome, status) = run_against(Peer::Absent, None).await;
+        assert!(outcome.unwrap_err().starts_with("connect failed"));
+        assert_eq!(status, ConnectionStatus::Connecting);
     }
 
     #[tokio::test]
@@ -1274,11 +1367,13 @@ fn reconnect_failure_report(reason: &str, transport: Transport) -> Option<String
     Some(gateway_failure_report(reason, Some(transport)))
 }
 
-fn record_gateway_interruption(state: &mut AppState, reason: &str) {
-    if state.status != ConnectionStatus::Reconnecting {
-        state.gateway_failure = reconnect_failure_report(reason, state.transport);
+/// Retries keep the report of the loss that started them, so a stopped host's
+/// redial noise stays hidden; only the server's own words replace it.
+fn record_gateway_interruption(state: &mut AppState, reason: &str, was_live: bool) {
+    let report = reconnect_failure_report(reason, state.transport);
+    if was_live || (report.is_some() && link::server_words(reason).is_some()) {
+        state.gateway_failure = report;
     }
-    state.status = ConnectionStatus::Reconnecting;
 }
 
 /// Stable, so roles written before positions were kept apart stay in the
@@ -1364,6 +1459,176 @@ pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage
     }
 }
 
+/// A Ready that `recovering` restores keeps what was selected in the session
+/// it restores; the first one of a session starts from the server's defaults.
+fn apply_ready(
+    s: &mut AppState,
+    ready: ServerMessage,
+    recovering: bool,
+    tx: &UnboundedSender<ClientMessage>,
+    voice_tx: &UnboundedSender<VoiceCmd>,
+) {
+    let ServerMessage::Ready {
+        chat_tools,
+        image_previews,
+        progressive_image_uploads,
+        user,
+        guilds,
+        channels,
+        members,
+        voice_states,
+        catalog,
+        profiles,
+        roles,
+        emojis,
+        sounds,
+        activities,
+        bot_commands,
+        operator,
+        default_guild,
+        server,
+        latest_messages,
+    } = ready
+    else {
+        return;
+    };
+    s.pending_edits.clear();
+    let selected_guild = s.selected_guild;
+    let selected_channel = s.selected_channel;
+    let selected_dm =
+        recovering && s.dm_mode && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
+    let local_channel = s.voice.channel_id;
+    s.readies = s.readies.wrapping_add(1);
+    s.self_user = Some(user);
+    s.is_operator = operator;
+    s.default_guild = default_guild;
+    s.server_info = server;
+    s.server_chat_tools = chat_tools;
+    s.server_image_previews = image_previews;
+    s.server_progressive_image_uploads = progressive_image_uploads;
+    s.guilds = guilds;
+    s.channels = channels;
+    s.members = members;
+    s.voice_states = voice_states;
+    if !recovering {
+        s.dm_mode = false;
+    }
+    s.catalog = catalog;
+    s.profiles = profiles
+        .into_iter()
+        .map(|p| (p.pubkey.clone(), p))
+        .collect();
+    s.activities = activities
+        .into_iter()
+        .filter_map(|u| u.activity.map(|a| (u.pubkey, a)))
+        .collect();
+    s.roles = {
+        let mut map: std::collections::HashMap<Id, Vec<crate::protocol::Role>> =
+            std::collections::HashMap::new();
+        for role in roles {
+            map.entry(role.guild_id).or_default().push(role);
+        }
+        for list in map.values_mut() {
+            list.sort_by_key(|r| r.position);
+        }
+        map
+    };
+    s.guild_emojis = {
+        let mut map: std::collections::HashMap<Id, Vec<crate::protocol::GuildEmoji>> =
+            std::collections::HashMap::new();
+        for e in emojis {
+            map.entry(e.guild_id).or_default().push(e);
+        }
+        map
+    };
+    s.guild_sounds = {
+        let mut map: std::collections::HashMap<Id, Vec<crate::protocol::GuildSound>> =
+            std::collections::HashMap::new();
+        for sound in sounds {
+            map.entry(sound.guild_id).or_default().push(sound);
+        }
+        map
+    };
+    s.bot_commands = bot_commands
+        .into_iter()
+        .map(|set| (set.bot_pubkey, set.commands))
+        .collect();
+    s.command_notes.clear();
+    let dm_channels: std::collections::HashSet<_> = s.dms.iter().map(|dm| dm.channel_id).collect();
+    s.messages.retain(|id, _| dm_channels.contains(id));
+    s.history_loaded.clear();
+    // A request the last session never got an answer to would
+    // otherwise stay "in flight" forever.
+    s.emoji_requested.clear();
+    resolve_media(s, tx);
+    let mut shares = std::collections::HashMap::<Id, Vec<String>>::new();
+    for vs in &s.voice_states {
+        if vs.screen_sharing
+            && let Some(channel) = vs.channel_id
+        {
+            shares
+                .entry(channel)
+                .or_default()
+                .push(vs.user_pubkey.clone());
+        }
+    }
+    s.screen_shares = shares;
+    if !recovering {
+        s.screen_viewing.clear();
+    }
+    let server_channel = s.server_voice_channel();
+    if recovering
+        && let Some(channel) = local_channel
+        && server_channel != Some(channel)
+    {
+        let guild = s
+            .channels
+            .iter()
+            .find(|c| c.id == channel)
+            .map(|c| c.guild_id);
+        let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
+        s.end_voice_locally();
+        if guild.is_some() && server_channel.is_none() {
+            let _ = tx.send(s.voice.join_message(channel));
+        }
+    }
+    s.status = ConnectionStatus::Ready;
+
+    let asked = s.open_guild_on_ready.take();
+    let chosen = selected_guild
+        .filter(|id| recovering && s.guilds.iter().any(|g| g.id == *id))
+        .or_else(|| asked.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
+        .or_else(|| default_guild.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
+        .or_else(|| s.guilds.first().map(|g| g.id));
+    if selected_dm {
+        s.selected_guild = chosen;
+        s.selected_channel = selected_channel;
+    } else if let Some(first) = chosen {
+        s.selected_guild = Some(first);
+        let chan = selected_channel
+            .filter(|id| {
+                recovering
+                    && s.channels
+                        .iter()
+                        .any(|c| c.id == *id && c.guild_id == first)
+            })
+            .or_else(|| s.default_channel_of(first));
+        s.selected_channel = chan;
+        if let Some(channel_id) = chan {
+            let _ = tx.send(ClientMessage::FetchMessages {
+                channel_id,
+                limit: 50,
+                before_ms: None,
+            });
+        }
+    }
+    s.prune_read_marks();
+    s.note_latest_messages(latest_messages);
+    if let Some(join_msg) = s.resume_voice_invite(None) {
+        let _ = tx.send(join_msg);
+    }
+}
+
 fn apply(
     state: &mut Signal<AppState>,
     msg: ServerMessage,
@@ -1372,165 +1637,8 @@ fn apply(
 ) {
     let mut s = state.write();
     match msg {
-        ServerMessage::Ready {
-            chat_tools,
-            image_previews,
-            progressive_image_uploads,
-            user,
-            guilds,
-            channels,
-            members,
-            voice_states,
-            catalog,
-            profiles,
-            roles,
-            emojis,
-            sounds,
-            activities,
-            bot_commands,
-            operator,
-            default_guild,
-            server,
-            latest_messages,
-        } => {
-            s.pending_edits.clear();
-            let recovering = s.status == ConnectionStatus::Reconnecting;
-            let selected_guild = s.selected_guild;
-            let selected_channel = s.selected_channel;
-            let selected_dm =
-                recovering && s.dm_mode && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
-            let local_channel = s.voice.channel_id;
-            s.readies = s.readies.wrapping_add(1);
-            s.self_user = Some(user);
-            s.is_operator = operator;
-            s.default_guild = default_guild;
-            s.server_info = server;
-            s.server_chat_tools = chat_tools;
-            s.server_image_previews = image_previews;
-            s.server_progressive_image_uploads = progressive_image_uploads;
-            s.guilds = guilds;
-            s.channels = channels;
-            s.members = members;
-            s.voice_states = voice_states;
-            if !recovering {
-                s.dm_mode = false;
-            }
-            s.catalog = catalog;
-            s.profiles = profiles
-                .into_iter()
-                .map(|p| (p.pubkey.clone(), p))
-                .collect();
-            s.activities = activities
-                .into_iter()
-                .filter_map(|u| u.activity.map(|a| (u.pubkey, a)))
-                .collect();
-            s.roles = {
-                let mut map: std::collections::HashMap<Id, Vec<crate::protocol::Role>> =
-                    std::collections::HashMap::new();
-                for role in roles {
-                    map.entry(role.guild_id).or_default().push(role);
-                }
-                for list in map.values_mut() {
-                    list.sort_by_key(|r| r.position);
-                }
-                map
-            };
-            s.guild_emojis = {
-                let mut map: std::collections::HashMap<Id, Vec<crate::protocol::GuildEmoji>> =
-                    std::collections::HashMap::new();
-                for e in emojis {
-                    map.entry(e.guild_id).or_default().push(e);
-                }
-                map
-            };
-            s.guild_sounds = {
-                let mut map: std::collections::HashMap<Id, Vec<crate::protocol::GuildSound>> =
-                    std::collections::HashMap::new();
-                for sound in sounds {
-                    map.entry(sound.guild_id).or_default().push(sound);
-                }
-                map
-            };
-            s.bot_commands = bot_commands
-                .into_iter()
-                .map(|set| (set.bot_pubkey, set.commands))
-                .collect();
-            s.command_notes.clear();
-            let dm_channels: std::collections::HashSet<_> =
-                s.dms.iter().map(|dm| dm.channel_id).collect();
-            s.messages.retain(|id, _| dm_channels.contains(id));
-            s.history_loaded.clear();
-            // A request the last session never got an answer to would
-            // otherwise stay "in flight" forever.
-            s.emoji_requested.clear();
-            resolve_media(&mut s, tx);
-            let mut shares = std::collections::HashMap::<Id, Vec<String>>::new();
-            for vs in &s.voice_states {
-                if vs.screen_sharing
-                    && let Some(channel) = vs.channel_id
-                {
-                    shares
-                        .entry(channel)
-                        .or_default()
-                        .push(vs.user_pubkey.clone());
-                }
-            }
-            s.screen_shares = shares;
-            if !recovering {
-                s.screen_viewing.clear();
-            }
-            let server_channel = s.server_voice_channel();
-            if recovering
-                && let Some(channel) = local_channel
-                && server_channel != Some(channel)
-            {
-                let guild = s
-                    .channels
-                    .iter()
-                    .find(|c| c.id == channel)
-                    .map(|c| c.guild_id);
-                let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
-                s.end_voice_locally();
-                if guild.is_some() && server_channel.is_none() {
-                    let _ = tx.send(s.voice.join_message(channel));
-                }
-            }
-            s.status = ConnectionStatus::Ready;
-
-            let asked = s.open_guild_on_ready.take();
-            let chosen = selected_guild
-                .filter(|id| recovering && s.guilds.iter().any(|g| g.id == *id))
-                .or_else(|| asked.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
-                .or_else(|| default_guild.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
-                .or_else(|| s.guilds.first().map(|g| g.id));
-            if selected_dm {
-                s.selected_guild = chosen;
-                s.selected_channel = selected_channel;
-            } else if let Some(first) = chosen {
-                s.selected_guild = Some(first);
-                let chan = selected_channel
-                    .filter(|id| {
-                        recovering
-                            && s.channels
-                                .iter()
-                                .any(|c| c.id == *id && c.guild_id == first)
-                    })
-                    .or_else(|| s.default_channel_of(first));
-                s.selected_channel = chan;
-                if let Some(channel_id) = chan {
-                    let _ = tx.send(ClientMessage::FetchMessages {
-                        channel_id,
-                        limit: 50,
-                        before_ms: None,
-                    });
-                }
-            }
-            s.prune_read_marks();
-            s.note_latest_messages(latest_messages);
-            if let Some(join_msg) = s.resume_voice_invite(None) {
-                let _ = tx.send(join_msg);
-            }
-        }
+        // Inside a live session a Ready has nothing to restore over, so it keeps the selection.
+        ready @ ServerMessage::Ready { .. } => apply_ready(&mut s, ready, true, tx, voice_tx),
         ServerMessage::MessageHistory {
             channel_id,
             messages,
@@ -2772,7 +2880,6 @@ mod tests {
                 };
                 {
                     let mut s = state.write();
-                    s.status = ConnectionStatus::Reconnecting;
                     s.server_chat_tools = true;
                     s.dm_mode = true;
                     s.selected_channel = Some(channel);
@@ -2803,32 +2910,28 @@ mod tests {
                 }
                 let (tx, mut commands) = unbounded_channel();
                 let (voice_tx, _voice_rx) = unbounded_channel();
-                apply(
-                    &mut state,
-                    ServerMessage::Ready {
-                        chat_tools: false,
-                        image_previews: false,
-                        progressive_image_uploads: false,
-                        user,
-                        guilds: vec![],
-                        channels: vec![],
-                        members: vec![],
-                        voice_states: vec![],
-                        catalog: vec![],
-                        profiles: vec![],
-                        roles: vec![],
-                        emojis: vec![],
-                        sounds: vec![],
-                        activities: vec![],
-                        bot_commands: vec![],
-                        operator: false,
-                        default_guild: None,
-                        server: Default::default(),
-                        latest_messages: Default::default(),
-                    },
-                    &tx,
-                    &voice_tx,
-                );
+                let ready = ServerMessage::Ready {
+                    chat_tools: false,
+                    image_previews: false,
+                    progressive_image_uploads: false,
+                    user,
+                    guilds: vec![],
+                    channels: vec![],
+                    members: vec![],
+                    voice_states: vec![],
+                    catalog: vec![],
+                    profiles: vec![],
+                    roles: vec![],
+                    emojis: vec![],
+                    sounds: vec![],
+                    activities: vec![],
+                    bot_commands: vec![],
+                    operator: false,
+                    default_guild: None,
+                    server: Default::default(),
+                    latest_messages: Default::default(),
+                };
+                apply_ready(&mut state.write(), ready.clone(), true, &tx, &voice_tx);
                 let s = state.peek();
                 assert_eq!(s.status, ConnectionStatus::Ready);
                 assert!(!s.server_chat_tools);
@@ -2840,6 +2943,9 @@ mod tests {
                     crate::nostr::delivery::Delivery::Pending
                 );
                 assert!(commands.try_recv().is_err());
+                drop(s);
+                apply_ready(&mut state.write(), ready, false, &tx, &voice_tx);
+                assert!(!state.peek().dm_mode, "a first Ready opens the server");
             });
             rsx! {}
         }

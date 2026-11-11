@@ -361,7 +361,6 @@ pub fn WorkspaceView(
     });
 
     let (gateway_tx, gateway_shutdown, voice_tx) = use_hook(|| {
-        state.write().status = ConnectionStatus::Connecting;
         let voice_tx = spawn_voice_service(state);
         let (gateway_tx, gateway_shutdown) =
             spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {

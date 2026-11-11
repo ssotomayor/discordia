@@ -232,21 +232,20 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         let username = sanitize_username(&username);
                         let refused = if origin.is_empty() {
-                            Some(
-                                "identify rejected: this client is too old — a login must \
+                            Some(format!(
+                                "{IDENTIFY_REJECTED}: this client is too old — a login must \
                                  name the server address it dialed"
-                                    .to_string(),
-                            )
+                            ))
                         } else if !ctx.identities.contains(&origin) {
                             Some(format!(
-                                "identify rejected: this server does not answer to '{origin}'. \
+                                "{IDENTIFY_REJECTED}: this server does not answer to '{origin}'. \
                                  A host reached through another name has to list it in \
                                  DISCORDIA_PUBLIC_HOSTS"
                             ))
                         } else {
                             auth::verify_identify(&pubkey, &signature, &nonce, &origin, &username)
                                 .err()
-                                .map(|e| format!("identify rejected: {e}"))
+                                .map(|e| format!("{IDENTIFY_REJECTED}: {e}"))
                         };
                         if let Some(message) = refused {
                             tracing::warn!(reason = %message, "gateway identify refused");
@@ -3126,6 +3125,10 @@ pub const RATE_LIMITED: &str = "rate limited: slow down";
 /// What a client is told when the host stops the server under it. Read back on
 /// the client side to name the reason instead of "connection closed".
 pub const HOST_STOPPED: &str = "the host stopped this server";
+
+/// Every refusal of a login that retrying cannot change. A client stops
+/// reconnecting on it instead of retrying forever.
+pub const IDENTIFY_REJECTED: &str = "identify rejected";
 
 /// Resolves when the host has stopped the server — including when it already
 /// had before this socket subscribed, which `changed()` alone would sleep
