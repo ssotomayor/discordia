@@ -1278,28 +1278,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 if was_camera_on {
                                     broadcast_camera_state(&ctx.state, from_channel_id);
                                 }
-                                let target_conn = call.owner;
-                                let ctx = ctx.clone();
-                                let by = u.pubkey.clone();
                                 let name = ctx.state.users.get(&user_pubkey)
                                     .map(|u| u.username.clone()).unwrap_or_default();
-                                let (host, peer) = ctx.state.connection_voice_address(target_conn);
-                                let (cfg, revision) = ctx.livekit.route();
-                                let mut urls = cfg.urls_for_client(host.as_deref(), peer);
-                                let url = urls.remove(0);
+                                grant_voice(&ctx, call, name);
+                                let ctx = ctx.clone();
+                                let by = u.pubkey.clone();
                                 tokio::spawn(async move {
                                     ctx.state.audit(guild_id, &by, "move_voice", &user_pubkey,
                                         &format!("{from_channel_id} -> {channel_id}")).await;
-                                    let frames = mint_voice_frames(&cfg, &user_pubkey, &name,
-                                        channel_id, url, urls, revision).await;
-                                    if ctx.state.voice_channel_of(&user_pubkey) != Some(channel_id)
-                                        || !ctx.state.voice_owned_by(&user_pubkey, target_conn)
-                                        || ctx.livekit.route().1 != revision {
-                                        return;
-                                    }
-                                    for frame in &frames {
-                                        ctx.state.deliver_to_conn(target_conn, frame);
-                                    }
                                 });
                             }
                             Err(message) => {
@@ -1993,7 +1979,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         }
-                        let crate::state::VoiceJoin { previous, state: new_state, .. } =
+                        let crate::state::VoiceJoin { previous, state: new_state, call } =
                             ctx.state.join_voice(conn_id, &u.pubkey, guild_id, channel_id, preferences);
                         // A move is a leave and then a join, for everyone including the
                         // mover. The leave goes first: one client can be in both guilds.
@@ -2032,40 +2018,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 broadcast_camera_state(&ctx.state, old_channel);
                             }
                         }
-                        // Minting may wait on a rendezvous. Off this loop, so a slow
-                        // one costs this join and not every frame on the socket.
-                        let ctx = ctx.clone();
-                        let (pubkey, username) = (u.pubkey.clone(), u.username.clone());
-                        let (voice_cfg, route_revision) = ctx.livekit.route();
-                        let mut livekit_urls = voice_cfg.urls_for_client(client_host.as_deref(), peer);
-                        let livekit_url = livekit_urls.remove(0);
-                        tokio::spawn(async move {
-                            let frames = mint_voice_frames(
-                                &voice_cfg,
-                                &pubkey,
-                                &username,
-                                channel_id,
-                                livekit_url,
-                                livekit_urls,
-                                route_revision,
-                            )
-                            .await;
-                            if ctx.state.voice_channel_of(&pubkey) != Some(channel_id)
-                                || !ctx.state.voice_owned_by(&pubkey, conn_id)
-                                || ctx.livekit.route().1 != route_revision {
-                                return;
-                            }
-                            for frame in &frames {
-                                ctx.state.deliver_to_conn(conn_id, frame);
-                            }
-                        });
+                        grant_voice(&ctx, call, u.username.clone());
                     }
                     ClientMessage::VoiceConnectionReport { channel_id, route_revision, connected } => {
                         let Some(u) = phase.user() else { continue };
                         let peer_private = peer.is_some_and(crate::protocol::is_private_ip);
                         let ignored = if !signals.allow() { Some("rate limited") }
                             else if ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id) { Some("not in that channel") }
-                            else if route_revision != 0 || ctx.livekit.route().1 != 0 { Some("already on the shared route") }
+                            else if route_revision != 0 || ctx.livekit.placement() == livekit::Placement::Shared { Some("already on the shared route") }
                             else if peer_private { Some("caller is on the LAN") }
                             else if ctx.livekit.fallback.is_none() { Some("no shared fallback configured") }
                             else { None };
@@ -3241,32 +3201,46 @@ async fn move_voice_to_shared(ctx: Arc<AppContext>) {
             reason: reason.into(),
         },
     );
-    let callers: Vec<_> = ctx
-        .state
-        .voice_states
-        .iter()
-        .filter_map(|v| v.channel_id.map(|channel| (v.user_pubkey.clone(), channel)))
-        .collect();
-    for (pubkey, channel) in callers {
-        let ctx = ctx.clone();
-        let cfg = cfg.clone();
-        let url = url.clone();
-        tokio::spawn(async move {
-            let name = ctx
-                .state
-                .users
-                .get(&pubkey)
-                .map(|u| u.username.clone())
-                .unwrap_or_default();
-            let frames =
-                mint_voice_frames(&cfg, &pubkey, &name, channel, url, Vec::new(), revision).await;
-            if ctx.state.voice_channel_of(&pubkey) == Some(channel) {
-                for frame in frames {
-                    ctx.state.deliver(vec![pubkey.clone()], frame);
-                }
-            }
-        });
+    for call in ctx.state.live_calls() {
+        let name = ctx
+            .state
+            .users
+            .get(&call.pubkey)
+            .map(|u| u.username.clone())
+            .unwrap_or_default();
+        grant_voice(&ctx, call, name);
     }
+}
+
+/// Mints a join's grants off the socket loop, so a slow rendezvous costs that
+/// join and not every frame on the socket (trap 26).
+fn grant_voice(ctx: &Arc<AppContext>, call: crate::state::VoiceCall, name: String) {
+    // Read after the join is recorded: a failover that this route misses finds the join.
+    let (cfg, revision) = ctx.livekit.route();
+    let (host, peer) = ctx.state.connection_voice_address(call.owner);
+    let mut urls = cfg.urls_for_client(host.as_deref(), peer);
+    let url = urls.remove(0);
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        let frames = mint_voice_frames(
+            &cfg,
+            &call.pubkey,
+            &name,
+            call.channel_id,
+            url,
+            urls,
+            revision,
+        )
+        .await;
+        // Only to the socket that holds this same join: a sibling of the key would
+        // connect as the caller and take its seat; an older join's grant is stale.
+        if !ctx.state.is_current_call(&call) || ctx.livekit.route_revision() != revision {
+            return;
+        }
+        for frame in &frames {
+            ctx.state.deliver_to_conn(call.owner, frame);
+        }
+    });
 }
 
 /// Enough of a hex pubkey to tell callers apart in a log line.
@@ -3295,13 +3269,7 @@ async fn mint_voice_frames(
         }
     };
     let ice_servers = cfg.ice_servers();
-    let location = if cfg.minter.is_some() {
-        "rendezvous"
-    } else if cfg.explicit_url.is_none() {
-        "host"
-    } else {
-        "configured"
-    };
+    let location = cfg.location().as_str();
     tracing::info!(
         %channel_id,
         user = %short_key(pubkey),
