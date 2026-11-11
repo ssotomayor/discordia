@@ -25,7 +25,7 @@ const MAX_KEY_COST: u8 = 20;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MENTION_VERSION: u32 = 1;
 
-/// What the Android side posts. Never a message body.
+/// What the Android side posts. A DM's text only while `dm_notification_text` is on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Alert {
@@ -36,6 +36,7 @@ pub enum Alert {
         peer: String,
         sender: String,
         message: String,
+        public: String,
         silent: bool,
         at: i64,
         id: String,
@@ -227,7 +228,12 @@ fn decide_dm(
             .name(peer)
             .map(clean_name)
             .unwrap_or_else(|| crate::identity::truncate_pubkey(peer)),
-        message: crate::i18n::translate(language, "New private message", &[]),
+        message: crate::push::dm_alert_text(
+            &message.content,
+            settings.dm_notification_text,
+            |key| crate::i18n::translate(language, key, &[]),
+        ),
+        public: crate::i18n::translate(language, "New private message", &[]),
         silent: settings.sfx_volume == 0,
         at: message.created_at,
         id: message.id.clone(),

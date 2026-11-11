@@ -23,6 +23,9 @@ pub struct ChatMessage {
     pub emoji: Vec<(String, String)>,
 }
 
+/// What an image message carries as text; the picture itself is in its tags.
+pub const IMAGE_PLACEHOLDER: &str = "[Encrypted image]";
+
 pub fn chat_rumor(
     from_pubkey: &str,
     to_pubkey: &str,
@@ -193,7 +196,7 @@ pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String
         author: rumor.pubkey.clone(),
         peer,
         content: if rumor.kind == super::dm_image::KIND {
-            "[Encrypted image]".into()
+            IMAGE_PLACEHOLDER.into()
         } else {
             rumor.content.clone()
         },

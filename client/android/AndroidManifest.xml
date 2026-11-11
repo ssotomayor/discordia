@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <application>
-        <activity android:name="dev.dioxus.main.MainActivity" android:launchMode="singleTask" android:enableOnBackInvokedCallback="true" />
+        <!-- Every change Android would otherwise answer by recreating the Activity: the native runtime cannot survive one. -->
+        <activity android:name="dev.dioxus.main.MainActivity" android:launchMode="singleTask" android:enableOnBackInvokedCallback="true"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|layoutDirection|colorMode|grammaticalGender|fontScale|fontWeightAdjustment"
+            tools:replace="android:configChanges" />
         <service android:name="com.discordia.app.DioxusPushService" android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />

@@ -7,6 +7,8 @@ struct Notice {
     peer: String,
     sender: String,
     message: String,
+    /// What a locked screen shows in place of `message`.
+    public: String,
     silent: bool,
     at: i64,
     id: String,
@@ -50,7 +52,13 @@ fn use_read_notification_dismissal(state: dioxus::prelude::Signal<AppState>, acc
     });
 }
 
-fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) -> Option<Notice> {
+fn notice(
+    state: &AppState,
+    message: &ChatMessage,
+    account: &str,
+    live: bool,
+    show_text: impl FnOnce() -> bool,
+) -> Option<Notice> {
     let channel = conversation_id(&message.peer);
     let at = message.created_at - state.clock_offset(&message.author);
     if !live
@@ -75,11 +83,19 @@ fn notice(state: &AppState, message: &ChatMessage, account: &str, live: bool) ->
             .filter(|c| !c.is_control())
             .take(100)
             .collect(),
-        message: crate::i18n::text("New private message", &[]),
+        message: crate::push::dm_alert_text(&message.content, show_text(), |key| {
+            crate::i18n::text(key, &[])
+        }),
+        public: crate::i18n::text("New private message", &[]),
         silent: !crate::native_sounds::sound_enabled("dm"),
         at: message.created_at,
         id: message.id.clone(),
     })
+}
+
+#[cfg(any(target_os = "android", target_os = "windows"))]
+fn shows_text() -> bool {
+    crate::settings::load_or_default().dm_notification_text
 }
 
 fn open_inbox(state: &mut AppState, peer: &str) -> bool {
@@ -125,7 +141,7 @@ pub fn request_open_dm(account: &str, peer: &str) {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, live: bool) {
-    if let Some(notice) = notice(state, message, account, live) {
+    if let Some(notice) = notice(state, message, account, live, shows_text) {
         crate::windows_notifications::show_dm_notification(
             &notice.account,
             &notice.sender,
@@ -181,7 +197,7 @@ pub(crate) fn use_notifications(mut state: dioxus::prelude::Signal<AppState>, ac
 
 #[cfg(target_os = "android")]
 pub(crate) fn received(state: &AppState, message: &ChatMessage, account: &str, live: bool) {
-    if let Some(notice) = notice(state, message, account, live)
+    if let Some(notice) = notice(state, message, account, live, shows_text)
         && crate::push::device::preferences().dms
     {
         match serde_json::to_string(&notice) {
@@ -412,6 +428,7 @@ mod native {
         let mut busy = use_signal(|| false);
         let push = use_hook(crate::android::push_available);
         let preferences = use_signal(crate::push::device::preferences);
+        let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
         let failed = use_signal(|| false);
         use_future(move || async move {
             status.set(
@@ -479,6 +496,22 @@ mod native {
                             }
                             span { class: "text-sm", {crate::i18n::text("Direct messages", &[])} }
                         }
+                        label { class: "ml-6 flex items-center gap-2 min-h-[44px] cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                class: "accent-[var(--accent)]",
+                                checked: settings.read().dm_notification_text,
+                                disabled: !preferences().dms,
+                                onchange: move |e| {
+                                    let mut next = settings.read().clone();
+                                    next.dm_notification_text = e.checked();
+                                    settings.set(next.clone());
+                                    crate::settings::save(&next);
+                                },
+                            }
+                            span { class: "text-sm", {crate::i18n::text("Show message text in notifications", &[])} }
+                        }
+                        p { class: "ml-6 text-sm text-[var(--text-muted)]", {crate::i18n::text("When off, a notification only says who wrote to you.", &[])} }
                         label { class: "flex items-center gap-2 min-h-[44px] cursor-pointer select-none",
                             input {
                                 r#type: "checkbox",
@@ -516,14 +549,14 @@ mod tests {
         let mut message = message();
         message.created_at = 108;
         state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
-        assert!(notice(&state, &message, "self", true).is_some());
+        assert!(notice(&state, &message, "self", true, || true).is_some());
     }
 
     #[test]
     fn do_not_disturb_prevents_native_message_alerts_even_without_a_server() {
         let mut state = AppState::empty();
         state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
-        assert!(notice(&state, &message(), "self", true).is_some());
+        assert!(notice(&state, &message(), "self", true, || true).is_some());
         state.profiles.insert(
             "self".into(),
             crate::protocol::Profile {
@@ -532,7 +565,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(notice(&state, &message(), "self", true).is_none());
+        assert!(notice(&state, &message(), "self", true, || true).is_none());
         state.note_account_profile(
             "self".into(),
             crate::profile::LocalProfile {
@@ -541,9 +574,9 @@ mod tests {
             },
         );
         state.clear_server_session();
-        assert!(notice(&state, &message(), "self", true).is_none());
+        assert!(notice(&state, &message(), "self", true, || true).is_none());
         state.account_dnd.as_mut().unwrap().0 = "another-account".into();
-        assert!(notice(&state, &message(), "self", true).is_some());
+        assert!(notice(&state, &message(), "self", true, || true).is_some());
     }
 
     fn message() -> ChatMessage {
@@ -562,27 +595,77 @@ mod tests {
     fn only_new_unread_inbox_messages_can_notify() {
         let mut state = AppState::empty();
         let mut message = message();
-        assert!(notice(&state, &message, "self", true).is_none());
+        assert!(notice(&state, &message, "self", true, || true).is_none());
         state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
-        assert!(notice(&state, &message, "self", true).is_some());
-        assert!(notice(&state, &message, "self", false).is_none());
+        assert!(notice(&state, &message, "self", true, || true).is_some());
+        assert!(notice(&state, &message, "self", false, || true).is_none());
         state.dm_read_at.insert("peer".into(), 101);
-        assert!(notice(&state, &message, "self", true).is_none());
+        assert!(notice(&state, &message, "self", true, || true).is_none());
         state.dm_read_at.clear();
         state.muted_channels.insert(conversation_id("peer"));
-        assert!(notice(&state, &message, "self", true).is_none());
+        assert!(notice(&state, &message, "self", true, || true).is_none());
         state.muted_channels.clear();
         message.author = "self".into();
-        assert!(notice(&state, &message, "self", true).is_none());
+        assert!(notice(&state, &message, "self", true, || true).is_none());
     }
 
     #[test]
-    fn notification_payload_never_contains_the_dm_body() {
+    fn the_dm_body_is_in_the_payload_only_when_the_setting_allows_and_never_in_the_public_line() {
         let mut state = AppState::empty();
         state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
-        let payload =
-            serde_json::to_string(&notice(&state, &message(), "self", true).unwrap()).unwrap();
-        assert!(!payload.contains("private content"));
+        let shown = notice(&state, &message(), "self", true, || true).unwrap();
+        assert_eq!(shown.message, "private content");
+        assert_eq!(shown.public, "New private message");
+        let hidden = notice(&state, &message(), "self", true, || false).unwrap();
+        assert!(
+            !serde_json::to_string(&hidden)
+                .unwrap()
+                .contains("private content")
+        );
+    }
+
+    #[test]
+    fn an_alert_line_is_one_bounded_line_and_names_what_is_not_text() {
+        let english = |key: &'static str| key.to_string();
+        let long = "x".repeat(crate::push::DM_ALERT_CHARS + 50);
+        let invite = "discordia://voice/00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002";
+        for (content, show, expected) in [
+            ("hello", true, "hello".to_string()),
+            ("hello", false, "New private message".to_string()),
+            (
+                "two\nlines\tand\u{7} a bell",
+                true,
+                "two lines and a bell".to_string(),
+            ),
+            ("  \n ", true, "New private message".to_string()),
+            (
+                crate::nostr::nip17::IMAGE_PLACEHOLDER,
+                true,
+                "Sent a picture".to_string(),
+            ),
+            (
+                crate::nostr::nip17::IMAGE_PLACEHOLDER,
+                false,
+                "New private message".to_string(),
+            ),
+            (invite, true, "Invited you to a voice channel".to_string()),
+            (
+                long.as_str(),
+                true,
+                format!("{}…", "x".repeat(crate::push::DM_ALERT_CHARS)),
+            ),
+        ] {
+            assert_eq!(
+                crate::push::dm_alert_text(content, show, english),
+                expected,
+                "{content:?}"
+            );
+        }
+        let with_note = format!("join us {invite}");
+        assert_eq!(
+            crate::push::dm_alert_text(&with_note, true, english),
+            "join us"
+        );
     }
 
     #[test]
@@ -606,11 +689,11 @@ mod tests {
     fn ignored_or_blocked_peers_do_not_notify() {
         let mut state = AppState::empty();
         state.choose_dm("peer", Some(crate::state::DmChoice::Ignored));
-        assert!(notice(&state, &message(), "self", true).is_none());
+        assert!(notice(&state, &message(), "self", true, || true).is_none());
         state.choose_dm("peer", None);
         state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         state.mutes = crate::nostr::nip51::MuteList::from_pubkeys(["peer".into()]);
-        assert!(notice(&state, &message(), "self", true).is_none());
+        assert!(notice(&state, &message(), "self", true, || true).is_none());
     }
 
     #[test]
@@ -618,7 +701,7 @@ mod tests {
         let mut state = AppState::empty();
         state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
         state.dm_read_at.insert("peer".into(), 100);
-        assert!(notice(&state, &message(), "self", true).is_some());
+        assert!(notice(&state, &message(), "self", true, || true).is_some());
     }
 
     #[test]

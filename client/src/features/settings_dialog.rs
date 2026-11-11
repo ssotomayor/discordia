@@ -562,6 +562,23 @@ fn WindowsNotificationSettings() -> Element {
                 }
                 span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Enable notifications when minimized to tray", &[])} }
             }
+            label { class: "mt-2 flex items-center gap-2 cursor-pointer select-none",
+                input {
+                    r#type: "checkbox",
+                    class: "accent-[var(--accent)]",
+                    checked: settings.read().dm_notification_text,
+                    disabled: !enabled,
+                    aria_label: crate::i18n::text("Show message text in notifications", &[]),
+                    onchange: move |e| {
+                        let mut next = settings.read().clone();
+                        next.dm_notification_text = e.checked();
+                        settings.set(next.clone());
+                        crate::settings::save(&next);
+                    },
+                }
+                span { class: "text-[13px] text-[var(--text)] flex-1", {crate::i18n::text("Show message text in notifications", &[])} }
+            }
+            p { class: "mt-1 text-[12.5px] text-[var(--text-dim)]", {crate::i18n::text("When off, a notification only says who wrote to you.", &[])} }
         }
     }
 }

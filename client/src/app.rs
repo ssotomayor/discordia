@@ -1099,6 +1099,27 @@ pub fn App() -> Element {
     });
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
+    use_hook(move || {
+        let (Some(identity), Some(saved)) = (identity.peek().clone(), last_session.peek().clone())
+        else {
+            return;
+        };
+        if !session::resumes(&saved, cfg!(target_os = "android")) {
+            return;
+        }
+        // Cleared first and set again only once it has held, or a start that dies here loops.
+        let _ = session::set_live(false);
+        session.set(Some(SessionParams {
+            mode: saved.mode,
+            identity,
+        }));
+        spawn(async move {
+            tokio::time::sleep(session::RESUME_SETTLE).await;
+            if session.peek().is_some() {
+                let _ = session::set_live(true);
+            }
+        });
+    });
 
     let appearance = settings.read();
     let theme = appearance.theme.clone();
@@ -1175,6 +1196,7 @@ pub fn App() -> Element {
                             error.set(None);
                             let saved = SavedSession {
                                 mode: params.mode.clone(),
+                                live: true,
                             };
                             let _ = session::save(&saved);
                             session.set(Some(params));
@@ -1201,6 +1223,7 @@ pub fn App() -> Element {
                         },
                         on_disconnect: move |reason: String| {
                             error.set(if reason.is_empty() { None } else { Some(reason) });
+                            let _ = session::set_live(false);
                             session.set(None);
                             if *exit.peek() == Exit::Staying {
                                 updates.check();

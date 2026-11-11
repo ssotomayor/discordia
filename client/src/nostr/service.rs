@@ -1373,7 +1373,7 @@ fn show_image_job(
         id: job.id.clone(),
         author: owner.into(),
         peer: job.peer.clone(),
-        content: "[Encrypted image]".into(),
+        content: super::nip17::IMAGE_PLACEHOLDER.into(),
         created_at: job.created_at,
         reply_to: job.reply_to.clone(),
         emoji: Vec::new(),

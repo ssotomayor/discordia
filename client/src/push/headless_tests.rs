@@ -153,25 +153,37 @@ fn none_before_unlock(f: &Fixture, data: &str) {
 }
 
 #[test]
-fn a_clean_dm_from_an_inbox_peer_alerts_without_its_body() {
+fn a_clean_dm_from_an_inbox_peer_alerts_with_its_text_and_a_public_line_without_it() {
     let f = fixture();
     let rumor = f.chat_from(&f.peer, NOW - 10);
     let (alert, unlocked) = f.run(&f.inline(&f.wrap(&f.peer, &rumor)));
     assert!(unlocked);
-    let alert = alert.expect("a clean DM alerts");
     assert_eq!(
-        alert,
+        alert.expect("a clean DM alerts"),
         Alert::Dm {
             account: f.me.pubkey.clone(),
             peer: f.peer_key(),
             sender: crate::identity::truncate_pubkey(&f.peer_key()),
-            message: "New private message".into(),
+            message: BODY.into(),
+            public: "New private message".into(),
             silent: false,
             at: NOW - 10,
             id: rumor.id.clone(),
         }
     );
-    let json = serde_json::to_string(&alert).unwrap();
+}
+
+#[test]
+fn with_the_text_setting_off_the_alert_carries_no_body() {
+    let f = fixture();
+    f.settings(|settings| {
+        settings.dm_accepted = vec![f.peer_key()];
+        settings.dm_notification_text = false;
+    });
+    let rumor = f.chat_from(&f.peer, NOW - 10);
+    let (alert, _) = f.run(&f.inline(&f.wrap(&f.peer, &rumor)));
+    let json = serde_json::to_string(&alert.expect("a clean DM alerts")).unwrap();
+    assert!(json.contains("New private message"));
     assert!(!json.contains(BODY) && !json.contains("secret body"));
 }
 
@@ -182,6 +194,7 @@ fn the_alert_json_is_the_shape_kotlin_reads() {
         peer: "p".into(),
         sender: "s".into(),
         message: "m".into(),
+        public: "g".into(),
         silent: true,
         at: 5,
         id: "i".into(),
@@ -189,7 +202,7 @@ fn the_alert_json_is_the_shape_kotlin_reads() {
     assert_eq!(
         serde_json::to_value(&dm).unwrap(),
         serde_json::json!({"kind": "dm", "account": "a", "peer": "p", "sender": "s",
-            "message": "m", "silent": true, "at": 5, "id": "i"})
+            "message": "m", "public": "g", "silent": true, "at": 5, "id": "i"})
     );
     let id = Id::from_u128(1);
     let mention = Alert::Mention {
@@ -243,9 +256,7 @@ fn the_language_and_a_silenced_device_carry_through() {
             |_, _| Err("unused".into()),
         );
         match alert {
-            Some(Alert::Dm {
-                message, silent, ..
-            }) => (message, silent),
+            Some(Alert::Dm { public, silent, .. }) => (public, silent),
             other => panic!("expected a DM alert, got {other:?}"),
         }
     };

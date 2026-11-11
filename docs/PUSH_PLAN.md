@@ -31,7 +31,7 @@ phase merges — `docs/MAP.md`, `docs/OPS.md` and `CLAUDE.md` carry what stays t
 | A guild server calls one operator-configured relay URL, never a client-supplied one | No SSRF surface. This is server config, not a guild install, so trap 39 is not engaged; say so in the new trap. |
 | DM pushes come from a relay-side watcher on kind 1059, not from the sender | A sender-side "poke" would show the relay the sender's address beside the recipient's key, which gift wraps exist to hide. The watcher sees only what relays already publish. |
 | Mention payloads use a per-server symmetric key, not the identity key | No vault unlock (scrypt) per mention, and the server needs no key agreement. |
-| Alerts stay generic: who and where, never the message body | Existing DM policy (`dm_notifications.rs`, `Notice`). |
+| A DM alert shows its text unless `dm_notification_text` is off; the lock screen line and mentions stay generic | The text is decrypted on the phone (`push::dm_alert_text`); nothing more reaches the relay or Google. |
 | Only the active account alerts | Existing rule in `DioxusDmNotifications.show`. One registration per install at a time. |
 | No push for phones without Play services in this plan | See [Later](#later). |
 

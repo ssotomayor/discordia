@@ -45,15 +45,19 @@ class AndroidReleaseTests(unittest.TestCase):
                         building.verify_notification_permission(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
 
     def test_main_activity_must_reuse_the_process_native_runtime(self):
-        good = '\n  E: activity (line=1)\n    A: android:name(0x01010003)="dev.dioxus.main.MainActivity"\n    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n'
-        for manifest, valid in [(good, True), (good.replace('0x2\n', '0x0\n'), False),
-                                (good.replace('dev.dioxus.main.MainActivity', 'other.Activity'), False),
-                                (good.replace('    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n', ''), False)]:
+        handled = '    A: android:configChanges(0x0101001f)=(type 0x11)0x5000ffff\n'
+        good = '\n  E: activity (line=1)\n    A: android:name(0x01010003)="dev.dioxus.main.MainActivity"\n    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n' + handled
+        for manifest, problem in [(good, None), (good.replace('0x2\n', '0x0\n'), 'singleTask'),
+                                  (good.replace('dev.dioxus.main.MainActivity', 'other.Activity'), 'singleTask'),
+                                  (good.replace('    A: android:launchMode(0x0101001d)=(type 0x10)0x2\n', ''), 'singleTask'),
+                                  # What dx declares on its own: a theme switch would recreate the Activity.
+                                  (good.replace('0x5000ffff', '0x000005a0'), 'configChanges'),
+                                  (good.replace(handled, ''), 'configChanges')]:
             with patch.object(building.subprocess, 'check_output', return_value=manifest):
-                if valid:
+                if problem is None:
                     building.verify_activity_mode(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
                 else:
-                    with self.assertRaisesRegex(RuntimeError, 'singleTask'):
+                    with self.assertRaisesRegex(RuntimeError, problem):
                         building.verify_activity_mode(Path('test.apk'), {'ANDROID_HOME': 'sdk'})
 
     def test_jni_class_must_be_defined_in_dex_not_only_referenced(self):
