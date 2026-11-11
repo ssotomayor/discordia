@@ -154,17 +154,19 @@ object DioxusNotifier {
         val pending = launch(context, Uri.Builder().scheme("discordia").authority("dm").appendPath(owner).appendPath(peer).build()) ?: return
         if (!remember(alerted(context), tag, at)) return
         ensureChannels(context)
-        val text = value.getString("message")
+        val text = value.getString("message").take(301)
         val channel = if (value.optBoolean("silent", false)) QUIET_CHANNEL else DM_CHANNEL
+        // `message` may be the message itself; a locked screen gets the line that never is.
         val publicVersion = Notification.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(context.getString(R.string.app_name))
-            .setContentText(text)
+            .setContentText(value.optString("public", label(labels(context), "dm")))
             .build()
         val notification = Notification.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(value.getString("sender").take(100))
             .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)

@@ -217,6 +217,9 @@ pub struct ClientSettings {
     /// Opt-out for native tray toast alerts on platforms that run a tray icon.
     #[serde(default = "default_enabled")]
     pub tray_notifications: bool,
+    /// Off: a DM alert names its sender only. Read from disk by the cold push path too.
+    #[serde(default = "default_enabled")]
+    pub dm_notification_text: bool,
 }
 
 fn default_publish_global_level() -> bool {
@@ -462,6 +465,7 @@ impl Default for ClientSettings {
             discord_rpc_socket: default_discord_rpc(),
             detect_extra: Vec::new(),
             tray_notifications: default_enabled(),
+            dm_notification_text: default_enabled(),
         }
     }
 }
