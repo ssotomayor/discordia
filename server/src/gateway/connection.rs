@@ -317,7 +317,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         if bot {
                             ask_for_bundles(&ctx.state, &new_user.pubkey);
                         }
-                        ctx.state.resume_voice_session(&new_user.pubkey, conn_id);
+                        ctx.state.hand_off_voice(&new_user.pubkey, conn_id);
                         let joins: Vec<(uuid::Uuid, Member)> = ctx
                             .state
                             .members
@@ -1253,7 +1253,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         }
                         match ctx.state.move_voice_member(&user_pubkey, &u.pubkey, from_channel_id, channel_id) {
-                            Ok((previous, joined, target_conn)) => {
+                            Ok((previous, joined)) => {
+                                let crate::state::VoiceJoin { state: joined, call, .. } = joined;
                                 let guild_id = joined.guild_id;
                                 let was_sharing = previous.screen_sharing;
                                 let was_camera_on = previous.camera_on;
@@ -1277,6 +1278,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 if was_camera_on {
                                     broadcast_camera_state(&ctx.state, from_channel_id);
                                 }
+                                let target_conn = call.owner;
                                 let ctx = ctx.clone();
                                 let by = u.pubkey.clone();
                                 let name = ctx.state.users.get(&user_pubkey)
@@ -1991,52 +1993,44 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         }
-                        let previous = ctx
-                            .state
-                            .voice_states
-                            .get(&u.pubkey)
-                            .map(|v| (v.guild_id, v.channel_id, v.muted, v.deafened));
-                        let was_sharing = sharing_in(&ctx.state, &u.pubkey);
-                        let was_camera = ctx
-                            .state
-                            .voice_states
-                            .get(&u.pubkey)
-                            .map(|voice| (voice.channel_id, voice.camera_on));
-                        let new_state =
-                            ctx.state.set_voice_channel_owned(conn_id, &u.pubkey, guild_id, channel_id, preferences);
+                        let crate::state::VoiceJoin { previous, state: new_state, .. } =
+                            ctx.state.join_voice(conn_id, &u.pubkey, guild_id, channel_id, preferences);
                         // A move is a leave and then a join, for everyone including the
                         // mover. The leave goes first: one client can be in both guilds.
-                        if let Some((old_guild, Some(old_channel), muted, deafened)) = previous
+                        if let Some(old) = &previous
+                            && let Some(old_channel) = old.channel_id
                             && old_channel != channel_id
                         {
                             // The flags they left with: the new room's are its own business.
                             let left = crate::protocol::VoiceState {
-                                user_pubkey: u.pubkey.clone(),
-                                guild_id: old_guild,
                                 channel_id: None,
-                                muted,
-                                deafened,
                                 speaking: false,
                                 camera_on: false,
                                 screen_sharing: false,
                                 screen_watching: Vec::new(),
                                 camera_watching: Vec::new(),
+                                ..old.clone()
                             };
-                            let targets = ctx.state.guild_member_pubkeys(old_guild);
+                            let targets = ctx.state.guild_member_pubkeys(old.guild_id);
                             send_voice_state(&ctx.state, targets, Some(old_channel), left);
                             evict_from_call(&ctx, &u.pubkey, old_channel);
                         }
                         // After a leave above, the join starts from outside any call.
                         let stayed = previous
-                            .and_then(|(_, c, ..)| c)
+                            .as_ref()
+                            .and_then(|v| v.channel_id)
                             .filter(|c| *c == channel_id);
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         send_voice_state(&ctx.state, targets, stayed, new_state);
-                        if let Some((gid, cid)) = was_sharing {
-                            broadcast_screen_state(&ctx.state, gid, cid);
-                        }
-                        if let Some((Some(channel), true)) = was_camera {
-                            broadcast_camera_state(&ctx.state, channel);
+                        if let Some(old) = &previous
+                            && let Some(old_channel) = old.channel_id
+                        {
+                            if old.screen_sharing {
+                                broadcast_screen_state(&ctx.state, old.guild_id, old_channel);
+                            }
+                            if old.camera_on {
+                                broadcast_camera_state(&ctx.state, old_channel);
+                            }
                         }
                         // Minting may wait on a rendezvous. Off this loop, so a slow
                         // one costs this join and not every frame on the socket.
@@ -2110,20 +2104,15 @@ pub(crate) async fn handle_connection_with_route<S>(
                     }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = phase.user() else { continue };
-                        let was_sharing = sharing_in(&ctx.state, &u.pubkey);
-                        let was_in = ctx.state.voice_channel_of(&u.pubkey);
-                        if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
-                            let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
-                            send_voice_state(&ctx.state, targets, previous.channel_id, cleared);
-                            if let Some(channel) = previous.channel_id {
-                                broadcast_camera_state(&ctx.state, channel);
-                            }
-                        }
-                        if let Some(channel) = was_in {
+                        let Some((previous, cleared)) = ctx.state.leave_voice(&u.pubkey, conn_id) else { continue };
+                        let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
+                        send_voice_state(&ctx.state, targets, previous.channel_id, cleared);
+                        if let Some(channel) = previous.channel_id {
+                            broadcast_camera_state(&ctx.state, channel);
                             evict_from_call(&ctx, &u.pubkey, channel);
-                        }
-                        if let Some((gid, cid)) = was_sharing {
-                            broadcast_screen_state(&ctx.state, gid, cid);
+                            if previous.screen_sharing {
+                                broadcast_screen_state(&ctx.state, previous.guild_id, channel);
+                            }
                         }
                     }
                     ClientMessage::SetVoiceMute { muted, deafened } => {
@@ -3031,7 +3020,7 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
             return;
         }
     }
-    if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
+    if let Some((previous, cleared)) = ctx.state.leave_voice(&u.pubkey, conn_id) {
         let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
         send_voice_state(&ctx.state, targets, previous.channel_id, cleared);
         if let Some(channel) = previous.channel_id {
@@ -3707,9 +3696,11 @@ fn apply_sight_change(
                     let was_sharing = sharing_in(state, &vs.user_pubkey);
                     // Everyone who saw them inside, before the change or after; the
                     // rule in send_voice_state reads only the access as it is now.
-                    if let Some(cleared) = state.clear_voice(&vs.user_pubkey) {
+                    if let Some(ended) =
+                        state.end_voice(&vs.user_pubkey, |v| v.channel_id == Some(cid))
+                    {
                         let told: Vec<String> = was.union(&now).cloned().collect();
-                        state.deliver(told, ServerMessage::VoiceStateUpdate(cleared));
+                        state.deliver(told, ServerMessage::VoiceStateUpdate(ended.cleared));
                     }
                     if let Some((gid, c)) = was_sharing {
                         broadcast_screen_state(state, gid, c);
@@ -3737,16 +3728,14 @@ fn apply_sight_change(
     }
 }
 
-/// Covers the case where the app doesn't hang up itself (frozen, crashed or
-/// modified). Skipped if they're back in that call, or a quick rejoin would be cut.
+/// Covers an app that doesn't hang up itself (frozen, crashed or modified). Being
+/// in that channel again can only be a newer join, whose seats a rejoin must keep.
 fn evict_from_call(ctx: &Arc<AppContext>, pubkey: &str, channel_id: Id) {
     let ctx = ctx.clone();
     let pubkey = pubkey.to_string();
     tokio::spawn(async move {
-        if ctx.state.voice_channel_of(&pubkey) == Some(channel_id) {
-            return;
-        }
-        let evicting = crate::livekit::evict(&ctx.livekit, channel_id, &pubkey);
+        let rejoined = || ctx.state.voice_channel_of(&pubkey) == Some(channel_id);
+        let evicting = crate::livekit::evict_unless(&ctx.livekit, channel_id, &pubkey, rejoined);
         if tokio::time::timeout(EVICT_TIMEOUT, evicting).await.is_err() {
             tracing::warn!(%channel_id, "the SFU did not answer an eviction in time");
         }

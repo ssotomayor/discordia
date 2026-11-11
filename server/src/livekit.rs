@@ -374,11 +374,23 @@ impl LiveKitConfig {
     }
 }
 
+pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+    evict_unless(cfg, channel_id, user_pubkey, || false).await
+}
+
 /// Every identity one person can hold in a channel's two rooms (trap 10). One
 /// that is not there is the usual answer, not a failure.
-pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+pub async fn evict_unless(
+    cfg: &LiveKitConfig,
+    channel_id: Id,
+    user_pubkey: &str,
+    rejoined: impl Fn() -> bool,
+) {
     let (cfg, _) = cfg.route();
     if let Some(minter) = &cfg.minter {
+        if rejoined() {
+            return;
+        }
         if let Err(error) = minter.evict(channel_id, user_pubkey).await {
             tracing::warn!(%channel_id, %error, "delegated SFU eviction failed");
         }
@@ -399,6 +411,11 @@ pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
         (screen, screen_viewer_identity(user_pubkey)),
     ];
     for (room, identity) in seats {
+        // Asked per seat, not once: these calls take long enough for a rejoin.
+        if rejoined() {
+            tracing::debug!(%channel_id, "back in the call; its remaining seats stay");
+            return;
+        }
         match client.remove_participant(&room, &identity).await {
             Ok(()) => tracing::info!(%room, %identity, "evicted from the SFU"),
             Err(e) => tracing::debug!(%room, %identity, error = %e, "nothing to evict"),
@@ -475,6 +492,41 @@ mod tests {
                 .is_ok(),
             "a shared SFU is unaffected"
         );
+    }
+
+    /// A rejoin while the seats go keeps the seats it took: the eviction stops at
+    /// the next one instead of finishing the list it started with.
+    #[tokio::test]
+    async fn an_eviction_stops_at_the_seat_after_a_rejoin() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let removed = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = removed.clone();
+        let app = axum::Router::new().fallback(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { axum::http::StatusCode::OK }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let cfg = LiveKitConfig {
+            explicit_url: Some(format!("ws://{addr}")),
+            fallback: None,
+            ..direct_routes()
+        };
+        let channel = Id::new_v4();
+        let seats = |after: Option<usize>| {
+            let removed = removed.clone();
+            let cfg = cfg.clone();
+            async move {
+                removed.store(0, Ordering::SeqCst);
+                let rejoined = || after.is_some_and(|n| removed.load(Ordering::SeqCst) >= n);
+                evict_unless(&cfg, channel, "pk", rejoined).await;
+                removed.load(Ordering::SeqCst)
+            }
+        };
+        for (rejoined_after, expected) in [(None, 5), (Some(0), 0), (Some(1), 1), (Some(3), 3)] {
+            assert_eq!(seats(rejoined_after).await, expected, "{rejoined_after:?}");
+        }
     }
 
     fn direct_routes() -> LiveKitConfig {

@@ -22,7 +22,7 @@ async fn fixture() -> (Arc<AppContext>, User, Id, Id, u64, u64) {
     state.identify_conn(owner, &user.pubkey).unwrap();
     let (sibling, _) = state.register_conn(None).unwrap();
     state.identify_conn(sibling, &user.pubkey).unwrap();
-    state.set_voice_channel_owned(owner, &user.pubkey, guild.id, channel, None);
+    state.join_voice(owner, &user.pubkey, guild.id, channel, None);
     state.update_screen_share(&user.pubkey, true);
     let ctx = Arc::new(AppContext {
         state: Arc::new(state),
@@ -39,7 +39,7 @@ async fn fixture() -> (Arc<AppContext>, User, Id, Id, u64, u64) {
 #[tokio::test]
 async fn closing_a_chat_sibling_preserves_the_owners_call_and_share() {
     let (ctx, user, _, channel, owner, sibling) = fixture().await;
-    ctx.state.resume_voice_session(&user.pubkey, sibling);
+    ctx.state.hand_off_voice(&user.pubkey, sibling);
     assert!(ctx.state.voice_owned_by(&user.pubkey, owner));
     ctx.state.unregister_conn(sibling, Some(&user.pubkey));
     cleanup_session(&ctx, sibling, user.clone(), false).await;
@@ -93,7 +93,7 @@ async fn reconnect_handoff_survives_late_cleanup_from_the_old_owner() {
     tokio::time::advance(Duration::from_secs(1)).await;
     let (replacement, _) = ctx.state.register_conn(None).unwrap();
     ctx.state.identify_conn(replacement, &user.pubkey).unwrap();
-    ctx.state.resume_voice_session(&user.pubkey, replacement);
+    ctx.state.hand_off_voice(&user.pubkey, replacement);
     tokio::time::advance(Duration::from_secs(2)).await;
     cleanup.await.unwrap();
     assert!(ctx.state.voice_owned_by(&user.pubkey, replacement));
@@ -104,14 +104,14 @@ async fn reconnect_handoff_survives_late_cleanup_from_the_old_owner() {
             .unwrap()
             .screen_sharing
     );
-    assert!(ctx.state.clear_voice_owned(&user.pubkey, owner).is_none());
+    assert!(ctx.state.leave_voice(&user.pubkey, owner).is_none());
     assert_eq!(ctx.state.voice_channel_of(&user.pubkey), Some(channel));
 }
 
 #[tokio::test]
 async fn explicit_leave_is_owned_and_releases_the_publication() {
     let (ctx, user, _, channel, owner, sibling) = fixture().await;
-    assert!(ctx.state.clear_voice_owned(&user.pubkey, sibling).is_none());
+    assert!(ctx.state.leave_voice(&user.pubkey, sibling).is_none());
     assert!(
         ctx.state
             .update_owned_voice(&user.pubkey, sibling, |state| state.update_voice_flags(
@@ -123,12 +123,12 @@ async fn explicit_leave_is_owned_and_releases_the_publication() {
     );
     assert!(!ctx.state.voice_states.get(&user.pubkey).unwrap().muted);
     assert_eq!(ctx.state.voice_channel_of(&user.pubkey), Some(channel));
-    let (previous, cleared) = ctx.state.clear_voice_owned(&user.pubkey, owner).unwrap();
+    let (previous, cleared) = ctx.state.leave_voice(&user.pubkey, owner).unwrap();
     assert!(previous.screen_sharing);
     assert_eq!(cleared.channel_id, None);
     assert!(!cleared.screen_sharing);
     assert!(!ctx.state.voice_owned_by(&user.pubkey, owner));
-    assert!(ctx.state.clear_voice_owned(&user.pubkey, owner).is_none());
+    assert!(ctx.state.leave_voice(&user.pubkey, owner).is_none());
 }
 
 async fn movable_member(ctx: &AppContext, owner: &User, guild: Id, source: Id) -> (User, u64, Id) {
@@ -142,7 +142,7 @@ async fn movable_member(ctx: &AppContext, owner: &User, guild: Id, source: Id) -
         .register_conn(Some("198.51.100.2".parse().unwrap()))
         .unwrap();
     ctx.state.identify_conn(conn, &member.pubkey).unwrap();
-    ctx.state.set_voice_channel_owned(
+    ctx.state.join_voice(
         conn,
         &member.pubkey,
         guild,
@@ -199,11 +199,13 @@ async fn owner_and_move_role_preserve_voice_ownership_and_mute_when_moving_a_mem
         .set_member_role(guild, role.id, &manager.pubkey, true, &owner.pubkey)
         .await
         .unwrap();
-    let (previous, joined, conn) = ctx
+    let (previous, moved) = ctx
         .state
         .move_voice_member(&target.pubkey, &manager.pubkey, source, destination)
         .unwrap();
-    assert_eq!(conn, target_conn);
+    let joined = moved.state;
+    assert_eq!(moved.call.owner, target_conn);
+    assert_eq!(moved.call.channel_id, destination);
     assert_eq!(previous.channel_id, Some(source));
     assert!(previous.camera_on && previous.screen_sharing);
     assert_eq!(joined.channel_id, Some(destination));
@@ -213,11 +215,7 @@ async fn owner_and_move_role_preserve_voice_ownership_and_mute_when_moving_a_mem
     assert!(ctx.state.voice_owned_by(&target.pubkey, target_conn));
     let (sibling, _) = ctx.state.register_conn(None).unwrap();
     ctx.state.identify_conn(sibling, &target.pubkey).unwrap();
-    assert!(
-        ctx.state
-            .clear_voice_owned(&target.pubkey, sibling)
-            .is_none()
-    );
+    assert!(ctx.state.leave_voice(&target.pubkey, sibling).is_none());
     assert_eq!(
         ctx.state.connection_voice_address(target_conn).1,
         Some("198.51.100.2".parse().unwrap())

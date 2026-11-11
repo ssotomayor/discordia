@@ -58,7 +58,9 @@ async fn a_hidden_room_earns_no_experience_even_when_the_guild_lists_it() {
     };
     state.set_guild_leveling(gid, leveling, by).await.unwrap();
 
-    state.set_voice_channel(&insider.pubkey, gid, Some(staff), None);
+    let (conn, _rx) = state.register_conn(None).unwrap();
+    state.identify_conn(conn, &insider.pubkey).unwrap();
+    state.join_voice(conn, &insider.pubkey, gid, staff, None);
     for sweep in 1..=2 {
         let awarded = state.award_voice_minute().await;
         assert!(
@@ -75,7 +77,7 @@ async fn a_hidden_room_earns_no_experience_even_when_the_guild_lists_it() {
     );
     assert_eq!(state.xp_of(gid, &insider.pubkey), 0);
 
-    state.set_voice_channel(&insider.pubkey, gid, Some(lounge), None);
+    state.join_voice(conn, &insider.pubkey, gid, lounge, None);
     let awarded = state.award_voice_minute().await;
     assert_eq!(awarded.len(), 1, "an open room still earns");
     assert_eq!(state.xp_of(gid, &insider.pubkey), 5);
