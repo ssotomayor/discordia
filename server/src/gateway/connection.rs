@@ -73,8 +73,7 @@ pub(crate) async fn handle_connection_with_route<S>(
         return;
     }
 
-    let mut user: Option<User> = None;
-    let mut is_bot = false;
+    let mut phase = Phase::Hello;
     let mut limiter = RateLimiter::new(WRITE_LIMIT, RATE_WINDOW);
     let mut reads = RateLimiter::new(READ_LIMIT, RATE_WINDOW);
     let mut signals = RateLimiter::new(SIGNAL_LIMIT, RATE_WINDOW);
@@ -138,7 +137,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                     }
                     WsMessage::Pong(_) | WsMessage::Binary(_) => continue,
                 };
-                if user.is_none() && text.len() > PRE_IDENTIFY_FRAME_BYTES {
+                if !phase.is_identified() && text.len() > PRE_IDENTIFY_FRAME_BYTES {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
                         message: "identify before sending anything that large".into(),
                     }).await;
@@ -152,6 +151,12 @@ pub(crate) async fn handle_connection_with_route<S>(
                     }).await;
                     continue;
                 };
+                if !phase.admits(&client_msg) {
+                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                        message: "identify first".into(),
+                    }).await;
+                    continue;
+                }
 
                 if matches!(client_msg, ClientMessage::LeaveVoice | ClientMessage::SetVoiceMute { .. }
                     | ClientMessage::SetSpeaking { .. } | ClientMessage::SetCamera { .. }
@@ -159,11 +164,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                     | ClientMessage::SetCameraWatching { .. }
                     | ClientMessage::ShareMediaKey { .. } | ClientMessage::VoiceConnectionReport { .. }
                     | ClientMessage::ConnectionRouteReport { .. })
-                    && user.as_ref().is_none_or(|u| !ctx.state.voice_owned_by(&u.pubkey, conn_id)) {
+                    && phase.user().is_none_or(|u| !ctx.state.voice_owned_by(&u.pubkey, conn_id)) {
                     continue;
                 }
 
-                if is_bot
+                if phase.is_bot()
                     && !matches!(
                         client_msg,
                         ClientMessage::FetchMessages { .. }
@@ -190,7 +195,7 @@ pub(crate) async fn handle_connection_with_route<S>(
 
                 match client_msg {
                     command @ (ClientMessage::SendFile { .. } | ClientMessage::PinMessage { .. } | ClientMessage::SearchMessages { .. } | ClientMessage::FetchGuildStickers { .. } | ClientMessage::CreateGuildSticker { .. } | ClientMessage::DeleteGuildSticker { .. } | ClientMessage::SendSticker { .. } | ClientMessage::FetchGuildFilePolicy { .. } | ClientMessage::SetGuildFilePolicy { .. }) => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
                             continue;
                         };
@@ -219,7 +224,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         client_version,
                         progressive_image_uploads,
                     } => {
-                        if user.is_some() {
+                        if phase.is_identified() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "already identified".into(),
                             }).await;
@@ -252,7 +257,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                             continue;
                         }
-                        if let Err(message) = ctx.state.identify_conn(conn_id, &pubkey) {
+                        let new_user = User { pubkey: pubkey.clone(), username };
+                        if let Err(message) = phase.identify(&ctx.state, conn_id, new_user.clone(), bot) {
                             tracing::warn!(reason = %message, "gateway identify refused");
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             failed_identifies += 1;
@@ -261,11 +267,6 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                             continue;
                         }
-                        let new_user = User { pubkey: pubkey.clone(), username };
-                        // Held from the moment the key holds this socket: a login that
-                        // breaks off below must still be unregistered under that key.
-                        user = Some(new_user.clone());
-                        is_bot = bot;
                         ctx.state
                             .set_progressive_image_uploads(conn_id, progressive_image_uploads);
                         let remembered = if bot {
@@ -287,14 +288,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 break;
                             }
                         }
-                        let gated_default = if is_bot {
+                        let gated_default = if bot {
                             Ok(None)
                         } else {
                             ctx.state.offer_default_guild(&new_user).await
                         };
                         let ready = match &gated_default {
                             Err(message) => Err(message.clone()),
-                            Ok(_) if is_bot => Ok(ctx.state.snapshot_for_bot(&new_user)),
+                            Ok(_) if bot => Ok(ctx.state.snapshot_for_bot(&new_user)),
                             Ok(_) => ctx.state.snapshot_for(&new_user).await,
                         };
                         let ready = match ready {
@@ -314,7 +315,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         {
                             break;
                         }
-                        if is_bot {
+                        if bot {
                             ask_for_bundles(&ctx.state, &new_user.pubkey);
                         }
                         ctx.state.resume_voice_session(&new_user.pubkey, conn_id);
@@ -347,7 +348,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         );
                     }
                     ClientMessage::FetchMessages { channel_id, limit, before_ms } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -364,13 +365,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         }
-                        if is_bot && !ctx.state.app_reads(&u.pubkey, channel_id) {
+                        if phase.is_bot() && !ctx.state.app_reads(&u.pubkey, channel_id) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "this guild doesn't let the app read that channel".into(),
                             }).await;
                             continue;
                         }
-                        if is_bot && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::ReadMessageHistory) {
+                        if phase.is_bot() && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::ReadMessageHistory) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "bot lacks the read_message_history permission here".into(),
                             }).await;
@@ -383,7 +384,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let mut history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms).await;
                         // History is the same text the live stream blanks for a
                         // bot without the content intent (`filter_for_bot`).
-                        if is_bot && !bot_has_intent(&ctx.state, channel_id, &u.pubkey, Intent::MessageContent) {
+                        if phase.is_bot() && !bot_has_intent(&ctx.state, channel_id, &u.pubkey, Intent::MessageContent) {
                             history.iter_mut().for_each(withhold_content);
                         }
                         if send(&mut ws_tx, &ServerMessage::MessageHistory {
@@ -394,7 +395,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::BeginImageUpload { upload_id, channel_id, content, preview, image_name, reply_to } => {
-                        let Some(author) = user.clone() else {
+                        let Some(author) = phase.user().cloned() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
                             continue;
                         };
@@ -414,14 +415,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "you're not a member of this guild".into() }).await;
                             continue;
                         }
-                        if is_bot
+                        if phase.is_bot()
                             || (ctx.state.channel_read_only(channel_id)
                                 && !ctx.state.writes_when_read_only(gid, &author.pubkey, false))
                         {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "this channel is read-only".into() }).await;
                             continue;
                         }
-                        let mod_exempt = ctx.state.slowmode_exempt(gid, &author.pubkey, is_bot);
+                        let mod_exempt = ctx.state.slowmode_exempt(gid, &author.pubkey, phase.is_bot());
                         if !mod_exempt
                             && let Some(wait) = ctx.state.slowmode_remaining(channel_id, &author.pubkey)
                         {
@@ -451,7 +452,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CompleteImageUpload { upload_id, image } => {
-                        let Some(author) = user.as_ref() else {
+                        let Some(author) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
                             continue;
                         };
@@ -490,13 +491,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                         };
                         let mod_exempt = ctx
                             .state
-                            .slowmode_exempt(guild_id, &author.pubkey, is_bot);
+                            .slowmode_exempt(guild_id, &author.pubkey, phase.is_bot());
                         let is_member = ctx.state.is_guild_member(guild_id, &author.pubkey);
                         let rejection = if !is_member {
                             Some("you're not a member of this guild".to_string())
-                        } else if is_bot
+                        } else if phase.is_bot()
                             || (ctx.state.channel_read_only(channel_id)
-                                && !ctx.state.writes_when_read_only(guild_id, &author.pubkey, is_bot))
+                                && !ctx.state.writes_when_read_only(guild_id, &author.pubkey, phase.is_bot()))
                         {
                             Some("this channel is read-only".to_string())
                         } else {
@@ -540,7 +541,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 if let Some(guild_id) = guild_id {
                                     ctx.state.notify_offline_mentions(guild_id, &message);
                                 }
-                                if !is_bot
+                                if !phase.is_bot()
                                     && let Some(guild_id) = guild_id
                                     && let Some(member) = ctx.state.award_xp(
                                         guild_id,
@@ -566,7 +567,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SendMessage { channel_id, content, image, image_preview, image_name, reply_to } => {
-                        let Some(author) = user.clone() else {
+                        let Some(author) = phase.user().cloned() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -611,7 +612,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 }).await;
                                 continue;
                             }
-                            if is_bot
+                            if phase.is_bot()
                                 && !ctx
                                     .state
                                     .bot_install(gid, &author.pubkey)
@@ -624,7 +625,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 continue;
                             }
                             if ctx.state.channel_read_only(channel_id)
-                                && !ctx.state.writes_when_read_only(gid, &author.pubkey, is_bot)
+                                && !ctx.state.writes_when_read_only(gid, &author.pubkey, phase.is_bot())
                             {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
                                     message: "this channel is read-only".into(),
@@ -632,7 +633,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 continue;
                             }
                             let mod_exempt =
-                                ctx.state.slowmode_exempt(gid, &author.pubkey, is_bot);
+                                ctx.state.slowmode_exempt(gid, &author.pubkey, phase.is_bot());
                             if !mod_exempt
                                 && let Err(wait) = ctx.state.slowmode_check(channel_id, &author.pubkey) {
                                     let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -657,7 +658,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     // A bot earns nothing: it is installed, not
                                     // present, and a level badge on one says a
                                     // person was here.
-                                    if !is_bot
+                                    if !phase.is_bot()
                                         && let Some(member) = ctx.state.award_xp(
                                             gid,
                                             Some(channel_id),
@@ -680,7 +681,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::RegisterPush { handle, key } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
                             continue;
                         };
@@ -693,7 +694,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UnregisterPush { handle } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
                             continue;
                         };
@@ -709,7 +710,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         ctx.state.set_attention(conn_id, attended);
                     }
                     ClientMessage::CreateGuild { name, template } => {
-                        let Some(creator) = user.clone() else {
+                        let Some(creator) = phase.user().cloned() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -749,7 +750,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::JoinGuild { guild_id, accept, pow_nonce } => {
-                        let Some(joiner) = user.clone() else {
+                        let Some(joiner) = phase.user().cloned() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -784,7 +785,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::JoinByInvite { code, accept, pow_nonce } => {
-                        let Some(joiner) = user.clone() else {
+                        let Some(joiner) = phase.user().cloned() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -825,7 +826,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteGuild { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -859,7 +860,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         avatar, banner, bio, status, custom_status, hide_guild_owner, hide_operator,
                         updated_at,
                     } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -910,7 +911,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         // A bot's presence is its connection, and it owns no
                         // guild and runs no server, so it has no badge to hide.
-                        let (status, custom_status, hide_guild_owner, hide_operator) = if is_bot {
+                        let (status, custom_status, hide_guild_owner, hide_operator) = if phase.is_bot() {
                             (None, None, false, false)
                         } else {
                             (status, custom_status, hide_guild_owner, hide_operator)
@@ -934,7 +935,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetActivity { activity } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -951,7 +952,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         );
                     }
                     ClientMessage::React { channel_id, message_id, emoji } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -963,7 +964,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         if !audience.iter().any(|p| p == &u.pubkey) {
                             continue;
                         }
-                        if is_bot && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::AddReactions) {
+                        if phase.is_bot() && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::AddReactions) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "bot lacks the add_reactions permission here".into(),
                             }).await;
@@ -999,7 +1000,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         );
                         // A toggle removes as readily as it adds, and only
                         // the add is worth anything (#187).
-                        if !is_bot
+                        if !phase.is_bot()
                             && added
                             && let Some(gid) = ctx.state.channel_guild(channel_id)
                             && let Some(member) = ctx.state.award_xp(
@@ -1014,7 +1015,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::Typing { channel_id } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() {
                             continue;
                         }
@@ -1035,7 +1036,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CreateGuildEmoji { guild_id, shortcode, image } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1063,7 +1064,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::RenameGuildEmoji { guild_id, emoji_id, shortcode } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1077,7 +1078,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteGuildEmoji { guild_id, emoji_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1091,7 +1092,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchImagePreviews { images } => {
-                        if user.is_none() {
+                        if !phase.is_identified() {
                             let _ = send(&mut ws_tx,&ServerMessage::Error {message:"identify first".into()}).await;
                             continue;
                         }
@@ -1100,7 +1101,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             && send(&mut ws_tx,&ServerMessage::ImagePreviews {blobs:Vec::new()}).await.is_err(){break;}
                     }
                     ClientMessage::FetchEmoji { images } => {
-                        if user.is_none() {
+                        if !phase.is_identified() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1117,7 +1118,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let mut asked: Vec<String> = images.into_iter().take(MAX_EMOJI_FETCH).collect();
                         asked.sort_unstable();
                         asked.dedup();
-                        let viewer = &user.as_ref().unwrap().pubkey;
+                        let viewer = &phase.user().unwrap().pubkey;
                         let mut blobs = Vec::new();
                         for image in asked {
                             let stored = format!("media:{image}");
@@ -1150,7 +1151,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CreateGuildSound { guild_id, name, audio } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1192,7 +1193,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::RenameGuildSound { guild_id, sound_id, name } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1206,7 +1207,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteGuildSound { guild_id, sound_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1220,7 +1221,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::PlaySound { sound_id } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !sound_plays.allow() {
                             continue;
                         }
@@ -1248,7 +1249,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetChannelAccess { channel_id, access } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1280,7 +1281,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::MoveVoice { user_pubkey, from_channel_id, channel_id } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1339,7 +1340,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DisconnectVoice { guild_id, user_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1373,7 +1374,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetGuildAccent { guild_id, accent } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1390,7 +1391,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::InstallBot { guild_id, bot_pubkey, name, permissions, intents, manifest } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1414,7 +1415,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchServerAgents => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !ctx.state.operators.contains(&u.pubkey) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "only this server's operator sees its agents".into(),
@@ -1426,7 +1427,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }).await;
                     }
                     ClientMessage::SaveServerAgent { pubkey, spec, api_key, look } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1439,7 +1440,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteServerAgent { pubkey } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1452,7 +1453,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetAppAccess { guild_id, bot_pubkey, access } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1468,7 +1469,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchServerSettings => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         let reply = if ctx.state.operators.contains(&u.pubkey) {
                             ServerMessage::ServerSettings { view: crate::server_settings::view(&ctx.state) }
                         } else {
@@ -1477,7 +1478,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let _ = send(&mut ws_tx, &reply).await;
                     }
                     ClientMessage::SetServerSettings { settings } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1487,7 +1488,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchServerApps => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         let reply = if ctx.state.operators.contains(&u.pubkey) {
                             crate::server_apps::snapshot(&ctx.state)
                         } else {
@@ -1496,7 +1497,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let _ = send(&mut ws_tx, &reply).await;
                     }
                     ClientMessage::FetchOfferedAgents => {
-                        if user.is_none() {
+                        if !phase.is_identified() {
                             continue;
                         }
                         let _ = send(&mut ws_tx, &crate::server_apps::offered(&ctx.state)).await;
@@ -1504,7 +1505,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                     command @ (ClientMessage::SetAppsPolicy { .. }
                     | ClientMessage::SetAppApproved { .. }
                     | ClientMessage::SetAppBanned { .. }) => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1526,7 +1527,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UninstallBot { guild_id, bot_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1543,13 +1544,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::RegisterManifest { event } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
                             continue;
                         };
-                        if !is_bot {
+                        if !phase.is_bot() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "only a bot registers a manifest".into(),
                             }).await;
@@ -1575,7 +1576,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ApproveAppUpdate { guild_id, bot_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1594,8 +1595,8 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::OfferActivityBundle { data_url } => {
-                        let Some(u) = user.as_ref() else { continue };
-                        if !is_bot {
+                        let Some(u) = phase.user() else { continue };
+                        if !phase.is_bot() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "only an app's bot offers its bundle".into(),
                             }).await;
@@ -1618,7 +1619,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UploadActivityBundle { guild_id, bot_pubkey, data_url } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1639,7 +1640,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchGuildActivities { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1659,7 +1660,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let _ = send(&mut ws_tx, &ServerMessage::GuildActivities { guild_id, activities }).await;
                     }
                     ClientMessage::SetGuildBlocklists { guild_id, curators } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1673,7 +1674,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UploadBlocklist { event } => {
-                        if user.is_none() {
+                        if !phase.is_identified() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1695,7 +1696,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetAppCalls { guild_id, bot_pubkey, may_call } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1709,7 +1710,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetAppLook { guild_id, bot_pubkey, name, look } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1730,7 +1731,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ActivityStart { channel_id, app } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1751,7 +1752,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ActivityJoin { instance_id, role } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1769,11 +1770,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ActivityLeave { instance_id } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         share_instances(&ctx.state, ctx.state.leave_instance(&u.pubkey, instance_id));
                     }
                     ClientMessage::ActivitySend { instance_id, to, data } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1795,7 +1796,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchActivityInstances { channel_id } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !reads.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1809,7 +1810,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchGuildActivityInstances { guild_id } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !reads.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1818,7 +1819,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let _ = send(&mut ws_tx, &ServerMessage::GuildActivityInstances { guild_id, instances }).await;
                     }
                     ClientMessage::FetchAppManifest { bot_pubkey } => {
-                        if user.is_none() {
+                        if !phase.is_identified() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1832,7 +1833,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let _ = send(&mut ws_tx, &ServerMessage::AppManifestEvent { bot_pubkey, event }).await;
                     }
                     ClientMessage::FetchIntegrations { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1854,13 +1855,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }).await;
                     }
                     ClientMessage::RegisterCommands { commands } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
                             continue;
                         };
-                        if !is_bot {
+                        if !phase.is_bot() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "only a bot declares commands".into(),
                             }).await;
@@ -1889,7 +1890,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::InvokeCommand { guild_id, channel_id, bot_pubkey, command, args, parent } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -1900,7 +1901,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             continue;
                         }
                         // `bot` in Identify is self-declared; the install is the fact.
-                        let as_app = is_bot || ctx.state.bot_install(guild_id, &u.pubkey).is_some();
+                        let as_app = phase.is_bot() || ctx.state.bot_install(guild_id, &u.pubkey).is_some();
                         match ctx.state.invoke_command(u, guild_id, channel_id, &bot_pubkey, &command, args, parent, as_app) {
                             Ok(invocation) => {
                                 tracing::debug!(%guild_id, bot = %bot_pubkey, command = ?invocation.command, by = ?u.username, "bot command invoked");
@@ -1912,13 +1913,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::RespondToCommand { invocation_id, content, data } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
                             continue;
                         };
-                        if !is_bot {
+                        if !phase.is_bot() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "only a bot answers commands".into(),
                             }).await;
@@ -1960,7 +1961,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetScreenWatching { sharers } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() || sharers.len() > 64 {
                             continue;
                         }
@@ -1970,7 +1971,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetCameraWatching { cameras } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() || cameras.len() > 64 {
                             continue;
                         }
@@ -1980,7 +1981,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() {
                             continue;
                         }
@@ -1996,7 +1997,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::JoinVoice { channel_id, preferences } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2100,7 +2101,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         });
                     }
                     ClientMessage::VoiceConnectionReport { channel_id, route_revision, connected } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         let peer_private = peer.is_some_and(crate::protocol::is_private_ip);
                         let ignored = if !signals.allow() { Some("rate limited") }
                             else if ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id) { Some("not in that channel") }
@@ -2131,7 +2132,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ConnectionRouteReport { channel_id, gateway, voice_send, voice_receive } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() || ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id)
                             || !valid_reported_routes(&gateway, voice_send.as_deref(), voice_receive.as_deref()) { continue; }
                         let targets = ctx.state.voice_states.iter()
@@ -2142,7 +2143,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         });
                     }
                     ClientMessage::LeaveVoice => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         let was_in = ctx.state.voice_channel_of(&u.pubkey);
                         if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
@@ -2160,7 +2161,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetVoiceMute { muted, deafened } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() {
                             continue;
                         }
@@ -2170,7 +2171,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetSpeaking { speaking } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() {
                             continue;
                         }
@@ -2180,7 +2181,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if blob.len() > MAX_MEDIA_KEY_BLOB || !signals.allow() {
                             continue;
                         }
@@ -2213,7 +2214,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         );
                     }
                     ClientMessage::SetCamera { on } => {
-                        let Some(u) = user.as_ref() else { continue };
+                        let Some(u) = phase.user() else { continue };
                         if !signals.allow() {
                             continue;
                         }
@@ -2227,7 +2228,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CreateRole { guild_id, name, color, permissions } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2252,7 +2253,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UpdateRole { guild_id, role_id, name, color, permissions } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2278,7 +2279,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteRole { guild_id, role_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2310,7 +2311,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::AssignRole { guild_id, role_id, user_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2333,7 +2334,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UnassignRole { guild_id, role_id, user_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2356,7 +2357,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::AdjustXp { guild_id, user_pubkey, change } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2377,7 +2378,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetGuildVisibility { guild_id, visibility } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2395,7 +2396,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CreateInvite { guild_id, rotate, expires_in_secs, max_uses } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2421,7 +2422,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::KickMember { guild_id, user_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2448,7 +2449,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::BanMember { guild_id, user_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2482,7 +2483,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                     }
                     ClientMessage::UnbanMember { guild_id, user_pubkey } => {
                         let user_pubkey = user_pubkey.to_ascii_lowercase();
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2507,7 +2508,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchBans { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2530,7 +2531,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::LeaveGuild { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2552,7 +2553,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::CreateChannel { guild_id, name, kind, topic, divider } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2574,7 +2575,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UpdateUsername { username } => {
-                        let Some(u) = user.as_mut() else {
+                        let Some(u) = phase.user_mut() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2603,7 +2604,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ReorderChannels { guild_id, positions } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2626,7 +2627,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::ReorderRoles { guild_id, order } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2647,7 +2648,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs, divider, markdown } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2668,7 +2669,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteChannel { channel_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2703,7 +2704,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::DeleteMessage { channel_id, message_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2728,14 +2729,14 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::EditMessage { channel_id, message_id, content } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
                             continue;
                         };
                         let outcome = if limiter.allow() {
-                            ctx.state.edit_message(channel_id, message_id, &content, &u.pubkey, is_bot).await
+                            ctx.state.edit_message(channel_id, message_id, &content, &u.pubkey, phase.is_bot()).await
                         } else {
                             Err("rate limited: too many messages, slow down".into())
                         };
@@ -2765,7 +2766,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::TransferOwnership { guild_id, new_owner_pubkey } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2785,7 +2786,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetGuildProfile { guild_id, name, description, icon_image, banner } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2816,7 +2817,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetGuildRetention { guild_id, days } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2834,7 +2835,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetDefaultGuild { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2851,7 +2852,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetJoinGate { guild_id, gate, rules } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2868,7 +2869,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetGuildLeveling { guild_id, leveling } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2890,7 +2891,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::SetPanicMode { guild_id, on } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2908,7 +2909,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                     }
                     ClientMessage::FetchAuditLog { guild_id } => {
-                        let Some(u) = user.as_ref() else {
+                        let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
@@ -2938,13 +2939,13 @@ pub(crate) async fn handle_connection_with_route<S>(
                 }
             }
 
-            _ = heartbeat.tick(), if user.is_some() => {
+            _ = heartbeat.tick(), if phase.is_identified() => {
                 if last_received.elapsed() >= crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT { break; }
                 let sent = tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
                     ws_tx.send(WsMessage::Ping(Vec::new()))).await;
                 if !matches!(sent, Ok(Ok(()))) { break; }
             }
-            _ = tokio::time::sleep_until(identify_by), if user.is_none() => {
+            _ = tokio::time::sleep_until(identify_by), if !phase.is_identified() => {
                 let _ = send(&mut ws_tx, &ServerMessage::Error {
                     message: "identify timed out".into(),
                 }).await;
@@ -2971,8 +2972,8 @@ pub(crate) async fn handle_connection_with_route<S>(
             outbound = outbound_rx.recv() => {
                 let Some(msg) = outbound else { break };
                 watch.begin("send");
-                let out = if is_bot {
-                    let Some(u) = user.as_ref() else { continue };
+                let out = if phase.is_bot() {
+                    let Some(u) = phase.user() else { continue };
                     match filter_for_bot(&ctx.state, &u.pubkey, &msg) {
                         Some(m) => m,
                         None => continue,
@@ -3002,11 +3003,64 @@ pub(crate) async fn handle_connection_with_route<S>(
             );
         }
     }
-    ctx.state
-        .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
-
-    if let Some(u) = user {
+    if let Some(u) = phase.end(&ctx.state, conn_id) {
         cleanup_session(&ctx, conn_id, u, graceful).await;
+    }
+}
+
+/// Where a socket stands. Registering under the key and becoming `Identified` are
+/// one step, so a login that breaks off before Ready is still unregistered by `end`.
+enum Phase {
+    Hello,
+    Identified { user: User, bot: bool },
+}
+
+impl Phase {
+    fn identify(
+        &mut self,
+        state: &crate::state::AppState,
+        conn_id: u64,
+        user: User,
+        bot: bool,
+    ) -> Result<(), String> {
+        state.identify_conn(conn_id, &user.pubkey)?;
+        *self = Phase::Identified { user, bot };
+        Ok(())
+    }
+
+    /// The one gate in front of every handler: before Identify, only Identify.
+    fn admits(&self, msg: &ClientMessage) -> bool {
+        self.is_identified() || matches!(msg, ClientMessage::Identify { .. })
+    }
+
+    fn is_identified(&self) -> bool {
+        matches!(self, Phase::Identified { .. })
+    }
+
+    fn is_bot(&self) -> bool {
+        matches!(self, Phase::Identified { bot: true, .. })
+    }
+
+    fn user(&self) -> Option<&User> {
+        match self {
+            Phase::Identified { user, .. } => Some(user),
+            Phase::Hello => None,
+        }
+    }
+
+    fn user_mut(&mut self) -> Option<&mut User> {
+        match self {
+            Phase::Identified { user, .. } => Some(user),
+            Phase::Hello => None,
+        }
+    }
+
+    /// Hands the slot back, under the key if it had one, and returns who still
+    /// needs `cleanup_session`.
+    fn end(self, state: &crate::state::AppState, conn_id: u64) -> Option<User> {
+        let user = self.user().cloned();
+        state.unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
+        user
     }
 }
 
