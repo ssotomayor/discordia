@@ -751,7 +751,7 @@ mod tests {
                 for _ in 0..3 {
                     state.change_dm_unread(id, crate::state::UnreadChange::Arrived);
                 }
-                state.dm_accepted.insert("peer".into());
+                state.choose_dm("peer", Some(crate::state::DmChoice::Accepted));
                 state
             });
             provide_context(state);

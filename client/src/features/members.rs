@@ -1000,7 +1000,7 @@ mod tests {
                         channel_id,
                         other_pubkey: peer.clone(),
                     });
-                    state.dm_accepted.insert(peer.clone());
+                    state.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
                     state.nostr_names.insert(peer, ("DM peer".into(), 0));
                     state
                 });
@@ -1028,7 +1028,7 @@ mod tests {
             state
                 .nostr_names
                 .insert(peer.clone(), ("Another peer".into(), 0));
-            state.dm_accepted.insert(peer);
+            state.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
             state.selected_channel = Some(next);
         }
         let changes = dom.render_immediate_to_vec().edits;

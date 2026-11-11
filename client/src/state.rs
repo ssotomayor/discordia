@@ -257,15 +257,7 @@ pub enum AppBadge {
     Count(u32),
 }
 
-/// Which list a conversation belongs in. A bot with `Members` can harvest every
-/// pubkey and DM it over relays, outside any server's reach (#311).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DmStanding {
-    Inbox,
-    Request,
-    Ignored,
-    Blocked,
-}
+pub use crate::dm_standing::{DmChoice, DmStanding};
 
 /// How a conversation's unread count may change; see `AppState::change_dm_unread`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,8 +363,8 @@ pub struct AppState {
     /// Seeded from `ClientSettings::dm_blocked` until our kind 10000 arrives.
     pub mutes: crate::nostr::nip51::MuteList,
     /// Seeded from `ClientSettings`; written back by `use_dm_standing_persistence`.
-    pub dm_accepted: HashSet<String>,
-    pub dm_ignored: HashSet<String>,
+    /// Changed only by `choose_dm`.
+    dm_choices: HashMap<String, DmChoice>,
     pub nostr_relays_up: std::collections::HashSet<String>,
     /// Names peers published for themselves (kind 0), by pubkey, each with the
     /// `created_at` it came with. Kept because kind 0 is replaceable and the
@@ -625,8 +617,7 @@ impl AppState {
             dm_call: None,
             contacts: Default::default(),
             mutes: Default::default(),
-            dm_accepted: HashSet::new(),
-            dm_ignored: HashSet::new(),
+            dm_choices: HashMap::new(),
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),
             dm_mode: false,
@@ -862,6 +853,7 @@ impl AppState {
         self.self_user = None;
         self.guilds.clear();
         self.channels.clear();
+        self.accept_guild_mates();
         self.members.clear();
         self.voice_states.clear();
         self.end_voice_locally();
@@ -1454,18 +1446,56 @@ impl AppState {
     }
 
     pub fn dm_standing(&self, peer: &str) -> DmStanding {
-        if self.mutes.contains(peer) {
-            DmStanding::Blocked
-        } else if self.dm_accepted.contains(peer)
-            || self.contacts.contains(peer)
-            || self.shares_guild(peer)
-        {
-            DmStanding::Inbox
-        } else if self.dm_ignored.contains(peer) {
-            DmStanding::Ignored
-        } else {
-            DmStanding::Request
+        crate::dm_standing::standing(
+            self.mutes.contains(peer),
+            self.dm_choice(peer),
+            self.contacts.contains(peer) || self.shares_guild(peer),
+        )
+    }
+
+    pub fn dm_choice(&self, peer: &str) -> Option<DmChoice> {
+        self.dm_choices.get(peer).copied()
+    }
+
+    /// The one writer of a peer's stored choice.
+    pub fn choose_dm(&mut self, peer: &str, choice: Option<DmChoice>) {
+        match choice {
+            Some(choice) => {
+                self.dm_choices.insert(peer.to_string(), choice);
+            }
+            None => {
+                self.dm_choices.remove(peer);
+            }
         }
+    }
+
+    /// The accepted and ignored lists `settings.json` keeps.
+    pub fn dm_choice_lists(&self) -> (Vec<String>, Vec<String>) {
+        crate::dm_standing::lists_of(&self.dm_choices)
+    }
+
+    pub fn accepted_dms(&self) -> impl Iterator<Item = &str> {
+        self.dm_choices
+            .iter()
+            .filter(|(_, choice)| **choice == DmChoice::Accepted)
+            .map(|(peer, _)| peer.as_str())
+    }
+
+    /// Keeps a guild-mate we talk to in the Inbox once the roster that made
+    /// them one is gone, so standing does not depend on the open server (trap 7).
+    /// An explicit ignore stands: sharing a guild only outranked it.
+    pub fn accept_guild_mates(&mut self) {
+        let mates: Vec<String> = self.guild_mates_to_accept().cloned().collect();
+        for peer in mates {
+            self.choose_dm(&peer, Some(DmChoice::Accepted));
+        }
+    }
+
+    fn guild_mates_to_accept(&self) -> impl Iterator<Item = &String> {
+        self.dms
+            .iter()
+            .map(|d| &d.other_pubkey)
+            .filter(|peer| self.shares_guild(peer) && self.dm_choice(peer).is_none())
     }
 
     pub fn preferred_dm(&self) -> Option<DmInfo> {
@@ -1591,13 +1621,12 @@ impl AppState {
     /// Moves the read mark too: nothing counted while it was a request, and a
     /// mark left behind would ring for all of it on the next launch's replay.
     pub fn accept_dm(&mut self, peer: &str) {
-        self.dm_accepted.insert(peer.to_string());
-        self.dm_ignored.remove(peer);
+        self.choose_dm(peer, Some(DmChoice::Accepted));
         self.mark_dm_read(crate::nostr::service::conversation_id(peer));
     }
 
     pub fn ignore_dm(&mut self, peer: &str) {
-        self.dm_ignored.insert(peer.to_string());
+        self.choose_dm(peer, Some(DmChoice::Ignored));
         let cid = crate::nostr::service::conversation_id(peer);
         if self.selected_channel == Some(cid) {
             self.selected_channel = None;
@@ -2428,18 +2457,10 @@ pub fn use_dm_pane(mut state: Signal<AppState>, open: impl Fn() -> bool + 'stati
 
 pub fn use_dm_standing_persistence(mut state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let guild_mates = use_memo(move || {
-        let s = state.read();
-        s.dms
-            .iter()
-            .map(|d| d.other_pubkey.clone())
-            .filter(|peer| s.shares_guild(peer) && !s.dm_accepted.contains(peer))
-            .collect::<Vec<_>>()
-    });
+    let guild_mates = use_memo(move || state.read().guild_mates_to_accept().next().is_some());
     use_effect(move || {
-        let peers = guild_mates();
-        if !peers.is_empty() {
-            state.write().dm_accepted.extend(peers);
+        if guild_mates() {
+            state.write().accept_guild_mates();
         }
     });
     let standing = use_memo(move || {
@@ -2449,9 +2470,10 @@ pub fn use_dm_standing_persistence(mut state: Signal<AppState>) {
             v.sort();
             v
         };
+        let (accepted, ignored) = s.dm_choice_lists();
         (
-            sorted(&mut s.dm_accepted.iter().cloned()),
-            sorted(&mut s.dm_ignored.iter().cloned()),
+            accepted,
+            ignored,
             sorted(&mut s.mutes.pubkeys().map(str::to_string)),
         )
     });
@@ -3307,7 +3329,7 @@ mod tests {
         let marks = desktop.read_marks();
         phone.adopt_read_marks(&marks);
         assert!(!phone.dm_unread.contains_key(&cid));
-        phone.dm_accepted.insert(peer.clone());
+        phone.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
         dm_at(&mut phone, &peer, &peer, 201);
         phone.note_dm_arrival(cid, &peer, 201);
         phone.adopt_read_marks(&marks);
@@ -3522,13 +3544,12 @@ mod tests {
         state.selected_channel = Some(older);
         assert_eq!(state.preferred_dm().unwrap().channel_id, older);
         state.selected_channel = Some(Id::new_v4());
-        state.dm_ignored.insert("recent".into());
-        state.dm_accepted.remove("recent");
+        state.choose_dm("recent", Some(crate::state::DmChoice::Ignored));
         assert_eq!(state.preferred_dm().unwrap().channel_id, older);
     }
 
     fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {
-        s.dm_accepted.insert(peer.to_string());
+        s.choose_dm(peer, Some(crate::state::DmChoice::Accepted));
         let cid = crate::nostr::service::conversation_id(peer);
         if !s.dms.iter().any(|d| d.channel_id == cid) {
             s.dms.push(DmInfo {
@@ -3712,7 +3733,7 @@ mod tests {
         use crate::nostr::call_history::{Outcome, Record, merge};
         let (peer, me) = ("b".repeat(64), "a".repeat(64));
         let mut s = AppState::empty();
-        s.dm_accepted.insert(peer.clone());
+        s.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
         let record = Record {
             version: 1,
             call_id: uuid::Uuid::new_v4(),
@@ -3750,12 +3771,45 @@ mod tests {
         }
     }
 
+    /// The roster that made someone a guild-mate is gone at Home; the
+    /// conversation is not (trap 7), so neither is its place in the Inbox.
+    #[test]
+    fn leaving_the_server_keeps_a_guild_mate_in_the_inbox_and_an_ignore_ignored() {
+        let mut s = AppState::empty();
+        for peer in ["mate", "ignored-mate", "bot"] {
+            dm_with(&mut s, peer, &[100]);
+            s.choose_dm(peer, None);
+        }
+        s.choose_dm("ignored-mate", Some(DmChoice::Ignored));
+        s.members.push(member("mate", true));
+        s.members.push(member("ignored-mate", true));
+        s.members.push(Member {
+            bot: true,
+            ..member("bot", true)
+        });
+        let before: Vec<_> = ["mate", "ignored-mate", "bot"]
+            .map(|peer| s.dm_standing(peer))
+            .into();
+        assert_eq!(
+            before,
+            vec![DmStanding::Inbox, DmStanding::Inbox, DmStanding::Request]
+        );
+        s.clear_server_session();
+        assert_eq!(s.dm_standing("mate"), DmStanding::Inbox);
+        assert_eq!(s.dm_standing("ignored-mate"), DmStanding::Ignored);
+        assert_eq!(s.dm_standing("bot"), DmStanding::Request);
+        assert_eq!(
+            s.dm_choice_lists(),
+            (vec!["mate".to_string()], vec!["ignored-mate".to_string()])
+        );
+    }
+
     #[test]
     fn a_stranger_waits_in_requests_without_counting_or_ringing() {
         let mut s = AppState::empty();
         let peer = "stranger";
         let cid = dm_with(&mut s, peer, &[100]);
-        s.dm_accepted.clear();
+        s.choose_dm(peer, None);
 
         s.note_dm_arrival(cid, peer, 100);
         assert_eq!(s.dm_standing(peer), DmStanding::Request);
@@ -3790,12 +3844,12 @@ mod tests {
         let mut s = AppState::empty();
         let peer = "stranger";
         let cid = dm_with(&mut s, peer, &[100, 200]);
-        s.dm_accepted.clear();
-        s.dm_ignored.insert(peer.into());
+        s.choose_dm(peer, None);
+        s.choose_dm(peer, Some(crate::state::DmChoice::Ignored));
 
         s.accept_dm(peer);
         assert_eq!(s.dm_standing(peer), DmStanding::Inbox);
-        assert!(!s.dm_ignored.contains(peer));
+        assert_ne!(s.dm_choice(peer), Some(crate::state::DmChoice::Ignored));
         assert_eq!(s.dms_by_recency(DmStanding::Inbox)[0].channel_id, cid);
         s.note_dm_arrival(cid, peer, 200);
         assert!(s.dm_unread.is_empty());
@@ -3806,7 +3860,7 @@ mod tests {
         let mut s = AppState::empty();
         let peer = "stranger";
         let cid = dm_with(&mut s, peer, &[100]);
-        s.dm_accepted.clear();
+        s.choose_dm(peer, None);
         s.selected_channel = Some(cid);
 
         s.ignore_dm(peer);
@@ -3838,7 +3892,7 @@ mod tests {
         let mut s = AppState::empty();
         let friend = dm_with(&mut s, "friend", &[]);
         let stranger = dm_with(&mut s, "stranger", &[]);
-        s.dm_accepted.remove("stranger");
+        s.choose_dm("stranger", None);
         s.dm_unread.insert(friend, 2);
         s.dm_unread.insert(stranger, 5);
         assert_eq!(s.dm_unread_total(), 2);

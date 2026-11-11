@@ -444,9 +444,10 @@ mod tests {
             pubkey: account.into(),
             username: String::new(),
         });
-        state
-            .dm_accepted
-            .insert(record.peer(account).unwrap().into());
+        state.choose_dm(
+            record.peer(account).unwrap(),
+            Some(crate::state::DmChoice::Accepted),
+        );
         state
     }
 
@@ -623,7 +624,7 @@ mod tests {
         };
         merge(&mut state, &record.callee, forged, &record.callee, 145);
         assert_eq!(state.dm_call_history[&record.id()].record, record);
-        state.dm_accepted.clear();
+        state.choose_dm(&record.caller, None);
         state.mutes = state.mutes.with(&record.caller);
         state.dm_call_history.clear();
         state.messages.clear();
@@ -739,7 +740,7 @@ mod tests {
     fn history_received_before_contacts_replay_is_retained_without_ringing() {
         let record = record();
         let mut state = inbox(&record, &record.callee);
-        state.dm_accepted.clear();
+        state.choose_dm(&record.caller, None);
         merge(
             &mut state,
             &record.callee,
@@ -750,7 +751,7 @@ mod tests {
         assert_eq!(unread(&state), 0);
         assert_eq!(state.dm_notify_tick, 0);
         assert_eq!(next_expiry(&state), None);
-        state.dm_accepted.insert(record.caller.clone());
+        state.choose_dm(&record.caller, Some(crate::state::DmChoice::Accepted));
         reconcile(&mut state, &record.callee, 145);
         assert_eq!(unread(&state), 1);
         let cid = super::super::service::conversation_id(&record.caller);

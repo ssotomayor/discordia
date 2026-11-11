@@ -36,8 +36,9 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();
     s.channel_read_at = saved.channel_read_at.clone();
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
-    s.dm_accepted = saved.dm_accepted.iter().cloned().collect();
-    s.dm_ignored = saved.dm_ignored.iter().cloned().collect();
+    for (peer, choice) in crate::dm_standing::choices_from(&saved.dm_accepted, &saved.dm_ignored) {
+        s.choose_dm(&peer, Some(choice));
+    }
     s.dm_deleted_ids = saved.dm_deleted_ids.iter().cloned().collect();
     s.mutes = crate::nostr::nip51::MuteList::from_pubkeys(saved.dm_blocked.iter().cloned());
     s.saved_emoji = saved.saved_emoji.clone();

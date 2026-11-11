@@ -33,6 +33,7 @@ mod text_menu;
 mod devlog;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod dm_notifications;
+mod dm_standing;
 mod emoji;
 mod features;
 #[doc(hidden)]

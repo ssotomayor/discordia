@@ -1098,7 +1098,7 @@ fn request_names(
 fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     let cid = conversation_id(peer);
     let mut s = state.write();
-    s.dm_accepted.insert(peer.to_string());
+    s.choose_dm(peer, Some(crate::state::DmChoice::Accepted));
     if !s.dms.iter().any(|d| d.channel_id == cid) {
         s.dms.push(DmInfo {
             channel_id: cid,
@@ -1617,7 +1617,7 @@ fn insert_message_with_settings(
     let mid = message_id(&msg.id);
     let mut s = state.write();
     if msg.author == our_pubkey {
-        s.dm_accepted.insert(msg.peer.clone());
+        s.choose_dm(&msg.peer, Some(crate::state::DmChoice::Accepted));
     }
 
     // A DM carries the time its sender wrote on it, and nothing keeps two

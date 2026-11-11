@@ -465,7 +465,9 @@ impl Actor {
                 if peer == self.our_key || peer.len() != 64 || hex::decode(&peer).is_err() {
                     return;
                 }
-                self.state.write().dm_accepted.insert(peer.clone());
+                self.state
+                    .write()
+                    .choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
                 self.begin(Session {
                     id: Uuid::new_v4(),
                     incoming: false,

@@ -60,9 +60,7 @@ pub(crate) fn build(state: &AppState, account: &str) -> PushPeers {
         }
     }
     let candidates: BTreeSet<&str> = state
-        .dm_accepted
-        .iter()
-        .map(String::as_str)
+        .accepted_dms()
         .chain(state.contacts.contacts.iter().map(|c| c.pubkey.as_str()))
         .chain(mates)
         .collect();
@@ -71,7 +69,7 @@ pub(crate) fn build(state: &AppState, account: &str) -> PushPeers {
         .filter(|key| {
             *key != account
                 && crate::protocol::is_canonical_pubkey(key)
-                && !state.mutes.contains(key)
+                && state.dm_standing(key) == crate::state::DmStanding::Inbox
         })
         .map(|key| {
             let name = roster
@@ -157,10 +155,10 @@ mod tests {
         let mut state = AppState::empty();
         let (here, there) = (crate::protocol::Id::new_v4(), crate::protocol::Id::new_v4());
         state.selected_guild = Some(here);
-        state.dm_accepted.insert(key(2));
-        state.dm_accepted.insert(me.clone());
-        state.dm_accepted.insert("not a key".into());
-        state.dm_ignored.insert(key(7));
+        state.choose_dm(&key(2), Some(crate::state::DmChoice::Accepted));
+        state.choose_dm(&me, Some(crate::state::DmChoice::Accepted));
+        state.choose_dm("not a key", Some(crate::state::DmChoice::Accepted));
+        state.choose_dm(&key(7), Some(crate::state::DmChoice::Ignored));
         state.contacts = state.contacts.clone().with(crate::nostr::nip02::Contact {
             pubkey: key(3),
             relay: None,
@@ -194,6 +192,22 @@ mod tests {
             assert_eq!(
                 state.dm_standing(&peer.pubkey),
                 crate::state::DmStanding::Inbox
+            );
+        }
+
+        // What a woken process decides from the files must be what the app decides.
+        let (accepted, ignored) = state.dm_choice_lists();
+        let blocked: Vec<String> = state.mutes.pubkeys().map(str::to_string).collect();
+        for peer in (2..=8).map(key) {
+            let cold = crate::dm_standing::standing(
+                blocked.contains(&peer),
+                crate::dm_standing::choice_in(&accepted, &ignored, &peer),
+                built.name(&peer).is_some(),
+            );
+            assert_eq!(
+                cold == crate::state::DmStanding::Inbox,
+                state.dm_standing(&peer) == crate::state::DmStanding::Inbox,
+                "{peer}"
             );
         }
 
