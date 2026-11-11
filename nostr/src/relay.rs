@@ -70,9 +70,8 @@ pub struct Filter {
 /// What the pool reports back to the app.
 #[derive(Debug, Clone)]
 pub enum RelayEvent {
-    /// An event nobody has delivered before. `relay` is whichever copy won the
-    /// dedup race, not a fact about the message: enough to say whether that
-    /// relay was still replaying, never which relays hold it.
+    /// `relay` is whichever copy won the dedup race, not a fact about the message: enough
+    /// to say whether that relay was still replaying, never which relays hold it.
     Event {
         relay: String,
         event: Box<Event>,

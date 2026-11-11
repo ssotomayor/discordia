@@ -1283,9 +1283,8 @@ impl Replay {
                 .all(|relay| self.done.contains(relay) || self.given_up.contains(relay))
     }
 
-    /// Whether an event this relay delivered was sent moments ago, the only
-    /// kind whose delivery time says anything about the sender's clock (trap
-    /// 18). A relay given up on is still replaying: what it brings is backlog.
+    /// Only an event sent moments ago says anything about its sender's clock (trap 18).
+    /// A relay given up on is still replaying: what it brings is backlog.
     fn live(&self, up: &std::collections::HashSet<String>, from: &str) -> bool {
         self.done.contains(from) && self.settled(up)
     }

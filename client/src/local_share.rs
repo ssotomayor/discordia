@@ -205,8 +205,7 @@ impl ScreenShare {
     }
 }
 
-/// What the server must be told when the share or the call's channel changes.
-/// `announced` is the channel it was last told we share in; the result is the new one.
+/// `announced` is the channel the server was last told we share in; the result is the new one.
 /// A share that follows its call into another channel is not re-announced: the move ends it.
 pub fn announce(
     announced: Option<Id>,

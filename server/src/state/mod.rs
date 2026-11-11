@@ -3732,9 +3732,8 @@ impl AppState {
         self.end_image_upload(conn_id, upload_id, UploadEnd::Cancelled(why))
     }
 
-    /// The only way out of `pending_image_uploads`, so leaving it and telling
-    /// whoever saw the provisional message cannot come apart. A cancel also goes
-    /// to the sender's socket, which may have stopped being a member.
+    /// The only way out of `pending_image_uploads`, so leaving and telling those who saw the
+    /// provisional message cannot come apart. A cancel also reaches the sender, who may have left.
     fn end_image_upload(&self, conn_id: u64, upload_id: Id, end: UploadEnd<'_>) -> bool {
         let Some((_, pending)) = self.pending_image_uploads.remove(&(conn_id, upload_id)) else {
             return false;

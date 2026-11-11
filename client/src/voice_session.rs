@@ -40,9 +40,8 @@ pub enum VoicePhase {
     Error,
 }
 
-/// Where our side of a guild call is. A join sent but not yet answered is
-/// `VoiceSession::joining_channel_id`, beside this: a move dials one channel
-/// while still connected to another.
+/// A join sent but not yet answered is `VoiceSession::joining_channel_id`, beside this:
+/// a move dials one channel while still connected to another.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum CallState {
     #[default]

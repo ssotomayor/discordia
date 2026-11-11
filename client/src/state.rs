@@ -1707,9 +1707,8 @@ impl AppState {
             .map(|(peer, _)| peer.as_str())
     }
 
-    /// Keeps a guild-mate we talk to in the Inbox once the roster that made
-    /// them one is gone, so standing does not depend on the open server (trap 7).
-    /// An explicit ignore stands: sharing a guild only outranked it.
+    /// Standing must not depend on the open server (trap 7), so a guild-mate stays in the
+    /// Inbox once the roster is gone. An explicit ignore stands: a shared guild only outranked it.
     pub fn accept_guild_mates(&mut self) {
         let mates: Vec<String> = self.guild_mates_to_accept().cloned().collect();
         for peer in mates {

@@ -147,9 +147,8 @@ pub struct Prior {
     pub first_at: i64,
 }
 
-/// Where one key stands on one relay; a key missing from `RelaySlot::watch` is
-/// unwatched there. A redial or a forced resubscribe keeps it: `Seen` knows that
-/// relay's replay, and what it gained while away is news.
+/// A key missing from `RelaySlot::watch` is unwatched there. A redial or forced resubscribe
+/// keeps the state: `Seen` knows that relay's replay, and what it gained while away is news.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Watch {
     Replaying,
