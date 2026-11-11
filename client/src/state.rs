@@ -498,7 +498,7 @@ pub struct AppState {
     pub media_undecryptable: bool,
     pub pending_rekey: bool,
     pub identity: Option<crate::identity::Identity>,
-    pub media_keys: HashMap<Id, (u32, [u8; 32])>,
+    pub media_key: crate::mediakey::CallKey,
     pub host_info: Option<HostInfo>,
     pub transport: Transport,
     pub integrations: HashMap<Id, Vec<BotInstall>>,
@@ -718,7 +718,7 @@ impl AppState {
             media_undecryptable: false,
             pending_rekey: false,
             identity: None,
-            media_keys: HashMap::new(),
+            media_key: Default::default(),
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),
@@ -775,7 +775,7 @@ impl AppState {
     /// and the process-wide media key must not survive a call.
     pub fn end_voice_locally(&mut self) {
         self.voice_event(VoiceEvent::Ended);
-        self.media_keys.clear();
+        self.drop_media_key();
         self.screen_token = None;
         self.voice_endpoint = None;
         self.voice_location = None;
@@ -3728,7 +3728,7 @@ mod tests {
         let mut s = AppState::empty();
         let channel = uuid::Uuid::from_u128(7);
         s.voice.force(CallState::Connected(channel));
-        s.media_keys.insert(channel, (3, [9; 32]));
+        s.media_key = crate::mediakey::CallKey::force(channel, (3, [9; 32]));
         s.screen_sharing = true;
         s.camera_on = true;
         s.camera_picker = true;
@@ -3740,7 +3740,7 @@ mod tests {
             s.voice_session_epoch, epoch,
             "a rejoin must not pass for this call"
         );
-        assert!(s.media_keys.is_empty());
+        assert_eq!(s.media_key, Default::default());
         assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
         assert!(!s.camera_picker);
         assert!(s.screen_viewer_token.is_none());

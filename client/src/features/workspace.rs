@@ -1511,7 +1511,7 @@ fn EncryptionBadge() -> Element {
     let has_key = snapshot
         .voice
         .channel_id()
-        .is_some_and(|c| snapshot.media_keys.contains_key(&c));
+        .is_some_and(|c| snapshot.media_key.held_for(c).is_some());
     let broken = snapshot.media_undecryptable;
     drop(snapshot);
 

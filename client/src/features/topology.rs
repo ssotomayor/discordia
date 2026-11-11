@@ -200,7 +200,7 @@ pub fn TopologyDialog(on_close: EventHandler<()>) -> Element {
     let voice_sealed = snapshot
         .voice
         .channel_id()
-        .is_some_and(|c| snapshot.media_keys.contains_key(&c));
+        .is_some_and(|c| snapshot.media_key.held_for(c).is_some());
     drop(snapshot);
 
     let self_hosting = host.is_some();

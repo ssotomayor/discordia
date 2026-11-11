@@ -378,6 +378,10 @@ async fn service_loop(
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown(state).await;
                 }
+                // Dropped only now: until its rooms closed, peers there were still decrypting it.
+                if state.peek().media_key_is_stale() {
+                    state.write().drop_media_key();
+                }
                 #[cfg(target_os = "android")]
                 {
                     if !call.is_current(state.peek().voice_call()) {

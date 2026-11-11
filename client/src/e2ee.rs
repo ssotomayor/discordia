@@ -48,10 +48,10 @@ pub async fn ensure_channel_key(
     use dioxus::prelude::*;
     let (epoch, key) = wait_for_key(|| {
         let current = state.peek();
-        if current.voice_call().map(|call| call.channel) != Some(channel) {
+        if current.key_channel() != Some(channel) {
             return Err("voice join cancelled".into());
         }
-        Ok(current.media_keys.get(&channel).copied())
+        Ok(current.media_key.held_for(channel))
     })
     .await?;
     apply_key(&key, epoch);
@@ -226,11 +226,33 @@ pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN], epoch: u32) {
             "media key applied to live rooms"
         );
     }
-    let js = format!(
+    tell_webview(&format!(
         "window.dxScreen.setE2eeKey({});",
         serde_json::to_string(&hex_key).unwrap_or_else(|_| "null".into())
-    );
-    let _ = dioxus::document::eval(&js);
+    ));
+}
+
+/// Takes the ended call's key out of the provider and the webview too, so no room
+/// of the next call can start on it: each would otherwise read the provider's slot.
+pub fn clear_key() {
+    if ACTIVE.lock().expect("e2ee key lock").take().is_none() {
+        return;
+    }
+    let placeholder = vec![0u8; crate::mediakey::KEY_LEN];
+    provider().set_shared_key(placeholder.clone(), SCREEN_SLOT);
+    let slot = VOICE_SLOT.swap(SCREEN_SLOT, std::sync::atomic::Ordering::Relaxed);
+    if slot != SCREEN_SLOT {
+        provider().set_shared_key(placeholder, slot);
+    }
+    tracing::info!("media key of the ended call forgotten");
+    tell_webview("window.dxScreen.setE2eeKey(null);");
+}
+
+/// State changes outside a Dioxus runtime (tests, a torn-down window) have no page to tell.
+fn tell_webview(js: &str) {
+    if dioxus::core::Runtime::try_current().is_some() {
+        let _ = dioxus::document::eval(js);
+    }
 }
 
 pub fn current_key() -> Option<String> {
@@ -288,6 +310,21 @@ mod tests {
         })
         .await;
         assert_eq!(result, Err("voice join cancelled".into()));
+    }
+
+    #[test]
+    fn a_cleared_key_is_gone_from_every_place_a_room_reads_it() {
+        super::apply_key(&[5; crate::mediakey::KEY_LEN], 3);
+        super::clear_key();
+        assert_eq!(*super::ACTIVE.lock().unwrap(), None);
+        assert_eq!(
+            super::VOICE_SLOT.load(std::sync::atomic::Ordering::Relaxed),
+            SCREEN_SLOT
+        );
+        if super::shared_key().is_none() {
+            assert_eq!(super::current_key(), None);
+        }
+        super::clear_key();
     }
 
     #[test]

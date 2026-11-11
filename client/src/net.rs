@@ -2242,7 +2242,7 @@ fn apply(
             };
             // The call the server has us in, not the one we are still leaving:
             // the key in use is global, so a late one for another call replaces ours.
-            if s.voice_call().map(|call| call.channel) != Some(channel_id) {
+            if s.key_channel() != Some(channel_id) {
                 tracing::debug!(%from, epoch, "ignoring a media key for a call we are not in");
                 return;
             }
@@ -2253,16 +2253,15 @@ fn apply(
                     return;
                 }
             };
-            let held = s.media_keys.get(&channel_id).copied();
+            let held = s.media_key.held_for(channel_id);
             match crate::mediakey::judge(held, (epoch, key)) {
                 crate::mediakey::Verdict::Keep => {
                     tracing::trace!(%from, epoch, "already running this key");
                 }
                 crate::mediakey::Verdict::Adopt => {
                     tracing::info!(%from, epoch, "media key accepted");
-                    s.media_keys.insert(channel_id, (epoch, key));
+                    s.adopt_media_key(channel_id, (epoch, key));
                     s.media_undecryptable = false;
-                    crate::e2ee::apply_key(&key, epoch);
                 }
                 crate::mediakey::Verdict::Answer => {
                     let Some(ours) = held else { return };
@@ -2370,6 +2369,10 @@ fn apply(
                     eprintln!("[net] server says we're out of voice — forcing Idle");
                     let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
                     s.end_voice_locally();
+                }
+                // A call left before its token never reached `end_voice_locally`.
+                if s.media_key_is_stale() && vs.channel_id.is_none() {
+                    s.drop_media_key();
                 }
             }
         }
