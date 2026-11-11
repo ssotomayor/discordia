@@ -38,6 +38,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::{ClientMessage, IceServer, Id};
 use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
+use crate::voice_session::VoiceCall;
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
 #[path = "voice_camera.rs"]
@@ -244,10 +245,9 @@ pub enum VoiceCmd {
     Connect {
         livekit_url: String,
         alternate_urls: Vec<String>,
-        route_revision: u32,
+        call: VoiceCall,
         report_tx: UnboundedSender<ClientMessage>,
         token: String,
-        channel_id: Id,
         ice_servers: Vec<IceServer>,
     },
     /// `done` fires once the rooms are closed and the capture is stopped, so a
@@ -366,12 +366,12 @@ async fn service_loop(
             VoiceCmd::Connect {
                 livekit_url,
                 alternate_urls,
-                route_revision,
+                call,
                 report_tx,
                 token,
-                channel_id,
                 ice_servers,
             } => {
+                let channel_id = call.channel;
                 eprintln!("[voice] Connect to {livekit_url} channel={channel_id}");
                 last_connect = None;
                 if let Some(prev) = session.take() {
@@ -380,13 +380,11 @@ async fn service_loop(
                 }
                 #[cfg(target_os = "android")]
                 {
-                    if state.peek().server_voice_channel() != Some(channel_id)
-                        || state.peek().voice_route_revision != route_revision {
+                    if !call.is_current(state.peek().voice_call()) {
                         continue;
                     }
                     if let Err(error) = crate::android::prepare_voice().await {
-                        if state.peek().server_voice_channel() == Some(channel_id)
-                            && state.peek().voice_route_revision == route_revision {
+                        if call.is_current(state.peek().voice_call()) {
                             if let Err(send_error) = report_tx.send(ClientMessage::LeaveVoice) {
                                 tracing::debug!(%send_error, "voice gateway closed");
                             }
@@ -404,20 +402,18 @@ async fn service_loop(
                     let controls = controls.clone();
                     let ice = ice_servers.clone();
                     async move {
-                        if state.peek().server_voice_channel() != Some(channel_id)
-                            || state.peek().voice_route_revision != route_revision {
+                        if !call.is_current(state.peek().voice_call()) {
                             return Err("voice join cancelled".into());
                         }
                         ActiveVoice::connect(&url, &token, channel_id, ice, state, controls).await
                     }
                 }).await;
-                if state.peek().server_voice_channel() != Some(channel_id)
-                    || state.peek().voice_route_revision != route_revision {
+                if !call.is_current(state.peek().voice_call()) {
                     if let Ok((active, _)) = result { active.shutdown(state).await; }
                     continue;
                 }
                 let _ = report_tx.send(ClientMessage::VoiceConnectionReport {
-                    channel_id, route_revision, connected: result.is_ok(),
+                    channel_id, route_revision: call.route, connected: result.is_ok(),
                 });
                 match result {
                     Ok((active, url)) => {

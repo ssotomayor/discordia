@@ -86,6 +86,7 @@ mod update;
 mod version;
 mod voice_handoff;
 mod voice_record;
+mod voice_session;
 #[cfg(target_os = "windows")]
 mod webview2;
 #[cfg(target_os = "windows")]

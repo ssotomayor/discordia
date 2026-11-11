@@ -2241,7 +2241,7 @@ fn apply(
             };
             // The call the server has us in, not the one we are still leaving:
             // the key in use is global, so a late one for another call replaces ours.
-            if s.server_voice_channel() != Some(channel_id) {
+            if s.voice_call().map(|call| call.channel) != Some(channel_id) {
                 tracing::debug!(%from, epoch, "ignoring a media key for a call we are not in");
                 return;
             }
@@ -2380,8 +2380,11 @@ fn apply(
             ice_servers,
         } => {
             eprintln!("[net] VoiceToken channel={channel_id} url={livekit_url}");
-            let stale = route_revision < s.voice_route_revision
-                || s.server_voice_channel() != Some(channel_id);
+            let call = crate::voice_session::VoiceCall {
+                channel: channel_id,
+                route: route_revision,
+            };
+            let stale = call.grant_is_stale(s.voice_call());
             // Last, after every address the host offered: direct media beats a
             // tunnel, and the gateway serves /sfu only for its own SFU.
             let mut alternate_urls = alternate_urls;
@@ -2406,7 +2409,7 @@ fn apply(
                 return;
             }
             s.voice_route_revision = route_revision;
-            if route_revision == 1
+            if call.on_shared_sfu()
                 && let Some(host) = &mut s.host_info
             {
                 host.voice_bundled = false;
@@ -2425,10 +2428,9 @@ fn apply(
             let _ = voice_tx.send(VoiceCmd::Connect {
                 livekit_url,
                 alternate_urls,
-                route_revision,
+                call,
                 report_tx: tx.clone(),
                 token,
-                channel_id,
                 ice_servers,
             });
         }
@@ -2443,9 +2445,11 @@ fn apply(
             ice_servers,
             ..
         } => {
-            if route_revision < s.voice_route_revision
-                || s.server_voice_channel() != Some(channel_id)
-            {
+            let call = crate::voice_session::VoiceCall {
+                channel: channel_id,
+                route: route_revision,
+            };
+            if call.grant_is_stale(s.voice_call()) {
                 return;
             }
             let livekit_url = s.voice_endpoint.clone().unwrap_or(livekit_url);
@@ -2463,7 +2467,7 @@ fn apply(
             reason,
         } => {
             tracing::warn!(url = %livekit_url, %reason, "voice route: server moved the session");
-            s.voice_route_revision = 1;
+            s.voice_route_revision = crate::voice_session::SHARED_SFU_ROUTE;
             if let Some(host) = &mut s.host_info {
                 host.voice_bundled = false;
                 host.livekit_url = livekit_url;
@@ -2700,10 +2704,7 @@ mod tests {
                 apply(&mut state, token(1), &tx, &voice_tx);
                 assert!(matches!(
                     native.try_recv().unwrap(),
-                    VoiceCmd::Connect {
-                        route_revision: 1,
-                        ..
-                    }
+                    VoiceCmd::Connect { call, .. } if call.on_shared_sfu()
                 ));
                 state
                     .write()

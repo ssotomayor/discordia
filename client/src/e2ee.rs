@@ -48,7 +48,7 @@ pub async fn ensure_channel_key(
     use dioxus::prelude::*;
     let (epoch, key) = wait_for_key(|| {
         let current = state.peek();
-        if current.server_voice_channel() != Some(channel) {
+        if current.voice_call().map(|call| call.channel) != Some(channel) {
             return Err("voice join cancelled".into());
         }
         Ok(current.media_keys.get(&channel).copied())

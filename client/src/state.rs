@@ -829,6 +829,8 @@ impl AppState {
     /// Clear locally before the server echo: retained tokens keep webview rooms alive,
     /// and the process-wide media key must not survive a call.
     pub fn end_voice_locally(&mut self) {
+        // A rejoin of the same channel is another call: nothing keyed on the epoch may carry over.
+        self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
         self.voice.phase = VoicePhase::Idle;
         self.voice.channel_id = None;
         self.media_keys.clear();
@@ -924,7 +926,6 @@ impl AppState {
         self.members.clear();
         self.voice_states.clear();
         self.end_voice_locally();
-        self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
         self.selected_guild = None;
         self.selected_channel = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
         self.dm_mode = self.selected_channel.is_some();
@@ -1180,6 +1181,13 @@ impl AppState {
         (self.voice.phase == VoicePhase::Connected)
             .then_some(self.voice.channel_id)
             .flatten()
+    }
+
+    pub fn voice_call(&self) -> Option<crate::voice_session::VoiceCall> {
+        Some(crate::voice_session::VoiceCall {
+            channel: self.server_voice_channel()?,
+            route: self.voice_route_revision,
+        })
     }
 
     /// Keys can arrive before the local media token, so the server channel leads the join.
@@ -3774,7 +3782,12 @@ mod tests {
         s.camera_picker = true;
         s.screen_token = Some(("url".into(), "tok".into()));
         s.screen_viewer_token = Some(("url".into(), "viewer".into()));
+        let epoch = s.voice_session_epoch;
         s.end_voice_locally();
+        assert_ne!(
+            s.voice_session_epoch, epoch,
+            "a rejoin must not pass for this call"
+        );
         assert!(s.media_keys.is_empty());
         assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
         assert!(!s.camera_picker);
