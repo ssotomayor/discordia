@@ -250,8 +250,8 @@ pub fn spawn_nostr(
         request_names(&pool, &state, &our_pubkey, &mut named);
 
         let mut xp_publisher = xp::Publisher::new(xp::PUBLISH_COOLDOWN);
-        // Nothing goes out before every relay has replayed: a fresh device
-        // would otherwise replace the account's marks with its own few.
+        // Nothing goes out before the relays have replayed (`Replay::settled`):
+        // a fresh device would otherwise replace the account's marks with its own few.
         let mut marks_checked = false;
         let mut marks_publisher = read_marks::Publisher::default();
         let mut marks_held_at = i64::MIN;
@@ -343,13 +343,31 @@ pub fn spawn_nostr(
         let mut delivery_tick = tokio::time::interval(std::time::Duration::from_millis(100));
         delivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // Relays that have said they finished replaying since they connected.
-        // A message arriving once every connected relay has is one that was
-        // sent moments ago, which is the only kind whose delivery time says
-        // anything about the sender's clock.
-        let mut replayed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut replay = Replay::default();
 
         loop {
+            if (!marks_checked || !profile_checked) && replay.settled(&state.peek().nostr_relays_up)
+            {
+                if !marks_checked {
+                    marks_checked = true;
+                    marks_tick.reset_immediately();
+                }
+                // Saved here while no relay answered, or before profiles synced.
+                if !profile_checked {
+                    profile_checked = true;
+                    let local = crate::profile::load(&our_pubkey);
+                    let synced_at = synced.as_ref().map_or(0, |s| s.updated_at);
+                    let newest_name = newest_name(local.as_ref(), synced.as_ref());
+                    if let Some(local) = local
+                        && local.updated_at > synced_at
+                    {
+                        share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
+                    }
+                    if let Some(name) = newest_name.or(own_name.pending.take()) {
+                        own_name.publish(&pool, &secret, state, &our_pubkey, name);
+                    }
+                }
+            }
             images.pump(secret, &image_tx);
             tokio::select! {
                 Some((key, result)) = image_rx.recv() => {
@@ -746,6 +764,13 @@ pub fn spawn_nostr(
                         }
                     }
                 }
+                _ = tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(replay.next_due().unwrap_or_else(std::time::Instant::now))
+                ), if replay.next_due().is_some() => {
+                    for relay in replay.give_up_on_overdue(std::time::Instant::now()) {
+                        eprintln!("[nostr] {relay}: no end of stored events after {}s; not waiting for it", REPLAY_PATIENCE.as_secs());
+                    }
+                }
                 _ = marks_tick.tick(), if marks_checked => {
                     let marks = state.peek().read_marks();
                     match marks_publisher.offer(marks, &secret, &our_pubkey, now(), std::time::Instant::now()) {
@@ -762,7 +787,7 @@ pub fn spawn_nostr(
                     }
                 }
                 ev = events.recv() => match ev {
-                    Some(RelayEvent::Event(event)) => match event.kind {
+                    Some(RelayEvent::Event { relay: from, event }) => match event.kind {
                         nip17::KIND_DM_RELAYS => routes.note(&event),
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
@@ -894,7 +919,7 @@ pub fn spawn_nostr(
                             if apply_dm_change(&rumor, &our_pubkey, &mut state, &mut settings) {
                                 continue;
                             }
-                            let live = every_relay_replayed(&state, &replayed);
+                            let live = replay.live(&state.peek().nostr_relays_up, &from);
                             if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
                                 insert_message_with_settings(
                                     &msg,
@@ -914,7 +939,7 @@ pub fn spawn_nostr(
                         eprintln!("[nostr] {url}: connected");
                         // A reconnect re-issues the subscriptions, so this relay
                         // is replaying again until it says otherwise.
-                        replayed.remove(&url);
+                        replay.connected(&url, std::time::Instant::now());
                         state.write().nostr_relays_up.insert(url);
                         for (id, attempt) in &mut system_deliveries {
                             if state.peek().dm_delivery.get(id) == Some(&super::delivery::Delivery::Failed)
@@ -930,7 +955,7 @@ pub fn spawn_nostr(
                         // Pool retries automatically; this is the only source
                         // of the disconnect reason for status.
                         eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
-                        replayed.remove(&relay);
+                        replay.disconnected(&relay);
                         state.write().nostr_relays_up.remove(&relay);
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
@@ -954,26 +979,7 @@ pub fn spawn_nostr(
                     Some(RelayEvent::EndOfStored { relay, subscription }) => {
                         if subscription != SUB_DM { continue; }
                         eprintln!("[nostr] {relay}: finished replaying stored events");
-                        replayed.insert(relay);
-                        if !marks_checked && every_relay_replayed(&state, &replayed) {
-                            marks_checked = true;
-                            marks_tick.reset_immediately();
-                        }
-                        // Saved here while no relay answered, or before profiles synced.
-                        if !profile_checked && every_relay_replayed(&state, &replayed) {
-                            profile_checked = true;
-                            let local = crate::profile::load(&our_pubkey);
-                            let synced_at = synced.as_ref().map_or(0, |s| s.updated_at);
-                            let newest_name = newest_name(local.as_ref(), synced.as_ref());
-                            if let Some(local) = local
-                                && local.updated_at > synced_at
-                            {
-                                share_profile(local, synced.clone(), settings, secret, profile_tx.clone());
-                            }
-                            if let Some(name) = newest_name.or(own_name.pending.take()) {
-                                own_name.publish(&pool, &secret, state, &our_pubkey, name);
-                            }
-                        }
+                        replay.finished(&relay);
                     }
                     None => break,
                 },
@@ -1228,18 +1234,71 @@ fn send_message(
     }
 }
 
-/// Whether every relay we are connected to has finished replaying.
-///
-/// Conservative on purpose: with one relay still replaying, a stored event
-/// could arrive next, and dating that by our clock would say the sender's is
-/// wrong by however old the message is. No relays up at all is not "live"
-/// either — it is nothing to conclude from.
-fn every_relay_replayed(
-    state: &Signal<AppState>,
-    replayed: &std::collections::HashSet<String>,
-) -> bool {
-    let up = &state.read().nostr_relays_up;
-    !up.is_empty() && up.iter().all(|relay| replayed.contains(relay))
+/// How long a connected relay may go without ending its replay before the
+/// others stop waiting for it.
+const REPLAY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Which relays have finished replaying the DM subscription since they
+/// connected, and which ran out of patience first.
+#[derive(Default)]
+struct Replay {
+    done: std::collections::HashSet<String>,
+    due: std::collections::HashMap<String, std::time::Instant>,
+    given_up: std::collections::HashSet<String>,
+}
+
+impl Replay {
+    /// A reconnect re-issues the subscriptions, so the relay replays again.
+    fn connected(&mut self, relay: &str, now: std::time::Instant) {
+        self.disconnected(relay);
+        self.due.insert(relay.to_string(), now + REPLAY_PATIENCE);
+    }
+
+    fn disconnected(&mut self, relay: &str) {
+        self.done.remove(relay);
+        self.due.remove(relay);
+        self.given_up.remove(relay);
+    }
+
+    fn finished(&mut self, relay: &str) {
+        self.due.remove(relay);
+        self.given_up.remove(relay);
+        self.done.insert(relay.to_string());
+    }
+
+    fn next_due(&self) -> Option<std::time::Instant> {
+        self.due.values().min().copied()
+    }
+
+    fn give_up_on_overdue(&mut self, now: std::time::Instant) -> Vec<String> {
+        let overdue: Vec<String> = self
+            .due
+            .iter()
+            .filter(|(_, due)| **due <= now)
+            .map(|(relay, _)| relay.clone())
+            .collect();
+        for relay in &overdue {
+            self.due.remove(relay);
+            self.given_up.insert(relay.clone());
+        }
+        overdue
+    }
+
+    /// Every connected relay has replayed or been given up on, and one at
+    /// least replayed: having read nothing is not the account's state.
+    fn settled(&self, up: &std::collections::HashSet<String>) -> bool {
+        up.iter().any(|relay| self.done.contains(relay))
+            && up
+                .iter()
+                .all(|relay| self.done.contains(relay) || self.given_up.contains(relay))
+    }
+
+    /// Whether an event this relay delivered was sent moments ago, the only
+    /// kind whose delivery time says anything about the sender's clock (trap
+    /// 18). A relay given up on is still replaying: what it brings is backlog.
+    fn live(&self, up: &std::collections::HashSet<String>, from: &str) -> bool {
+        self.done.contains(from) && self.settled(up)
+    }
 }
 
 /// Where a message came from. Only a relay can be replaying deleted history;
@@ -1697,6 +1756,56 @@ fn insert_message_with_settings(
 
 #[cfg(test)]
 mod tests {
+    fn relays(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn a_silent_relay_stops_blocking_the_others_but_what_it_brings_stays_backlog() {
+        let t0 = std::time::Instant::now();
+        let up = relays(&["a", "b"]);
+        let mut replay = super::Replay::default();
+        replay.connected("a", t0);
+        replay.connected("b", t0);
+        replay.finished("a");
+        assert!(!replay.settled(&up));
+        assert!(!replay.live(&up, "a"));
+
+        let second = std::time::Duration::from_secs(1);
+        assert!(
+            replay
+                .give_up_on_overdue(t0 + super::REPLAY_PATIENCE - second)
+                .is_empty()
+        );
+        assert_eq!(
+            replay.give_up_on_overdue(t0 + super::REPLAY_PATIENCE),
+            vec!["b".to_string()]
+        );
+        assert_eq!(replay.next_due(), None, "nothing left to wait for");
+        assert!(replay.settled(&up));
+        assert!(replay.live(&up, "a"));
+        assert!(!replay.live(&up, "b"), "b never ended its replay");
+
+        replay.finished("b");
+        assert!(replay.live(&up, "b"));
+    }
+
+    #[test]
+    fn a_reconnect_replays_again_and_having_read_nothing_is_not_settled() {
+        let t0 = std::time::Instant::now();
+        let up = relays(&["a"]);
+        let mut replay = super::Replay::default();
+        replay.connected("a", t0);
+        replay.give_up_on_overdue(t0 + super::REPLAY_PATIENCE);
+        assert!(!replay.settled(&up), "no relay replayed anything");
+
+        replay.finished("a");
+        assert!(replay.live(&up, "a"));
+        replay.connected("a", t0 + super::REPLAY_PATIENCE);
+        assert!(!replay.live(&up, "a"));
+        assert!(replay.next_due().is_some());
+    }
+
     #[test]
     fn the_newest_edit_names_the_account_and_an_unnamed_one_defers() {
         let local = |at, name: Option<&str>| crate::profile::LocalProfile {

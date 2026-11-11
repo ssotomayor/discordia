@@ -77,7 +77,7 @@ pub async fn answer_dms<H: Harness + Clone>(
                         online = true;
                         report(Status::Online);
                     }
-                    RelayEvent::Event(gift) if gift.kind == nip59::KIND_GIFT_WRAP => {
+                    RelayEvent::Event { event: gift, .. } if gift.kind == nip59::KIND_GIFT_WRAP => {
                         let Ok(rumor) = nip59::unwrap(&secret, &gift) else { continue };
                         if rumor.kind != nip17::KIND_CHAT
                             || rumor.pubkey == me

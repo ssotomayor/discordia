@@ -585,7 +585,7 @@ impl State {
                 }
                 Vec::new()
             }
-            RelayEvent::Event(event) => self.on_wrap(i, &event),
+            RelayEvent::Event { event, .. } => self.on_wrap(i, &event),
             RelayEvent::Connected(url) => {
                 tracing::debug!(relay = %url, "DM watcher connected");
                 Vec::new()
