@@ -2345,10 +2345,8 @@ fn apply(
                 }
             }
 
-            if s.screen_viewing.contains(&vs.user_pubkey)
-                && (!vs.screen_sharing || vs.channel_id.is_none())
-            {
-                s.screen_viewing.remove(&vs.user_pubkey);
+            if !vs.screen_sharing || vs.channel_id.is_none() {
+                s.screen_viewing.unwatch(&vs.user_pubkey);
             }
 
             if is_self {

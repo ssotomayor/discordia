@@ -449,11 +449,7 @@ pub fn WorkspaceView(
                 .send(local.set_profile_message(snapshot.profile_of(&profile_owner.peek())));
         }
     });
-    let streams_visible = use_memo(move || {
-        let s = state.read();
-        let detached = popouts.detached.read();
-        s.screen_viewing.iter().any(|pk| !detached.contains(pk))
-    });
+    let streams_visible = use_memo(move || state.read().screen_viewing.inline().next().is_some());
 
     let layout = use_layout_store(|| {
         let saved = settings.read();
@@ -994,8 +990,8 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    let viewing = use_memo(move || state.read().screen_viewing.clone());
-    let mut last_viewing = use_signal(|| state.peek().screen_viewing.clone());
+    let viewing = use_memo(move || state.read().screen_viewing.sharers());
+    let mut last_viewing = use_signal(|| state.peek().screen_viewing.sharers());
     use_effect(move || {
         let now = viewing();
         let prev = last_viewing.peek().clone();

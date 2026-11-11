@@ -581,7 +581,7 @@ fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
 #[test]
 fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
     let mut state = AppState::empty();
-    state.screen_viewing.insert("alice".into());
+    state.screen_viewing.watch("alice");
     state.stream_volumes.insert("alice".into(), 50);
     let controls = AudioControls::from_state(&state);
     let mut tracks = MixerTracks::default();

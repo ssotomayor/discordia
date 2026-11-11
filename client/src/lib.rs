@@ -79,6 +79,7 @@ mod single_instance;
 mod sound_decode;
 mod state;
 mod stream_audio;
+mod stream_placement;
 mod sysaudio;
 mod syscamera;
 mod sysvideo;

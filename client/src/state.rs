@@ -441,7 +441,7 @@ pub struct AppState {
     pub ice_servers: Vec<crate::protocol::IceServer>,
     pub screen_share: crate::local_share::ScreenShare,
     pub screen_shares: HashMap<Id, Vec<String>>,
-    pub screen_viewing: HashSet<String>,
+    pub screen_viewing: crate::stream_placement::StreamWatches,
     pub replying_to: Option<ReplyDraft>,
     pub screen_capture_available: bool,
 
@@ -662,7 +662,7 @@ impl AppState {
             screen_share: Default::default(),
             screen_audio_joined: false,
             screen_shares: HashMap::new(),
-            screen_viewing: HashSet::new(),
+            screen_viewing: Default::default(),
             replying_to: None,
             screen_capture_available: false,
             camera: Default::default(),

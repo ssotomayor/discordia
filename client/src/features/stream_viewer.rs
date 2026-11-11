@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use dioxus::prelude::*;
 use tokio::sync::{mpsc, watch};
@@ -35,7 +35,6 @@ enum Command {
 
 #[derive(Clone, Copy)]
 pub(super) struct Popouts {
-    pub detached: Signal<HashSet<String>>,
     pub open: EventHandler<String>,
 }
 
@@ -45,8 +44,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     let mut reported = use_signal(|| None);
     use_effect(move || {
         let s = state.read();
-        let mut sharers: Vec<_> = s.screen_viewing.iter().cloned().collect();
-        sharers.sort();
+        let sharers: Vec<_> = s.screen_viewing.iter().cloned().collect();
         let next = (s.voice_session_epoch, s.voice.channel_id(), sharers);
         if reported.peek().as_ref() != Some(&next) {
             if next.1.is_some() {
@@ -57,19 +55,20 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
             reported.set(Some(next));
         }
     });
-    let mut detached = use_signal(HashSet::<String>::new);
-    let mut detached_epoch = use_signal(move || state.peek().voice_session_epoch);
+    // `None` at mount: a workspace that mounts again starts with every stream in the app.
+    let mut placement_epoch = use_signal(|| None::<u64>);
     use_effect(move || {
-        let s = state.read();
-        let epoch = s.voice_session_epoch;
-        let same_session = epoch == *detached_epoch.peek() && s.screen_viewer_token.is_some();
-        let mut current = detached.read().clone();
-        reconcile_detached(&mut current, &s.screen_viewing, same_session);
-        if current != *detached.peek() {
-            detached.set(current);
+        let (epoch, same_session, any_detached) = {
+            let s = state.read();
+            let epoch = s.voice_session_epoch;
+            let same = Some(epoch) == *placement_epoch.peek() && s.screen_viewer_token.is_some();
+            (epoch, same, s.screen_viewing.detached().next().is_some())
+        };
+        if !same_session && any_detached {
+            state.write().screen_viewing.dock_all();
         }
-        if epoch != *detached_epoch.peek() {
-            detached_epoch.set(epoch);
+        if Some(epoch) != *placement_epoch.peek() {
+            placement_epoch.set(Some(epoch));
         }
     });
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -88,11 +87,10 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     });
     let snapshot = use_memo(move || {
         let s = state.read();
-        let detached = detached.read();
         let (url, token) = s.screen_viewer_token.as_ref()?;
-        let mut streams: Vec<_> = detached
-            .iter()
-            .filter(|pk| s.screen_viewing.contains(*pk))
+        let streams: Vec<_> = s
+            .screen_viewing
+            .detached()
             .map(|pk| Stream {
                 pubkey: pk.clone(),
                 name: s.display_name(pk),
@@ -102,7 +100,6 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 viewers: s.screen_viewer_names(pk),
             })
             .collect();
-        streams.sort_by(|a, b| a.pubkey.cmp(&b.pubkey));
         if streams.is_empty() {
             return None;
         }
@@ -132,17 +129,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
             .as_ref()
             .map(|s| s.streams.iter().map(|v| v.pubkey.clone()).collect())
             .unwrap_or_default();
-        let inline = {
-            let s = state.read();
-            let mut inline: Vec<String> = s
-                .screen_viewing
-                .iter()
-                .filter(|pk| !detached.contains(*pk))
-                .cloned()
-                .collect();
-            inline.sort();
-            inline
-        };
+        let inline: Vec<String> = state.read().screen_viewing.inline().cloned().collect();
         evaluate(&format!(
             "window.dxScreen.setDetachedScreens({});window.dxScreen.setInlineScreens({});",
             serde_json::to_string(&detached).unwrap_or_else(|_| "[]".into()),
@@ -212,15 +199,14 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 }
                 match command {
                     Command::Dock(pk) => {
-                        detached.write().remove(&pk);
-                        if detached.peek().is_empty() {
+                        state.write().screen_viewing.dock(&pk);
+                        if state.peek().screen_viewing.detached().next().is_none() {
                             close_popout(&handle);
                         }
                     }
                     Command::Stop(pk) => {
-                        detached.write().remove(&pk);
-                        state.write().screen_viewing.remove(&pk);
-                        if detached.peek().is_empty() {
+                        state.write().screen_viewing.unwatch(&pk);
+                        if state.peek().screen_viewing.detached().next().is_none() {
                             close_popout(&handle);
                         }
                     }
@@ -236,7 +222,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                     }
                     Command::DockAll => {
                         close_popout(&handle);
-                        detached.write().clear();
+                        state.write().screen_viewing.dock_all();
                     }
                 }
             }
@@ -249,30 +235,17 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
         }
     });
     Popouts {
-        detached,
-        open: EventHandler::new(move |pk| {
+        open: EventHandler::new(move |pk: String| {
             if state.read().screen_viewer_token.is_none() {
                 state.write().error_toast = Some("This server does not provide external stream windows yet. Update the server and rejoin voice.".into());
                 return;
             }
-            detached.write().insert(pk);
+            state.write().screen_viewing.detach(&pk);
             if let Some(popup) = handle.borrow().as_ref().and_then(|h| h.upgrade()) {
                 popup.set_visible(true);
                 popup.window.set_focus();
             }
         }),
-    }
-}
-
-fn reconcile_detached(
-    detached: &mut HashSet<String>,
-    viewing: &HashSet<String>,
-    same_session: bool,
-) {
-    if same_session {
-        detached.retain(|pk| viewing.contains(pk));
-    } else {
-        detached.clear();
     }
 }
 
@@ -804,8 +777,8 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_style, reconcile_detached};
-    use std::collections::HashSet;
+    use super::grid_style;
+    use crate::stream_placement::StreamWatches;
 
     #[test]
     fn exiting_fullscreen_from_the_button_restores_the_mosaic() {
@@ -849,28 +822,30 @@ mod tests {
 
     #[test]
     fn a_rewatched_stream_stays_in_the_app_until_explicitly_detached_again() {
-        let mut detached = HashSet::from(["A".into(), "B".into()]);
-        let mut viewing = detached.clone();
-        viewing.remove("A");
-        reconcile_detached(&mut detached, &viewing, true);
-        assert_eq!(detached, HashSet::from(["B".into()]));
-        viewing.insert("A".into());
-        reconcile_detached(&mut detached, &viewing, true);
-        assert!(!detached.contains("A"));
-        assert!(detached.contains("B"));
-        detached.insert("A".into());
-        reconcile_detached(&mut detached, &viewing, true);
-        assert!(detached.contains("A"));
+        let mut watches = StreamWatches::default();
+        for pk in ["A", "B"] {
+            watches.watch(pk);
+            watches.detach(pk);
+        }
+        watches.unwatch("A");
+        assert_eq!(watches.detached().collect::<Vec<_>>(), ["B"]);
+        watches.watch("A");
+        assert!(!watches.is_detached("A"));
+        assert!(watches.is_detached("B"));
+        watches.detach("A");
+        assert!(watches.is_detached("A"));
     }
 
     #[test]
     fn changing_voice_sessions_drops_old_external_window_selections() {
-        let viewing = HashSet::from(["A".into(), "B".into()]);
-        let mut detached = viewing.clone();
-        reconcile_detached(&mut detached, &viewing, false);
-        assert!(detached.is_empty());
-        reconcile_detached(&mut detached, &viewing, true);
-        assert!(detached.is_empty());
+        let mut watches = StreamWatches::default();
+        for pk in ["A", "B"] {
+            watches.watch(pk);
+            watches.detach(pk);
+        }
+        assert!(watches.dock_all());
+        assert!(watches.detached().next().is_none());
+        assert_eq!(watches.inline().count(), 2);
     }
 
     #[test]

@@ -1837,10 +1837,7 @@ fn VoiceOccupant(
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
                             if can_watch {
-                                let mut s = state.write();
-                                if !s.screen_viewing.remove(&pk_watch) {
-                                    s.screen_viewing.insert(pk_watch.clone());
-                                }
+                                state.write().screen_viewing.toggle(&pk_watch);
                             }
                         },
                         dangerous_inner_html: crate::features::icons::SCREEN,

@@ -70,7 +70,8 @@ mod tests {
     #[test]
     fn detached_stream_levels_survive_reconnect_and_stop_independently() {
         let mut state = crate::state::AppState::empty();
-        state.screen_viewing.extend(["alice".into(), "bob".into()]);
+        state.screen_viewing.watch("alice");
+        state.screen_viewing.watch("bob");
         state.stream_volumes.insert("alice".into(), 25);
         state.stream_volumes.insert("bob".into(), 75);
         let initial = playback_gains(&state, &[]);
@@ -91,7 +92,7 @@ mod tests {
         state.voice.force_mute(false, false);
         state.stream_muted.clear();
         assert_eq!(playback_gains(&state, &initial), initial);
-        state.screen_viewing.remove("alice");
+        state.screen_viewing.unwatch("alice");
         assert_eq!(
             playback_gains(&state, &initial),
             vec![("alice".into(), 0.0), ("bob".into(), 0.75)]

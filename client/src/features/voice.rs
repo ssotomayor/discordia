@@ -163,10 +163,11 @@ impl AudioControls {
             .into_iter()
             .collect();
         self.watched_streams.send_if_modified(|watched| {
-            if *watched == state.screen_viewing {
+            let now = state.screen_viewing.sharers();
+            if *watched == now {
                 return false;
             }
-            watched.clone_from(&state.screen_viewing);
+            *watched = now;
             true
         });
     }
@@ -192,7 +193,7 @@ impl AudioControls {
                     .collect(),
             )),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
-            watched_streams: tokio::sync::watch::channel(s.screen_viewing.clone()).0,
+            watched_streams: tokio::sync::watch::channel(s.screen_viewing.sharers()).0,
             soundboard_pct: Arc::new(AtomicU32::new(s.soundboard_volume.min(100))),
         }
     }
@@ -5192,7 +5193,7 @@ mod tests {
     #[test]
     fn rejoining_without_watching_clears_the_previous_stream_gain() {
         let mut state = AppState::empty();
-        state.screen_viewing.insert("alice".into());
+        state.screen_viewing.watch("alice");
         state.stream_volumes.insert("alice".into(), 50);
         let controls = AudioControls::from_state(&state);
         let mut watched = controls.watched_streams.subscribe();

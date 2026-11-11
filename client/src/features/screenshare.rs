@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::state::{ShareEvent, use_app_state, use_gateway};
+use crate::stream_placement::InlineView;
 
 #[component]
 pub(crate) fn StreamQualityNotice(
@@ -1753,7 +1754,7 @@ pub fn ScreenShareBridge() -> Element {
     });
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let watching = use_memo(move || state.read().screen_viewing.clone());
+    let watching = use_memo(move || state.read().screen_viewing.sharers());
     let stream_levels = use_memo(move || {
         let s = state.read();
         (s.stream_volumes.clone(), s.stream_muted.clone())
@@ -3121,13 +3122,10 @@ fn primary_mouse_button_down() -> bool {
 pub fn ScreenWatchWindow() -> Element {
     let state = use_app_state();
     let popouts = use_context::<super::stream_viewer::Popouts>();
-    let detached = popouts.detached;
-    let mut focused = use_signal::<Option<String>>(|| None);
     let viewing = use_memo(move || state.read().screen_viewing.clone());
-    let mut fullscreen = use_signal::<Option<String>>(|| None);
+    let mut view = use_signal(InlineView::default);
     super::stream_viewer::use_fullscreen_escape(use_callback(move |_| {
-        fullscreen.set(None);
-        focused.set(None);
+        view.set(InlineView::Mosaic);
     }));
     let mut was_fullscreen = use_signal(|| false);
     let window = crate::platform::use_window();
@@ -3139,7 +3137,7 @@ pub fn ScreenWatchWindow() -> Element {
     let mut size = use_signal(|| (800.0, 500.0));
     let restore_fullscreen = original_fullscreen.clone();
     use_effect(move || {
-        let active = fullscreen().is_some();
+        let active = view.read().is_fullscreen();
         if active != *was_fullscreen.peek() {
             fullscreen_window.window.set_fullscreen(if active {
                 Some(crate::platform::tao::window::Fullscreen::Borderless(None))
@@ -3161,26 +3159,13 @@ pub fn ScreenWatchWindow() -> Element {
             && event.state == ElementState::Pressed
             && event.logical_key == crate::platform::tao::keyboard::Key::Escape
         {
-            fullscreen.set(None);
-            focused.set(None);
+            view.set(InlineView::Mosaic);
         }
     });
     use_effect(move || {
-        let watched = viewing.read();
-        let detached = detached.read();
-        if watched.iter().filter(|pk| !detached.contains(*pk)).count() <= 1
-            && focused.peek().is_some()
-        {
-            focused.set(None);
-        }
-        for mut selection in [focused, fullscreen] {
-            let invalid = selection
-                .peek()
-                .as_ref()
-                .is_some_and(|pk| !watched.contains(pk) || detached.contains(pk));
-            if invalid {
-                selection.set(None);
-            }
+        let next = view.peek().reconciled(&viewing.read());
+        if *view.peek() != next {
+            view.set(next);
         }
     });
     let close_window = window.clone();
@@ -3195,20 +3180,18 @@ pub fn ScreenWatchWindow() -> Element {
         let _ = document::eval(&stream_sink_js(output_device().as_deref()));
     });
 
-    let mut watched: Vec<String> = viewing().into_iter().collect();
-    watched.sort();
-    let count = watched
-        .iter()
-        .filter(|pk| !detached.read().contains(*pk))
-        .count();
-    let selected = fullscreen().or(if count > 1 { focused() } else { None });
+    let watches = viewing();
+    let count = watches.inline().count();
+    let shown = view.read().reconciled(&watches);
+    let selected = shown.selected().cloned();
+    let expanded = shown.is_fullscreen();
     let (width, height) = size();
     let grid =
         super::stream_viewer::grid_style(if selected.is_some() { 1 } else { count }, width, height);
     rsx! {
         if count > 0 { dioxus_grid_layout::GridItem { id: "streams", x: 3, y: 0, w: 7, h: 19,
-            min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
-            class: if fullscreen().is_some() { "dxf-streams dxf-streams-expanded" } else { "dxf-streams" },
+            min_w: 3, min_h: 6, overlay: expanded,
+            class: if expanded { "dxf-streams dxf-streams-expanded" } else { "dxf-streams" },
             div { class: "dxf-stream-panel panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
                 div { class: "dxf-stream-grid flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
                     onmounted: move |event| {
@@ -3224,10 +3207,10 @@ pub fn ScreenWatchWindow() -> Element {
                             size.set((box_size.width, box_size.height));
                         }
                     },
-                    for pk in watched {
-                        ScreenWatchTile { key: "{pk}", is_detached: detached.read().contains(&pk),
+                    for pk in watches.iter().cloned() {
+                        ScreenWatchTile { key: "{pk}", is_detached: watches.is_detached(&pk),
                             hidden: selected.as_ref().is_some_and(|selected| selected != &pk),
-                            pubkey: pk, focused, fullscreen, multiple_streams: count > 1, on_popout: popouts.open }
+                            pubkey: pk, view, multiple_streams: count > 1, on_popout: popouts.open }
                     }
                 }
             }
@@ -3256,8 +3239,7 @@ pub(super) fn StreamViewers(names: Vec<String>) -> Element {
 #[component]
 fn ScreenWatchTile(
     pubkey: String,
-    mut focused: Signal<Option<String>>,
-    mut fullscreen: Signal<Option<String>>,
+    mut view: Signal<InlineView>,
     hidden: bool,
     is_detached: bool,
     multiple_streams: bool,
@@ -3322,13 +3304,13 @@ fn ScreenWatchTile(
     let detach_container = container.clone();
     let detach_pk = pk.clone();
     use_drop(move || {
-        if fullscreen.peek().as_ref() == Some(&detach_pk) {
-            fullscreen.set(None);
+        if *view.peek() == InlineView::Fullscreen(detach_pk.clone()) {
+            view.set(InlineView::Mosaic);
         }
         let _ = document::eval(&detach_js(&detach_container));
     });
-    let is_fullscreen = fullscreen().as_ref() == Some(&pk);
-    let selected = multiple_streams && focused().as_ref() == Some(&pk);
+    let is_fullscreen = *view.read() == InlineView::Fullscreen(pk.clone());
+    let selected = multiple_streams && *view.read() == InlineView::Focused(pk.clone());
     let can_focus = multiple_streams && !is_fullscreen;
     let layout = stream_tile_style(is_detached || hidden, false, false, true, [0.0; 4]);
 
@@ -3362,7 +3344,7 @@ fn ScreenWatchTile(
                         aria_label: crate::i18n::text(if selected { "Return to mosaic" } else { "Focus stream" }, &[]),
                         aria_pressed: selected,
                         onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| focused.set(if selected { None } else { Some(pk_focus_button.clone()) }),
+                        onclick: move |_| { let next = view.peek().toggle_focus(&pk_focus_button); view.set(next); },
                         dangerous_inner_html: crate::features::icons::LAYOUT,
                     }
                 }
@@ -3372,7 +3354,7 @@ fn ScreenWatchTile(
                     title: crate::i18n::text("Open in separate window", &[]),
                     aria_label: crate::i18n::text("Open in separate window", &[]),
                     onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| { focused.set(None); fullscreen.set(None); on_popout.call(pk_popout.clone()); },
+                    onclick: move |_| { view.set(InlineView::Mosaic); on_popout.call(pk_popout.clone()); },
                     dangerous_inner_html: crate::features::icons::WINDOW_POP_OUT,
                 }
                 button {
@@ -3382,8 +3364,8 @@ fn ScreenWatchTile(
                     aria_label: if is_fullscreen { crate::i18n::text("Exit full screen", &[]) } else { crate::i18n::text("Full screen", &[]) },
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| {
-                        focused.set(None);
-                        fullscreen.set(if is_fullscreen { None } else { Some(pk_fullscreen.clone()) });
+                        let next = view.peek().toggle_fullscreen(&pk_fullscreen);
+                        view.set(next);
                     },
                     dangerous_inner_html: if is_fullscreen { crate::features::icons::CONTRACT } else { crate::features::icons::EXPAND },
                 }
@@ -3392,7 +3374,7 @@ fn ScreenWatchTile(
                     onmousedown: move |e| e.stop_propagation(),
                     title: crate::i18n::text("Stop watching", &[]),
                     aria_label: crate::i18n::text("Stop watching", &[]),
-                    onclick: move |_| { state.write().screen_viewing.remove(&pk); },
+                    onclick: move |_| { state.write().screen_viewing.unwatch(&pk); },
                     "✕"
                 }
             }
@@ -3410,9 +3392,10 @@ fn ScreenWatchTile(
                 onclick: move |e| {
                     e.stop_propagation();
                     if is_fullscreen {
-                        fullscreen.set(None);
+                        view.set(InlineView::Mosaic);
                     } else if can_focus {
-                        focused.set(if selected { None } else { Some(pk_focus.clone()) });
+                        let next = view.peek().toggle_focus(&pk_focus);
+                        view.set(next);
                     }
                 },
                 onkeydown: move |e| {
@@ -3420,9 +3403,10 @@ fn ScreenWatchTile(
                         e.prevent_default();
                         e.stop_propagation();
                         if is_fullscreen {
-                            fullscreen.set(None);
+                            view.set(InlineView::Mosaic);
                         } else {
-                            focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                            let next = view.peek().toggle_focus(&pk_focus_key);
+                            view.set(next);
                         }
                     }
                 },
@@ -3513,7 +3497,7 @@ mod js_escaping_tests {
             return;
         }
         assert!(super::screen_connection_target(&state).is_none());
-        state.screen_viewing.insert("publisher".into());
+        state.screen_viewing.watch("publisher");
         assert!(super::screen_connection_target(&state).is_some());
         state.screen_viewing.clear();
         assert!(super::screen_connection_target(&state).is_none());

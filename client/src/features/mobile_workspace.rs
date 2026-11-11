@@ -248,7 +248,7 @@ pub(super) fn MobileWorkspace(
             (
                 s.screen_share.is_live(),
                 s.camera.is_on(),
-                s.screen_viewing.clone(),
+                s.screen_viewing.sharers(),
                 s.cameras_watching.clone(),
             )
         });
