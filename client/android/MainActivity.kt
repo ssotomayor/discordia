@@ -850,6 +850,9 @@ class MainActivity : WryActivity() {
         stopCameraCapture()
         documentRequest?.let { cancelDocument(it) }
         super.onDestroy()
+        // Tao starts `main` again for the next Activity and exits from the old loop at its
+        // leisure; a process that outlives its Activity is two apps or none. End it here.
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     // The page is served over https (dioxus.index.html) while the gateway mints the

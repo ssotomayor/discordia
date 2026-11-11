@@ -184,15 +184,23 @@ def verify_release_branding(apk, env):
             raise RuntimeError(f"Final APK is missing branding resource: {name}")
 
 
+# Every android:configChanges flag through API 34. One left out lets Android recreate the
+# Activity for it, and tao answers a second Activity by running `main` again beside the first.
+ALL_CONFIG_CHANGES = 0x5000FFFF
+
+
 def verify_activity_mode(apk, env):
     tools = Path(env["ANDROID_HOME"]) / "build-tools/34.0.0"
     aapt = tools / ("aapt.exe" if os.name == "nt" else "aapt")
     manifest = subprocess.check_output([str(aapt), "dump", "xmltree", str(apk), "AndroidManifest.xml"], text=True)
     for activity in re.split(r"\n\s*E: activity \(", manifest)[1:]:
         if re.search(r'android:name[^\n]*="dev\.dioxus\.main\.MainActivity"', activity):
-            if re.search(r"android:launchMode[^\n]*=\(type 0x10\)0x2\b", activity):
-                return
-            break
+            if not re.search(r"android:launchMode[^\n]*=\(type 0x10\)0x2\b", activity):
+                break
+            handled = re.search(r"android:configChanges[^\n]*=\(type 0x1[01]\)0x([0-9a-fA-F]+)", activity)
+            if not handled or int(handled.group(1), 16) & ALL_CONFIG_CHANGES != ALL_CONFIG_CHANGES:
+                raise RuntimeError("Android main activity must handle every configChanges flag itself")
+            return
     raise RuntimeError("Android main activity must use singleTask to preserve the native runtime")
 
 
