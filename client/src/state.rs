@@ -267,6 +267,14 @@ pub enum DmStanding {
     Blocked,
 }
 
+/// How a conversation's unread count may change; see `AppState::change_dm_unread`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnreadChange {
+    Arrived,
+    Read,
+    Settle,
+}
+
 /// A right-click on someone in a voice channel. Mounted at the workspace root
 /// like the soundboard (trap 22), so it carries where it was opened.
 #[derive(Debug, Clone, PartialEq)]
@@ -315,7 +323,8 @@ pub struct AppState {
     pub dm_emoji: HashMap<Id, Vec<(String, String)>>,
     /// Seeded from settings and written back by `use_saved_emoji_persistence`.
     pub saved_emoji: Vec<crate::settings::SavedEmoji>,
-    pub dm_unread: HashMap<Id, u32>,
+    /// Written only by `change_dm_unread`, read through `dm_unread`.
+    dm_unread: HashMap<Id, u32>,
     pub channel_unread: HashSet<Id>,
     /// Messages naming us since the channel was last read; counted live only,
     /// since Ready carries one timestamp per channel and no content.
@@ -373,7 +382,7 @@ pub struct AppState {
     pub dm_mode: bool,
     /// Whether the surface holding the selected conversation is on screen. The
     /// home drawer closes over a DM that stays selected, and a message arriving
-    /// behind it is unread however selected it is.
+    /// behind it is unread however selected it is. Written only by `use_dm_pane`.
     pub dm_pane_open: bool,
     /// Android's resume state; on desktop, whether any of our windows has focus.
     pub app_foreground: bool,
@@ -621,7 +630,7 @@ impl AppState {
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),
             dm_mode: false,
-            dm_pane_open: true,
+            dm_pane_open: false,
             app_foreground: !cfg!(target_os = "android"),
             dm_notification_open: None,
             catalog: Vec::new(),
@@ -859,7 +868,6 @@ impl AppState {
         self.selected_guild = None;
         self.selected_channel = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
         self.dm_mode = self.selected_channel.is_some();
-        self.dm_pane_open = false;
         let dm_channels: HashSet<_> = self.dms.iter().map(|dm| dm.channel_id).collect();
         self.messages.retain(|id, _| dm_channels.contains(id));
         self.history_loaded.clear();
@@ -1488,8 +1496,89 @@ impl AppState {
         self.dms
             .iter()
             .filter(|d| self.dm_standing(&d.other_pubkey) == DmStanding::Inbox)
-            .filter_map(|d| self.dm_unread.get(&d.channel_id))
+            .map(|d| self.dm_unread(d.channel_id))
             .sum()
+    }
+
+    /// What a conversation shows as unread: nothing while it is being read.
+    pub fn dm_unread(&self, channel_id: Id) -> u32 {
+        if self.watched_dm() == Some(channel_id) {
+            return 0;
+        }
+        self.dm_unread.get(&channel_id).copied().unwrap_or(0)
+    }
+
+    /// The conversation the screen shows, in front or not. Android's notifier
+    /// needs it apart from focus: it learns of a resume before we do.
+    pub fn dm_in_view(&self) -> Option<Id> {
+        self.selected_channel
+            .filter(|_| self.dm_mode && self.dm_pane_open)
+    }
+
+    /// The one answer to "is this conversation being read right now": what
+    /// counts, rings, badges and dismisses alerts all ask it.
+    pub fn watched_dm(&self) -> Option<Id> {
+        self.dm_in_view().filter(|_| self.app_foreground)
+    }
+
+    /// The watched conversation while it still holds a count, for the effect
+    /// that marks it read.
+    pub fn unread_on_screen(&self) -> Option<Id> {
+        self.watched_dm()
+            .filter(|channel| self.dm_unread.contains_key(channel))
+    }
+
+    /// The one writer of `dm_unread`. `Settle` caps the count at what is past
+    /// the read mark, so a mark moved elsewhere takes the count down with it.
+    pub fn change_dm_unread(&mut self, channel_id: Id, change: UnreadChange) {
+        match change {
+            UnreadChange::Arrived => *self.dm_unread.entry(channel_id).or_insert(0) += 1,
+            UnreadChange::Read => {
+                self.dm_unread.remove(&channel_id);
+            }
+            UnreadChange::Settle => {
+                let Some(&counted) = self.dm_unread.get(&channel_id) else {
+                    return;
+                };
+                let left = counted.min(self.dm_unread_bound(channel_id));
+                if left == 0 {
+                    self.dm_unread.remove(&channel_id);
+                } else {
+                    self.dm_unread.insert(channel_id, left);
+                }
+            }
+        }
+    }
+
+    /// The peer's messages and our missed calls past the read mark. A call's
+    /// row is authored by its caller, so it counts once, as the missed call.
+    fn dm_unread_bound(&self, channel_id: Id) -> u32 {
+        let Some(peer) = self.dm_of(channel_id).map(|dm| dm.other_pubkey.as_str()) else {
+            return 0;
+        };
+        let read = self.dm_read_at.get(peer).copied();
+        let past = |at: i64| read.is_none_or(|mark| at > mark);
+        let messages = self
+            .messages
+            .get(&channel_id)
+            .into_iter()
+            .flatten()
+            .filter(|m| {
+                m.author.pubkey == peer
+                    && !self.dm_call_history.contains_key(&m.id)
+                    && past(m.created_at.timestamp())
+            })
+            .count();
+        let calls = self
+            .dm_call_history
+            .values()
+            .filter(|entry| {
+                entry.confirmed && (entry.record.caller == peer || entry.record.callee == peer)
+            })
+            .filter_map(|entry| entry.missed_at)
+            .filter(|missed| past(*missed))
+            .count();
+        u32::try_from(messages + calls).unwrap_or(u32::MAX)
     }
 
     pub fn dm_request_count(&self) -> usize {
@@ -1539,7 +1628,7 @@ impl AppState {
                 self.dm_images.remove(&message.id);
             }
         }
-        self.dm_unread.remove(&cid);
+        self.change_dm_unread(cid, UnreadChange::Read);
         if self.selected_channel == Some(cid) {
             self.selected_channel = None;
         }
@@ -1836,7 +1925,11 @@ impl AppState {
                 continue;
             }
             self.dm_read_at.insert(peer.clone(), at);
-            self.recount_dm_unread(peer, at);
+            // The relays replay a conversation before the marks event may arrive.
+            self.change_dm_unread(
+                crate::nostr::service::conversation_id(peer),
+                UnreadChange::Settle,
+            );
             changed = true;
         }
         for (server, channels) in &marks.channels {
@@ -1874,37 +1967,6 @@ impl AppState {
         }
         if changed {
             self.read_marks_revision = self.read_marks_revision.wrapping_add(1);
-        }
-    }
-
-    /// The relays replay a conversation before the marks event may arrive, so
-    /// its counter can already hold messages another device has read.
-    fn recount_dm_unread(&mut self, peer: &str, read: i64) {
-        let cid = crate::nostr::service::conversation_id(peer);
-        let Some(&counted) = self.dm_unread.get(&cid) else {
-            return;
-        };
-        let messages = self
-            .messages
-            .get(&cid)
-            .into_iter()
-            .flatten()
-            .filter(|m| m.author.pubkey == peer && m.created_at.timestamp() > read)
-            .count();
-        let calls = self
-            .dm_call_history
-            .values()
-            .filter(|entry| {
-                entry.confirmed && (entry.record.caller == peer || entry.record.callee == peer)
-            })
-            .filter_map(|entry| entry.missed_at)
-            .filter(|missed| *missed > read)
-            .count();
-        let left = counted.min(u32::try_from(messages + calls).unwrap_or(u32::MAX));
-        if left == 0 {
-            self.dm_unread.remove(&cid);
-        } else {
-            self.dm_unread.insert(cid, left);
         }
     }
 
@@ -2047,10 +2109,7 @@ impl AppState {
     /// history on every launch and `dm_unread` is rebuilt from it, so a message
     /// only ever read live would come back as unread on the next one.
     pub fn note_dm_arrival(&mut self, channel_id: Id, peer: &str, at: i64) {
-        let viewing = self.app_foreground
-            && self.dm_pane_open
-            && self.selected_channel == Some(channel_id)
-            && self.dm_mode;
+        let viewing = self.watched_dm() == Some(channel_id);
         if viewing {
             use std::collections::hash_map::Entry;
             let changed = match self.dm_read_at.entry(peer.to_string()) {
@@ -2073,7 +2132,7 @@ impl AppState {
         } else if self.dm_standing(peer) == DmStanding::Inbox
             && self.dm_read_at.get(peer).is_none_or(|mark| at > *mark)
         {
-            *self.dm_unread.entry(channel_id).or_insert(0) += 1;
+            self.change_dm_unread(channel_id, UnreadChange::Arrived);
             // Tied to the counter and not merely to `viewing`: the relays replay
             // the whole history on every launch, and ringing for that would be a
             // burst of sound for messages read days ago.
@@ -2090,7 +2149,7 @@ impl AppState {
     /// reads.
     pub fn mark_dm_read(&mut self, channel_id: Id) {
         let unread = self.dm_unread.get(&channel_id).is_some_and(|n| *n > 0);
-        self.dm_unread.remove(&channel_id);
+        self.change_dm_unread(channel_id, UnreadChange::Read);
         let Some(peer) = self.dm_of(channel_id).map(|d| d.other_pubkey.clone()) else {
             return;
         };
@@ -2350,6 +2409,23 @@ pub fn use_channel_read_persistence(state: Signal<AppState>) {
 
 /// A roster exists only while connected, so a guild-mate is accepted for good
 /// once seen; on Home their next DM would otherwise be a request.
+/// The one writer of `dm_pane_open`, mounted by the one component per screen
+/// that holds the conversation; a parent and a child both writing raced on Android.
+pub fn use_dm_pane(mut state: Signal<AppState>, open: impl Fn() -> bool + 'static) {
+    use_effect(move || {
+        let open = open();
+        if state.peek().dm_pane_open != open {
+            state.write().dm_pane_open = open;
+        }
+    });
+    use_drop(move || {
+        // The account's state may be gone first when the whole account unmounts.
+        if let Ok(mut state) = state.try_write() {
+            state.dm_pane_open = false;
+        }
+    });
+}
+
 pub fn use_dm_standing_persistence(mut state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let guild_mates = use_memo(move || {
@@ -3510,6 +3586,7 @@ mod tests {
         let peer = "abcd";
         let cid = dm_with(&mut s, peer, &[]);
         s.dm_mode = true;
+        s.dm_pane_open = true;
         s.selected_channel = Some(cid);
 
         let rev_before = s.read_marks_revision;
@@ -3540,6 +3617,117 @@ mod tests {
 
         assert_eq!(s.dm_unread.get(&cid), Some(&1));
         assert!(s.dm_read_at.is_empty());
+    }
+
+    /// Selected, DM mode, the pane shown and the app in front: all four, or no
+    /// conversation is being read.
+    #[test]
+    fn a_conversation_is_watched_only_with_every_fact() {
+        let peer = "abcd";
+        for foreground in [false, true] {
+            for dm_mode in [false, true] {
+                for pane in [false, true] {
+                    for selected in [false, true] {
+                        let mut s = AppState::empty();
+                        let cid = dm_with(&mut s, peer, &[]);
+                        s.app_foreground = foreground;
+                        s.dm_mode = dm_mode;
+                        s.dm_pane_open = pane;
+                        s.selected_channel = selected.then_some(cid);
+                        let shown = dm_mode && pane && selected;
+                        let label = format!("{foreground} {dm_mode} {pane} {selected}");
+                        assert_eq!(s.dm_in_view(), shown.then_some(cid), "{label}");
+                        assert_eq!(
+                            s.watched_dm(),
+                            (shown && foreground).then_some(cid),
+                            "{label}"
+                        );
+                        s.note_dm_arrival(cid, peer, 100);
+                        let counted = !(shown && foreground);
+                        assert_eq!(s.dm_unread.contains_key(&cid), counted, "{label}");
+                        assert_eq!(s.dm_read_at.contains_key(peer), !counted, "{label}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A count left from before the conversation came on screen is not shown
+    /// while it is read, though only marking it read removes it.
+    #[test]
+    fn a_watched_conversation_shows_no_unread() {
+        let peer = "abcd";
+        let mut s = AppState::empty();
+        let cid = dm_with(&mut s, peer, &[100]);
+        s.note_dm_arrival(cid, peer, 100);
+        assert_eq!((s.dm_unread(cid), s.dm_unread_total()), (1, 1));
+        assert_eq!(s.unread_on_screen(), None);
+        s.dm_mode = true;
+        s.dm_pane_open = true;
+        s.selected_channel = Some(cid);
+        assert_eq!((s.dm_unread(cid), s.dm_unread_total()), (0, 0));
+        assert_eq!(s.unread_on_screen(), Some(cid));
+        s.mark_dm_read(cid);
+        assert_eq!(s.unread_on_screen(), None);
+    }
+
+    #[test]
+    fn every_unread_change() {
+        let peer = "abcd";
+        // Held messages at 100, 200 and 300; (counted, read mark, change, after).
+        let table: Vec<(u32, Option<i64>, UnreadChange, u32)> = vec![
+            (0, None, UnreadChange::Arrived, 1),
+            (2, None, UnreadChange::Arrived, 3),
+            (2, None, UnreadChange::Read, 0),
+            (0, None, UnreadChange::Read, 0),
+            (3, None, UnreadChange::Settle, 3),
+            (5, None, UnreadChange::Settle, 3),
+            (3, Some(150), UnreadChange::Settle, 2),
+            (1, Some(150), UnreadChange::Settle, 1),
+            (3, Some(300), UnreadChange::Settle, 0),
+            (0, Some(50), UnreadChange::Settle, 0),
+        ];
+        for (counted, mark, change, after) in table {
+            let mut s = AppState::empty();
+            let cid = dm_with(&mut s, peer, &[100, 200, 300]);
+            if counted > 0 {
+                s.dm_unread.insert(cid, counted);
+            }
+            if let Some(mark) = mark {
+                s.dm_read_at.insert(peer.into(), mark);
+            }
+            s.change_dm_unread(cid, change);
+            assert_eq!(
+                s.dm_unread(cid),
+                after,
+                "{counted} past {mark:?} on {change:?}"
+            );
+            assert_eq!(s.dm_unread.contains_key(&cid), after > 0);
+        }
+    }
+
+    /// The peer's own call rows are counted once, as the missed call.
+    #[test]
+    fn a_settled_count_does_not_count_a_call_row_as_a_message() {
+        use crate::nostr::call_history::{Outcome, Record, merge};
+        let (peer, me) = ("b".repeat(64), "a".repeat(64));
+        let mut s = AppState::empty();
+        s.dm_accepted.insert(peer.clone());
+        let record = Record {
+            version: 1,
+            call_id: uuid::Uuid::new_v4(),
+            caller: peer.clone(),
+            callee: me.clone(),
+            started_at: 100,
+            outcome: Outcome::Missed,
+        };
+        merge(&mut s, &me, record, &peer, 145);
+        let cid = crate::nostr::service::conversation_id(&peer);
+        assert_eq!(s.messages[&cid].len(), 1);
+        assert_eq!(s.dm_unread(cid), 1);
+        s.dm_unread.insert(cid, 2);
+        s.change_dm_unread(cid, UnreadChange::Settle);
+        assert_eq!(s.dm_unread(cid), 1);
     }
 
     /// The mark must not swallow what came after it.

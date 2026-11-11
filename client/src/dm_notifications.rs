@@ -340,15 +340,11 @@ mod native {
         });
         let viewing = use_memo(move || {
             let current = state.read();
-            let peer = if current.dm_mode && current.dm_pane_open {
-                current
-                    .selected_channel
-                    .and_then(|channel| current.dm_of(channel))
-                    .map(|dm| dm.other_pubkey.clone())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
+            let peer = current
+                .dm_in_view()
+                .and_then(|channel| current.dm_of(channel))
+                .map(|dm| dm.other_pubkey.clone())
+                .unwrap_or_default();
             (peer, current.app_foreground)
         });
         use_effect(move || {
@@ -515,7 +511,7 @@ mod tests {
         state.dm_read_at.insert("peer".into(), 100);
         state.dm_clock_offset.insert("peer".into(), 7);
         assert_eq!(notification_read_marks(&state), vec![("peer".into(), 107)]);
-        state.dm_unread.insert(conversation_id("peer"), 1);
+        state.change_dm_unread(conversation_id("peer"), crate::state::UnreadChange::Arrived);
         assert_eq!(notification_read_marks(&state), vec![("peer".into(), 107)]);
         let mut message = message();
         message.created_at = 108;
@@ -599,7 +595,7 @@ mod tests {
         state.selected_channel = Some(channel);
         state.app_foreground = false;
         state.note_dm_arrival(channel, "peer", 100);
-        assert_eq!(state.dm_unread.get(&channel), Some(&1));
+        assert_eq!(state.dm_unread(channel), 1);
         assert!(!state.dm_read_at.contains_key("peer"));
         state.app_foreground = true;
         state.note_dm_arrival(channel, "peer", 101);

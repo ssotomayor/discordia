@@ -1698,7 +1698,11 @@ fn apply(
                 .as_ref()
                 .map(|u| u.pubkey == m.author.pubkey)
                 .unwrap_or(false);
-            let viewing = s.selected_channel == Some(cid) && (is_dm == s.dm_mode);
+            let viewing = if is_dm {
+                s.watched_dm() == Some(cid)
+            } else {
+                s.selected_channel == Some(cid) && !s.dm_mode
+            };
             if let Some(set) = s.typing.get_mut(&cid) {
                 set.remove(&m.author.pubkey);
             }
@@ -1707,7 +1711,7 @@ fn apply(
                 return;
             }
             if is_dm && !author_is_self && !viewing {
-                *s.dm_unread.entry(cid).or_insert(0) += 1;
+                s.change_dm_unread(cid, crate::state::UnreadChange::Arrived);
             }
             if s.should_ring(cid, author_is_self, viewing) {
                 if is_dm {

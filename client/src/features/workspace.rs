@@ -362,9 +362,9 @@ pub fn WorkspaceView(
 ) -> Element {
     super::bookmarks::use_panel();
     let mut state = use_app_state();
-    // A selected DM here is in the chat panel, always on screen; left false by
-    // the last session, every message read here counted as unread.
-    use_effect(move || state.write().dm_pane_open = true);
+    // A selected DM here is in the chat panel, always on screen; Android's tabs decide there.
+    #[cfg(not(target_os = "android"))]
+    crate::state::use_dm_pane(state, || true);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
     let leave = move |request: LeaveRequest| {

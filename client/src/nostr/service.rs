@@ -2079,7 +2079,7 @@ mod tests {
             );
             let s = state.read();
             assert_eq!(s.dm_standing(&peer), crate::state::DmStanding::Inbox);
-            assert_eq!(s.dm_unread.get(&conversation_id(&peer)), Some(&1));
+            assert_eq!(s.dm_unread(conversation_id(&peer)), 1);
         });
     }
 
@@ -2097,7 +2097,7 @@ mod tests {
             );
             let s = state.read();
             assert_eq!(s.dm_request_count(), 1);
-            assert!(s.dm_unread.is_empty());
+            assert_eq!(s.dm_unread(conversation_id(&peer)), 0);
             assert_eq!(s.dm_notify_tick, 0);
         });
     }

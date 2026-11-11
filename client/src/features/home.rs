@@ -37,10 +37,9 @@ pub fn HomeView(
     crate::mobile_back::use_handler(crate::mobile_back::SCREEN, social(), move |_| {
         social.set(false)
     });
-    use_effect(move || {
-        let mut app = state;
-        app.write().dm_pane_open = social() && !cfg!(target_os = "android");
-    });
+    // On Android the social screen's own chat view holds the conversation.
+    #[cfg(not(target_os = "android"))]
+    crate::state::use_dm_pane(state, move || *social.read());
 
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-5"
@@ -92,6 +91,7 @@ pub fn HomeView(
 
 #[component]
 fn MobileSocial(on_close: EventHandler<()>) -> Element {
+    #[allow(unused_mut)]
     let mut state = use_app_state();
     let mut chat = use_signal(move || state.peek().dm_notification_open.is_some());
     #[cfg(target_os = "android")]
@@ -113,7 +113,7 @@ fn MobileSocial(on_close: EventHandler<()>) -> Element {
             chat.set(current.is_some());
         }
     });
-    use_effect(move || state.write().dm_pane_open = chat());
+    crate::state::use_dm_pane(state, move || *chat.read());
     rsx! {
         div { class: "flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden", "data-mobile-social": "true",
             if chat() {
@@ -410,7 +410,7 @@ pub(super) fn SocialPanel(
                     }
                 }),
                 when: last.map(|m| m.created_at.format("%H:%M").to_string()),
-                unread: snapshot.dm_unread.get(&dm.channel_id).copied().unwrap_or(0),
+                unread: snapshot.dm_unread(dm.channel_id),
                 muted: snapshot.channel_muted(dm.channel_id),
                 info: dm,
             }
@@ -748,7 +748,9 @@ mod tests {
                     channel_id: id,
                     other_pubkey: "peer".into(),
                 });
-                state.dm_unread.insert(id, 3);
+                for _ in 0..3 {
+                    state.change_dm_unread(id, crate::state::UnreadChange::Arrived);
+                }
                 state.dm_accepted.insert("peer".into());
                 state
             });

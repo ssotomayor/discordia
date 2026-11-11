@@ -17,12 +17,7 @@ pub(crate) fn use_foreground(mut state: Signal<AppState>) {
             state.write().app_foreground = *focused;
         }
     });
-    let unread_on_screen = use_memo(move || {
-        let s = state.read();
-        let channel = s.selected_channel?;
-        (s.app_foreground && s.dm_mode && s.dm_pane_open && s.dm_unread.contains_key(&channel))
-            .then_some(channel)
-    });
+    let unread_on_screen = use_memo(move || state.read().unread_on_screen());
     use_effect(move || {
         if let Some(channel) = unread_on_screen() {
             state.write().mark_dm_read(channel);

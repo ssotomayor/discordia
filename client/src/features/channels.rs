@@ -128,7 +128,10 @@ pub fn ChannelsColumn() -> Element {
     let has_dm_call = snapshot.dm_call.is_some();
     let dms: Vec<DmInfo> = snapshot.dms_by_recency(crate::state::DmStanding::Inbox);
     let requests = snapshot.dm_request_count();
-    let dm_unread = snapshot.dm_unread.clone();
+    let dm_unread: std::collections::HashMap<Id, u32> = dms
+        .iter()
+        .map(|dm| (dm.channel_id, snapshot.dm_unread(dm.channel_id)))
+        .collect();
     let channel_unread: std::collections::HashSet<Id> = snapshot
         .channels
         .iter()

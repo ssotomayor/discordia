@@ -234,7 +234,7 @@ pub(super) fn MobileWorkspace(
         }
     });
     #[cfg(target_os = "android")]
-    use_effect(move || state.write().dm_pane_open = tab() == MobileTab::Chat);
+    crate::state::use_dm_pane(state, move || tab() == MobileTab::Chat);
     crate::mobile_back::use_handler(
         crate::mobile_back::CONTENT,
         tab() != MobileTab::Channels,
