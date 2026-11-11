@@ -1113,6 +1113,7 @@
   "Import identity": ["Importar identidad", "Importar identidade", "导入身份", "ID をインポートします"],
   "Import private key": ["Importar clave privada", "Importar chave privada", "导入私钥", "秘密キーをインポートします"],
   "Imported from a private key, so there is no recovery phrase. Keep the key string itself.": ["Se importó una clave privada, por lo que no hay frase de recuperación. Guarda la clave en sí.", "Foi importada uma chave privada, por isso não há frase de recuperação. Guarde a própria chave.", "从私钥导入，因此没有恢复短语。保留密钥字符串本身。", "秘密キーからインポートされるため、リカバリフレーズはありません。キー文字列自体は保持します。"],
+  "The connection to the server dropped during the import, so the new guild may be missing parts. Check it before importing again.": ["La conexión con el servidor se cortó durante la importación, así que a la nueva comunidad le pueden faltar partes. Revísala antes de volver a importar.", "A conexão com o servidor caiu durante a importação, então podem faltar partes na nova comunidade. Confira-a antes de importar de novo.", "导入期间与服务器的连接断开，新社区可能缺少部分内容。再次导入前请先检查它。", "インポート中にサーバーとの接続が切れたため、新しいコミュニティの一部が欠けている可能性があります。もう一度インポートする前に確認してください。"],
   "Imported.": ["Importado.", "Importado.", "导入。", "インポートされました。"],
   "In voice": ["En voz", "Em voz", "语音", "音声で"],
   "In voice — {0}": ["En voz — {0}", "Em voz — {0}", "语音 — {0}", "音声中 — {0}"],
