@@ -973,7 +973,7 @@ pub(crate) fn ErrorToast() -> Element {
 fn VoiceSounds() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let phase = use_memo(move || state.read().voice.phase);
+    let phase = use_memo(move || state.read().voice.phase());
     let mut last_phase = use_signal(|| VoicePhase::Idle);
 
     use_effect(move || {
@@ -1034,9 +1034,9 @@ fn VoiceSounds() -> Element {
     let camera_watch_report = use_memo(move || {
         let s = state.read();
         (
-            s.status == ConnectionStatus::Ready && s.voice.phase == VoicePhase::Connected,
+            s.status == ConnectionStatus::Ready && s.voice.phase() == VoicePhase::Connected,
             s.voice_session_epoch,
-            s.voice.channel_id,
+            s.voice.channel_id(),
             active_camera_watches(&s).into_iter().collect::<Vec<_>>(),
         )
     });
@@ -1092,7 +1092,7 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    let voice_channel = use_memo(move || state.read().voice.channel_id);
+    let voice_channel = use_memo(move || state.read().voice.channel_id());
     let voice_states = use_memo(move || state.read().voice_states.clone());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
     let mut last_peers_channel = use_signal(|| None::<Id>);
@@ -1157,7 +1157,7 @@ fn VoiceSounds() -> Element {
 }
 
 fn active_camera_watches(state: &crate::state::AppState) -> std::collections::BTreeSet<String> {
-    let Some(channel) = state.voice.channel_id else {
+    let Some(channel) = state.voice.channel_id() else {
         return std::collections::BTreeSet::new();
     };
     state
@@ -1507,10 +1507,10 @@ fn EncryptionBadge() -> Element {
     }
     let mut state = use_app_state();
     let snapshot = state.read();
-    let in_voice = snapshot.voice.channel_id.is_some();
+    let in_voice = snapshot.voice.channel_id().is_some();
     let has_key = snapshot
         .voice
-        .channel_id
+        .channel_id()
         .is_some_and(|c| snapshot.media_keys.contains_key(&c));
     let broken = snapshot.media_undecryptable;
     drop(snapshot);
@@ -1600,7 +1600,7 @@ fn VoiceRouteBadge() -> Element {
     let state = use_app_state();
     let mut open = use_signal(|| false);
     let s = state.read();
-    if s.voice.phase == crate::state::VoicePhase::Idle {
+    if s.voice.phase() == crate::state::VoicePhase::Idle {
         return rsx! {};
     }
     let location = match s.voice_location.as_deref() {
@@ -1610,7 +1610,7 @@ fn VoiceRouteBadge() -> Element {
         _ => "server unknown",
     };
     let location = crate::i18n::label(location);
-    let phase = match s.voice.phase {
+    let phase = match s.voice.phase() {
         crate::state::VoicePhase::Connecting => crate::i18n::text("Connecting…", &[]),
         crate::state::VoicePhase::Error => crate::i18n::text("Error", &[]),
         _ => {
@@ -1633,7 +1633,7 @@ fn VoiceRouteBadge() -> Element {
     };
     let phase = crate::i18n::label(&phase).to_owned();
     let mobile_phase = crate::i18n::text(
-        match s.voice.phase {
+        match s.voice.phase() {
             crate::state::VoicePhase::Connecting => "Connecting…",
             crate::state::VoicePhase::Connected => "Connected",
             _ => "Error",

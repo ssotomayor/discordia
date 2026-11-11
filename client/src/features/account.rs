@@ -207,7 +207,7 @@ pub fn AccountView(
             let current = state.read();
             let in_call = current.dm_call.is_some()
                 || matches!(
-                    current.voice.phase,
+                    current.voice.phase(),
                     crate::state::VoicePhase::Connecting | crate::state::VoicePhase::Connected
                 );
             if updates.state.peek().in_call != in_call {

@@ -40,10 +40,10 @@ fn current_call(state: &AppState) -> Option<Call> {
         }
     }
     if matches!(
-        state.voice.phase,
+        state.voice.phase(),
         VoicePhase::Connecting | VoicePhase::Connected
     ) {
-        state.voice.channel_id.map(|channel| Call::Guild {
+        state.voice.channel_id().map(|channel| Call::Guild {
             channel,
             epoch: state.voice_session_epoch,
         })
@@ -387,8 +387,8 @@ mod tests {
 
     fn guild() -> AppState {
         let mut state = AppState::empty();
-        state.voice.phase = VoicePhase::Connected;
-        state.voice.channel_id = Some(Uuid::new_v4());
+        state.voice.force_phase(VoicePhase::Connected);
+        state.voice.force_channel(Some(Uuid::new_v4()));
         state
     }
 
@@ -438,7 +438,7 @@ mod tests {
         changed.voice_session_epoch += 1;
         assert!(apply(&mut changed, owner, route, &key, ControlAction::Hangup).is_none());
         changed = state.clone();
-        changed.voice.channel_id = Some(Uuid::new_v4());
+        changed.voice.force_channel(Some(Uuid::new_v4()));
         assert!(apply(&mut changed, owner, route, &key, ControlAction::Hangup).is_none());
         changed = state.clone();
         changed.voice.muted = true;
@@ -479,8 +479,8 @@ mod tests {
             apply(&mut state, owner, route, &key, ControlAction::Hangup),
             Some(Call::Guild { .. })
         ));
-        assert_eq!(state.voice.phase, VoicePhase::Connected);
-        state.voice.phase = VoicePhase::Idle;
+        assert_eq!(state.voice.phase(), VoicePhase::Connected);
+        state.voice.force_phase(VoicePhase::Idle);
         assert!(apply(&mut state, owner, route, &key, ControlAction::Hangup).is_none());
     }
 

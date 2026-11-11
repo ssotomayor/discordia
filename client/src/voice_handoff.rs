@@ -71,7 +71,7 @@ impl Bridge {
             .borrow()
             .clone()
             .ok_or("The voice channel is no longer available.")?;
-        let channel = state.peek().voice.channel_id;
+        let channel = state.peek().voice.channel_id();
         route
             .gateway
             .0
@@ -106,7 +106,7 @@ impl Bridge {
             if state
                 .peek()
                 .voice
-                .channel_id
+                .channel_id()
                 .is_some_and(|current| Some(current) != channel)
             {
                 return Err(
@@ -159,8 +159,8 @@ mod tests {
                 screen_watching: vec![],
                 camera_watching: Vec::new(),
             });
-            state.voice.phase = VoicePhase::Connected;
-            state.voice.channel_id = Some(channel);
+            state.voice.force_phase(VoicePhase::Connected);
+            state.voice.force_channel(Some(channel));
             state.screen_sharing = true;
             state.camera_on = true;
             Signal::new(state)
@@ -196,7 +196,7 @@ mod tests {
         assert!(state.peek().screen_sharing);
         state.write().voice_states.clear();
         handoff.await.unwrap();
-        assert_eq!(state.peek().voice.phase, VoicePhase::Idle);
+        assert_eq!(state.peek().voice.phase(), VoicePhase::Idle);
         assert!(!state.peek().screen_sharing && !state.peek().camera_on);
     }
 
@@ -219,7 +219,7 @@ mod tests {
                 media.send(Err("media failed".into())).unwrap();
             }
             assert!(handoff.await.is_err());
-            assert_eq!(state.peek().voice.phase, VoicePhase::Connected);
+            assert_eq!(state.peek().voice.phase(), VoicePhase::Connected);
         }
     }
 }

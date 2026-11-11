@@ -8,6 +8,7 @@ use crate::protocol::{
     BotInstall, Channel, ClientMessage, Guild, GuildSummary, Id, Member, Message, Permission,
     Profile, Role, User, VoiceState,
 };
+pub use crate::voice_session::{CallState, VoiceEvent, VoicePhase, VoiceSession};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -67,14 +68,6 @@ pub enum ConnectionStatus {
     Reconnecting,
     Ready,
     Disconnected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoicePhase {
-    Idle,
-    Connecting,
-    Connected,
-    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,54 +148,6 @@ pub struct ScreenShareStats {
     pub jitter_ms: Option<f64>,
     pub reception: Option<VideoReceptionStats>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoiceSession {
-    pub phase: VoicePhase,
-    pub channel_id: Option<Id>,
-    pub joining_channel_id: Option<Id>,
-    pub muted: bool,
-    pub deafened: bool,
-    pub muted_before_deafen: bool,
-    pub speaking: bool,
-    pub error: Option<String>,
-}
-
-impl Default for VoiceSession {
-    fn default() -> Self {
-        Self {
-            phase: VoicePhase::Idle,
-            channel_id: None,
-            joining_channel_id: None,
-            muted: false,
-            deafened: false,
-            muted_before_deafen: false,
-            speaking: false,
-            error: None,
-        }
-    }
-}
-
-impl VoiceSession {
-    pub fn join_message(&self, channel_id: Id) -> ClientMessage {
-        ClientMessage::JoinVoice {
-            channel_id,
-            preferences: Some(crate::protocol::VoicePreferences {
-                muted: self.muted || self.deafened,
-                deafened: self.deafened,
-            }),
-        }
-    }
-
-    pub fn toggle_deafen(&mut self) -> (bool, bool) {
-        if self.deafened {
-            (self.muted_before_deafen, false)
-        } else {
-            self.muted_before_deafen = self.muted;
-            (true, true)
-        }
-    }
 }
 
 /// A bot command whose fields are being filled in (`bot_commands::CommandDialog`).
@@ -829,12 +774,8 @@ impl AppState {
     /// Clear locally before the server echo: retained tokens keep webview rooms alive,
     /// and the process-wide media key must not survive a call.
     pub fn end_voice_locally(&mut self) {
-        // A rejoin of the same channel is another call: nothing keyed on the epoch may carry over.
-        self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
-        self.voice.phase = VoicePhase::Idle;
-        self.voice.channel_id = None;
+        self.voice_event(VoiceEvent::Ended);
         self.media_keys.clear();
-        self.voice.error = None;
         self.screen_token = None;
         self.voice_endpoint = None;
         self.voice_location = None;
@@ -1178,9 +1119,20 @@ impl AppState {
     }
 
     pub fn connected_voice_channel(&self) -> Option<Id> {
-        (self.voice.phase == VoicePhase::Connected)
-            .then_some(self.voice.channel_id)
-            .flatten()
+        self.voice.connected_channel()
+    }
+
+    /// `voice_session_epoch` numbers the native rooms: a restart rebuilds the
+    /// screen rooms too, so trap 11's bridge must see a new one and republish.
+    pub fn voice_event(&mut self, event: VoiceEvent) -> bool {
+        let up = matches!(event, VoiceEvent::RoomUp(_));
+        // A rejoin of the same channel is another call: nothing keyed on the epoch may carry over.
+        let ended = matches!(event, VoiceEvent::Ended);
+        let changed = self.voice.on(event);
+        if ended || up && changed {
+            self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
+        }
+        changed
     }
 
     pub fn voice_call(&self) -> Option<crate::voice_session::VoiceCall> {
@@ -1201,7 +1153,7 @@ impl AppState {
 
     /// The guild of the voice channel we are in, whose sounds the board offers.
     pub fn voice_guild(&self) -> Option<Id> {
-        let channel = self.voice.channel_id?;
+        let channel = self.voice.channel_id()?;
         self.channels
             .iter()
             .find(|c| c.id == channel)
@@ -3756,7 +3708,8 @@ mod tests {
     fn only_a_person_leaving_the_calls_guild_changes_the_media_key() {
         let mut s = AppState::empty();
         let (call_guild, other_guild) = (Id::new_v4(), Id::new_v4());
-        s.voice.channel_id = Some(text_channel(&mut s, call_guild));
+        let channel = text_channel(&mut s, call_guild);
+        s.voice.force_channel(Some(channel));
         let mut agent = member("agent", true);
         agent.guild_id = call_guild;
         agent.bot = true;
@@ -3774,8 +3727,7 @@ mod tests {
     fn leaving_a_call_drops_its_media_key_and_everything_published() {
         let mut s = AppState::empty();
         let channel = uuid::Uuid::from_u128(7);
-        s.voice.channel_id = Some(channel);
-        s.voice.phase = VoicePhase::Connected;
+        s.voice.force(CallState::Connected(channel));
         s.media_keys.insert(channel, (3, [9; 32]));
         s.screen_sharing = true;
         s.camera_on = true;
@@ -3792,7 +3744,7 @@ mod tests {
         assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
         assert!(!s.camera_picker);
         assert!(s.screen_viewer_token.is_none());
-        assert_eq!(s.voice.channel_id, None);
+        assert_eq!(s.voice.channel_id(), None);
     }
 
     #[test]
@@ -3914,10 +3866,8 @@ mod tests {
         v.deafened = true;
         assert_eq!(v.toggle_deafen(), (false, false));
 
-        let mut v = VoiceSession {
-            muted: true,
-            ..VoiceSession::default()
-        };
+        let mut v = VoiceSession::default();
+        v.muted = true;
         assert_eq!(v.toggle_deafen(), (true, true));
         v.deafened = true;
         assert_eq!(v.toggle_deafen(), (true, false));
@@ -3928,11 +3878,9 @@ mod tests {
         let channel_id = Id::new_v4();
         for muted in [false, true] {
             for deafened in [false, true] {
-                let voice = VoiceSession {
-                    muted,
-                    deafened,
-                    ..VoiceSession::default()
-                };
+                let mut voice = VoiceSession::default();
+                voice.muted = muted;
+                voice.deafened = deafened;
                 match voice.join_message(channel_id) {
                     ClientMessage::JoinVoice {
                         channel_id: requested,

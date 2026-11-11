@@ -1672,7 +1672,7 @@ type ScreenBridgeState = (
 );
 
 fn screen_connection_target(s: &crate::state::AppState) -> Option<super::video_lifecycle::Target> {
-    let channel = s.voice.channel_id?;
+    let channel = s.voice.channel_id()?;
     let needed = !crate::sysvideo::supported()
         || s.screen_share_target.is_some()
         || s.screen_sharing
@@ -1805,7 +1805,7 @@ pub fn ScreenShareBridge() -> Element {
 
     let sharing = use_memo(move || {
         let s = state.read();
-        (s.screen_sharing, s.voice.channel_id)
+        (s.screen_sharing, s.voice.channel_id())
     });
     let mut shared_channel = use_signal(|| None::<crate::protocol::Id>);
     let gateway_for_capture = gateway.clone();
@@ -1884,7 +1884,7 @@ pub fn ScreenShareBridge() -> Element {
         let self_pk = s.self_user.as_ref().map(|u| u.pubkey.as_str());
         let others_sharing = s
             .voice
-            .channel_id
+            .channel_id()
             .and_then(|cid| s.screen_shares.get(&cid))
             .is_some_and(|sharers| sharers.iter().any(|pk| Some(pk.as_str()) != self_pk));
         let want = if others_sharing {
@@ -2001,7 +2001,7 @@ pub fn ScreenShareBridge() -> Element {
                         }
                     }
                     Some("share-started") => {
-                        let cid = state.read().voice.channel_id;
+                        let cid = state.read().voice.channel_id();
                         {
                             let mut w = state.write();
                             w.screen_sharing = true;
@@ -2039,7 +2039,7 @@ pub fn ScreenShareBridge() -> Element {
                         );
                     }
                     Some("screen-share-ended") => {
-                        let cid = state.read().voice.channel_id;
+                        let cid = state.read().voice.channel_id();
                         {
                             let mut w = state.write();
                             w.screen_sharing = false;
@@ -2244,7 +2244,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
         },
     };
     let can_share =
-        selected_source.is_some() && state.read().voice.channel_id.is_some() && codec_ready;
+        selected_source.is_some() && state.read().voice.channel_id().is_some() && codec_ready;
     let resolution_notice = selected_source
         .as_ref()
         .and_then(|source| source_resolution_notice(source.width, source.height, &quality()));
@@ -2489,7 +2489,7 @@ fn choose_source(
         settings.read().screenshare_audio && crate::sysaudio::supported_for(Some(target));
     let (channel, already_sharing) = {
         let s = state.read();
-        (s.voice.channel_id, s.screen_sharing)
+        (s.voice.channel_id(), s.screen_sharing)
     };
     {
         let mut s = state.write();
@@ -2908,7 +2908,7 @@ pub fn ScreenSelfPreview(
                         e.stop_propagation();
                     },
                     onclick: move |_| {
-                        let cid = state.read().voice.channel_id;
+                        let cid = state.read().voice.channel_id();
                         {
                             let mut w = state.write();
                             w.screen_sharing = false;
@@ -3562,7 +3562,7 @@ mod js_escaping_tests {
     fn voice_only_join_keeps_video_idle_until_capture_or_viewing_needs_it() {
         let mut state = crate::state::AppState::empty();
         let channel = uuid::Uuid::new_v4();
-        state.voice.channel_id = Some(channel);
+        state.voice.force_channel(Some(channel));
         state.screen_token = Some(("wss://video.invalid".into(), "token".into()));
         if !crate::sysvideo::supported() {
             assert!(super::screen_connection_target(&state).is_some());
@@ -3598,7 +3598,7 @@ mod js_escaping_tests {
         assert!(super::screen_connection_target(&state).is_some());
         state.voice_states[0].channel_id = Some(uuid::Uuid::new_v4());
         assert!(super::screen_connection_target(&state).is_none());
-        state.voice.channel_id = None;
+        state.voice.force_channel(None);
         state.camera_on = true;
         assert!(super::screen_connection_target(&state).is_none());
     }

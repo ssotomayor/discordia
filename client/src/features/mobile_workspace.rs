@@ -5,7 +5,7 @@ use crate::state::use_app_state;
 
 #[cfg(any(target_os = "android", test))]
 fn media_guild(s: &crate::state::AppState) -> Option<crate::protocol::Id> {
-    let channel = s.voice.channel_id?;
+    let channel = s.voice.channel_id()?;
     s.channels
         .iter()
         .find(|ch| ch.id == channel)
@@ -31,7 +31,7 @@ fn open_media_chat(s: &mut crate::state::AppState) {
                 .iter()
                 .find(|ch| ch.guild_id == guild && ch.kind == crate::protocol::ChannelKind::Text)
                 .map(|ch| ch.id)
-                .or(s.voice.channel_id);
+                .or(s.voice.channel_id());
         }
         s.selected_guild = Some(guild);
     }
@@ -130,7 +130,7 @@ mod tests {
                 markdown: false,
             });
         }
-        s.voice.channel_id = Some(voice);
+        s.voice.force_channel(Some(voice));
         s.selected_guild = Some(other);
         s.selected_channel = Some(elsewhere);
         assert!(!media_chat_visible(&s));
@@ -145,7 +145,7 @@ mod tests {
         s.selected_guild = Some(guild);
         s.selected_channel = Some(elsewhere);
         assert!(!media_chat_visible(&s));
-        s.voice.channel_id = None;
+        s.voice.force_channel(None);
         assert!(!media_chat_visible(&s));
     }
 

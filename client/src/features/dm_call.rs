@@ -189,9 +189,9 @@ struct Actor {
 
 fn guild_busy(state: &AppState) -> bool {
     state.server_voice_channel().is_some()
-        || state.voice.channel_id.is_some()
+        || state.voice.channel_id().is_some()
         || matches!(
-            state.voice.phase,
+            state.voice.phase(),
             VoicePhase::Connecting | VoicePhase::Connected
         )
 }

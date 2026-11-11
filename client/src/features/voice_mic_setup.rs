@@ -355,7 +355,7 @@ pub fn MicrophoneTestPanel(mut exclusive: Signal<bool>) -> Element {
                 state.write().mic_test_active = capturing;
             }
             let current = state.peek();
-            let connected = current.voice.phase == VoicePhase::Connected
+            let connected = current.voice.phase() == VoicePhase::Connected
                 || current
                     .dm_call
                     .as_ref()

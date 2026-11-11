@@ -52,7 +52,7 @@ pub(crate) fn is_expired_message(message: &crate::protocol::Message, now: i64) -
 pub(super) fn can_invite_to(state: &AppState, channel: &Channel) -> bool {
     state.status == ConnectionStatus::Ready
         && channel.kind == ChannelKind::Voice
-        && state.voice.channel_id == Some(channel.id)
+        && state.voice.channel_id() == Some(channel.id)
         && state.self_user.as_ref().is_some_and(|user| {
             state
                 .members
@@ -86,7 +86,7 @@ mod tests {
         }))
         .unwrap();
         state.channels.push(channel.clone());
-        state.voice.channel_id = Some(channel.id);
+        state.voice.force_channel(Some(channel.id));
         for (pk, name, bot) in [
             ("me", "Me", false),
             ("alice", "Alice", false),

@@ -490,13 +490,17 @@ struct Cost {
 }
 
 fn cost_of(s: &AppState) -> Cost {
-    let call = s.voice.channel_id.or(s.voice.joining_channel_id).map(|id| {
-        s.channels
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "voice".into())
-    });
+    let call = s
+        .voice
+        .channel_id()
+        .or(s.voice.joining_channel_id())
+        .map(|id| {
+            s.channels
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "voice".into())
+        });
     let hosting = s
         .host_info
         .is_some()

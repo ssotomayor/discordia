@@ -47,7 +47,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
         let s = state.read();
         let mut sharers: Vec<_> = s.screen_viewing.iter().cloned().collect();
         sharers.sort();
-        let next = (s.voice_session_epoch, s.voice.channel_id, sharers);
+        let next = (s.voice_session_epoch, s.voice.channel_id(), sharers);
         if reported.peek().as_ref() != Some(&next) {
             if next.1.is_some() {
                 gateway.send(crate::protocol::ClientMessage::SetScreenWatching {

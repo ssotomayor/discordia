@@ -214,7 +214,7 @@ pub(super) fn spawn_stats_task(
         );
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let connected = state.peek().voice.phase == VoicePhase::Connected;
+            let connected = state.peek().voice.phase() == VoicePhase::Connected;
             let (routes, room_rtt) = if connected {
                 match tokio::time::timeout(Duration::from_secs(2), room.get_stats()).await {
                     Ok(Ok(s)) => (

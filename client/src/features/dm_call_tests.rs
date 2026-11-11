@@ -67,7 +67,11 @@ fn only_a_valid_new_call_or_incoming_accept_can_acquire_the_microphone_service()
         actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
         assert!(actor.needs_voice_start(&Action::Accept));
         assert!(!actor.needs_voice_start(&start));
-        actor.state.write().voice.phase = VoicePhase::Connecting;
+        actor
+            .state
+            .write()
+            .voice
+            .force_phase(VoicePhase::Connecting);
         assert!(!actor.needs_voice_start(&Action::Accept));
     });
 }
@@ -109,7 +113,11 @@ fn server_navigation_preserves_calls_but_guild_voice_is_exclusive() {
         actor.tick();
         assert_eq!(actor.session.as_ref().unwrap().id, call_id);
         actor.action(Action::Accept);
-        actor.state.write().voice.phase = VoicePhase::Connecting;
+        actor
+            .state
+            .write()
+            .voice
+            .force_phase(VoicePhase::Connecting);
         actor.tick();
         assert!(actor.session.is_none());
         assert!(actor.state.peek().dm_call.is_none());
@@ -300,24 +308,24 @@ fn cancellation_of_another_call_is_remembered_while_busy() {
 #[test]
 fn incoming_call_rings_while_in_guild_but_starting_outgoing_is_still_blocked() {
     harness(|actor, output| {
-        actor.state.write().voice.phase = VoicePhase::Connected;
+        actor.state.write().voice.force_phase(VoicePhase::Connected);
         actor.action(Action::Start("22".repeat(32)));
         assert!(actor.session.is_none());
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
         actor.tick();
         assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Incoming);
-        assert_eq!(actor.state.peek().voice.phase, VoicePhase::Connected);
+        assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Connected);
         assert!(output.try_recv().is_err());
         actor.action(Action::End);
-        assert_eq!(actor.state.peek().voice.phase, VoicePhase::Connected);
+        assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Connected);
         assert_eq!(
             output.try_recv().unwrap().1.body,
             Body::End {
                 reason: EndReason::Declined
             }
         );
-        actor.state.write().voice.phase = VoicePhase::Idle;
+        actor.state.write().voice.force_phase(VoicePhase::Idle);
         actor.action(Action::Start("22".repeat(32)));
         actor.session.as_mut().unwrap().deadline = Some(Instant::now());
         actor.tick();
@@ -329,7 +337,7 @@ fn incoming_call_rings_while_in_guild_but_starting_outgoing_is_still_blocked() {
 #[test]
 fn accepting_waits_for_handoff_and_duplicate_accept_does_not_restart_it() {
     harness(|actor, output| {
-        actor.state.write().voice.phase = VoicePhase::Connected;
+        actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
         assert_eq!(actor.prepare_handoff(), Some(id));
@@ -391,7 +399,7 @@ fn cancelled_replaced_failed_or_expired_handoffs_cannot_accept() {
 #[test]
 fn handoff_completion_refuses_a_still_active_guild_call() {
     harness(|actor, output| {
-        actor.state.write().voice.phase = VoicePhase::Connected;
+        actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
         actor.prepare_handoff();
@@ -402,7 +410,7 @@ fn handoff_completion_refuses_a_still_active_guild_call() {
                 reason: EndReason::Failed
             }
         );
-        assert_eq!(actor.state.peek().voice.phase, VoicePhase::Connected);
+        assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Connected);
     });
 }
 
@@ -737,12 +745,12 @@ fn failed_signaling_ends_with_a_failure_record_instead_of_a_missed_call() {
 #[test]
 fn unanswered_incoming_call_keeps_the_existing_voice_channel() {
     harness(|actor, output| {
-        actor.state.write().voice.phase = VoicePhase::Connected;
+        actor.state.write().voice.force_phase(VoicePhase::Connected);
         actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
         actor.session.as_mut().unwrap().deadline = Some(Instant::now());
         actor.tick();
         assert!(actor.session.is_none());
-        assert_eq!(actor.state.peek().voice.phase, VoicePhase::Connected);
+        assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Connected);
         assert_eq!(
             output.try_recv().unwrap().1.body,
             Body::End {
@@ -755,14 +763,14 @@ fn unanswered_incoming_call_keeps_the_existing_voice_channel() {
 #[test]
 fn ending_private_call_during_handoff_does_not_rejoin_or_accept_it_later() {
     harness(|actor, output| {
-        actor.state.write().voice.phase = VoicePhase::Connected;
+        actor.state.write().voice.force_phase(VoicePhase::Connected);
         let id = Uuid::new_v4();
         actor.incoming(incoming(id, Uuid::new_v4(), Body::Invite));
         assert_eq!(actor.prepare_handoff(), Some(id));
         actor.state.write().end_voice_locally();
         actor.action(Action::End);
         assert!(actor.session.is_none());
-        assert_eq!(actor.state.peek().voice.phase, VoicePhase::Idle);
+        assert_eq!(actor.state.peek().voice.phase(), VoicePhase::Idle);
         assert_eq!(
             output.try_recv().unwrap().1.body,
             Body::End {

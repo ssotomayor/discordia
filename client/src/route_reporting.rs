@@ -43,7 +43,7 @@ impl Snapshot {
                 }),
                 sent: state.voice_send_route.clone(),
                 received: state.voice_receive_route.clone(),
-                phase: state.voice.phase,
+                phase: state.voice.phase(),
                 endpoint: state.voice_endpoint.clone(),
                 revision: state.voice_route_revision,
             },

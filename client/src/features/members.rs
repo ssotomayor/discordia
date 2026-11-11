@@ -1068,8 +1068,8 @@ mod tests {
                     s.channels.push(serde_json::from_value(serde_json::json!({
                         "id": channel, "guild_id": Id::nil(), "name": "Private voice destination", "kind": "voice"
                     })).unwrap());
-                    s.voice.channel_id = Some(channel);
-                    s.voice.phase = crate::state::VoicePhase::Connected;
+                    s.voice.force_channel(Some(channel));
+                    s.voice.force_phase(crate::state::VoicePhase::Connected);
                     s.voice_states = vec![
                         voice("alice", Id::nil(), Some(channel)),
                         voice("bob", Id::nil(), Some(Id::new_v4())),
@@ -1123,7 +1123,10 @@ mod tests {
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Good);
         assert!(dom.render_immediate_to_vec().edits.is_empty());
-        state.write().voice.phase = crate::state::VoicePhase::Idle;
+        state
+            .write()
+            .voice
+            .force_phase(crate::state::VoicePhase::Idle);
         assert!(dom.render_immediate_to_vec().edits.is_empty());
         state
             .write()
@@ -1208,12 +1211,15 @@ mod tests {
         assert_eq!(renders(), expected);
         {
             let mut s = state.write();
-            s.voice.channel_id = Some(channel);
-            s.voice.phase = crate::state::VoicePhase::Connected;
+            s.voice.force_channel(Some(channel));
+            s.voice.force_phase(crate::state::VoicePhase::Connected);
         }
         assert!(dom.render_immediate_to_vec().edits.is_empty());
         assert_eq!(renders(), expected);
-        state.write().voice.phase = crate::state::VoicePhase::Idle;
+        state
+            .write()
+            .voice
+            .force_phase(crate::state::VoicePhase::Idle);
         assert!(dom.render_immediate_to_vec().edits.is_empty());
         assert_eq!(renders(), expected);
         state.write().voice_states[0].muted = true;

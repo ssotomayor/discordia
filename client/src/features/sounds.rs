@@ -13,8 +13,8 @@ mod tests {
         let mut state = AppState::empty();
         let channel = Id::new_v4();
         state.status = ConnectionStatus::Ready;
-        state.voice.phase = VoicePhase::Connected;
-        state.voice.channel_id = Some(channel);
+        state.voice.force_phase(VoicePhase::Connected);
+        state.voice.force_channel(Some(channel));
         state.screen_sharing = true;
         state.self_user = Some(User {
             pubkey: "me".into(),
@@ -86,11 +86,11 @@ impl ViewerSnapshot {
     fn from_state(state: &crate::state::AppState) -> Self {
         if !state.screen_sharing
             || state.status != crate::state::ConnectionStatus::Ready
-            || state.voice.phase != crate::state::VoicePhase::Connected
+            || state.voice.phase() != crate::state::VoicePhase::Connected
         {
             return Self::default();
         }
-        let (Some(channel), Some(me)) = (state.voice.channel_id, state.self_user.as_ref()) else {
+        let (Some(channel), Some(me)) = (state.voice.channel_id(), state.self_user.as_ref()) else {
             return Self::default();
         };
         Self {
@@ -129,11 +129,11 @@ impl CameraViewerSnapshot {
     fn from_state(state: &crate::state::AppState) -> Self {
         if !state.camera_on
             || state.status != crate::state::ConnectionStatus::Ready
-            || state.voice.phase != crate::state::VoicePhase::Connected
+            || state.voice.phase() != crate::state::VoicePhase::Connected
         {
             return Self::default();
         }
-        let (Some(channel), Some(me)) = (state.voice.channel_id, state.self_user.as_ref()) else {
+        let (Some(channel), Some(me)) = (state.voice.channel_id(), state.self_user.as_ref()) else {
             return Self::default();
         };
         Self {

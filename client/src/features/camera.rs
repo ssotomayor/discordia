@@ -165,7 +165,7 @@ fn NativeCameraBridge() -> Element {
         let s = state.read();
         let cfg = settings.read();
         let wanted = s.camera_on || s.camera_starting;
-        let room = (wanted && s.voice.channel_id.is_some())
+        let room = (wanted && s.voice.channel_id().is_some())
             .then(|| s.screen_video_token.clone())
             .flatten();
         let device = resolve_device(
@@ -223,7 +223,7 @@ fn BrowserCameraBridge() -> Element {
 
     // Leaving, being moved or dropped from a call releases the camera itself,
     // whatever the screen room is doing: nothing a call started outlives it.
-    let in_call = use_memo(move || state.read().voice.channel_id.is_some());
+    let in_call = use_memo(move || state.read().voice.channel_id().is_some());
     use_effect(move || {
         if !in_call() {
             let _ = document::eval(&stop_camera_js());
@@ -496,7 +496,7 @@ pub fn CameraGridWindow() -> Element {
 
     let others = use_memo(move || {
         let s = state.read();
-        let Some(cid) = s.voice.channel_id else {
+        let Some(cid) = s.voice.channel_id() else {
             return Vec::new();
         };
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());

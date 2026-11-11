@@ -629,12 +629,12 @@ mod tests {
     fn opening_a_notification_preserves_voice_and_does_not_accept_strangers() {
         let mut state = AppState::empty();
         let voice = crate::protocol::Id::new_v4();
-        state.voice.channel_id = Some(voice);
+        state.voice.force_channel(Some(voice));
         assert!(!open_inbox(&mut state, "stranger"));
         assert!(state.selected_channel.is_none());
         state.dm_accepted.insert("peer".into());
         assert!(open_inbox(&mut state, "peer"));
-        assert_eq!(state.voice.channel_id, Some(voice));
+        assert_eq!(state.voice.channel_id(), Some(voice));
         assert_eq!(state.dm_notification_open, Some(conversation_id("peer")));
         assert!(state.dm_mode);
         assert!(!state.dm_accepted.contains("stranger"));

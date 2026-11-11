@@ -237,7 +237,11 @@ pub(crate) fn use_mention_open(
 ) {
     let inputs = use_memo(move || {
         let s = state.read();
-        let in_call = s.voice.channel_id.or(s.voice.joining_channel_id).is_some();
+        let in_call = s
+            .voice
+            .channel_id()
+            .or(s.voice.joining_channel_id())
+            .is_some();
         s.mention_tap.clone().map(|pending| {
             (
                 pending,
@@ -463,7 +467,7 @@ mod tests {
 
         let mut there = tap(Id::from_u128(3));
         there.tap.origin = THERE.into();
-        state.write().voice.channel_id = Some(Id::from_u128(4));
+        state.write().voice.force_channel(Some(Id::from_u128(4)));
         state.write().mention_tap = Some(there);
         dom.render_immediate_to_vec();
         let s = state.peek();
@@ -473,7 +477,7 @@ mod tests {
         drop(s);
         assert!(drain(&mut messages).is_empty());
 
-        state.write().voice.channel_id = None;
+        state.write().voice.force_channel(None);
         let mut there = tap(Id::from_u128(3));
         there.tap.origin = THERE.into();
         state.write().mention_tap = Some(there);

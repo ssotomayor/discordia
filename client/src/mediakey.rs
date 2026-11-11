@@ -258,7 +258,7 @@ pub fn MediaKeyBridge() -> Element {
 
     let roster = use_memo(move || {
         let s = state.read();
-        let channel = s.voice.channel_id?;
+        let channel = s.voice.channel_id()?;
         let mut present = present_in(&s, channel);
         present.sort();
         Some((channel, present))
@@ -377,7 +377,7 @@ pub fn rekey_after_removal(
 ) {
     let (channel, identity, me, epoch) = {
         let s = state.read();
-        let Some(channel) = s.voice.channel_id else {
+        let Some(channel) = s.voice.channel_id() else {
             return;
         };
         let Some(identity) = s.identity.clone() else {

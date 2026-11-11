@@ -441,7 +441,7 @@ pub fn ChannelsColumn() -> Element {
                                     }
                                 }
                             } else if ch.kind == ChannelKind::Voice {
-                                let in_this = self_voice.channel_id == Some(cid);
+                                let in_this = self_voice.channel_id() == Some(cid);
                                 let g_join = gateway.clone();
                                 let occupants: Vec<VoiceState> = voice_states
                                     .iter()
@@ -1930,7 +1930,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         _ => self_npub.clone(),
     };
 
-    let voice_channel_id = self_voice.channel_id;
+    let voice_channel_id = self_voice.channel_id();
     let (voice_where, voice_sub) = {
         let s = state.read();
         let ch = voice_channel_id.and_then(|cid| s.channels.iter().find(|c| c.id == cid));
@@ -1955,14 +1955,14 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         )
     };
 
-    let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
-    let (dot_color, phase_text) = match self_voice.phase {
+    let show_banner = !matches!(self_voice.phase(), VoicePhase::Idle);
+    let (dot_color, phase_text) = match self_voice.phase() {
         VoicePhase::Idle => ("var(--text-dim)", "voice idle"),
         VoicePhase::Connecting => ("var(--warn)", "Connecting…"),
         VoicePhase::Connected => ("var(--success)", "voice connected"),
         VoicePhase::Error => ("var(--danger)", "voice error"),
     };
-    let voice_error = self_voice.error.clone();
+    let voice_error = self_voice.error().map(str::to_string);
 
     let muted = self_voice.muted;
     let deafened = self_voice.deafened;
@@ -1975,7 +1975,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_hang = voice.clone();
     let g_for_share = gateway.clone();
     let g_for_camera = gateway.clone();
-    let voice_channel = self_voice.channel_id;
+    let voice_channel = self_voice.channel_id();
     let soundboard_open = state.read().soundboard_open;
 
     // The trigger lives in the title bar; this panel only owns the device

@@ -18,7 +18,8 @@ use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
 use crate::protocol::{ClientMessage, Id, ServerMessage};
 use crate::state::{
-    AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, Transport, VoicePhase,
+    AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, Transport, VoiceEvent,
+    VoicePhase,
 };
 
 fn gateway_diagnostic(detail: std::fmt::Arguments<'_>) {
@@ -798,10 +799,10 @@ where
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
                 match &msg {
                     ClientMessage::JoinVoice { channel_id, .. } => {
-                        state.write().voice.joining_channel_id = Some(*channel_id);
+                        state.write().voice_event(VoiceEvent::JoinSent(*channel_id));
                     }
                     ClientMessage::LeaveVoice => {
-                        state.write().voice.joining_channel_id = None;
+                        state.write().voice_event(VoiceEvent::LeaveSent);
                     }
                     _ => {}
                 }
@@ -1497,7 +1498,7 @@ fn apply_ready(
     let selected_channel = s.selected_channel;
     let selected_dm =
         recovering && s.dm_mode && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
-    let local_channel = s.voice.channel_id;
+    let local_channel = s.voice.channel_id();
     s.readies = s.readies.wrapping_add(1);
     s.self_user = Some(user);
     s.is_operator = operator;
@@ -2297,8 +2298,8 @@ fn apply(
                 previous_channel,
                 vs.channel_id,
                 is_self,
-                s.voice.channel_id,
-                s.voice.joining_channel_id,
+                s.voice.channel_id(),
+                s.voice.joining_channel_id(),
             ) {
                 crate::features::sounds::sfx("peer-join");
             }
@@ -2309,12 +2310,14 @@ fn apply(
                     vs.muted,
                     vs.deafened,
                     vs.speaking,
-                    s.voice.phase
+                    s.voice.phase()
                 );
             }
 
-            if is_self && vs.channel_id.is_some() && s.voice.joining_channel_id == vs.channel_id {
-                s.voice.joining_channel_id = None;
+            if is_self
+                && let Some(channel) = vs.channel_id
+                && s.voice_event(VoiceEvent::Placed(channel))
+            {
                 let muted = s.voice.muted || s.voice.deafened;
                 let deafened = s.voice.deafened;
                 // Older hosts ignore join preferences; their initial echo must not open the mic.
@@ -2363,7 +2366,7 @@ fn apply(
                     s.voice.muted = vs.muted;
                     s.voice.deafened = vs.deafened;
                 }
-                if vs.channel_id.is_none() && s.voice.phase != VoicePhase::Idle {
+                if vs.channel_id.is_none() && s.voice.phase() != VoicePhase::Idle {
                     eprintln!("[net] server says we're out of voice — forcing Idle");
                     let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
                     s.end_voice_locally();
@@ -2417,9 +2420,7 @@ fn apply(
                 host.voice_reason =
                     "Local voice endpoints failed; this session now uses rendezvous voice.".into();
             }
-            s.voice.phase = VoicePhase::Connecting;
-            s.voice.channel_id = Some(channel_id);
-            s.voice.error = None;
+            s.voice_event(VoiceEvent::Granted(channel_id));
             s.voice_endpoint = None;
             s.ice_servers = ice_servers.clone();
             s.voice_location = voice_location;
@@ -2493,7 +2494,7 @@ fn apply(
             }
         }
         ServerMessage::Error { message } => {
-            s.voice.joining_channel_id = None;
+            s.voice_event(VoiceEvent::JoinRefused);
             tracing::warn!(server_error = %message);
             s.error_toast = Some(message);
         }
@@ -2753,7 +2754,7 @@ mod tests {
                         });
                         s.voice.muted = muted;
                         s.voice.deafened = deafened;
-                        s.voice.joining_channel_id = Some(channel);
+                        s.voice.on(VoiceEvent::JoinSent(channel));
                     }
                     let (tx, mut messages) = unbounded_channel();
                     let (voice_tx, mut native) = unbounded_channel();
