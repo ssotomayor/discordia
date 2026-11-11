@@ -930,8 +930,8 @@ fn window_close_behavior(
 #[component]
 pub fn App() -> Element {
     crate::mobile_back::use_navigation();
-    let mut quitting = use_signal(|| false);
-    use_context_provider(|| QuitRequest(quitting));
+    let mut exit = use_signal(|| Exit::Staying);
+    use_context_provider(|| QuitRequest(exit));
     let mut session = use_signal(|| None::<SessionParams>);
     let settings = use_signal(crate::settings::load_or_default);
     use_context_provider(|| settings);
@@ -940,7 +940,6 @@ pub fn App() -> Element {
     use_drop(move || locale.manually_drop());
     use_context_provider(|| crate::i18n::Locale(locale));
     let updates = crate::update::use_updates();
-    let mut update_exit = use_signal(|| false);
     let quit_window = crate::platform::use_window();
     let close_to_tray = use_signal(|| false);
     let close_window = quit_window.clone();
@@ -958,36 +957,26 @@ pub fn App() -> Element {
             && *id == window_id
             && !*close_to_tray.peek()
         {
-            quitting.set(true);
+            let quit = exit.peek().quit();
+            exit.set(quit);
         }
     });
     use_effect(move || {
-        let phase = updates.state.read().phase.clone();
-        if matches!(phase, crate::update::UpdatePhase::Leaving(_)) {
-            update_exit.set(true);
-            if !*quitting.peek() {
-                quitting.set(true);
-            }
+        let (phase, in_call) = {
+            let current = updates.state.read();
+            (current.phase.clone(), current.in_call)
+        };
+        let (next, act) = exit_step(exit(), session.read().is_some(), in_call, &phase);
+        if next != *exit.peek() {
+            exit.set(next);
         }
-        if *update_exit.peek()
-            && matches!(
-                phase,
-                crate::update::UpdatePhase::Failed(_)
-                    | crate::update::UpdatePhase::Opened
-                    | crate::update::UpdatePhase::Ready(_)
-            )
-        {
-            update_exit.set(false);
-            quitting.set(false);
-            return;
-        }
-        if quitting() && session.read().is_none() {
-            if *update_exit.peek() && updates.prevents_close() {
-                updates.install_after_disconnect();
-                return;
+        match act {
+            ExitAct::Wait => {}
+            ExitAct::Install => updates.install_after_disconnect(),
+            ExitAct::Close => {
+                quit_window.set_close_behavior(crate::platform::WindowCloseBehaviour::WindowCloses);
+                quit_window.close();
             }
-            quit_window.set_close_behavior(crate::platform::WindowCloseBehaviour::WindowCloses);
-            quit_window.close();
         }
     });
     #[cfg(target_os = "windows")]
@@ -1009,7 +998,8 @@ pub fn App() -> Element {
                 if let Some(mut receiver) = receiver
                     && receiver.recv().await.is_some()
                 {
-                    quitting.set(true);
+                    let quit = exit.peek().quit();
+                    exit.set(quit);
                 }
             }
         });
@@ -1205,14 +1195,14 @@ pub fn App() -> Element {
                             let _ = session::clear();
                             session.set(None);
                             identity.set(None);
-                            if !quitting() {
+                            if *exit.peek() == Exit::Staying {
                                 updates.check();
                             }
                         },
                         on_disconnect: move |reason: String| {
                             error.set(if reason.is_empty() { None } else { Some(reason) });
                             session.set(None);
-                            if !quitting() {
+                            if *exit.peek() == Exit::Staying {
                                 updates.check();
                             }
                         },
@@ -1226,7 +1216,66 @@ pub fn App() -> Element {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct QuitRequest(pub Signal<bool>);
+pub(crate) struct QuitRequest(pub Signal<Exit>);
+
+impl QuitRequest {
+    /// Reads reactively: an effect that asks re-runs when the app starts going down.
+    pub(crate) fn requested(&self) -> bool {
+        (self.0)() != Exit::Staying
+    }
+}
+
+/// Why the app is going down, if it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Exit {
+    Staying,
+    /// The window was closed, or the tray's Exit chosen.
+    Quit,
+    /// Leaving the session to install a downloaded update.
+    Update,
+}
+
+impl Exit {
+    fn quit(self) -> Exit {
+        match self {
+            Exit::Staying => Exit::Quit,
+            going => going,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitAct {
+    Wait,
+    Install,
+    Close,
+}
+
+/// Where going down stands, and what to do next. Nothing acts while a session
+/// is open: it is torn down first (trap 17), and an install also waits out calls.
+fn exit_step(
+    exit: Exit,
+    session: bool,
+    in_call: bool,
+    phase: &crate::update::UpdatePhase,
+) -> (Exit, ExitAct) {
+    use crate::update::UpdatePhase as Phase;
+    let exit = match (exit, phase) {
+        (_, Phase::Leaving(_)) => Exit::Update,
+        (Exit::Update, phase) if phase.prevents_close() => Exit::Update,
+        // A failed install, or one handed to its own installer window, keeps the app.
+        (Exit::Update, _) => Exit::Staying,
+        (unchanged, _) => unchanged,
+    };
+    let act = match exit {
+        Exit::Staying => ExitAct::Wait,
+        _ if session => ExitAct::Wait,
+        Exit::Quit => ExitAct::Close,
+        Exit::Update if in_call || !matches!(phase, Phase::Leaving(_)) => ExitAct::Wait,
+        Exit::Update => ExitAct::Install,
+    };
+    (exit, act)
+}
 
 pub(crate) fn session_key(p: &SessionParams) -> String {
     let mode = match &p.mode {
@@ -1387,6 +1436,63 @@ mod tests {
             openable("https://example.com/path?q=1").map(|u| u.to_string()),
             Some("https://example.com/path?q=1".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::{Exit, ExitAct, exit_step};
+    use crate::update::UpdatePhase as Phase;
+
+    #[test]
+    fn what_going_down_does_next() {
+        use Exit::*;
+        use ExitAct::*;
+        let leaving = || Phase::Leaving("verified".into());
+        let ready = || Phase::Ready("verified".into());
+        // (exit, session, in_call, phase) -> (exit, act)
+        let table = [
+            (Staying, true, false, Phase::Offered, (Staying, Wait)),
+            (Staying, false, false, ready(), (Staying, Wait)),
+            (Quit, true, true, Phase::Offered, (Quit, Wait)),
+            (Quit, false, true, Phase::Offered, (Quit, Close)),
+            (Quit, false, false, Phase::Failed("x".into()), (Quit, Close)),
+            (Staying, true, false, leaving(), (Update, Wait)),
+            (Quit, true, false, leaving(), (Update, Wait)),
+            (Staying, false, false, leaving(), (Update, Install)),
+            (Update, false, true, leaving(), (Update, Wait)),
+            (Update, false, false, leaving(), (Update, Install)),
+            (Update, false, false, Phase::Installing, (Update, Wait)),
+            (Update, false, false, Phase::Finished, (Update, Wait)),
+            (
+                Update,
+                false,
+                false,
+                Phase::Failed("x".into()),
+                (Staying, Wait),
+            ),
+            (Update, false, false, Phase::Opened, (Staying, Wait)),
+            (Update, true, false, ready(), (Staying, Wait)),
+            (Update, false, false, Phase::Offered, (Staying, Wait)),
+        ];
+        for (exit, session, in_call, phase, expected) in table {
+            let label = format!("{exit:?} session={session} in_call={in_call} {phase:?}");
+            let next = exit_step(exit, session, in_call, &phase);
+            assert_eq!(next, expected, "{label}");
+            // The effect re-runs on its own write; a second step must settle.
+            assert_eq!(
+                exit_step(next.0, session, in_call, &phase).0,
+                next.0,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quit_never_overrides_an_update_under_way() {
+        assert_eq!(Exit::Staying.quit(), Exit::Quit);
+        assert_eq!(Exit::Quit.quit(), Exit::Quit);
+        assert_eq!(Exit::Update.quit(), Exit::Update);
     }
 }
 

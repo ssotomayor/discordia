@@ -196,7 +196,7 @@ pub fn AccountView(
     let quitting = try_consume_context::<crate::app::QuitRequest>();
     let quit_nostr = nostr.clone();
     use_effect(move || {
-        if quitting.is_some_and(|request| (request.0)()) && state.read().dm_call.is_some() {
+        if quitting.is_some_and(|request| request.requested()) && state.read().dm_call.is_some() {
             quit_nostr.send(crate::nostr::service::NostrCmd::Call(
                 super::dm_call::Action::End,
             ));
@@ -231,7 +231,7 @@ pub fn AccountView(
         (
             current.read_marks_revision,
             current.app_foreground,
-            quitting.is_some_and(|request| (request.0)()),
+            quitting.is_some_and(|request| request.requested()),
         )
     });
     let read_nostr = nostr.clone();

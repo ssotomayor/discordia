@@ -375,9 +375,9 @@ pub fn WorkspaceView(
             leaving.set(next);
         }
     };
-    let quitting = use_context::<crate::app::QuitRequest>().0;
+    let quitting = use_context::<crate::app::QuitRequest>();
     use_effect(move || {
-        if quitting() {
+        if quitting.requested() {
             leave(LeaveRequest::Quit);
         }
     });
