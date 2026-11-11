@@ -546,11 +546,11 @@ async fn service_loop(
             VoiceCmd::SetSystemAudio { enabled, target } => {
                 if let Some(active) = session.as_mut() {
                     #[cfg(target_os = "android")]
-                    let enabled = enabled && state.peek().screen_sharing && active.screen_video.is_some();
+                    let enabled = enabled && state.peek().screen_share.is_live() && active.screen_video.is_some();
                     if let Err(e) = active.set_system_audio(enabled, target, state).await {
                         eprintln!("[voice] system audio failed: {e}");
                         #[cfg(target_os = "android")]
-                        { state.write().screen_native_audio = false; }
+                        { state.write().screen_share.on(crate::local_share::ShareEvent::SystemAudioLost); }
                         state.write().error_toast = Some(format!(
                             "Sharing video only — couldn't capture this computer's sound: {e}"
                         ));
@@ -572,12 +572,15 @@ async fn service_loop(
                 settings,
             } => {
                 if let Some(active) = session.as_mut() {
+                    let publishing = room.is_some();
                     if let Err(e) = active.set_screen_video(room, target, settings, state).await {
                         eprintln!("[voice] screen video failed: {e}");
                         let mut s = state.write();
-                        s.screen_sharing = false;
-                        s.screen_share_target = None;
-                        s.error_toast = Some(format!("Couldn't share your screen: {e}"));
+                        if publishing
+                            && s.screen_share.on(crate::local_share::ShareEvent::Failed(target))
+                        {
+                            s.error_toast = Some(format!("Couldn't share your screen: {e}"));
+                        }
                     }
                 } else if room.is_some() {
                     eprintln!("[voice] SetScreenVideo ignored — no voice session");
@@ -1296,7 +1299,10 @@ impl ActiveVoice {
                     eprintln!("[voice] system audio died mid-share: {e}");
                     #[cfg(target_os = "android")]
                     {
-                        state.write().screen_native_audio = false;
+                        state
+                            .write()
+                            .screen_share
+                            .on(crate::local_share::ShareEvent::SystemAudioLost);
                     }
                     state.write().error_toast = Some(format!(
                         "This computer's sound stopped being shared: {e}. The screen is still \
@@ -1474,7 +1480,14 @@ impl ActiveVoice {
                 screen.shutdown().await;
             }
             match ScreenVideoRoom::connect(room.room.clone(), target, settings, state).await {
-                Ok(screen) => room.screen = Some(screen),
+                Ok(screen) => {
+                    room.screen = Some(screen);
+                    let mut state = state;
+                    state
+                        .write()
+                        .screen_share
+                        .on(crate::local_share::ShareEvent::Published(target));
+                }
                 Err(e) => {
                     self.close_unused_video_room().await;
                     return Err(e);
@@ -2001,15 +2014,13 @@ impl ScreenVideoRoom {
                 if let Some(e) = fatal_rx.recv().await {
                     eprintln!("[voice] screen capture died mid-share: {e}");
                     let mut s = state.write();
-                    if s.voice_session_epoch != capture_epoch
-                        || s.screen_share_target != Some(target)
+                    if s.voice_session_epoch == capture_epoch
+                        && s.screen_share
+                            .on(crate::local_share::ShareEvent::Failed(target))
                     {
-                        return;
+                        s.error_toast =
+                            Some(format!("Your screen stopped being shared: {e}. Try again."));
                     }
-                    s.screen_sharing = false;
-                    s.screen_share_target = None;
-                    s.error_toast =
-                        Some(format!("Your screen stopped being shared: {e}. Try again."));
                 }
             })
         };
@@ -2246,8 +2257,7 @@ impl ScreenVideoRoom {
                 }
                 let mut s = stats_state.write();
                 if s.voice_session_epoch != capture_epoch
-                    || s.screen_share_target != Some(target)
-                    || !s.screen_sharing
+                    || s.screen_share.native_target() != Some(target)
                 {
                     break;
                 }

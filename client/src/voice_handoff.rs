@@ -161,7 +161,11 @@ mod tests {
             });
             state.voice.force_phase(VoicePhase::Connected);
             state.voice.force_channel(Some(channel));
-            state.screen_sharing = true;
+            state
+                .screen_share
+                .on(crate::local_share::ShareEvent::WebViewStarted {
+                    native_audio: false,
+                });
             state.camera_on = true;
             Signal::new(state)
         });
@@ -193,11 +197,11 @@ mod tests {
         assert!(state.peek().camera_on);
         media.send(()).unwrap();
         assert!(futures_util::poll!(&mut handoff).is_pending());
-        assert!(state.peek().screen_sharing);
+        assert!(state.peek().screen_share.is_live());
         state.write().voice_states.clear();
         handoff.await.unwrap();
         assert_eq!(state.peek().voice.phase(), VoicePhase::Idle);
-        assert!(!state.peek().screen_sharing && !state.peek().camera_on);
+        assert!(!state.peek().screen_share.is_live() && !state.peek().camera_on);
     }
 
     #[tokio::test]

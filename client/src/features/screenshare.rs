@@ -2,8 +2,7 @@ use dioxus::prelude::*;
 use serde_json::Value;
 
 use crate::features::voice::{VoiceCmd, use_voice_tx};
-use crate::protocol::ClientMessage;
-use crate::state::{use_app_state, use_gateway};
+use crate::state::{ShareEvent, use_app_state, use_gateway};
 
 #[component]
 pub(crate) fn StreamQualityNotice(
@@ -1674,8 +1673,7 @@ type ScreenBridgeState = (
 fn screen_connection_target(s: &crate::state::AppState) -> Option<super::video_lifecycle::Target> {
     let channel = s.voice.channel_id()?;
     let needed = !crate::sysvideo::supported()
-        || s.screen_share_target.is_some()
-        || s.screen_sharing
+        || s.screen_share.is_live()
         || !s.screen_viewing.is_empty()
         || s.camera_on
         || s.camera_starting
@@ -1805,21 +1803,19 @@ pub fn ScreenShareBridge() -> Element {
 
     let sharing = use_memo(move || {
         let s = state.read();
-        (s.screen_sharing, s.voice.channel_id())
+        (s.screen_share.is_live(), s.voice.channel_id())
     });
-    let mut shared_channel = use_signal(|| None::<crate::protocol::Id>);
+    // The one place the server hears about our share, so no path that ends one can forget to.
+    let mut announced = use_signal(|| None::<crate::protocol::Id>);
     let gateway_for_capture = gateway.clone();
     use_effect(move || {
-        let (active, channel) = sharing();
-        let previous = *shared_channel.peek();
-        if active {
-            shared_channel.set(channel);
-        } else if let Some(channel_id) = previous {
-            gateway_for_capture.send(ClientMessage::SetScreenShare {
-                channel_id,
-                sharing: false,
-            });
-            shared_channel.set(None);
+        let (live, channel) = sharing();
+        let (next, message) = crate::local_share::announce(*announced.peek(), live, channel);
+        if let Some(message) = message {
+            gateway_for_capture.send(message);
+        }
+        if *announced.peek() != next {
+            announced.set(next);
         }
     });
     let lifecycle = use_hook(|| {
@@ -1892,11 +1888,11 @@ pub fn ScreenShareBridge() -> Element {
         } else {
             None
         };
-        let publish_system = s.screen_sharing && s.screen_native_audio;
+        let publish_system = s.screen_share.system_audio();
         let epoch = s.voice_session_epoch;
         let joined = s.screen_audio_joined;
-        let target = s.screen_share_target;
-        let want_video = match (s.screen_sharing && crate::sysvideo::supported(), target) {
+        let target = s.screen_share.native_target();
+        let want_video = match (crate::sysvideo::supported(), target) {
             (true, Some(_)) => s.screen_video_token.clone(),
             _ => None,
         };
@@ -1970,10 +1966,8 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
-    let gateway_end = gateway.clone();
     use_future(move || {
         let mut state = state;
-        let gateway = gateway_end.clone();
         let lifecycle_events = lifecycle_events.clone();
         async move {
             let bridge_js = r#"
@@ -2001,26 +1995,19 @@ pub fn ScreenShareBridge() -> Element {
                         }
                     }
                     Some("share-started") => {
-                        let cid = state.read().voice.channel_id();
-                        {
-                            let mut w = state.write();
-                            w.screen_sharing = true;
-                            w.screen_native_audio =
-                                msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true);
-                        }
-                        if let Some(c) = cid {
-                            gateway.send(ClientMessage::SetScreenShare {
-                                channel_id: c,
-                                sharing: true,
-                            });
-                        }
+                        let native_audio =
+                            msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true);
+                        state
+                            .write()
+                            .screen_share
+                            .on(ShareEvent::WebViewStarted { native_audio });
                     }
                     Some("share-unavailable") => {
                         let secure = msg.get("secure").and_then(|v| v.as_bool()).unwrap_or(false);
                         eprintln!("[screen] share unavailable (secure_context={secure})");
                         let mut w = state.write();
                         w.screen_capture_available = false;
-                        w.screen_sharing = false;
+                        w.screen_share.on(ShareEvent::Stopped);
                         w.error_toast = Some(if secure {
                             "This webview has no screen-capture support.".into()
                         } else {
@@ -2039,18 +2026,7 @@ pub fn ScreenShareBridge() -> Element {
                         );
                     }
                     Some("screen-share-ended") => {
-                        let cid = state.read().voice.channel_id();
-                        {
-                            let mut w = state.write();
-                            w.screen_sharing = false;
-                            w.screen_native_audio = false;
-                        }
-                        if let Some(c) = cid {
-                            gateway.send(ClientMessage::SetScreenShare {
-                                channel_id: c,
-                                sharing: false,
-                            });
-                        }
+                        state.write().screen_share.on(ShareEvent::Stopped);
                     }
                     Some("screen-room-error") => {
                         let detail = msg
@@ -2099,7 +2075,7 @@ pub fn ScreenShareBridge() -> Element {
                         );
                         let mut s = state.write();
                         if outbound {
-                            if !(crate::sysvideo::supported() && s.screen_sharing) {
+                            if !(crate::sysvideo::supported() && s.screen_share.is_live()) {
                                 s.screen_share_stats = screen_stats;
                             }
                         } else {
@@ -2181,7 +2157,7 @@ pub fn ScreenShareBridge() -> Element {
 #[component]
 pub fn ScreenSourcePicker() -> Element {
     let state = use_app_state();
-    let picker = use_memo(move || state.read().screen_picker.clone());
+    let picker = use_memo(move || state.read().screen_share.picker().cloned());
     match picker() {
         Some(result) => rsx! { ScreenShareDialog { result } },
         None => rsx! {},
@@ -2189,9 +2165,8 @@ pub fn ScreenSourcePicker() -> Element {
 }
 
 #[component]
-fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> Element {
+fn ScreenShareDialog(result: crate::local_share::SourceList) -> Element {
     let mut state = use_app_state();
-    let gateway = use_gateway();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut target = use_signal(|| None::<crate::sysvideo::Target>);
     let mut preview_revision = use_signal(|| 0_u64);
@@ -2211,9 +2186,9 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
     let mut audio =
         use_signal(move || settings.read().screenshare_audio && crate::sysaudio::supported());
     let close = move |_| {
-        state.write().screen_picker = None;
+        state.write().screen_share.on(ShareEvent::PickerClosed);
     };
-    let sources = result.as_ref().ok().cloned().unwrap_or_default();
+    let sources = result.sources().to_vec();
     let selected_source = sources
         .iter()
         .find(|source| Some(source.target) == target())
@@ -2268,8 +2243,8 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                     }
                 }
                 div { class: "flex-1 overflow-y-auto p-3 space-y-3",
-                    if let Err(error) = &result {
-                        div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(&(error).to_string())} }
+                    if let Some(error) = result.error() {
+                        div { class: "text-xs text-[var(--danger)]", {crate::i18n::message(error)} }
                         if cfg!(target_os = "macos") {
                             p { class: "text-xs text-[var(--text-muted)]",
                                 {crate::i18n::text("Allow Screen Recording in System Settings › Privacy & Security, then reopen Discordia.", &[])}
@@ -2429,7 +2404,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                 next.screenshare_audio = audio();
                                 settings.set(next.clone());
                                 crate::settings::save(&next);
-                                choose_source(state, gateway.clone(), settings, chosen);
+                                choose_source(state, settings, chosen);
                             }
                         },
                         {crate::i18n::text("Share", &[])}
@@ -2481,29 +2456,14 @@ fn ScreenSourceTile(
 
 fn choose_source(
     mut state: Signal<crate::state::AppState>,
-    gateway: crate::state::GatewayTx,
     settings: Signal<crate::settings::ClientSettings>,
     target: crate::sysvideo::Target,
 ) {
-    let with_audio =
-        settings.read().screenshare_audio && crate::sysaudio::supported_for(Some(target));
-    let (channel, already_sharing) = {
-        let s = state.read();
-        (s.voice.channel_id(), s.screen_sharing)
-    };
-    {
-        let mut s = state.write();
-        s.screen_share_target = Some(target);
-        s.screen_sharing = true;
-        s.screen_native_audio = with_audio;
-        s.screen_picker = None;
-    }
-    if !already_sharing && let Some(cid) = channel {
-        gateway.send(ClientMessage::SetScreenShare {
-            channel_id: cid,
-            sharing: true,
-        });
-    }
+    let audio = settings.read().screenshare_audio && crate::sysaudio::supported_for(Some(target));
+    state
+        .write()
+        .screen_share
+        .on(ShareEvent::Chosen { target, audio });
 }
 
 #[cfg(any(target_os = "android", test))]
@@ -2517,7 +2477,6 @@ fn screen_consent_matches(
 
 pub fn open_screen_picker(
     state: Signal<crate::state::AppState>,
-    gateway: crate::state::GatewayTx,
     settings: Signal<crate::settings::ClientSettings>,
 ) {
     // Android's consent dialog is the picker: one screen, and no thumbnail can
@@ -2548,19 +2507,14 @@ pub fn open_screen_picker(
                     return;
                 }
             }
-            choose_source(
-                state,
-                gateway,
-                settings,
-                crate::sysvideo::Target::AndroidScreen,
-            );
+            choose_source(state, settings, crate::sysvideo::Target::AndroidScreen);
         });
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (gateway, settings);
+        let _ = settings;
         let mut state = state;
-        state.write().screen_picker = Some(Ok(Vec::new()));
+        state.write().screen_share.on(ShareEvent::PickerOpened);
         if !crate::sysvideo::supported() {
             return;
         }
@@ -2568,8 +2522,9 @@ pub fn open_screen_picker(
             let found = tokio::task::spawn_blocking(crate::sysvideo::sources)
                 .await
                 .unwrap_or_else(|e| Err(format!("listing screens failed: {e}")));
-            if state.peek().screen_picker.is_some() {
-                state.write().screen_picker = Some(found);
+            let listed = ShareEvent::SourcesListed(found);
+            if state.peek().screen_share.clone().on(listed.clone()) {
+                state.write().screen_share.on(listed);
             }
         });
     }
@@ -2624,7 +2579,6 @@ pub fn ScreenSelfPreview(
 ) -> Element {
     let visible = use_memo(use_reactive((&visible,), |(visible,)| visible));
     let mut state = use_app_state();
-    let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let window = crate::platform::use_window();
 
@@ -2660,11 +2614,11 @@ pub fn ScreenSelfPreview(
         }
     });
 
-    let sharing = use_memo(move || state.read().screen_sharing);
+    let sharing = use_memo(move || state.read().screen_share.is_live());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
 
     let native_capture = crate::sysvideo::supported();
-    let share_label = use_memo(move || match state.read().screen_share_target {
+    let share_label = use_memo(move || match state.read().screen_share.native_target() {
         Some(crate::sysvideo::Target::Display(_)) => "Sharing your screen",
         Some(crate::sysvideo::Target::Window(_)) => "Sharing one window",
         Some(crate::sysvideo::Target::Application(_)) => "Sharing an app",
@@ -2774,13 +2728,13 @@ pub fn ScreenSelfPreview(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             let payload = {
                 let s = state.read();
-                if !s.screen_sharing {
+                if !s.screen_share.is_live() {
                     serde_json::json!({ "active": false })
                 } else if native_capture {
                     s.screen_share_stats.as_ref().map_or_else(
                         || serde_json::json!({ "active": false }),
                         |stats| serde_json::json!({
-                            "id": format!("{}/{:?}", s.voice_session_epoch, s.screen_share_target),
+                            "id": format!("{}/{:?}", s.voice_session_epoch, s.screen_share.native_target()),
                             "bandwidth": stats.quality_limitation_reason.as_deref() == Some("bandwidth"),
                             "cpu": stats.quality_limitation_reason.as_deref() == Some("cpu"),
                             "captureLimited": stats.device_limited,
@@ -2908,18 +2862,9 @@ pub fn ScreenSelfPreview(
                         e.stop_propagation();
                     },
                     onclick: move |_| {
-                        let cid = state.read().voice.channel_id();
-                        {
-                            let mut w = state.write();
-                            w.screen_sharing = false;
-                            w.screen_share_target = None;
-                            w.screen_native_audio = false;
-                        }
+                        state.write().screen_share.on(ShareEvent::Stopped);
                         if !crate::sysvideo::supported() {
                             let _ = document::eval(&share_js(false, "", true));
-                        }
-                        if let Some(c) = cid {
-                            gateway.send(ClientMessage::SetScreenShare { channel_id: c, sharing: false });
                         }
                     },
                     {crate::i18n::text("Stop", &[])}
@@ -3573,9 +3518,12 @@ mod js_escaping_tests {
         assert!(super::screen_connection_target(&state).is_some());
         state.screen_viewing.clear();
         assert!(super::screen_connection_target(&state).is_none());
-        state.screen_share_target = Some(crate::sysvideo::Target::Display(0));
+        state.screen_share.on(crate::state::ShareEvent::Chosen {
+            target: crate::sysvideo::Target::Display(0),
+            audio: false,
+        });
         assert!(super::screen_connection_target(&state).is_some());
-        state.screen_share_target = None;
+        state.screen_share.on(crate::state::ShareEvent::Stopped);
         state.camera_starting = true;
         assert!(super::screen_connection_target(&state).is_some());
         state.camera_starting = false;

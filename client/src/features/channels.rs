@@ -1237,7 +1237,7 @@ pub(crate) fn ConnectionStats() -> Element {
         (
             s.screen_share_stats.clone(),
             s.screen_share_in_stats.clone(),
-            s.screen_sharing && crate::sysvideo::supported(),
+            s.screen_share.is_live() && crate::sysvideo::supported(),
         )
     };
 
@@ -1891,7 +1891,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mut state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
-    let sharing = state.read().screen_sharing;
+    let sharing = state.read().screen_share.is_live();
     let camera_on = state.read().camera_on;
     let camera_starting = state.read().camera_starting;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
@@ -1973,9 +1973,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_deafen = voice.clone();
     let g_for_hang = gateway.clone();
     let v_for_hang = voice.clone();
-    let g_for_share = gateway.clone();
     let g_for_camera = gateway.clone();
-    let voice_channel = self_voice.channel_id();
     let soundboard_open = state.read().soundboard_open;
 
     // The trigger lives in the title bar; this panel only owns the device
@@ -2115,10 +2113,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             onclick: move |_| {
                                 let now = !sharing;
                                 if !now {
-                                    state.write().screen_sharing = false;
-                                    if let Some(cid) = voice_channel {
-                                        g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: false });
-                                    }
+                                    state.write().screen_share.on(crate::local_share::ShareEvent::Stopped);
                                 }
 
                                                             if native_capture {
@@ -2128,11 +2123,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                          captured screen share.".into()
                                                                     );
                                                                 } else if now {
-                                                                    crate::features::screenshare::open_screen_picker(state, g_for_share.clone(), settings);
-                                                                } else {
-                                                                    let mut s = state.write();
-                                                                    s.screen_native_audio = false;
-                                                                    s.screen_share_target = None;
+                                                                    crate::features::screenshare::open_screen_picker(state, settings);
                                                                 }
                                                             } else if now {
                                                                 let quality = settings.read().screenshare_quality.clone();

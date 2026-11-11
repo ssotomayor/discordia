@@ -550,7 +550,7 @@ pub fn WorkspaceView(
     };
     let mut preview_target = preview_dock.target;
     let preview_docked = !is_mobile() && !settings.read().screen_preview_floating;
-    let preview_occupies_slot = preview_docked && state.read().screen_sharing;
+    let preview_occupies_slot = preview_docked && state.read().screen_share.is_live();
     let preview_on_right =
         layout
             .get("members")
@@ -1077,7 +1077,7 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    let sharing = use_memo(move || state.read().screen_sharing);
+    let sharing = use_memo(move || state.read().screen_share.is_live());
     let mut last_sharing = use_signal(|| false);
     use_effect(move || {
         let now = sharing();

@@ -246,7 +246,7 @@ pub(super) fn MobileWorkspace(
         let media = use_memo(move || {
             let s = state.read();
             (
-                s.screen_sharing,
+                s.screen_share.is_live(),
                 s.camera_on,
                 s.screen_viewing.clone(),
                 s.cameras_watching.clone(),

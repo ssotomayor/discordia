@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
+pub use crate::local_share::ShareEvent;
 use crate::protocol::{
     BotInstall, Channel, ClientMessage, Guild, GuildSummary, Id, Member, Message, Permission,
     Profile, Role, User, VoiceState,
@@ -437,10 +438,7 @@ pub struct AppState {
     /// What every LiveKit room of this session hands its ICE agent; a host
     /// behind NAT sends its rendezvous's relay here so its SFU can be reached.
     pub ice_servers: Vec<crate::protocol::IceServer>,
-    pub screen_share_target: Option<crate::sysvideo::Target>,
-    pub screen_picker: Option<Result<Vec<crate::sysvideo::Source>, String>>,
-    pub screen_sharing: bool,
-    pub screen_native_audio: bool,
+    pub screen_share: crate::local_share::ScreenShare,
     pub screen_shares: HashMap<Id, Vec<String>>,
     pub screen_viewing: HashSet<String>,
     pub replying_to: Option<ReplyDraft>,
@@ -662,11 +660,8 @@ impl AppState {
             screen_video_token: None,
             screen_viewer_token: None,
             ice_servers: Vec::new(),
-            screen_share_target: None,
-            screen_picker: None,
+            screen_share: Default::default(),
             screen_audio_joined: false,
-            screen_sharing: false,
-            screen_native_audio: false,
             screen_shares: HashMap::new(),
             screen_viewing: HashSet::new(),
             replying_to: None,
@@ -785,8 +780,7 @@ impl AppState {
         self.screen_audio_token = None;
         self.screen_video_token = None;
         self.screen_viewer_token = None;
-        self.screen_share_target = None;
-        self.screen_sharing = false;
+        self.screen_share.on(ShareEvent::CallEnded);
         self.screen_viewing.clear();
         self.camera_on = false;
         self.camera_starting = false;
@@ -908,7 +902,7 @@ impl AppState {
         self.media_undecryptable = false;
         self.pending_rekey = false;
         self.screen_shares.clear();
-        self.screen_picker = None;
+        self.screen_share.on(ShareEvent::PickerClosed);
         self.screen_audio_joined = false;
         self.stream_has_audio = Default::default();
         self.soundboard_open = false;
@@ -3729,7 +3723,10 @@ mod tests {
         let channel = uuid::Uuid::from_u128(7);
         s.voice.force(CallState::Connected(channel));
         s.media_key = crate::mediakey::CallKey::force(channel, (3, [9; 32]));
-        s.screen_sharing = true;
+        s.screen_share.on(ShareEvent::Chosen {
+            target: crate::sysvideo::Target::Display(0),
+            audio: true,
+        });
         s.camera_on = true;
         s.camera_picker = true;
         s.screen_token = Some(("url".into(), "tok".into()));
@@ -3741,7 +3738,7 @@ mod tests {
             "a rejoin must not pass for this call"
         );
         assert_eq!(s.media_key, Default::default());
-        assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
+        assert!(!s.screen_share.is_live() && !s.camera_on && s.screen_token.is_none());
         assert!(!s.camera_picker);
         assert!(s.screen_viewer_token.is_none());
         assert_eq!(s.voice.channel_id(), None);
