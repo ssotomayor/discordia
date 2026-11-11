@@ -1084,8 +1084,13 @@ pub fn App() -> Element {
         });
     }
 
+    let mut load_failure = None;
     let mut identity = use_signal(|| {
-        let identity = Identity::load().ok().flatten();
+        let identity = Identity::load().unwrap_or_else(|error| {
+            tracing::warn!(%error, "could not open the saved identity");
+            load_failure = Some(error);
+            None
+        });
         // Bind the old shared cache before sign-in can select a different account.
         if let Some(identity) = &identity
             && let Err(error) = crate::profile::migrate_legacy(&identity.pubkey)
@@ -1094,6 +1099,7 @@ pub fn App() -> Element {
         }
         identity
     });
+    let mut load_failure = use_signal(|| load_failure);
     let mut update_dialog = use_signal(|| false);
     use_effect(move || {
         let request = *updates.open_request.read();
@@ -1160,7 +1166,11 @@ pub fn App() -> Element {
             match (identity.read().clone(), session.read().clone()) {
                 (None, _) => rsx! {
                     IdentitySetupView {
-                        on_done: move |new_id: Identity| identity.set(Some(new_id)),
+                        notice: load_failure(),
+                        on_done: move |new_id: Identity| {
+                            load_failure.set(None);
+                            identity.set(Some(new_id));
+                        },
                     }
                 },
                 (Some(id), active_session) => rsx! {

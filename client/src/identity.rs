@@ -248,13 +248,17 @@ impl Identity {
             ));
         }
         // The filename only locates a candidate; its decrypted key must still match the pointer.
-        if active.active.len() == 64
-            && active.active.bytes().all(|byte| byte.is_ascii_hexdigit())
-            && let Ok(identity) =
-                Self::from_file(&identities_dir().join(format!("{}.json", active.active)))
-            && identity.pubkey == active.active
-        {
-            return Ok(Some(identity));
+        if active.active.len() == 64 && active.active.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            // Asked here so a vault that cannot open reaches the person, rather than
+            // every key below failing quietly and the pointer being dropped.
+            let passphrase = crate::keyvault::passphrase()?;
+            if let Ok(identity) = Self::from_file_with(
+                &identities_dir().join(format!("{}.json", active.active)),
+                Some(&passphrase),
+            ) && identity.pubkey == active.active
+            {
+                return Ok(Some(identity));
+            }
         }
         match detected().into_iter().find(|f| f.pubkey == active.active) {
             Some(found) => Self::from_file(&found.path).map(Some),
@@ -283,19 +287,33 @@ impl Identity {
     }
 
     fn from_file(path: &Path) -> Result<Self, String> {
+        Self::from_file_with(path, None)
+    }
+
+    fn from_file_with(path: &Path, passphrase: Option<&Zeroizing<String>>) -> Result<Self, String> {
         let content = std::fs::read_to_string(path).map_err(|e| format!("read identity: {e}"))?;
         let stored: Stored =
             serde_json::from_str(&content).map_err(|e| format!("parse identity: {e}"))?;
-        Self::from_stored(stored)
+        Self::from_stored_with(stored, passphrase)
     }
 
     fn from_stored(stored: Stored) -> Result<Self, String> {
+        Self::from_stored_with(stored, None)
+    }
+
+    fn from_stored_with(
+        stored: Stored,
+        passphrase: Option<&Zeroizing<String>>,
+    ) -> Result<Self, String> {
         match stored.version {
             FILE_VERSION => {
                 let ncryptsec = stored
                     .ncryptsec
                     .ok_or_else(|| "identity file has no ncryptsec".to_string())?;
-                let passphrase = crate::keyvault::passphrase()?;
+                let passphrase = match passphrase {
+                    Some(passphrase) => passphrase.clone(),
+                    None => crate::keyvault::passphrase()?,
+                };
                 let bytes = crate::keyvault::decrypt(&ncryptsec, &passphrase)?;
                 let mut identity = Self::restore_from_private_key(
                     hex::encode(bytes.as_ref()),
@@ -463,6 +481,34 @@ fn encrypt_plaintext_files() {
             }
         }
     }
+}
+
+/// Whether any key file is locked under the vault passphrase. Read without
+/// opening one: this is asked before the passphrase is known to exist.
+#[cfg(not(target_os = "android"))]
+pub(crate) fn encrypted_keys_exist() -> Result<bool, String> {
+    for dir in [identities_dir(), config_dir()] {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("read {}: {e}", dir.display())),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if serde_json::from_str::<Stored>(&content)
+                .is_ok_and(|stored| stored.version == FILE_VERSION && stored.ncryptsec.is_some())
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// The pointer as a process woken without the app reads it: `dir` is handed
@@ -1047,6 +1093,15 @@ mod store_tests {
             "{:?}",
             back.source
         );
+    }
+
+    #[test]
+    fn a_vault_that_cannot_open_is_an_error_and_keeps_the_pointer() {
+        let root = sandbox("vault-missing");
+        Identity::create("ana").unwrap().save().unwrap();
+        std::fs::remove_file(root.join("vault.key")).unwrap();
+        assert!(Identity::load().is_err());
+        assert!(root.join("identity.json").exists());
     }
 
     /// Sign out has to leave something behind, or the list it feeds is always
