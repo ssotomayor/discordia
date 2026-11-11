@@ -4,6 +4,7 @@ use discordia_bot::{Bot, BotIdentity};
 
 use crate::config::AgentConfig;
 use crate::harness::Harness;
+use crate::limits::Ledger;
 use crate::runner::run;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +24,7 @@ const LONGEST_WAIT: Duration = Duration::from_secs(120);
 const STEADY: Duration = Duration::from_secs(60);
 
 /// Runs until the task is dropped, reconnecting with bounded backoff so a
-/// host that is down or refusing is not hammered.
+/// host that is down or refusing is not hammered. One ledger spans every connection.
 pub async fn run_forever<H: Harness + Clone>(
     url: String,
     identity: BotIdentity,
@@ -31,6 +32,7 @@ pub async fn run_forever<H: Harness + Clone>(
     harness: H,
     report: impl Fn(Status) + Send + 'static,
 ) {
+    let ledger = Ledger::new(config.limits.clone());
     let mut wait = FIRST_WAIT;
     loop {
         report(Status::Connecting);
@@ -38,7 +40,15 @@ pub async fn run_forever<H: Harness + Clone>(
         let error = match Bot::connect(&url, &identity, &config.name).await {
             Ok(bot) => {
                 report(Status::Online);
-                match run(bot, &identity, config.clone(), harness.clone()).await {
+                match run(
+                    bot,
+                    &identity,
+                    config.clone(),
+                    harness.clone(),
+                    ledger.clone(),
+                )
+                .await
+                {
                     Ok(()) => "the server closed the connection".to_string(),
                     Err(e) => e.to_string(),
                 }

@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use crate::config::{ASK, AgentConfig, Look};
 use crate::context;
 use crate::harness::{Harness, HarnessError, Prompt, Reply};
-use crate::limits::Ledger;
+use crate::limits::{Ledger, Slot};
 use crate::split::split_reply;
 
 const TICK: Duration = Duration::from_secs(4);
@@ -41,6 +41,7 @@ struct Waiting {
     trigger: Message,
     answer: Answer,
     since: Instant,
+    slot: Slot,
 }
 
 struct Done {
@@ -48,20 +49,23 @@ struct Done {
     guild: Option<Id>,
     answer: Answer,
     result: Result<Reply, HarnessError>,
+    slot: Slot,
 }
 
 /// Runs one gateway connection until it closes. Reconnecting is the caller's
-/// choice; replies still in flight are dropped with the connection.
+/// choice; replies still in flight are dropped with the connection, and their
+/// slots with them, uncharged. `ledger` is the caller's so a reconnect does not reset it.
 pub async fn run<H: Harness>(
     mut bot: Bot,
     identity: &BotIdentity,
     config: AgentConfig,
     harness: H,
+    ledger: Ledger,
 ) -> Result<(), BotError> {
     let mut agent = Agent {
         me: bot.user.pubkey.clone(),
         names: HashSet::from([bot.user.username.clone()]),
-        ledger: Ledger::new(config.limits.clone()),
+        ledger,
         config,
         harness: Arc::new(harness),
         waiting: HashMap::new(),
@@ -85,9 +89,9 @@ pub async fn run<H: Harness>(
                         agent.running.remove(&task);
                         agent.deliver(&mut bot, done).await?;
                     }
+                    // Its slot went down with the task.
                     Err(e) => {
                         agent.running.remove(&e.id());
-                        agent.ledger.finish(0, None, Utc::now().date_naive());
                         tracing::error!(error = %e, "agent reply task failed");
                     }
                 }
@@ -224,6 +228,8 @@ impl<H: Harness> Agent<H> {
                 };
                 self.start(bot, trigger, Answer::Ask(Box::new(inv))).await?;
             }
+            // A history names only its channel, so the first answers every trigger
+            // waiting there; `context::build` cuts it at each trigger's own time.
             ServerMessage::MessageHistory {
                 channel_id,
                 messages,
@@ -271,18 +277,21 @@ impl<H: Harness> Agent<H> {
     ) -> Result<(), BotError> {
         let channel_id = trigger.channel_id;
         let today = Utc::now().date_naive();
-        if let Err((refusal, notify)) = self.ledger.admit(
+        let slot = match self.ledger.admit(
             &trigger.author.pubkey,
             self.guild_of.get(&channel_id).copied(),
             Instant::now(),
             today,
         ) {
-            // A command press waits on an answer; a mention may go unanswered.
-            if notify || !answer.public() {
-                self.say(bot, channel_id, &answer, refusal.notice()).await?;
+            Ok(slot) => slot,
+            Err((refusal, notify)) => {
+                // A command press waits on an answer; a mention may go unanswered.
+                if notify || !answer.public() {
+                    self.say(bot, channel_id, &answer, refusal.notice()).await?;
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
+        };
         if answer.public() {
             bot.send(&ClientMessage::Typing { channel_id }).await?;
         }
@@ -292,6 +301,7 @@ impl<H: Harness> Agent<H> {
             trigger,
             answer,
             since: Instant::now(),
+            slot,
         });
         Ok(())
     }
@@ -310,7 +320,7 @@ impl<H: Harness> Agent<H> {
         let channel_id = w.trigger.channel_id;
         let guild = self.guild_of.get(&channel_id).copied();
         let public = w.answer.public();
-        let answer = w.answer;
+        let (answer, slot) = (w.answer, w.slot);
         let handle = self.tasks.spawn(async move {
             let result = harness.reply(prompt).await;
             Done {
@@ -318,6 +328,7 @@ impl<H: Harness> Agent<H> {
                 guild,
                 answer,
                 result,
+                slot,
             }
         });
         self.running.insert(handle.id(), (channel_id, public));
@@ -360,7 +371,7 @@ impl<H: Harness> Agent<H> {
             Ok(r) => r.tokens,
             Err(e) => e.tokens(),
         };
-        self.ledger
+        done.slot
             .finish(tokens, done.guild, Utc::now().date_naive());
         let text = match done.result {
             Ok(r) => r.text,
