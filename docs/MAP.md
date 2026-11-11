@@ -14,15 +14,15 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 |---|---|
 | `client/src/features/voice.rs` | 5439 |
 | `server/src/state/mod.rs` | 4809 |
-| `server/src/gateway/connection.rs` | 4547 |
+| `server/src/gateway/connection.rs` | 4550 |
 | `protocol/src/lib.rs` | 4437 |
-| `client/src/state.rs` | 3995 |
+| `client/src/state.rs` | 3963 |
 | `client/src/features/screenshare.rs` | 3853 |
-| `client/src/features/chat.rs` | 3768 |
+| `client/src/features/chat.rs` | 3841 |
 | `server/tests/owner_controls.rs` | 3457 |
-| `client/src/net.rs` | 3118 |
+| `client/src/net.rs` | 3119 |
 | `client/src/features/channels.rs` | 2648 |
-| `client/src/nostr/service.rs` | 2591 |
+| `client/src/nostr/service.rs` | 2633 |
 | `client/src/features/activities.rs` | 2063 |
 | `server/src/store.rs` | 1844 |
 | `client/src/identity.rs` | 1437 |
