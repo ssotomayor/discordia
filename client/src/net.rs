@@ -1192,11 +1192,13 @@ mod graceful_shutdown_tests {
                 shutdown_tx.send_replace(true);
             }
         };
-        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        // Windows takes about two seconds to refuse a closed loopback port.
+        let limit = if quit_after.is_some() { 1 } else { 15 };
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(limit), async {
             tokio::join!(session, quit)
         })
         .await
-        .unwrap_or_else(|_| panic!("{peer:?}: quit interrupts connection/retry"));
+        .unwrap_or_else(|_| panic!("{peer:?}: the session did not end within {limit} s"));
         let status = dom.in_scope(ScopeId::ROOT, || state.peek().status);
         (outcome, status)
     }
