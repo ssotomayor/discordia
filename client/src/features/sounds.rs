@@ -132,7 +132,7 @@ struct CameraViewerSnapshot {
 
 impl CameraViewerSnapshot {
     fn from_state(state: &crate::state::AppState) -> Self {
-        if !state.camera_on
+        if !state.camera.is_on()
             || state.status != crate::state::ConnectionStatus::Ready
             || state.voice.phase() != crate::state::VoicePhase::Connected
         {

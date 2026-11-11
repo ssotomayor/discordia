@@ -1892,8 +1892,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let sharing = state.read().screen_share.is_live();
-    let camera_on = state.read().camera_on;
-    let camera_starting = state.read().camera_starting;
+    let camera_on = state.read().camera.is_on();
+    let camera_starting = state.read().camera.is_starting();
     let name = self_username.clone().unwrap_or_else(|| "—".into());
     let (level, xp_pct) = {
         let s = state.read();
@@ -2092,7 +2092,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 if camera_on || camera_starting {
                                     crate::features::camera::toggle_camera(state, settings, &g_for_camera, false);
                                 } else {
-                                    state.write().camera_picker = true;
+                                    let _ = state.write().camera.on(crate::state::CameraEvent::SetupOpened);
                                 }
                             },
                             dangerous_inner_html: if camera_on {

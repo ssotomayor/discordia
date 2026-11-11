@@ -166,7 +166,7 @@ mod tests {
                 .on(crate::local_share::ShareEvent::WebViewStarted {
                     native_audio: false,
                 });
-            state.camera_on = true;
+            let _ = state.camera.on(crate::local_camera::CameraEvent::Started);
             Signal::new(state)
         });
         let (gateway, messages) = unbounded_channel();
@@ -194,14 +194,14 @@ mod tests {
         };
         done.send(()).unwrap();
         assert!(futures_util::poll!(&mut handoff).is_pending());
-        assert!(state.peek().camera_on);
+        assert!(state.peek().camera.is_on());
         media.send(()).unwrap();
         assert!(futures_util::poll!(&mut handoff).is_pending());
         assert!(state.peek().screen_share.is_live());
         state.write().voice_states.clear();
         handoff.await.unwrap();
         assert_eq!(state.peek().voice.phase(), VoicePhase::Idle);
-        assert!(!state.peek().screen_share.is_live() && !state.peek().camera_on);
+        assert!(!state.peek().screen_share.is_live() && !state.peek().camera.is_on());
     }
 
     #[tokio::test]

@@ -594,19 +594,19 @@ async fn service_loop(
                 gateway,
             } => {
                 let epoch = state.read().voice_session_epoch;
-                let was_on = state.read().camera_on;
                 if let Some(active) = session.as_mut()
                     && let Err(e) = active
                         .set_camera(room, device, state, settings, gateway.clone())
                         .await
                 {
                     let mut s = state.write();
-                    if s.voice_session_epoch == epoch && (s.camera_on || s.camera_starting) {
-                        s.camera_on = false;
-                        s.camera_starting = false;
-                        s.error_toast = Some(format!("Couldn't start your camera: {e}"));
-                        if was_on {
-                            gateway.send(crate::protocol::ClientMessage::SetCamera { on: false });
+                    if s.voice_session_epoch == epoch {
+                        let followup = s.camera.on(crate::local_camera::CameraEvent::Failed);
+                        if followup.changed {
+                            s.error_toast = Some(format!("Couldn't start your camera: {e}"));
+                        }
+                        if let Some(message) = followup.server() {
+                            gateway.send(message);
                         }
                     }
                 }

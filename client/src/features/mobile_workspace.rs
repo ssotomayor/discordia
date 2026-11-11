@@ -247,7 +247,7 @@ pub(super) fn MobileWorkspace(
             let s = state.read();
             (
                 s.screen_share.is_live(),
-                s.camera_on,
+                s.camera.is_on(),
                 s.screen_viewing.clone(),
                 s.cameras_watching.clone(),
             )

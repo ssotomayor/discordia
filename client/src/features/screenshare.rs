@@ -1675,8 +1675,7 @@ fn screen_connection_target(s: &crate::state::AppState) -> Option<super::video_l
     let needed = !crate::sysvideo::supported()
         || s.screen_share.is_live()
         || !s.screen_viewing.is_empty()
-        || s.camera_on
-        || s.camera_starting
+        || s.camera.wanted()
         || s.voice_states
             .iter()
             .any(|v| v.channel_id == Some(channel) && v.camera_on);
@@ -3524,12 +3523,11 @@ mod js_escaping_tests {
         });
         assert!(super::screen_connection_target(&state).is_some());
         state.screen_share.on(crate::state::ShareEvent::Stopped);
-        state.camera_starting = true;
+        let _ = state.camera.on(crate::state::CameraEvent::StartRequested);
         assert!(super::screen_connection_target(&state).is_some());
-        state.camera_starting = false;
-        state.camera_on = true;
+        let _ = state.camera.on(crate::state::CameraEvent::Started);
         assert!(super::screen_connection_target(&state).is_some());
-        state.camera_on = false;
+        let _ = state.camera.on(crate::state::CameraEvent::Released);
         let peer = crate::protocol::VoiceState {
             user_pubkey: "peer".into(),
             guild_id: uuid::Uuid::new_v4(),
@@ -3547,7 +3545,7 @@ mod js_escaping_tests {
         state.voice_states[0].channel_id = Some(uuid::Uuid::new_v4());
         assert!(super::screen_connection_target(&state).is_none());
         state.voice.force_channel(None);
-        state.camera_on = true;
+        let _ = state.camera.on(crate::state::CameraEvent::Started);
         assert!(super::screen_connection_target(&state).is_none());
     }
 

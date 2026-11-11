@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
+pub use crate::local_camera::CameraEvent;
 pub use crate::local_share::ShareEvent;
 use crate::protocol::{
     BotInstall, Channel, ClientMessage, Guild, GuildSummary, Id, Member, Message, Permission,
@@ -444,9 +445,7 @@ pub struct AppState {
     pub replying_to: Option<ReplyDraft>,
     pub screen_capture_available: bool,
 
-    pub camera_on: bool,
-    pub camera_starting: bool,
-    pub camera_picker: bool,
+    pub camera: crate::local_camera::LocalCamera,
     pub available_cameras: Vec<CameraDevice>,
     pub cameras_watching: HashSet<String>,
     pub camera_capture_available: bool,
@@ -666,9 +665,7 @@ impl AppState {
             screen_viewing: HashSet::new(),
             replying_to: None,
             screen_capture_available: false,
-            camera_on: false,
-            camera_starting: false,
-            camera_picker: false,
+            camera: Default::default(),
             available_cameras: Vec::new(),
             cameras_watching: HashSet::new(),
             camera_capture_available: false,
@@ -782,9 +779,7 @@ impl AppState {
         self.screen_viewer_token = None;
         self.screen_share.on(ShareEvent::CallEnded);
         self.screen_viewing.clear();
-        self.camera_on = false;
-        self.camera_starting = false;
-        self.camera_picker = false;
+        let _ = self.camera.on(CameraEvent::Released);
         self.cameras_watching.clear();
     }
 
@@ -3727,8 +3722,7 @@ mod tests {
             target: crate::sysvideo::Target::Display(0),
             audio: true,
         });
-        s.camera_on = true;
-        s.camera_picker = true;
+        let _ = s.camera.on(CameraEvent::Started);
         s.screen_token = Some(("url".into(), "tok".into()));
         s.screen_viewer_token = Some(("url".into(), "viewer".into()));
         let epoch = s.voice_session_epoch;
@@ -3738,8 +3732,8 @@ mod tests {
             "a rejoin must not pass for this call"
         );
         assert_eq!(s.media_key, Default::default());
-        assert!(!s.screen_share.is_live() && !s.camera_on && s.screen_token.is_none());
-        assert!(!s.camera_picker);
+        assert!(!s.screen_share.is_live() && s.screen_token.is_none());
+        assert_eq!(s.camera.phase(), crate::local_camera::CameraPhase::Off);
         assert!(s.screen_viewer_token.is_none());
         assert_eq!(s.voice.channel_id(), None);
     }
