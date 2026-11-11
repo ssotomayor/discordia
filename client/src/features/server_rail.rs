@@ -6,7 +6,9 @@ use futures_util::StreamExt;
 use crate::known_servers::{self, KnownGuild, KnownServer};
 use crate::net::Reach;
 use crate::protocol::Id;
-use crate::state::{AppState, ConnectionStatus, SessionMode, SessionParams, use_app_state};
+use crate::state::{
+    AppState, ConnectionStatus, ServerSession, SessionMode, SessionParams, use_app_state,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Probe {
@@ -180,7 +182,7 @@ pub fn use_server_rail(params: &SessionParams, state: Signal<AppState>) -> Serve
     // Only a Ready session says what the server's guilds are.
     let seen = use_memo(move || {
         let s = state.read();
-        (s.status == ConnectionStatus::Ready).then(|| {
+        (s.server_session() == ServerSession::Live).then(|| {
             s.guilds
                 .iter()
                 .map(|g| KnownGuild {

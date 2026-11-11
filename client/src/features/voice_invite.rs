@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::nostr::service::{NostrCmd, NostrTx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission};
-use crate::state::{AppState, ConnectionStatus, SessionMode, use_app_state, use_gateway};
+use crate::state::{AppState, ServerSession, SessionMode, use_app_state, use_gateway};
 
 pub(crate) const INVITE_LIFETIME_SECS: u64 = 24 * 60 * 60;
 
@@ -20,7 +20,7 @@ pub(super) fn prepare_home_invite(
     state: &mut AppState,
     invite: crate::state::PendingVoiceInvite,
 ) -> bool {
-    if state.status != ConnectionStatus::Disconnected
+    if state.server_session() != ServerSession::Absent
         || state.dm_call.is_some()
         || invite
             .expires_at
@@ -50,7 +50,7 @@ pub(crate) fn is_expired_message(message: &crate::protocol::Message, now: i64) -
 }
 
 pub(super) fn can_invite_to(state: &AppState, channel: &Channel) -> bool {
-    state.status == ConnectionStatus::Ready
+    state.server_session() == ServerSession::Live
         && channel.kind == ChannelKind::Voice
         && state.voice.channel_id() == Some(channel.id)
         && state.self_user.as_ref().is_some_and(|user| {
@@ -66,6 +66,7 @@ mod tests {
     use super::*;
     use crate::nostr::nip02::Contact;
     use crate::protocol::{ChannelAccess, Member, Role, User};
+    use crate::state::ConnectionStatus;
 
     fn fixture() -> (AppState, Channel) {
         let mut state = AppState::empty();
@@ -764,7 +765,7 @@ fn invite_route(
     known: &[crate::known_servers::KnownServer],
     invite: &VoiceInviteInfo,
 ) -> InviteRoute {
-    if state.status == ConnectionStatus::Ready
+    if state.server_session() == ServerSession::Live
         && state.guilds.iter().any(|g| g.id == invite.guild_id)
     {
         return InviteRoute::Current;
@@ -789,7 +790,7 @@ fn invite_route(
             })
         });
     if current_matches || target.is_some_and(|server| Some(server.key()) == current_key) {
-        return if state.status == ConnectionStatus::Ready && invite.code.is_some() {
+        return if state.server_session() == ServerSession::Live && invite.code.is_some() {
             InviteRoute::Current
         } else {
             InviteRoute::Unavailable

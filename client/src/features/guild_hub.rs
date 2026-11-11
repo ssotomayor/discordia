@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{ConnectionStatus, use_app_state, use_gateway};
+use crate::state::{ServerSession, use_app_state, use_gateway};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
@@ -59,7 +59,7 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
                 .collect::<Vec<_>>(),
             s.error_toast.clone(),
             s.rules_prompt.clone(),
-            s.status,
+            s.server_session(),
             s.catalog_revision,
             s.guild_join_confirmation,
         )
@@ -87,7 +87,7 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
             } else if let Some(message) = toast.clone() {
                 error.set(Some(message));
                 pending.set(None);
-            } else if status != ConnectionStatus::Ready {
+            } else if status != ServerSession::Live {
                 error.set(Some(
                     "Connection interrupted. Check your guild list before trying again.".into(),
                 ));
@@ -101,7 +101,7 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
             } else if let Some(message) = toast {
                 catalog_loading.set(None);
                 error.set(Some(message));
-            } else if status != ConnectionStatus::Ready {
+            } else if status != ServerSession::Live {
                 catalog_loading.set(None);
                 error.set(Some("Reconnect to browse this host's guilds.".into()));
             }
@@ -112,7 +112,7 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
         if pending.peek().is_some() || *import_locked.peek() {
             return false;
         }
-        if state.peek().status != ConnectionStatus::Ready {
+        if state.peek().server_session() != ServerSession::Live {
             error.set(Some("Connect to a server first.".into()));
             return false;
         }
@@ -145,7 +145,7 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
             if catalog_loading.peek().is_some() {
                 return;
             }
-            if state.peek().status != ConnectionStatus::Ready {
+            if state.peek().server_session() != ServerSession::Live {
                 error.set(Some("Connect to a server first.".into()));
                 return;
             }
@@ -173,7 +173,7 @@ pub fn AddGuildDialog(on_close: EventHandler<()>) -> Element {
         }
     };
     let locked = import_locked() || pending().is_some();
-    let ready = state.read().status == ConnectionStatus::Ready;
+    let ready = state.read().server_session() == ServerSession::Live;
     let may_create = {
         let s = state.read();
         s.is_operator

@@ -10,7 +10,9 @@ use crate::features::{
 };
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
+use crate::state::{
+    ConnectionStatus, ServerSession, SessionParams, VoicePhase, use_app_state, use_gateway,
+};
 
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
@@ -398,7 +400,7 @@ pub fn WorkspaceView(
     let name_gateway = gateway_tx.clone();
     let mut sent_name = use_signal(|| None::<String>);
     use_effect(use_reactive((&display_name,), move |(name,)| {
-        if state.read().status != ConnectionStatus::Ready {
+        if state.read().server_session() != ServerSession::Live {
             sent_name.set(None);
         } else if sent_name.peek().as_ref() != Some(&name) {
             name_gateway.send(ClientMessage::UpdateUsername {
@@ -1030,7 +1032,7 @@ fn VoiceSounds() -> Element {
     let camera_watch_report = use_memo(move || {
         let s = state.read();
         (
-            s.status == ConnectionStatus::Ready && s.voice.phase() == VoicePhase::Connected,
+            s.server_session() == ServerSession::Live && s.voice.phase() == VoicePhase::Connected,
             s.voice_session_epoch,
             s.voice.channel_id(),
             active_camera_watches(&s).into_iter().collect::<Vec<_>>(),
@@ -1382,7 +1384,7 @@ fn MobileMenu(mut open: Signal<bool>, on_disconnect: EventHandler<()>) -> Elemen
     });
     let s = state.read();
     let hosting = s.host_info.is_some();
-    let operator = s.is_operator && s.status == ConnectionStatus::Ready;
+    let operator = s.is_operator && s.server_session() == ServerSession::Live;
     drop(s);
     let mut act = move |f: fn(&mut crate::state::AppState)| {
         open.set(false);

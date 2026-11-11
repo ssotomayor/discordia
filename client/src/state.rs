@@ -72,6 +72,18 @@ pub enum ConnectionStatus {
     Disconnected,
 }
 
+/// Whether this account is in a server session, for state that outlives one
+/// (`AppState::server_session`). `App::session` is what mounts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerSession {
+    /// Home, or a session whose gateway task has ended.
+    Absent,
+    /// Dialling, or redialling one that was live; nothing of the server is current.
+    Connecting,
+    /// The server let us in and its Ready is applied.
+    Live,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionHealth {
     Excellent,
@@ -784,6 +796,18 @@ impl AppState {
         self.cameras_watching.clear();
     }
 
+    /// Not `self_user` or `server_origin`: Home keeps our own user, and the
+    /// origin is known before Ready.
+    pub fn server_session(&self) -> ServerSession {
+        match self.status {
+            ConnectionStatus::Disconnected => ServerSession::Absent,
+            ConnectionStatus::Connecting | ConnectionStatus::Reconnecting => {
+                ServerSession::Connecting
+            }
+            ConnectionStatus::Ready => ServerSession::Live,
+        }
+    }
+
     pub fn prepare_server_switch(&mut self, guild: Option<Id>, invite: Option<PendingVoiceInvite>) {
         self.clear_server_session();
         self.open_guild_on_ready = guild;
@@ -803,6 +827,7 @@ impl AppState {
     }
 
     pub fn resume_voice_invite(&mut self, joined: Option<Id>) -> Option<ClientMessage> {
+        let live = self.server_session() == ServerSession::Live;
         let pending = self.voice_invite_on_ready.as_mut()?;
         if pending
             .expires_at
@@ -811,7 +836,7 @@ impl AppState {
             self.voice_invite_on_ready = None;
             return None;
         }
-        if self.status != ConnectionStatus::Ready {
+        if !live {
             return None;
         }
         if self.dm_call.is_some() {
@@ -3157,6 +3182,27 @@ mod tests {
         );
         assert_eq!(s.readies, 3);
         assert_eq!(s.error_toast, before.error_toast);
+    }
+
+    /// Home has our own user and a dialled session has its origin, so neither
+    /// can say whether there is a session.
+    #[test]
+    fn only_the_gateway_status_says_whether_a_session_exists() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        s.server_origin = Some("server-a".into());
+        for (status, session) in [
+            (ConnectionStatus::Disconnected, ServerSession::Absent),
+            (ConnectionStatus::Connecting, ServerSession::Connecting),
+            (ConnectionStatus::Reconnecting, ServerSession::Connecting),
+            (ConnectionStatus::Ready, ServerSession::Live),
+        ] {
+            s.status = status;
+            assert_eq!(s.server_session(), session, "{status:?}");
+        }
+        s.clear_server_session();
+        assert_eq!(s.server_session(), ServerSession::Absent);
+        assert!(s.self_user.is_some(), "we are still ourselves at Home");
     }
 
     /// `short.png` fails `emoji::safe_name`, so nothing touches the disk.
