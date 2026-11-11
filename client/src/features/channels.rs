@@ -1964,8 +1964,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     };
     let voice_error = self_voice.error().map(str::to_string);
 
-    let muted = self_voice.muted;
-    let deafened = self_voice.deafened;
+    let muted = self_voice.muted();
+    let deafened = self_voice.deafened();
     let mute_label = if muted { "Unmute mic" } else { "Mute mic" };
     let g_for_mute = gateway.clone();
     let v_for_mute = voice.clone();
@@ -2050,10 +2050,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         },
                         title: crate::i18n::label(mute_label),
                         onclick: move |_| {
-                            let new_muted = !muted || deafened;
-                            state.write().voice.muted = new_muted;
-                            g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
-                            v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
+                            let followup = state.write().voice.change_mute(crate::state::MuteChange::ToggleMute);
+                            if let Some(followup) = followup {
+                                followup.send(&g_for_mute, &v_for_mute);
+                            }
                         },
                         dangerous_inner_html: if muted { crate::features::icons::MIC_OFF } else { crate::features::icons::MIC },
                     }
@@ -2065,15 +2065,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         },
                         title: if deafened { crate::i18n::text("undeafen", &[]) } else { crate::i18n::text("deafen", &[]) },
                         onclick: move |_| {
-                            let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
-                            {
-                                let mut s = state.write();
-                                s.voice.muted = next_muted;
-                                s.voice.deafened = next_deafened;
+                            let followup = state.write().voice.change_mute(crate::state::MuteChange::ToggleDeafen);
+                            if let Some(followup) = followup {
+                                followup.send(&g_for_deafen, &v_for_deafen);
                             }
-                            g_for_deafen.send(ClientMessage::SetVoiceMute { muted: next_muted, deafened: next_deafened });
-                            v_for_deafen.send(VoiceCmd::SetDeafen { deafened: next_deafened });
-                            v_for_deafen.send(VoiceCmd::SetMute { muted: next_muted });
                         },
                         dangerous_inner_html: if deafened {
                             crate::features::icons::HEADPHONES_OFF

@@ -447,7 +447,9 @@ fn dm_playback_volume_changes_output_without_changing_microphone_gain() {
         } else {
             state.user_muted.remove("peer");
         }
-        state.voice.deafened = deafened;
+        state
+            .voice
+            .force_mute(state.voice.muted() || deafened, deafened);
         direct::update_controls(&controls, &state);
         assert_eq!(controls.mic_gain_pct.load(Ordering::Relaxed), 150);
         handle.push(id, &[0.1; 480], SAMPLE_RATE, 480);
@@ -527,7 +529,7 @@ fn native_pipeline_limits_hot_microphones_and_recovers() {
 #[test]
 fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
     let mut initial = AppState::empty();
-    initial.voice.deafened = true;
+    initial.voice.force_mute(true, true);
     let controls = AudioControls::from_state(&initial);
     assert!(controls.deafened.load(Ordering::Relaxed));
     controls.gains.lock().insert("alice".into(), 0.5);

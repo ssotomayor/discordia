@@ -35,7 +35,7 @@ impl Audio {
         let meter = Arc::new(MicMeter::default());
         let gate_stats = Arc::new(GateStats::default());
         let muted = Arc::new(AtomicBool::new(
-            state.peek().voice.muted || state.peek().voice.deafened,
+            state.peek().voice.muted() || state.peek().voice.deafened(),
         ));
         track.set_enabled(!muted.load(Ordering::Relaxed));
         let (faults, faults_rx) = unbounded_channel::<AudioFault>();
@@ -88,8 +88,8 @@ impl Audio {
                         s.auto_gain_control,
                         s.noise_cancellation,
                         peak_to_db_label(s.mic_sensitivity),
-                        s.voice.muted,
-                        s.voice.deafened,
+                        s.voice.muted(),
+                        s.voice.deafened(),
                         s.dm_call
                             .as_ref()
                             .map_or(1.0, |call| s.voice_gain_of(&call.peer)),
@@ -126,7 +126,7 @@ impl Audio {
                 }
             }
         }
-        let muted = state.peek().voice.muted || state.peek().voice.deafened;
+        let muted = state.peek().voice.muted() || state.peek().voice.deafened();
         update_controls(&self.controls, &state.peek());
         let input = input_preferences(&state.peek());
         if self.input != input || self.mic.is_none() {
@@ -235,7 +235,7 @@ fn input_preferences(state: &AppState) -> (Option<String>, bool) {
 pub(super) fn update_controls(controls: &AudioControls, state: &AppState) {
     controls
         .deafened
-        .store(state.voice.deafened, Ordering::Relaxed);
+        .store(state.voice.deafened(), Ordering::Relaxed);
     controls.apply_mic(crate::mic_profile::Config::from_state(state));
     controls
         .denoise_retry

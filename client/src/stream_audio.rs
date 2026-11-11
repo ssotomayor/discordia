@@ -11,7 +11,7 @@ pub(crate) fn playback_gains(
     seen.dedup();
     seen.into_iter()
         .map(|pk| {
-            let gain = if state.screen_viewing.contains(&pk) && !state.voice.deafened {
+            let gain = if state.screen_viewing.contains(&pk) && !state.voice.deafened() {
                 state.stream_gain_of(&pk)
             } else {
                 0.0
@@ -82,13 +82,13 @@ mod tests {
             playback_gains(&state, &initial),
             vec![("alice".into(), 0.0), ("bob".into(), 0.75)]
         );
-        state.voice.deafened = true;
+        state.voice.force_mute(true, true);
         assert!(
             playback_gains(&state, &initial)
                 .iter()
                 .all(|(_, gain)| *gain == 0.0)
         );
-        state.voice.deafened = false;
+        state.voice.force_mute(false, false);
         state.stream_muted.clear();
         assert_eq!(playback_gains(&state, &initial), initial);
         state.screen_viewing.remove("alice");

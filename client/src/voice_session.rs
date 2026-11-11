@@ -109,9 +109,10 @@ pub struct VoiceSession {
     joining: Option<Id>,
     /// Kept apart from a failed connect: devices are re-checked every tick while a room is up.
     device_error: Option<String>,
-    pub muted: bool,
-    pub deafened: bool,
-    pub muted_before_deafen: bool,
+    /// Private, so deafened without muted cannot be built: `change_mute` keeps the pair.
+    muted: bool,
+    deafened: bool,
+    muted_before_deafen: bool,
     pub speaking: bool,
 }
 
@@ -238,12 +239,107 @@ impl VoiceSession {
         }
     }
 
-    pub fn toggle_deafen(&mut self) -> (bool, bool) {
-        if self.deafened {
-            (self.muted_before_deafen, false)
-        } else {
+    pub fn muted(&self) -> bool {
+        self.muted
+    }
+
+    pub fn deafened(&self) -> bool {
+        self.deafened
+    }
+
+    /// The one place our mute or deafen changes. `None` when nothing did, so
+    /// a repeated press sends nothing; else what the server and audio must be told.
+    pub fn change_mute(&mut self, change: MuteChange) -> Option<MuteFollowup> {
+        let before = (self.muted, self.deafened);
+        let mut tell_server = true;
+        match change {
+            MuteChange::ToggleMute if !self.deafened => self.muted = !self.muted,
+            MuteChange::SetMuted(muted) if !self.deafened => self.muted = muted,
+            MuteChange::ToggleMute | MuteChange::SetMuted(_) => {}
+            MuteChange::ToggleDeafen => self.deafen(!self.deafened),
+            MuteChange::SetDeafened(deafened) => self.deafen(deafened),
+            MuteChange::Unmute => {
+                self.deafened = false;
+                self.muted = false;
+            }
+            MuteChange::Server { muted, deafened } => {
+                tell_server = false;
+                self.deafened = deafened;
+                self.muted = muted || deafened;
+            }
+        }
+        ((self.muted, self.deafened) != before).then_some(MuteFollowup {
+            muted: self.muted,
+            deafened: self.deafened,
+            tell_server,
+        })
+    }
+
+    fn deafen(&mut self, on: bool) {
+        if on == self.deafened {
+            return;
+        }
+        if on {
             self.muted_before_deafen = self.muted;
-            (true, true)
+            self.muted = true;
+        } else {
+            self.muted = self.muted_before_deafen;
+        }
+        self.deafened = on;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MuteChange {
+    ToggleMute,
+    ToggleDeafen,
+    /// Only Android's notification buttons say which way, since a stale press must not flip it back.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    SetMuted(bool),
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    SetDeafened(bool),
+    /// Microphone and call audio both back on.
+    Unmute,
+    /// What the server says we are. It is not told back.
+    Server {
+        muted: bool,
+        deafened: bool,
+    },
+}
+
+/// What has to follow a mute change, so no caller writes the triple by hand.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MuteFollowup {
+    pub muted: bool,
+    pub deafened: bool,
+    tell_server: bool,
+}
+
+impl MuteFollowup {
+    pub fn server(&self) -> Option<ClientMessage> {
+        self.tell_server.then_some(ClientMessage::SetVoiceMute {
+            muted: self.muted,
+            deafened: self.deafened,
+        })
+    }
+
+    pub fn audio(&self) -> [crate::features::voice::VoiceCmd; 2] {
+        use crate::features::voice::VoiceCmd;
+        [
+            VoiceCmd::SetDeafen {
+                deafened: self.deafened,
+            },
+            VoiceCmd::SetMute { muted: self.muted },
+        ]
+    }
+
+    pub fn send(self, gateway: &crate::state::GatewayTx, voice: &crate::features::voice::VoiceTx) {
+        if let Some(message) = self.server() {
+            gateway.send(message);
+        }
+        for command in self.audio() {
+            voice.send(command);
         }
     }
 }
@@ -263,6 +359,12 @@ impl VoiceSession {
             (Some(c), CallState::Restarting(_)) => CallState::Restarting(c),
             (Some(c), _) => CallState::Dialing(c),
         };
+    }
+
+    pub fn force_mute(&mut self, muted: bool, deafened: bool) {
+        assert!(muted || !deafened, "deafened always mutes");
+        self.muted = muted;
+        self.deafened = deafened;
     }
 
     pub fn force_phase(&mut self, phase: VoicePhase) {
@@ -446,6 +548,140 @@ mod tests {
         assert_eq!(voice.error(), Some("no mic"));
         voice.on(VoiceEvent::Ended);
         assert_eq!(voice.error(), None);
+    }
+
+    fn mute(muted: bool, deafened: bool, before_deafen: bool) -> VoiceSession {
+        VoiceSession {
+            muted,
+            deafened,
+            muted_before_deafen: before_deafen,
+            ..VoiceSession::default()
+        }
+    }
+
+    /// (muted, deafened, muted before deafen), change, (muted, deafened), tells the server
+    type MuteRow = ((bool, bool, bool), MuteChange, (bool, bool), Option<bool>);
+
+    #[test]
+    fn every_mute_transition_keeps_deafened_muted() {
+        use MuteChange::*;
+        let table: Vec<MuteRow> = vec![
+            ((false, false, false), ToggleMute, (true, false), Some(true)),
+            ((true, false, false), ToggleMute, (false, false), Some(true)),
+            ((true, true, false), ToggleMute, (true, true), None),
+            (
+                (false, false, false),
+                SetMuted(true),
+                (true, false),
+                Some(true),
+            ),
+            ((true, false, false), SetMuted(true), (true, false), None),
+            ((true, true, false), SetMuted(false), (true, true), None),
+            (
+                (false, false, false),
+                ToggleDeafen,
+                (true, true),
+                Some(true),
+            ),
+            ((true, false, false), ToggleDeafen, (true, true), Some(true)),
+            (
+                (true, true, false),
+                ToggleDeafen,
+                (false, false),
+                Some(true),
+            ),
+            ((true, true, true), ToggleDeafen, (true, false), Some(true)),
+            (
+                (false, false, false),
+                SetDeafened(true),
+                (true, true),
+                Some(true),
+            ),
+            ((true, true, false), SetDeafened(true), (true, true), None),
+            (
+                (true, true, false),
+                SetDeafened(false),
+                (false, false),
+                Some(true),
+            ),
+            (
+                (false, false, false),
+                SetDeafened(false),
+                (false, false),
+                None,
+            ),
+            ((true, true, true), Unmute, (false, false), Some(true)),
+            ((true, false, false), Unmute, (false, false), Some(true)),
+            ((false, false, false), Unmute, (false, false), None),
+            (
+                (false, false, false),
+                Server {
+                    muted: true,
+                    deafened: false,
+                },
+                (true, false),
+                Some(false),
+            ),
+            (
+                (false, false, false),
+                Server {
+                    muted: false,
+                    deafened: true,
+                },
+                (true, true),
+                Some(false),
+            ),
+            (
+                (true, true, false),
+                Server {
+                    muted: true,
+                    deafened: true,
+                },
+                (true, true),
+                None,
+            ),
+        ];
+        for ((muted, deafened, before), change, after, tells) in table {
+            let mut voice = mute(muted, deafened, before);
+            let followup = voice.change_mute(change);
+            let label = format!("{muted}/{deafened}/{before} on {change:?}");
+            assert_eq!((voice.muted(), voice.deafened()), after, "{label}");
+            assert!(voice.muted() || !voice.deafened(), "{label}");
+            assert_eq!(followup.map(|f| f.server().is_some()), tells, "{label}");
+            if let Some(followup) = followup {
+                assert_eq!((followup.muted, followup.deafened), after, "{label}");
+                if let Some(ClientMessage::SetVoiceMute { muted, deafened }) = followup.server() {
+                    assert_eq!((muted, deafened), after, "{label}");
+                }
+                let [deafen, mic] = followup.audio();
+                assert!(
+                    matches!(deafen, crate::features::voice::VoiceCmd::SetDeafen { deafened } if deafened == after.1),
+                    "{label}"
+                );
+                assert!(
+                    matches!(mic, crate::features::voice::VoiceCmd::SetMute { muted } if muted == after.0),
+                    "{label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn joining_voice_carries_the_local_mute_and_deafen_choices() {
+        let channel_id = ch(9);
+        for (muted, deafened) in [(false, false), (true, false), (true, true)] {
+            let voice = mute(muted, deafened, false);
+            match voice.join_message(channel_id) {
+                ClientMessage::JoinVoice {
+                    channel_id: requested,
+                    preferences: Some(prefs),
+                } => {
+                    assert_eq!(requested, channel_id);
+                    assert_eq!((prefs.muted, prefs.deafened), (muted, deafened));
+                }
+                other => panic!("unexpected join: {other:?}"),
+            }
+        }
     }
 
     fn call(channel: u128, route: u32) -> VoiceCall {

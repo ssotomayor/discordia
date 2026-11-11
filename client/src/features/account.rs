@@ -416,8 +416,7 @@ mod tests {
                         phase: Phase::Connected,
                         microphone_error: None,
                     });
-                    s.voice.muted = true;
-                    s.voice.deafened = true;
+                    s.voice.force_mute(true, true);
                     s.mic_volume = 170;
                     let id = crate::protocol::Id::new_v4();
                     s.dms.push(DmInfo {
@@ -447,7 +446,7 @@ mod tests {
             assert!(exported.borrow().unwrap().0 == state);
             let s = state.read();
             assert_eq!(s.dm_call.as_ref().unwrap().phase, Phase::Connected);
-            assert!(s.voice.muted && s.voice.deafened);
+            assert!(s.voice.muted() && s.voice.deafened());
             assert_eq!(s.mic_volume, 170);
             assert_eq!(s.messages.len(), 1);
             assert!(s.dm_mode);

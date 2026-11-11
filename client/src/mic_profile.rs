@@ -311,7 +311,7 @@ mod tests {
                 .voice_detection
         );
         let mut state = crate::state::AppState::empty();
-        state.voice.muted = true;
+        state.voice.force_mute(true, false);
         state.voice_bitrate_kbps = 48;
         let mut config = Config::from_state(&state);
         config.volume = 0;
@@ -325,7 +325,7 @@ mod tests {
         );
         natural.apply_state(&mut state);
         assert_eq!(state.mic_volume, 0);
-        assert!(state.voice.muted);
+        assert!(state.voice.muted());
         assert_eq!(state.voice_bitrate_kbps, 48);
         assert_eq!(natural.preset(Profile::Custom).volume, 0);
         let switched = natural.for_new_output();

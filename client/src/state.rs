@@ -8,7 +8,7 @@ use crate::protocol::{
     BotInstall, Channel, ClientMessage, Guild, GuildSummary, Id, Member, Message, Permission,
     Profile, Role, User, VoiceState,
 };
-pub use crate::voice_session::{CallState, VoiceEvent, VoicePhase, VoiceSession};
+pub use crate::voice_session::{CallState, MuteChange, VoiceEvent, VoicePhase, VoiceSession};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -3856,44 +3856,6 @@ mod tests {
         s.stream_volumes.insert("x".into(), 50);
         assert_eq!(s.stream_gain_of("x"), 0.5);
         assert_eq!(s.voice_gain_of("x"), 1.5);
-    }
-
-    #[test]
-    fn deafening_mutes_and_undeafening_restores_the_previous_mute() {
-        let mut v = VoiceSession::default();
-        assert_eq!(v.toggle_deafen(), (true, true));
-        v.muted = true;
-        v.deafened = true;
-        assert_eq!(v.toggle_deafen(), (false, false));
-
-        let mut v = VoiceSession::default();
-        v.muted = true;
-        assert_eq!(v.toggle_deafen(), (true, true));
-        v.deafened = true;
-        assert_eq!(v.toggle_deafen(), (true, false));
-    }
-
-    #[test]
-    fn joining_voice_carries_the_local_mute_and_deafen_choices() {
-        let channel_id = Id::new_v4();
-        for muted in [false, true] {
-            for deafened in [false, true] {
-                let mut voice = VoiceSession::default();
-                voice.muted = muted;
-                voice.deafened = deafened;
-                match voice.join_message(channel_id) {
-                    ClientMessage::JoinVoice {
-                        channel_id: requested,
-                        preferences: Some(prefs),
-                    } => {
-                        assert_eq!(requested, channel_id);
-                        assert_eq!(prefs.muted, muted || deafened);
-                        assert_eq!(prefs.deafened, deafened);
-                    }
-                    other => panic!("unexpected join: {other:?}"),
-                }
-            }
-        }
     }
 
     #[test]

@@ -202,7 +202,7 @@ mod tests {
     fn Holder(capture: ExportedState, observed: Rc<Cell<bool>>) -> Element {
         let state = use_hook(|| Signal::new_in_scope(AppState::empty(), ScopeId::ROOT));
         *capture.borrow_mut() = Some(state);
-        observed.set(state.read().voice.muted);
+        observed.set(state.read().voice.muted());
         rsx! {}
     }
 
@@ -214,8 +214,8 @@ mod tests {
     #[component]
     fn Reader(observed: Rc<Cell<bool>>) -> Element {
         let state = crate::state::use_app_state();
-        observed.set(state.read().voice.muted);
-        rsx! { div { "{state.read().voice.muted}" } }
+        observed.set(state.read().voice.muted());
+        rsx! { div { "{state.read().voice.muted()}" } }
     }
 
     #[tokio::test]
@@ -242,7 +242,7 @@ mod tests {
         )
         .with_root_context(state);
         assert_eq!(hoist_warnings(|| popup.rebuild_in_place()), 0);
-        state.write().voice.muted = true;
+        state.write().voice.force_mute(true, false);
         tokio::time::timeout(std::time::Duration::from_secs(1), popup.wait_for_work())
             .await
             .unwrap();
@@ -255,7 +255,7 @@ mod tests {
         owner.render_immediate_to_vec();
         assert!(popup_muted.get() && owner_muted.get());
         drop(popup);
-        state.write().voice.muted = false;
+        state.write().voice.force_mute(false, false);
         owner.render_immediate_to_vec();
         assert!(!owner_muted.get());
         state.manually_drop();

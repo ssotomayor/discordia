@@ -1,6 +1,7 @@
 use crate::features::dm_call::Phase;
 use crate::protocol::Id;
-use crate::state::{AppState, VoicePhase};
+use crate::state::{AppState, MuteChange, VoicePhase};
+use crate::voice_session::MuteFollowup;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,8 +60,8 @@ fn token(owner: Uuid, route: Option<Uuid>, state: &AppState) -> Option<String> {
     };
     Some(format!(
         "{owner}:{call}:{}:{}",
-        u8::from(state.voice.muted),
-        u8::from(state.voice.deafened)
+        u8::from(state.voice.muted()),
+        u8::from(state.voice.deafened())
     ))
 }
 
@@ -70,31 +71,22 @@ fn apply(
     route: Option<Uuid>,
     expected: &str,
     action: ControlAction,
-) -> Option<Call> {
+) -> Option<(Call, Option<MuteFollowup>)> {
     if token(owner, route, state).as_deref() != Some(expected) {
         return None;
     }
     let call = current_call(state)?;
-    match action {
-        ControlAction::Hangup => {}
+    let change = match action {
+        ControlAction::Hangup => return Some((call, None)),
         ControlAction::Mute | ControlAction::Unmute => {
-            let muted = action == ControlAction::Mute;
-            if state.voice.deafened || state.voice.muted == muted {
-                return None;
-            }
-            state.voice.muted = muted;
+            MuteChange::SetMuted(action == ControlAction::Mute)
         }
         ControlAction::Deafen | ControlAction::Undeafen => {
-            let deafened = action == ControlAction::Deafen;
-            if state.voice.deafened == deafened {
-                return None;
-            }
-            let (muted, deafened) = state.voice.toggle_deafen();
-            state.voice.muted = muted;
-            state.voice.deafened = deafened;
+            MuteChange::SetDeafened(action == ControlAction::Deafen)
         }
-    }
-    Some(call)
+    };
+    let followup = state.voice.change_mute(change)?;
+    Some((call, Some(followup)))
 }
 
 #[cfg(target_os = "android")]
@@ -239,18 +231,18 @@ mod native {
         let text = |key| crate::i18n::text(key, &[]);
         Notice {
             token,
-            muted: state.voice.muted || state.voice.deafened,
-            deafened: state.voice.deafened,
+            muted: state.voice.muted() || state.voice.deafened(),
+            deafened: state.voice.deafened(),
             channel: text("Calls and sharing"),
             voice: text("Voice call"),
             camera: text("Camera active"),
             screen: text("Sharing your screen"),
-            mute: text(if state.voice.muted || state.voice.deafened {
+            mute: text(if state.voice.muted() || state.voice.deafened() {
                 "Unmute mic"
             } else {
                 "Mute mic"
             }),
-            sound: text(if state.voice.deafened {
+            sound: text(if state.voice.deafened() {
                 "Unmute call audio"
             } else {
                 "Mute call audio"
@@ -317,7 +309,7 @@ mod native {
                         let route = routes.borrow().clone().filter(|route| {
                             !route.gateway.0.is_closed() && !route.voice.0.is_closed()
                         });
-                        let Some(call) = apply(
+                        let Some((call, followup)) = apply(
                             &mut state.write(),
                             owner,
                             route.as_ref().map(|route| route.id),
@@ -341,16 +333,8 @@ mod native {
                                         route.gateway.send(ClientMessage::LeaveVoice);
                                         route.voice.send(VoiceCmd::Disconnect { done: None });
                                         ending = Some(token);
-                                    } else {
-                                        let voice = state.peek().voice.clone();
-                                        route.gateway.send(ClientMessage::SetVoiceMute {
-                                            muted: voice.muted,
-                                            deafened: voice.deafened,
-                                        });
-                                        route.voice.send(VoiceCmd::SetDeafen {
-                                            deafened: voice.deafened,
-                                        });
-                                        route.voice.send(VoiceCmd::SetMute { muted: voice.muted });
+                                    } else if let Some(followup) = followup {
+                                        followup.send(&route.gateway, &route.voice);
                                     }
                                 }
                             }
@@ -441,7 +425,7 @@ mod tests {
         changed.voice.force_channel(Some(Uuid::new_v4()));
         assert!(apply(&mut changed, owner, route, &key, ControlAction::Hangup).is_none());
         changed = state.clone();
-        changed.voice.muted = true;
+        changed.voice.force_mute(true, false);
         assert!(apply(&mut changed, owner, route, &key, ControlAction::Unmute).is_none());
     }
 
@@ -449,17 +433,17 @@ mod tests {
     fn deafen_restores_prior_mic_state_and_disallows_unmute_while_deafened() {
         for muted in [false, true] {
             let mut state = guild();
-            state.voice.muted = muted;
+            state.voice.force_mute(muted, false);
             let owner = Uuid::new_v4();
             let route = Some(Uuid::new_v4());
             let key = token(owner, route, &state).unwrap();
             assert!(apply(&mut state, owner, route, &key, ControlAction::Deafen).is_some());
-            assert!(state.voice.muted && state.voice.deafened);
+            assert!(state.voice.muted() && state.voice.deafened());
             let key = token(owner, route, &state).unwrap();
             assert!(apply(&mut state, owner, route, &key, ControlAction::Unmute).is_none());
             assert!(apply(&mut state, owner, route, &key, ControlAction::Undeafen).is_some());
-            assert_eq!(state.voice.muted, muted);
-            assert!(!state.voice.deafened);
+            assert_eq!(state.voice.muted(), muted);
+            assert!(!state.voice.deafened());
         }
     }
 
@@ -477,7 +461,7 @@ mod tests {
         let key = token(owner, route, &state).unwrap();
         assert!(matches!(
             apply(&mut state, owner, route, &key, ControlAction::Hangup),
-            Some(Call::Guild { .. })
+            Some((Call::Guild { .. }, None))
         ));
         assert_eq!(state.voice.phase(), VoicePhase::Connected);
         state.voice.force_phase(VoicePhase::Idle);
@@ -503,7 +487,7 @@ mod tests {
                 &key,
                 ControlAction::Hangup
             ),
-            Some(Call::Dm(_))
+            Some((Call::Dm(_), None))
         ));
         state.dm_call.as_mut().unwrap().call_id = Uuid::new_v4();
         assert!(apply(&mut state, owner, None, &key, ControlAction::Hangup).is_none());

@@ -18,8 +18,8 @@ use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
 use crate::protocol::{ClientMessage, Id, ServerMessage};
 use crate::state::{
-    AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, Transport, VoiceEvent,
-    VoicePhase,
+    AppState, ConnectionStatus, GatewayTx, MuteChange, SessionMode, SessionParams, Transport,
+    VoiceEvent, VoicePhase,
 };
 
 fn gateway_diagnostic(detail: std::fmt::Arguments<'_>) {
@@ -2317,8 +2317,7 @@ fn apply(
                 && let Some(channel) = vs.channel_id
                 && s.voice_event(VoiceEvent::Placed(channel))
             {
-                let muted = s.voice.muted || s.voice.deafened;
-                let deafened = s.voice.deafened;
+                let (muted, deafened) = (s.voice.muted(), s.voice.deafened());
                 // Older hosts ignore join preferences; their initial echo must not open the mic.
                 if vs.muted != muted || vs.deafened != deafened {
                     let _ = tx.send(ClientMessage::SetVoiceMute { muted, deafened });
@@ -2353,17 +2352,15 @@ fn apply(
             }
 
             if is_self {
-                if vs.channel_id.is_some() && vs.muted != s.voice.muted {
-                    let _ = voice_tx.send(VoiceCmd::SetMute { muted: vs.muted });
-                }
-                if vs.channel_id.is_some() && vs.deafened != s.voice.deafened {
-                    let _ = voice_tx.send(VoiceCmd::SetDeafen {
+                if vs.channel_id.is_some()
+                    && let Some(followup) = s.voice.change_mute(MuteChange::Server {
+                        muted: vs.muted,
                         deafened: vs.deafened,
-                    });
-                }
-                if vs.channel_id.is_some() {
-                    s.voice.muted = vs.muted;
-                    s.voice.deafened = vs.deafened;
+                    })
+                {
+                    for command in followup.audio() {
+                        let _ = voice_tx.send(command);
+                    }
                 }
                 if vs.channel_id.is_none() && s.voice.phase() != VoicePhase::Idle {
                     eprintln!("[net] server says we're out of voice — forcing Idle");
@@ -2755,8 +2752,7 @@ mod tests {
                             pubkey: pubkey.clone(),
                             username: "Alice".into(),
                         });
-                        s.voice.muted = muted;
-                        s.voice.deafened = deafened;
+                        s.voice.force_mute(muted, deafened);
                         s.voice.on(VoiceEvent::JoinSent(channel));
                     }
                     let (tx, mut messages) = unbounded_channel();
@@ -2779,8 +2775,8 @@ mod tests {
                         &tx,
                         &voice_tx,
                     );
-                    assert_eq!(state.peek().voice.muted, muted);
-                    assert_eq!(state.peek().voice.deafened, deafened);
+                    assert_eq!(state.peek().voice.muted(), muted);
+                    assert_eq!(state.peek().voice.deafened(), deafened);
                     assert!(
                         native.try_recv().is_err(),
                         "join must not send an unmute command"
@@ -2801,8 +2797,8 @@ mod tests {
                         &tx,
                         &voice_tx,
                     );
-                    assert_eq!(state.peek().voice.muted, muted);
-                    assert_eq!(state.peek().voice.deafened, deafened);
+                    assert_eq!(state.peek().voice.muted(), muted);
+                    assert_eq!(state.peek().voice.deafened(), deafened);
                 }
             });
             rsx! {}

@@ -182,7 +182,7 @@ impl AudioControls {
             denoise_retry: Arc::new(AtomicU32::new(s.denoise_retry)),
             bitrate_kbps: Arc::new(AtomicU32::new(s.voice_bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
-            deafened: Arc::new(AtomicBool::new(s.voice.deafened)),
+            deafened: Arc::new(AtomicBool::new(s.voice.deafened())),
             // Restored volumes reach the mixer here: nothing sends them again.
             gains: Arc::new(Mutex::new(
                 s.user_volumes
@@ -520,12 +520,10 @@ async fn service_loop(
                 if let Some(active) = session.as_mut() {
                     active.set_muted(muted).await;
                 }
-                state.write().voice.muted = muted;
             }
             VoiceCmd::SetDeafen { deafened } => {
                 eprintln!("[voice] SetDeafen deafened={deafened}");
                 controls.deafened.store(deafened, Ordering::Relaxed);
-                state.write().voice.deafened = deafened;
             }
             VoiceCmd::ApplyMicrophone { config } => {
                 config.apply_state(&mut state.write());
@@ -912,7 +910,7 @@ impl ActiveVoice {
         // DSP initialization yields; a mute changed during that wait must win before capture starts.
         let (start_muted, start_deafened) = {
             let s = state.peek();
-            (s.voice.muted || s.voice.deafened, s.voice.deafened)
+            (s.voice.muted() || s.voice.deafened(), s.voice.deafened())
         };
         controls.deafened.store(start_deafened, Ordering::Relaxed);
         apply_microphone_mute(&local_audio_for_mute, &muted, start_muted);

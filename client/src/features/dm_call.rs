@@ -1117,9 +1117,9 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
         return rsx! {};
     };
     let name = state.read().display_name(&call.peer);
-    let muted = state.read().voice.muted;
+    let muted = state.read().voice.muted();
     let mic_volume = state.read().mic_volume;
-    let deafened = state.read().voice.deafened;
+    let deafened = state.read().voice.deafened();
     let volume = state
         .read()
         .user_volumes
@@ -1196,17 +1196,13 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                             icon: if muted || deafened { super::icons::MIC_OFF } else { super::icons::MIC },
                             label: if muted { crate::i18n::text("Unmute mic", &[]) } else { crate::i18n::text("Mute mic", &[]) },
                             active: muted || deafened, toggle: true, disabled: deafened,
-                            on_press: move |_| { let value = !state.peek().voice.muted; state.write().voice.muted = value; }
+                            on_press: move |_| { let _ = state.write().voice.change_mute(crate::state::MuteChange::ToggleMute); }
                         }
                         CallControl {
                             icon: if deafened { super::icons::HEADPHONES_OFF } else { super::icons::HEADPHONES },
                             label: if deafened { crate::i18n::text("Undeafen", &[]) } else { crate::i18n::text("Deafen", &[]) },
                             active: deafened, toggle: true,
-                            on_press: move |_| {
-                                let mut s = state.write();
-                                if s.voice.deafened { s.voice.muted = s.voice.muted_before_deafen; s.voice.deafened = false; }
-                                else { s.voice.muted_before_deafen = s.voice.muted; s.voice.deafened = true; s.voice.muted = true; }
-                            }
+                            on_press: move |_| { let _ = state.write().voice.change_mute(crate::state::MuteChange::ToggleDeafen); }
                         }
                         CallControl { icon: super::icons::PHONE_HANGUP,
                             label: if call.phase == Phase::Ringing { crate::i18n::text("Cancel", &[]) } else { crate::i18n::text("End call", &[]) }, tone: "danger",
