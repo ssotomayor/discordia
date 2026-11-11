@@ -25,7 +25,8 @@ pub enum CameraEvent {
     Started,
     /// The person turned it off. The server hears it here (trap 29).
     Stopped,
-    /// The webview reported the track ended.
+    /// The webview reported the track ended; a native publisher never sends it.
+    #[cfg_attr(any(target_os = "android", target_os = "windows"), allow(dead_code))]
     Ended,
     Failed,
     /// The call or its video grant is gone; the server already knows.
