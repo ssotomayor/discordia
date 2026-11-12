@@ -920,6 +920,30 @@ fn typing_label(typers: &[String]) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryMark {
+    None,
+    Clock,
+    Check,
+    Failed,
+}
+
+/// What an outgoing DM shows of its delivery: the mark at the row's end, and whether its
+/// text is dimmed. A phone dims in place of the clock and the check; a failure always shows.
+fn delivery_look(
+    delivery: Option<crate::nostr::delivery::Delivery>,
+    phone: bool,
+) -> (DeliveryMark, bool) {
+    use crate::nostr::delivery::Delivery;
+    match (delivery, phone) {
+        (None, _) | (Some(Delivery::Accepted), true) => (DeliveryMark::None, false),
+        (Some(Delivery::Pending), true) => (DeliveryMark::None, true),
+        (Some(Delivery::Pending), false) => (DeliveryMark::Clock, false),
+        (Some(Delivery::Accepted), false) => (DeliveryMark::Check, false),
+        (Some(Delivery::Failed), _) => (DeliveryMark::Failed, false),
+    }
+}
+
 #[component]
 pub(super) fn MessageRow(
     message: Message,
@@ -1112,21 +1136,22 @@ pub(super) fn MessageRow(
     };
 
     let nostr_retry = nostr.clone();
-    let delivery_mark = delivery.map(move |delivery| {
-        use crate::nostr::delivery::Delivery;
+    let (mark, sending_dim) = delivery_look(delivery, cfg!(target_os = "android"));
+    let delivery_mark = (mark != DeliveryMark::None).then(move || {
         let icon = "inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]";
-        match delivery {
-            Delivery::Pending => rsx! {
+        match mark {
+            DeliveryMark::None => rsx! {},
+            DeliveryMark::Clock => rsx! {
                 span { class: icon, title: crate::i18n::text("Sending…", &[]), dangerous_inner_html: crate::features::icons::CLOCK }
             },
-            Delivery::Accepted => rsx! {
+            DeliveryMark::Check => rsx! {
                 span {
                     class: icon,
                     title: crate::i18n::text("Accepted by relay. Not a delivery or read receipt.", &[]),
                     dangerous_inner_html: crate::features::icons::CHECK,
                 }
             },
-            Delivery::Failed => rsx! {
+            DeliveryMark::Failed => rsx! {
                 span { class: "text-[10px] text-[var(--danger)]",
                     {crate::i18n::text("Not accepted · ", &[])}
                     button { class: "underline", onclick: move |_| nostr_retry.send(crate::nostr::service::NostrCmd::Retry { message_id }), {crate::i18n::text("Retry", &[])} }
@@ -1134,6 +1159,8 @@ pub(super) fn MessageRow(
             },
         }
     });
+    let text_row = if delivery.is_some() { "flex gap-2" } else { "" };
+    let text_dim = if sending_dim { "opacity-60" } else { "" };
 
     let menu_open = show_react() || confirm_delete();
     // A phone has no hover: the bar stays out of the DOM there (`mobile.css`) and
@@ -1272,28 +1299,30 @@ pub(super) fn MessageRow(
                         }
                     }
                 } else if has_text {
-                    div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
-                        MessageContent { content: display_content.clone(), channel_id, message_id }
-                        if let Some(when) = edited.clone() {
-                            span {
-                                class: "ml-1 text-[10px] text-[var(--text-dim)] select-none",
-                                title: crate::i18n::text("Edited {0}", std::slice::from_ref(&when)),
-                                {crate::i18n::text("(edited)", &[])}
+                    div { class: "{text_row}",
+                        div { class: "min-w-0 flex-1 text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed transition-opacity {text_dim}",
+                            MessageContent { content: display_content.clone(), channel_id, message_id }
+                            if let Some(when) = edited.clone() {
+                                span {
+                                    class: "ml-1 text-[10px] text-[var(--text-dim)] select-none",
+                                    title: crate::i18n::text("Edited {0}", std::slice::from_ref(&when)),
+                                    {crate::i18n::text("(edited)", &[])}
+                                }
                             }
-                        }
-                        if edit_pending {
-                            span {
-                                class: "ml-1 inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]",
-                                title: crate::i18n::text("Saving…", &[]),
-                                dangerous_inner_html: crate::features::icons::CLOCK,
+                            if edit_pending {
+                                span {
+                                    class: "ml-1 inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]",
+                                    title: crate::i18n::text("Saving…", &[]),
+                                    dangerous_inner_html: crate::features::icons::CLOCK,
+                                }
                             }
                         }
                         if let Some(mark) = delivery_mark.clone() {
-                            span { class: "ml-1.5", {mark} }
+                            span { class: "shrink-0 mt-auto whitespace-nowrap", {mark} }
                         }
                     }
                 } else if let Some(mark) = delivery_mark.clone() {
-                    div { class: "mt-0.5", {mark} }
+                    div { class: "mt-0.5 flex justify-end", {mark} }
                 }
                 if pinned { div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("📌 Pinned", &[])} } }
                 if let Some(attachment) = message.attachment.clone() {
@@ -3810,6 +3839,31 @@ mod composer_tests {
 #[cfg(test)]
 mod reactor_tests {
     use super::*;
+
+    #[test]
+    fn a_phone_dims_what_a_wider_screen_marks_and_a_failure_always_shows() {
+        use crate::nostr::delivery::Delivery;
+        for (delivery, phone, expected) in [
+            (None, false, (DeliveryMark::None, false)),
+            (None, true, (DeliveryMark::None, false)),
+            (Some(Delivery::Pending), false, (DeliveryMark::Clock, false)),
+            (Some(Delivery::Pending), true, (DeliveryMark::None, true)),
+            (
+                Some(Delivery::Accepted),
+                false,
+                (DeliveryMark::Check, false),
+            ),
+            (Some(Delivery::Accepted), true, (DeliveryMark::None, false)),
+            (Some(Delivery::Failed), false, (DeliveryMark::Failed, false)),
+            (Some(Delivery::Failed), true, (DeliveryMark::Failed, false)),
+        ] {
+            assert_eq!(
+                delivery_look(delivery, phone),
+                expected,
+                "{delivery:?} phone={phone}"
+            );
+        }
+    }
 
     #[test]
     fn you_come_first_and_a_long_list_is_counted() {
