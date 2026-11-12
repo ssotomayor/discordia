@@ -378,6 +378,7 @@
   "Missed voice call": ["Llamada perdida", "Chamada perdida", "未接语音通话", "不在の音声通話"],
   "Voice call not answered": ["Llamada sin respuesta", "Chamada não atendida", "语音呼叫未应答", "音声通話に応答しませんでした"],
   "Voice call": ["Llamada de voz", "Chamada de voz", "语音通话", "音声通話"],
+  "This call continued on another device.": ["Esta llamada siguió en otro dispositivo.", "Esta chamada continuou em outro dispositivo.", "此通话已在另一台设备上继续。", "この通話は別のデバイスで続行されました。"],
   "New private message": ["Nuevo mensaje privado", "Nova mensagem privada", "新私人消息", "新しいプライベート メッセージ"],
   "Sent a picture": ["Envió una imagen", "Enviou uma imagem", "发送了一张图片", "画像を送信しました"],
   "Invited you to a voice channel": ["Te invitó a un canal de voz", "Convidou você para um canal de voz", "邀请你加入语音频道", "ボイスチャンネルに招待されました"],

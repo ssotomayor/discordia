@@ -675,6 +675,10 @@ struct LastConnect {
 }
 
 /// Leaves the state alone when nothing changes, since a write wakes every reader.
+/// Counts the voice rooms this process has dialled, so a room can tell whether a later
+/// one of ours exists when the SFU drops it as a duplicate.
+static ROOMS_DIALLED: AtomicU64 = AtomicU64::new(0);
+
 fn voice_event(mut state: Signal<AppState>, event: VoiceEvent) -> bool {
     if !state.peek().voice.would_change(&event) {
         return false;
@@ -975,6 +979,7 @@ impl ActiveVoice {
         // yellow and the return to green does not wait on anything else.
         let alive = Arc::new(AtomicBool::new(true));
         let (room_tx, mut room_rx) = tokio::sync::mpsc::unbounded_channel::<RoomSignal>();
+        let room_number = ROOMS_DIALLED.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut state = state;
             crate::service_task::spawn(async move {
@@ -982,11 +987,24 @@ impl ActiveVoice {
                     let event = match signal {
                         RoomSignal::Reconnecting => VoiceEvent::RoomReconnecting(channel_id),
                         RoomSignal::Reconnected => VoiceEvent::RoomReconnected(channel_id),
-                        // The server took us out (a move, a kick, another device); its echo says what follows.
+                        // The SFU seats one connection per identity. A room of ours dialled since
+                        // replaced this one itself; otherwise another device joined as us.
+                        RoomSignal::Lost(livekit::DisconnectReason::DuplicateIdentity) => {
+                            let replaced = ROOMS_DIALLED.load(Ordering::Relaxed) != room_number;
+                            if !replaced && state.peek().voice.holds_room(channel_id) {
+                                let mut s = state.write();
+                                s.end_voice_locally();
+                                s.error_toast = Some(crate::i18n::text(
+                                    "This call continued on another device.",
+                                    &[],
+                                ));
+                            }
+                            continue;
+                        }
+                        // The server took us out (a move, a kick); its echo says what follows.
                         RoomSignal::Lost(
                             livekit::DisconnectReason::ParticipantRemoved
-                            | livekit::DisconnectReason::RoomDeleted
-                            | livekit::DisconnectReason::DuplicateIdentity,
+                            | livekit::DisconnectReason::RoomDeleted,
                         ) => continue,
                         RoomSignal::Lost(reason) => VoiceEvent::RoomLost {
                             channel: channel_id,

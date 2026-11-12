@@ -155,6 +155,12 @@ impl VoiceSession {
         }
     }
 
+    /// Whether this client's room for `channel` is the call: a room lost while dialling
+    /// or restarting was never, or is no longer, the one in use.
+    pub fn holds_room(&self, channel: Id) -> bool {
+        matches!(self.call, CallState::Connected(c) | CallState::Reconnecting(c) if c == channel)
+    }
+
     /// The banner's line: why the call failed, else which device is missing.
     pub fn error(&self) -> Option<&str> {
         match &self.call {
@@ -400,6 +406,26 @@ mod tests {
         VoiceEvent::Failed {
             channel,
             error: "failed".into(),
+        }
+    }
+
+    #[test]
+    fn only_a_room_in_use_can_be_taken_by_another_device() {
+        let (here, other) = (Id::from_u128(1), Id::from_u128(2));
+        for (call, expected) in [
+            (CallState::Connected(here), true),
+            (CallState::Reconnecting(here), true),
+            (CallState::Connected(other), false),
+            (CallState::Dialing(here), false),
+            (CallState::Restarting(here), false),
+            (CallState::Idle, false),
+            (CallState::Failed("x".into()), false),
+        ] {
+            let session = VoiceSession {
+                call: call.clone(),
+                ..VoiceSession::default()
+            };
+            assert_eq!(session.holds_room(here), expected, "{call:?}");
         }
     }
 
