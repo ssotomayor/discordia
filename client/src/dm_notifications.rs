@@ -241,7 +241,7 @@ mod native {
     ) {
         events().send_modify(|state| state.resumed = resumed != 0);
         if resumed != 0 {
-            crate::android::wake_nostr();
+            crate::android::note_resume();
         }
     }
 

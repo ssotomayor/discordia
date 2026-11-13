@@ -2476,6 +2476,7 @@ dependencies = [
  "iroh",
  "jni 0.21.1",
  "keyring",
+ "libc",
  "libwebrtc",
  "livekit",
  "livekit-api",

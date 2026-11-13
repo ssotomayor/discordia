@@ -11,6 +11,10 @@ use url::Url;
 #[cfg(any(target_os = "android", test))]
 mod background_socket;
 mod link;
+mod wake;
+
+#[cfg(target_os = "android")]
+pub(crate) use background_socket::say_goodbye;
 
 use link::{Event, Link};
 
@@ -429,11 +433,24 @@ async fn run(
         .as_ref()
         .and_then(HostHandle::connection_monitor);
     let mut link = Link::Resolving.step(Event::Resolved);
+    let mut resumes = wake::Resumes::subscribe();
     loop {
         publish(&mut state, link);
-        let connected = tokio::select! {
-            _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
-            connected = connect_gateway(&dial) => connected,
+        let connected = 'dial: loop {
+            let began = wake::now();
+            let attempt = connect_gateway(&dial);
+            tokio::pin!(attempt);
+            loop {
+                tokio::select! {
+                    _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
+                    connected = &mut attempt => break 'dial connected,
+                    // An attempt the phone slept through is waiting on a handshake nobody remembers.
+                    _ = resumes.next() => if wake::overdue(wake::now, began, QUIC_ATTEMPT) {
+                        tracing::info!("gateway dial outlived its deadline asleep; dialing again");
+                        continue 'dial;
+                    },
+                }
+            }
         };
         let outcome = match connected {
             Ok((socket, transport, origin)) => {
@@ -533,6 +550,8 @@ async fn run(
             tokio::select! {
                 _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
                 _ = tokio::time::sleep_until(until) => break,
+                // Someone is looking at the screen again: the wait has no one left to spare.
+                _ = resumes.next() => break,
                 command = rx.recv() => {
                     let Some(command) = command else { return Ok(()); };
                     if matches!(command, ClientMessage::SendMessage { .. }) {
@@ -2270,7 +2289,9 @@ fn apply(
                     s.media_undecryptable = false;
                 }
                 crate::mediakey::Verdict::Answer => {
-                    let Some(ours) = held else { return };
+                    let Some(ours) = held.filter(|_| s.shares_keys_for(channel_id)) else {
+                        return;
+                    };
                     tracing::info!(%from, epoch, ours = ours.0, "answering a losing media key with ours");
                     match crate::mediakey::seal(&ours.1, &from, ours.0, &identity) {
                         Ok(blob) => {
@@ -2290,6 +2311,8 @@ fn apply(
         ServerMessage::VoiceStateUpdate(vs) => {
             if vs.channel_id.is_none() {
                 s.peer_routes.remove(&vs.user_pubkey);
+                crate::mediakey::forget_member(&vs.user_pubkey);
+                s.voice_turnover = s.voice_turnover.wrapping_add(1);
             }
             let mut vs = vs;
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
@@ -2652,6 +2675,86 @@ mod tests {
                         .as_deref(),
                     Some("Updated name")
                 );
+            });
+            rsx! {}
+        }
+        VirtualDom::new(harness).rebuild_in_place();
+    }
+
+    /// Two devices of one account read the same voice state, and the server relays
+    /// keys only for the one holding the call: the other's sends reach nobody.
+    #[test]
+    fn only_the_device_in_the_call_answers_a_key_and_a_leave_makes_it_owed_again() {
+        fn harness() -> Element {
+            let mut state = use_signal(AppState::empty);
+            use_hook(move || {
+                let (channel, guild) = (Id::new_v4(), Id::new_v4());
+                let me = crate::identity::Identity::restore_from_private_key("11".repeat(32), "me")
+                    .expect("identity");
+                let peer =
+                    crate::identity::Identity::restore_from_private_key("22".repeat(32), "peer")
+                        .expect("identity");
+                let in_call = |pubkey: &str, channel_id| crate::protocol::VoiceState {
+                    user_pubkey: pubkey.to_string(),
+                    guild_id: guild,
+                    channel_id,
+                    muted: false,
+                    deafened: false,
+                    speaking: false,
+                    camera_on: false,
+                    screen_sharing: false,
+                    screen_watching: Vec::new(),
+                    camera_watching: Vec::new(),
+                };
+                let ours = (2, [1; crate::mediakey::KEY_LEN]);
+                {
+                    let mut s = state.write();
+                    s.self_user = Some(crate::protocol::User {
+                        pubkey: me.pubkey.clone(),
+                        username: "me".into(),
+                    });
+                    s.identity = Some(me.clone());
+                    s.voice_states = vec![
+                        in_call(&me.pubkey, Some(channel)),
+                        in_call(&peer.pubkey, Some(channel)),
+                    ];
+                    s.media_key = crate::mediakey::CallKey::force(channel, ours);
+                }
+                let (tx, mut sent) = unbounded_channel();
+                let (voice_tx, _native) = unbounded_channel();
+                let losing = || ServerMessage::MediaKey {
+                    channel_id: channel,
+                    from: peer.pubkey.clone(),
+                    epoch: 1,
+                    blob: crate::mediakey::seal(&[9; 32], &me.pubkey, 1, &peer).unwrap(),
+                };
+
+                assert_eq!(state.peek().key_channel(), Some(channel));
+                apply(&mut state, losing(), &tx, &voice_tx);
+                assert!(
+                    sent.try_recv().is_err(),
+                    "the account's other device holds the call"
+                );
+                assert!(crate::mediakey::owes(channel, &peer.pubkey, ours));
+
+                state
+                    .write()
+                    .voice
+                    .force(crate::voice_session::CallState::Connected(channel));
+                apply(&mut state, losing(), &tx, &voice_tx);
+                assert!(matches!(
+                    sent.try_recv().unwrap(),
+                    ClientMessage::ShareMediaKey { to, epoch: 2, .. } if to == peer.pubkey
+                ));
+                assert!(!crate::mediakey::owes(channel, &peer.pubkey, ours));
+
+                // Their leave and return can be applied before anyone looks at the roster.
+                let update =
+                    |channel_id| ServerMessage::VoiceStateUpdate(in_call(&peer.pubkey, channel_id));
+                apply(&mut state, update(None), &tx, &voice_tx);
+                apply(&mut state, update(Some(channel)), &tx, &voice_tx);
+                assert!(crate::mediakey::owes(channel, &peer.pubkey, ours));
+                assert_eq!(state.peek().voice_turnover, 1);
             });
             rsx! {}
         }

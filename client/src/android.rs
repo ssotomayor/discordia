@@ -23,6 +23,31 @@ static PERMISSION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 static DOCUMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static NETWORK_CHANGES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
 static NOSTR_WAKEUPS: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+static RESUMES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+
+fn resume_sender() -> &'static tokio::sync::watch::Sender<u64> {
+    RESUMES.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+/// The Activity coming back to the foreground, which is when a session that
+/// slept is first looked at again.
+pub(crate) fn resumes() -> tokio::sync::watch::Receiver<u64> {
+    resume_sender().subscribe()
+}
+
+pub(crate) fn note_resume() {
+    resume_sender().send_modify(|revision| *revision = revision.wrapping_add(1));
+    wake_nostr();
+}
+
+/// Kotlin calls this on its way to `killProcess`, from the UI thread.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_dioxus_main_MainActivity_onProcessEnding(
+    _env: JNIEnv,
+    _activity: JObject,
+) {
+    crate::net::say_goodbye(Duration::from_millis(400));
+}
 
 pub(crate) fn nostr_wakeups() -> tokio::sync::watch::Receiver<u64> {
     NOSTR_WAKEUPS

@@ -508,6 +508,9 @@ pub struct AppState {
     pub stream_has_audio: crate::stream_audio::Presence,
     pub media_undecryptable: bool,
     pub pending_rekey: bool,
+    /// Counts departures from any call. A leave and a rejoin applied in one poll leave
+    /// the roster as it was, and the member is owed the media key all the same.
+    pub voice_turnover: u64,
     pub identity: Option<crate::identity::Identity>,
     pub media_key: crate::mediakey::CallKey,
     pub host_info: Option<HostInfo>,
@@ -722,6 +725,7 @@ impl AppState {
             stream_has_audio: crate::stream_audio::Presence::default(),
             media_undecryptable: false,
             pending_rekey: false,
+            voice_turnover: 0,
             identity: None,
             media_key: Default::default(),
             host_info: None,
@@ -943,6 +947,7 @@ impl AppState {
             stream_has_audio,
             media_undecryptable,
             pending_rekey,
+            voice_turnover,
             host_info,
             transport,
             integrations,
@@ -1132,6 +1137,7 @@ impl AppState {
         *stream_has_audio = Default::default();
         *media_undecryptable = false;
         *pending_rekey = false;
+        *voice_turnover = 0;
         *host_info = None;
         *transport = Transport::Loopback;
         integrations.clear();
@@ -3032,6 +3038,7 @@ mod tests {
                 stream_has_audio = presence => |v| !v.contains(peer);
                 media_undecryptable = true => |v| !*v;
                 pending_rekey = true => |v| !*v;
+                voice_turnover = 3 => |v| *v == 0;
                 host_info = Some(HostInfo {
                     offered_routes: Vec::new(),
                     connections: Vec::new(),

@@ -219,6 +219,12 @@ impl crate::state::AppState {
         crate::e2ee::clear_key();
     }
 
+    /// Whether this client is the one in that call. `key_channel` cannot say: another
+    /// device of the account reads the same voice state, and its keys would be relayed nowhere.
+    pub fn shares_keys_for(&self, channel: Id) -> bool {
+        self.voice.channel_id() == Some(channel)
+    }
+
     /// True once the held key belongs to a call we are no longer in.
     pub fn media_key_is_stale(&self) -> bool {
         self.media_key
@@ -252,6 +258,11 @@ pub(crate) fn note_sent(channel: Id, to: &str, key: Held) {
     mark_sent(sent, channel, to, key);
 }
 
+#[cfg(test)]
+pub(crate) fn owes(channel: Id, to: &str, key: Held) -> bool {
+    needs_send(channel, to, key)
+}
+
 fn should_send(sent: &Ledger, channel: Id, to: &str, key: Held) -> bool {
     sent.get(&(channel, to.to_string())) != Some(&key)
 }
@@ -272,6 +283,18 @@ fn forget_other_channels(sent: &mut Ledger, channel: Id) -> usize {
     let before = sent.len();
     sent.retain(|(ch, _), _| *ch == channel);
     before - sent.len()
+}
+
+/// A member who left may come back before the roster is looked at again.
+pub(crate) fn forget_member(pubkey: &str) {
+    let mut guard = SENT.lock().expect("media key ledger");
+    if let Some(sent) = guard.as_mut() {
+        sent.retain(|(_, to), _| to != pubkey);
+    }
+}
+
+fn forget_everyone() {
+    *SENT.lock().expect("media key ledger") = None;
 }
 
 fn forget_absent_now(channel: Id, present: &[String]) -> usize {
@@ -314,14 +337,25 @@ pub fn MediaKeyBridge() -> Element {
         let channel = s.key_channel()?;
         let mut present = present_in(&s, channel);
         present.sort();
-        Some((channel, present))
+        Some((
+            channel,
+            present,
+            s.shares_keys_for(channel),
+            s.voice_turnover,
+        ))
     });
 
     let send = gateway.clone();
     use_effect(move || {
-        let Some((channel, present)) = roster() else {
+        let Some((channel, present, in_call, _turnover)) = roster() else {
+            forget_everyone();
             return;
         };
+        // What was sent before this client held the call was relayed to no one.
+        if !in_call {
+            forget_everyone();
+            return;
+        }
         let (identity, me, held) = {
             let s = state.read();
             (
@@ -386,9 +420,13 @@ pub fn MediaKeyBridge() -> Element {
                 spawn(async move {
                     if !alone {
                         tokio::time::sleep(KEY_WAIT).await;
-                        if state.peek().media_key.held_for(channel).is_some() {
+                        let now = state.peek();
+                        if now.media_key.held_for(channel).is_some()
+                            || !now.shares_keys_for(channel)
+                        {
                             return;
                         }
+                        drop(now);
                         tracing::info!(
                             %channel,
                             "no key arrived while waiting — making one rather than waiting longer"
@@ -432,7 +470,7 @@ pub fn rekey_after_removal(
 ) {
     let (channel, identity, me, epoch) = {
         let s = state.read();
-        let Some(channel) = s.key_channel() else {
+        let Some(channel) = s.key_channel().filter(|c| s.shares_keys_for(*c)) else {
             return;
         };
         let Some(identity) = s.identity.clone() else {

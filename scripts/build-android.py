@@ -32,6 +32,7 @@ REQUIRED_SYMBOLS = {
     "Java_livekit_org_webrtc_SoftwareVideoDecoderFactory_nativeCreateFactory",
     "Java_dev_dioxus_main_MainActivity_initializeWebRtc",
     "Java_dev_dioxus_main_MainActivity_onNetworkChanged",
+    "Java_dev_dioxus_main_MainActivity_onProcessEnding",
     "Java_dev_dioxus_main_MainActivity_onVideoFrame",
     "Java_dev_dioxus_main_MainActivity_onCaptureStopped",
     "Java_dev_dioxus_main_MainActivity_shouldCaptureVideoFrame",
