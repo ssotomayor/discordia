@@ -14,6 +14,11 @@ pub fn TextMenu() -> Element {
             "cut": crate::i18n::text("Cut", &[]),
             "paste": crate::i18n::text("Paste", &[]),
             "all": crate::i18n::text("Select all", &[]),
+            "b": crate::i18n::text("Bold", &[]),
+            "i": crate::i18n::text("Italic", &[]),
+            "u": crate::i18n::text("Underline", &[]),
+            "s": crate::i18n::text("Strikethrough", &[]),
+            "spoiler": crate::i18n::text("Spoiler", &[]),
             "error": crate::i18n::text("Could not access the clipboard.", &[]),
         });
         document::eval(&format!("window.__dxfTextMenuLabels = {labels};"));

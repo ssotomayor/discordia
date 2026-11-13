@@ -265,7 +265,13 @@ fn load_attachment(
     mut pending: Signal<Option<PendingImage>>,
     mut error: Signal<Option<String>>,
     mut generation: Signal<u64>,
+    mut loading: Signal<bool>,
 ) {
+    // A held Ctrl+V asks thirty times a second, and each read holds the picture twice over.
+    if *loading.peek() {
+        return;
+    }
+    loading.set(true);
     let request = generation.peek().wrapping_add(1);
     generation.set(request);
     spawn(async move {
@@ -283,6 +289,7 @@ fn load_attachment(
             Ok::<_, String>((url, preview))
         })
         .await;
+        loading.set(false);
         if *generation.peek() != request {
             return;
         }
@@ -302,6 +309,7 @@ fn pick_image(
     mut pending_file: Signal<Option<(String, String)>>,
     mut error: Signal<Option<String>>,
     mut generation: Signal<u64>,
+    mut loading: Signal<bool>,
 ) {
     let request = generation.peek().wrapping_add(1);
     generation.set(request);
@@ -324,12 +332,14 @@ fn pick_image(
         let name = file
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
+        loading.set(true);
         let result = tokio::task::spawn_blocking(move || {
             let url = crate::chat_image::read_file_with_limit(&file, max_bytes)?;
             let preview = crate::chat_image::preview_data_url(&url).ok().flatten();
             Ok::<_, String>((url, preview))
         })
         .await;
+        loading.set(false);
         if *generation.peek() != request {
             return;
         }
@@ -1198,7 +1208,7 @@ pub(super) fn MessageRow(
                         "@"
                         {state.read().display_name_or(&q.author_pubkey, &q.author_username)}
                     }
-                    span { class: "dxf-reply-excerpt truncate text-[var(--text-muted)]", "{q.excerpt}" }
+                    span { class: "dxf-reply-excerpt truncate text-[var(--text-muted)]", {super::markup::plain(&q.excerpt)} }
                 }
             }
         }
@@ -2212,10 +2222,16 @@ return (async function () {
     if (kept === true) message.kept = true;
     dioxus.send(message);
   };
+  let selecting = false;
   const remember = () => {
     const el = find();
     const r = el && caretIn(el);
     if (r) saved = r.cloneRange();
+    const sel = window.getSelection();
+    const now = !!(r && sel && !sel.isCollapsed);
+    if (now === selecting || !alive) return;
+    selecting = now;
+    dioxus.send({ k: 'selection', on: now });
   };
   const restore = (el) => {
     el.focus();
@@ -2272,6 +2288,7 @@ return (async function () {
     report();
   };
   const MARKS = { b: '**', i: '*', u: '__' };
+  const FORMATS = { ...MARKS, s: '~~', spoiler: '||' };
   const api = {
     insertText: (text, replaceToken) => insert([document.createTextNode(text)], replaceToken),
     insertEmoji: (code, url, replaceToken, space) => {
@@ -2287,6 +2304,13 @@ return (async function () {
     clear: () => { const el = find(); if (el) { el.innerHTML = ''; saved = null; report(); } },
     suggest: (on) => { suggesting = !!on; },
     focus: () => { const el = find(); if (el) restore(el); },
+    // A toolbar or a menu took the selection with the focus; `restore` puts back the last one here.
+    format: (kind) => {
+      const el = find();
+      if (!el || !FORMATS[kind]) return;
+      if (!caretIn(el)) restore(el);
+      wrap(FORMATS[kind]);
+    },
     off: (gen) => {
       if (gen && gen !== mine) return;
       alive = false;
@@ -2347,6 +2371,21 @@ fn composer_call(id: &str, method: &str, args: &[Value]) {
         Value::String(id.to_string()),
         args.join(",")
     ));
+}
+
+/// Cancels `mousedown`: a button that takes focus takes the selection it is meant to wrap.
+#[component]
+fn FormatButton(composer: String, kind: &'static str, title: String, children: Element) -> Element {
+    rsx! {
+        button {
+            r#type: "button",
+            title: "{title}",
+            aria_label: "{title}",
+            onmousedown: move |e| e.prevent_default(),
+            onclick: move |_| composer_call(&composer, "format", &[Value::String(kind.into())]),
+            {children}
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2968,6 +3007,12 @@ fn Composer(
     }
 
     let mut generation = use_signal(|| 0_u64);
+    let loading_image = use_signal(|| false);
+    let mut show_format = use_signal(|| false);
+    let mut selecting = use_signal(|| false);
+    // A phone's row has no room for another button, so there the bar comes with a selection.
+    let format_bar =
+        show_format() || (cfg!(any(target_os = "android", target_os = "ios")) && selecting());
     use_effect(move || {
         if let Some(dropped) = dropped_file() {
             dropped_file.set(None);
@@ -2977,6 +3022,7 @@ fn Composer(
                 pending_image,
                 attach_err,
                 generation,
+                loading_image,
             );
         }
     });
@@ -2990,6 +3036,7 @@ fn Composer(
                     pending_image,
                     attach_err,
                     generation,
+                    loading_image,
                 );
             }
         }
@@ -3439,6 +3486,9 @@ fn Composer(
                             }
                         }
                         Some("dismiss") => caret_token.set(None),
+                        Some("selection") => {
+                            selecting.set(msg.get("on").and_then(Value::as_bool).unwrap_or(false));
+                        }
                         _ => {}
                     }
                 }
@@ -3454,7 +3504,7 @@ fn Composer(
                     span { class: "shrink-0 text-[var(--text-dim)] opacity-60", "↩" }
                     span { class: "shrink-0 text-[var(--text-muted)]", {crate::i18n::text("Replying to", &[])} }
                     span { class: "shrink-0 font-medium text-[var(--accent)]", {state.read().display_name_or(&r.author_pubkey, &r.author_username)} }
-                    span { class: "truncate text-[var(--text-dim)]", "{r.excerpt}" }
+                    span { class: "truncate text-[var(--text-dim)]", {super::markup::plain(&r.excerpt)} }
                     button {
                         class: "ml-auto shrink-0 w-5 h-5 rounded text-[var(--text-dim)] hover:text-[var(--danger)] leading-none transition-colors",
                         title: crate::i18n::text("Cancel reply", &[]),
@@ -3526,6 +3576,21 @@ fn Composer(
                 }
             }
 
+            if format_bar {
+                div { class: "dxf-format-bar", role: "toolbar", aria_label: crate::i18n::text("Text formatting", &[]),
+                    FormatButton { composer: composer_id.clone(), kind: "b", title: crate::i18n::text("Bold", &[]), b { "B" } }
+                    FormatButton { composer: composer_id.clone(), kind: "i", title: crate::i18n::text("Italic", &[]), i { "I" } }
+                    FormatButton { composer: composer_id.clone(), kind: "u", title: crate::i18n::text("Underline", &[]), u { "U" } }
+                    FormatButton { composer: composer_id.clone(), kind: "s", title: crate::i18n::text("Strikethrough", &[]), s { "S" } }
+                    FormatButton { composer: composer_id.clone(), kind: "spoiler", title: crate::i18n::text("Spoiler: hidden until pressed", &[]), {crate::i18n::text("Spoiler", &[])} }
+                }
+            }
+            if loading_image() {
+                div { class: "mb-2 flex items-center text-[11px] text-[var(--text-dim)]", role: "status",
+                    span { class: "dx-spinner" }
+                    {crate::i18n::text("Reading the picture…", &[])}
+                }
+            }
             if let Some(img) = pending_image() {
                 div { class: "mb-2 flex items-center gap-2",
                     button {
@@ -3599,7 +3664,7 @@ fn Composer(
                                     class: "w-full flex items-center gap-2 px-2 h-8 rounded text-left text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)] cursor-pointer",
                                     onclick: move |_| {
                                         show_attach.set(false);
-                                        pick_image(upload_limit(&state.peek(), channel_id), pending_image, pending_file, attach_err, generation);
+                                        pick_image(upload_limit(&state.peek(), channel_id), pending_image, pending_file, attach_err, generation, loading_image);
                                     },
                                     span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::IMAGE }
                                     {crate::i18n::text("Image", &[])}
@@ -3637,6 +3702,23 @@ fn Composer(
                         aria_activedescendant: has_suggestions().then(|| format!("dxf-suggestion-{channel_id}-{}", selected() % suggestions.len().max(1))),
                         aria_multiline: "true",
                         aria_label: crate::i18n::text("Message {0}", &[(composer_label).to_string()]),
+                    }
+
+                    if !cfg!(any(target_os = "android", target_os = "ios")) {
+                        button {
+                            r#type: "button",
+                            class: if show_format() {
+                                "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+                            } else {
+                                "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                            },
+                            title: crate::i18n::text("Text formatting", &[]),
+                            aria_label: crate::i18n::text("Text formatting", &[]),
+                            aria_pressed: show_format(),
+                            onmousedown: move |e| e.prevent_default(),
+                            onclick: move |_| show_format.toggle(),
+                            span { class: "block w-4 h-4", dangerous_inner_html: super::icons::TYPE }
+                        }
                     }
 
                     button {

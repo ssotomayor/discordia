@@ -160,6 +160,26 @@ return (async function () {
     for (const button of actions.filter(button => ['bookmark', 'pin', 'edit'].includes(button.dataset.contextAction))) messageAction(button);
     const remove = actions.find(button => button.dataset.contextAction === 'delete');
     if (remove) { separator(); messageAction(remove); }
+    // Only the chat composer wraps a selection in marks; any other field is plain text.
+    const composer = field && !field.readOnly && text && window.__dxfComposers && window.__dxfComposers[field.id];
+    function format(kind, shortcut) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.setAttribute('role', 'menuitem');
+      const label = document.createElement('span'); label.textContent = labels[kind]; button.append(label);
+      if (shortcut) { const kbd = document.createElement('kbd'); kbd.textContent = modifier + shortcut; button.append(kbd); }
+      button.addEventListener('mousedown', event => event.preventDefault());
+      button.addEventListener('click', () => {
+        const restored = restore(c);
+        close(); context = null;
+        if (restored) composer.format(kind);
+      });
+      menu.append(button);
+    }
+    if (composer) {
+      separator();
+      format('b', 'B'); format('i', 'I'); format('u', 'U'); format('s'); format('spoiler');
+      separator();
+    }
     if (field) {
       if (!field.readOnly) {
         if (text) item('cut', 'X');

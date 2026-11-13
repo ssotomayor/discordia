@@ -37,6 +37,8 @@ pub(crate) fn dm_alert_text(
     }
     let invited = crate::features::parse_voice_invite(content).is_some();
     let content = crate::features::strip_voice_invite(content);
+    // An alert cannot ask before showing, so a spoiler never reaches one.
+    let content = crate::features::markup::plain(&content);
     let cleaned: String = content
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })

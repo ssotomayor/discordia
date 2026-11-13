@@ -39,6 +39,16 @@ const mutations = [
     to: "if (false) out += '\\n';",
   },
   {
+    name: 'format-wraps-anything-asked', test: composer,
+    from: 'if (!el || !FORMATS[kind]) return;',
+    to: 'if (!el) return;',
+  },
+  {
+    name: 'selection-reported-on-every-change', test: composer,
+    from: 'if (now === selecting || !alive) return;',
+    to: 'if (!alive) return;',
+  },
+  {
     name: 'kept-draft-overwrites-typing', test: composer,
     from: "if (field && field.innerHTML === '') {",
     to: 'if (field) {',
