@@ -1215,6 +1215,7 @@ pub fn App() -> Element {
                         on_sign_out: move |_| {
                             let _ = crate::identity::sign_out();
                             let _ = session::clear();
+                            crate::left_off::clear();
                             session.set(None);
                             identity.set(None);
                             if *exit.peek() == Exit::Staying {

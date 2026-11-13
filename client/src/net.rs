@@ -1672,6 +1672,9 @@ fn apply_ready(
     if let Some(join_msg) = s.resume_voice_invite(None) {
         let _ = tx.send(join_msg);
     }
+    if let Some(join_msg) = s.rejoin_left_call(chrono::Utc::now().timestamp_millis()) {
+        let _ = tx.send(join_msg);
+    }
 }
 
 fn apply(
@@ -3083,6 +3086,64 @@ mod tests {
         }
         let mut dom = VirtualDom::new(harness);
         dom.rebuild_checked();
+    }
+
+    #[test]
+    fn the_first_ready_after_a_restart_rejoins_the_call_it_cut() {
+        let voice = crate::protocol::Channel {
+            id: Id::new_v4(),
+            guild_id: Id::new_v4(),
+            name: "voice".into(),
+            kind: crate::protocol::ChannelKind::Voice,
+            topic: None,
+            read_only: false,
+            slowmode_secs: 0,
+            position: 0,
+            access: None,
+            divider: Default::default(),
+            markdown: false,
+        };
+        let ready = ServerMessage::Ready {
+            chat_tools: false,
+            image_previews: false,
+            progressive_image_uploads: false,
+            user: crate::protocol::User {
+                pubkey: "ab".repeat(32),
+                username: "Alice".into(),
+            },
+            guilds: vec![],
+            channels: vec![voice.clone()],
+            members: vec![],
+            voice_states: vec![],
+            catalog: vec![],
+            profiles: vec![],
+            roles: vec![],
+            emojis: vec![],
+            sounds: vec![],
+            activities: vec![],
+            bot_commands: vec![],
+            operator: false,
+            default_guild: None,
+            server: Default::default(),
+            latest_messages: Default::default(),
+        };
+        let mut state = AppState::empty();
+        state.rejoin_voice_on_ready = Some(crate::left_off::Rejoin {
+            call: crate::left_off::Call {
+                channel: voice.id,
+                muted: false,
+                deafened: true,
+            },
+            left_at_ms: chrono::Utc::now().timestamp_millis(),
+        });
+        let (tx, mut commands) = unbounded_channel();
+        let (voice_tx, _voice_rx) = unbounded_channel();
+        apply_ready(&mut state, ready.clone(), false, &tx, &voice_tx);
+        assert!(
+            matches!(commands.try_recv(), Ok(ClientMessage::JoinVoice { channel_id, preferences: Some(p) }) if channel_id == voice.id && p.deafened)
+        );
+        apply_ready(&mut state, ready, true, &tx, &voice_tx);
+        assert!(commands.try_recv().is_err(), "a later Ready asks nothing");
     }
 
     fn share(addrs: &str) -> String {
