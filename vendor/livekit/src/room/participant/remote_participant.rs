@@ -31,6 +31,8 @@ use super::{
 use crate::{prelude::*, rtc_engine::RtcEngine, track::TrackError};
 
 const ADD_TRACK_TIMEOUT: Duration = Duration::from_secs(5);
+// Long enough for the SFU to renegotiate a resubscribe it did not merge with the unsubscribe.
+const RESUBSCRIBE_GRACE: Duration = Duration::from_secs(1);
 
 type TrackPublishedHandler = Box<dyn Fn(RemoteParticipant, RemoteTrackPublication) + Send>;
 type TrackUnpublishedHandler = Box<dyn Fn(RemoteParticipant, RemoteTrackPublication) + Send>;
@@ -358,26 +360,37 @@ impl RemoteParticipant {
         publication.on_subscription_update_needed({
             let rtc_engine = self.inner.rtc_engine.clone();
             let psid = self.sid();
-            move |publication, subscribed| {
+            // One task per call let an unsubscribe overtake the resubscribe after it.
+            let (updates, mut queue) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn({
                 let rtc_engine = rtc_engine.clone();
-                let psid = psid.clone();
-                tokio::spawn(async move {
-                    let tsid: String = publication.sid().into();
-                    let update_subscription = proto::UpdateSubscription {
+                async move {
+                    while let Some(update) = queue.recv().await {
+                        rtc_engine
+                            .send_request(proto::signal_request::Message::Subscription(update))
+                            .await;
+                    }
+                }
+            });
+            move |publication, subscribed| {
+                let tsid: String = publication.sid().into();
+                let _ = updates.send(proto::UpdateSubscription {
+                    track_sids: vec![tsid.clone()],
+                    subscribe: subscribed,
+                    participant_tracks: vec![proto::ParticipantTracks {
+                        participant_sid: psid.clone().into(),
                         track_sids: vec![tsid.clone()],
-                        subscribe: subscribed,
-                        participant_tracks: vec![proto::ParticipantTracks {
-                            participant_sid: psid.into(),
-                            track_sids: vec![tsid],
-                        }],
-                    };
-
-                    let _ = rtc_engine
-                        .send_request(proto::signal_request::Message::Subscription(
-                            update_subscription,
-                        ))
-                        .await;
+                    }],
                 });
+                if subscribed && publication.track().is_none() {
+                    let rtc_engine = rtc_engine.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(RESUBSCRIBE_GRACE).await;
+                        if publication.is_desired() && publication.track().is_none() {
+                            rtc_engine.session().redispatch_track(&tsid);
+                        }
+                    });
+                }
             }
         });
 
