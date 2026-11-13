@@ -11,6 +11,7 @@ use url::Url;
 #[cfg(any(target_os = "android", test))]
 mod background_socket;
 mod link;
+mod sent;
 mod wake;
 
 #[cfg(target_os = "android")]
@@ -776,6 +777,7 @@ where
     let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
     let mut host_route_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut last_received = tokio::time::Instant::now();
+    let mut sent = sent::SentLately::default();
     let media_updates = state.peek().emoji_images.updates();
     loop {
         watch.finish("session");
@@ -829,6 +831,7 @@ where
                 gateway_diagnostic(format_args!("outbound op={} bytes={}", op_of(&json), json.len()));
                 watch.begin(format!("send {}", op_of(&json)));
                 let operation = op_of(&json).to_string();
+                sent.note(&operation, std::time::Instant::now());
                 gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), &operation).await?;
             }
             _ = media_tick.tick() => {
@@ -873,6 +876,25 @@ where
                         tracing::warn!(err = %e, "bad server frame");
                         continue;
                     }
+                };
+                let parsed = match parsed {
+                    ServerMessage::Error { message } => {
+                        let mut lately = sent.summary(std::time::Instant::now());
+                        if !lately.is_empty() {
+                            let s = state.peek();
+                            // A count that climbs between two refusals is a session that keeps being lost.
+                            lately = format!("{lately}; ready ×{}", s.readies);
+                            // Every blob request comes from the media cache, so its state says why.
+                            if lately.contains("Fetch") {
+                                lately = format!("{lately}; {}, {} awaited", s.emoji_images.report(), s.emoji_requested.len());
+                            }
+                        }
+                        if message.starts_with("rate limited") {
+                            tracing::warn!(%message, sent = %lately, "the server refused this session for rate");
+                        }
+                        ServerMessage::Error { message: sent::explain(message, &lately) }
+                    }
+                    other => other,
                 };
                 apply(&mut state, parsed, tx, voice_tx);
             }

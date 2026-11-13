@@ -70,6 +70,9 @@ pub struct MediaCache {
     byte_budget: usize,
     clock: Arc<AtomicU64>,
     updates: Arc<Updates>,
+    // Counted for `report`: a picture that keeps reloading was evicted, cleared or asked for twice.
+    evicted: Arc<AtomicU64>,
+    cleared: Arc<AtomicU64>,
 }
 
 impl Default for MediaCache {
@@ -85,6 +88,8 @@ impl MediaCache {
             bytes: 0,
             byte_budget,
             clock: Arc::new(AtomicU64::new(0)),
+            evicted: Arc::default(),
+            cleared: Arc::default(),
             updates: Arc::new(Updates {
                 ready: Notify::new(),
                 work: Mutex::default(),
@@ -120,7 +125,16 @@ impl MediaCache {
             .map(|entry| Arc::clone(&entry.data))
     }
 
+    #[track_caller]
     pub fn clear(&mut self) {
+        if !self.entries.is_empty() {
+            self.cleared.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                entries = self.entries.len(),
+                by = %std::panic::Location::caller(),
+                "media cache cleared"
+            );
+        }
         self.entries.clear();
         self.bytes = 0;
         let mut work = self.updates.work.lock();
@@ -172,6 +186,7 @@ impl MediaCache {
             let Some(oldest) = oldest else { break };
             if let Some(entry) = self.entries.remove(&oldest) {
                 self.bytes -= entry.data.len();
+                self.evicted.fetch_add(1, Ordering::Relaxed);
             }
         }
         {
@@ -188,6 +203,19 @@ impl MediaCache {
                 touched: Arc::new(AtomicU64::new(self.clock.fetch_add(1, Ordering::Relaxed))),
             },
         );
+    }
+
+    /// One line for a diagnostic: how full it is and how often it had to give something up.
+    pub(crate) fn report(&self) -> String {
+        const MIB: usize = 1024 * 1024;
+        format!(
+            "cache {} entries {}/{} MiB, {} evicted, {} clears",
+            self.entries.len(),
+            self.bytes / MIB,
+            self.byte_budget / MIB,
+            self.evicted.load(Ordering::Relaxed),
+            self.cleared.load(Ordering::Relaxed),
+        )
     }
 
     pub(crate) fn updates(&self) -> Arc<Updates> {
@@ -325,6 +353,24 @@ mod tests {
         assert_eq!(cache.bytes, 8);
         assert!(cache.is_original("preview-v2:animated"));
         assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn the_report_counts_what_the_cache_gave_up() {
+        let mut cache = MediaCache::with_budget(8);
+        cache.insert("a".into(), "1234".into());
+        cache.insert("b".into(), "5678".into());
+        cache.insert("c".into(), "90ab".into());
+        assert_eq!(
+            cache.report(),
+            "cache 2 entries 0/0 MiB, 1 evicted, 0 clears"
+        );
+        cache.clear();
+        cache.clear();
+        assert_eq!(
+            cache.report(),
+            "cache 0 entries 0/0 MiB, 1 evicted, 1 clears"
+        );
     }
 
     #[test]
@@ -486,6 +532,8 @@ mod tests {
                 bytes: 0,
                 byte_budget: 100 * 1024 * 1024,
                 clock: Arc::new(AtomicU64::new(0)),
+                evicted: Arc::default(),
+                cleared: Arc::default(),
                 updates: Arc::new(Updates {
                     ready: Notify::new(),
                     work: Mutex::default(),
@@ -541,6 +589,8 @@ mod tests {
                 bytes: 0,
                 byte_budget: 2048 * item_size,
                 clock: Arc::new(AtomicU64::new(0)),
+                evicted: Arc::default(),
+                cleared: Arc::default(),
                 updates: Arc::new(Updates {
                     ready: Notify::new(),
                     work: Mutex::default(),

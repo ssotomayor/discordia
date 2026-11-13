@@ -120,7 +120,10 @@ def verify_java_classes(archive):
 def matching_jar(target_dir, target, profile):
     candidates = {}
     cargo_profile = "android-release" if profile == "release" else "android-dev"
-    for output in (target_dir / target / cargo_profile / "build").glob("webrtc-sys-*/output"):
+    build = target_dir / target / cargo_profile / "build"
+    # Cargo 1.100 moved a build script's stdout from <pkg>-<hash>/output to <pkg>/<hash>/run/stdout.
+    outputs = [*build.glob("webrtc-sys-*/output"), *build.glob("webrtc-sys/*/run/stdout")]
+    for output in outputs:
         for line in output.read_text(encoding="utf-8", errors="replace").splitlines():
             if "rustc-link-search=native=" not in line:
                 continue

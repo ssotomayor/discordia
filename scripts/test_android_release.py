@@ -111,6 +111,23 @@ class AndroidReleaseTests(unittest.TestCase):
                 output.write_text(f"cargo:rustc-link-search=native={library}\n", encoding="utf-8")
                 self.assertEqual(building.matching_jar(root, "aarch64-linux-android", profile), jar)
 
+    def test_java_artifact_is_found_in_the_build_layout_of_cargo_1_100(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            library = root / "webrtc/lib"
+            library.mkdir(parents=True)
+            jar = library.parent / "libwebrtc.jar"
+            with zipfile.ZipFile(jar, "w") as archive:
+                for name in building.REQUIRED_WEBRTC_CLASSES:
+                    archive.writestr(name, b"test")
+            build = root / "aarch64-linux-android/android-release/build"
+            with self.assertRaises(RuntimeError):
+                building.matching_jar(root, "aarch64-linux-android", "release")
+            output = build / "webrtc-sys/d1c9050a94a318a8/run/stdout"
+            output.parent.mkdir(parents=True)
+            output.write_text(f"cargo:rustc-link-search=native={library}\n", encoding="utf-8")
+            self.assertEqual(building.matching_jar(root, "aarch64-linux-android", "release"), jar)
+
     def test_release_metadata_rejects_debug_builds_and_wrong_versions(self):
         env = {"ANDROID_HOME": "sdk", "DISCORDIA_ANDROID_VERSION_CODE": "862", "DISCORDIA_ANDROID_VERSION_NAME": "v0.1.0-pre.862"}
         permission = "uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'\n"

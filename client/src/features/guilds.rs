@@ -198,6 +198,7 @@ pub fn GuildsSidebar() -> Element {
                                 on_select: {
                                     let gateway = gateway.clone();
                                     move |gid: Id| {
+                                        let before = state.peek().selected_channel;
                                         let target = {
                                             let mut s = state.write();
                                             crate::channel_selection::remember_current(&mut s);
@@ -206,12 +207,24 @@ pub fn GuildsSidebar() -> Element {
                                             s.selected_channel = None;
                                             s.default_channel_of(gid)
                                         };
-                                        if let Some(cid) = target {
-                                            crate::features::channels::select_text_channel(
+                                        let Some(cid) = target else { return };
+                                        // On a phone a guild is picked to see its channels, not its chat.
+                                        match try_consume_context::<super::workspace::RailPick>() {
+                                            Some(super::workspace::RailPick(mut pick)) => {
+                                                if before != Some(cid) {
+                                                    pick.set(Some(cid));
+                                                }
+                                                crate::features::channels::open_text_channel(
+                                                    &mut state.clone(),
+                                                    &gateway,
+                                                    cid,
+                                                );
+                                            }
+                                            None => crate::features::channels::select_text_channel(
                                                 &mut state.clone(),
                                                 &gateway,
                                                 cid,
-                                            );
+                                            ),
                                         }
                                     }
                                 },

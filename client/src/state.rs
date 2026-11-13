@@ -1181,6 +1181,7 @@ impl AppState {
         view.retry();
     }
 
+    #[track_caller]
     pub fn evict_inactive_dm_images(&mut self, active_channel: Option<Id>) {
         for image in self.dm_images.values_mut() {
             if Some(image.channel_id) != active_channel {
