@@ -591,6 +591,7 @@ mod tests {
             created_at: 100,
             reply_to: None,
             emoji: vec![],
+            view_once: false,
         }
     }
 

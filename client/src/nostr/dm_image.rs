@@ -14,6 +14,7 @@ pub const KIND: u16 = 15;
 pub const MAX_BYTES: usize = crate::chat_image::MAX_DM_BYTES;
 pub const MAX_CIPHER_BYTES: usize = MAX_BYTES + 16;
 pub const MAX_JOBS: usize = 8;
+pub(super) const VIEW_ONCE_TAG: &str = "view-once";
 const CACHE_BYTES: u64 = if cfg!(target_os = "android") {
     128 * 1024 * 1024
 } else {
@@ -48,6 +49,10 @@ pub struct Descriptor {
     pub size: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<Box<Descriptor>>,
+    /// Shown one time and then deleted for both people. A courtesy between honest
+    /// clients: the wrap stays on its relays, and a screen can be photographed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub view_once: bool,
 }
 
 impl std::fmt::Debug for Descriptor {
@@ -172,6 +177,9 @@ impl Descriptor {
         if let Some(height) = self.height {
             tags.push(vec!["image-height".into(), height.to_string()]);
         }
+        if self.view_once {
+            tags.push(vec![VIEW_ONCE_TAG.into(), "1".into()]);
+        }
         if let Some(preview) = self.preview.as_deref() {
             for (tag, value) in [
                 ("preview-file-type", preview.mime.as_str()),
@@ -268,6 +276,7 @@ impl Descriptor {
                 .transpose()
                 .map_err(|_| "Invalid image height.")?,
             preview: None,
+            view_once: rumor.tag(VIEW_ONCE_TAG).is_some(),
         };
         let preview_tags = [
             "preview-file-type",
@@ -283,7 +292,8 @@ impl Descriptor {
             .iter()
             .filter(|tag| rumor.tag(tag).is_some())
             .count();
-        if present != 0 {
+        // A preview would be a second copy to open, and one that is cached.
+        if present != 0 && !descriptor.view_once {
             if present != preview_tags.len()
                 || rumor.tag("preview-encryption-algorithm") != Some("aes-gcm")
             {
@@ -303,6 +313,7 @@ impl Descriptor {
                     .parse()
                     .map_err(|_| "Invalid preview image size.")?,
                 preview: None,
+                view_once: false,
             }));
         }
         descriptor.validate()?;
@@ -420,6 +431,7 @@ pub fn encrypt(data_url: &str) -> Result<(Descriptor, Vec<u8>), String> {
             original_hash: blossom::sha256_hex(&bytes),
             size: ciphertext.len(),
             preview: None,
+            view_once: false,
         },
         ciphertext,
     ))
@@ -861,6 +873,16 @@ async fn receive_uploaded_preview(owner: &str, preview: &Descriptor) -> Result<S
         .map_err(|_| "Could not decode image.")?
 }
 
+/// Past the cache both ways: what is opened once must leave nothing here to open again.
+pub async fn open_once(image: &Descriptor) -> Result<String, String> {
+    image.validate()?;
+    let bytes = download_ciphertext(image).await?;
+    let metadata = image.clone();
+    tokio::task::spawn_blocking(move || metadata.decrypt(&bytes))
+        .await
+        .map_err(|_| "Could not decode image.")?
+}
+
 pub async fn load_original(owner: &str, image: &Descriptor) -> Result<String, String> {
     static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
     let _permit = DOWNLOADS
@@ -1045,6 +1067,7 @@ pub(super) struct PrepareImage {
     pub(super) preview_data_url: Option<String>,
     pub(super) text: String,
     pub(super) reply_to: Option<String>,
+    pub(super) view_once: bool,
 }
 
 pub(super) fn prepare(secret: &secp256k1::SecretKey, input: PrepareImage) -> Result<Job, String> {
@@ -1056,6 +1079,7 @@ pub(super) fn prepare(secret: &secp256k1::SecretKey, input: PrepareImage) -> Res
         preview_data_url,
         text,
         reply_to,
+        view_once,
     } = input;
     if !valid_hash(&peer) || text.len() > 8000 {
         return Err("Invalid image recipient or caption.".into());
@@ -1067,7 +1091,8 @@ pub(super) fn prepare(secret: &secp256k1::SecretKey, input: PrepareImage) -> Res
     public_url(&server)?;
     let (mut image, bytes) = encrypt(&data)?;
     image.name = file_name.as_deref().and_then(sanitize_image_name);
-    let preview_bytes = if let Some(preview) = preview_data_url {
+    image.view_once = view_once;
+    let preview_bytes = if let Some(preview) = preview_data_url.filter(|_| !view_once) {
         let (mime, raw) = blossom::split_data_url(&preview).ok_or("Invalid image preview.")?;
         if !matches!(mime.as_str(), "image/jpeg" | "image/png") {
             return Err("Image previews must be static JPEG or PNG files.".into());
@@ -1106,7 +1131,9 @@ pub(super) fn prepare(secret: &secp256k1::SecretKey, input: PrepareImage) -> Res
         let _ = std::fs::remove_file(path.with_extension("preview-bin"));
         return Err(error);
     }
-    if let Ok(cache) = cache_root(&owner).map(|r| r.join("cache"))
+    // The sender keeps no copy to look at either.
+    if !view_once
+        && let Ok(cache) = cache_root(&owner).map(|r| r.join("cache"))
         && std::fs::create_dir_all(&cache).is_ok()
     {
         let cache_path = cache.join(format!("{}.bin", job.image.hash));
@@ -1947,6 +1974,7 @@ mod tests {
                 preview_data_url: None,
                 text: "caption".into(),
                 reply_to: None,
+                view_once: false,
             },
         )
         .unwrap();
@@ -1988,6 +2016,7 @@ mod tests {
                 preview_data_url: Some(PNG.into()),
                 text: String::new(),
                 reply_to: None,
+                view_once: false,
             },
         )
         .unwrap();
@@ -2006,6 +2035,74 @@ mod tests {
         let cache = cache_root(&owner).unwrap().join("cache");
         let _ = std::fs::remove_file(cache.join(format!("{}.bin", job.image.hash)));
         let _ = std::fs::remove_file(cache.join(format!("{}.bin", preview.hash)));
+    }
+
+    #[test]
+    fn a_view_once_picture_says_so_and_keeps_no_copy_or_preview() {
+        let secret = secp256k1::SecretKey::from_slice(&[11; 32]).unwrap();
+        let peer = event::xonly_hex(&secp256k1::SecretKey::from_slice(&[12; 32]).unwrap());
+        let owner = event::xonly_hex(&secret);
+        let job = prepare(
+            &secret,
+            PrepareImage {
+                peer: peer.clone(),
+                server: "https://nostr.download".into(),
+                data: PNG.into(),
+                file_name: None,
+                preview_data_url: Some(PNG.into()),
+                text: String::new(),
+                reply_to: None,
+                view_once: true,
+            },
+        )
+        .unwrap();
+        assert!(job.image.view_once);
+        assert!(job.image.preview.is_none(), "a preview is a second copy");
+        let path = job.path(&owner).unwrap();
+        assert!(!path.with_extension("preview-bin").exists());
+        let cache = cache_root(&owner).unwrap().join("cache");
+        for kept in ["bin", "preview-v2.thumb"] {
+            assert!(
+                !cache.join(format!("{}.{kept}", job.image.hash)).exists(),
+                "the sender keeps nothing to look at: {kept}"
+            );
+        }
+
+        let mut sent = job.image.clone();
+        sent.url = format!("https://example.com/{}.bin", sent.hash);
+        let rumor = sent.rumor(&owner, &peer, None, 100);
+        assert_eq!(rumor.tag(VIEW_ONCE_TAG), Some("1"));
+        assert!(Descriptor::parse(&rumor).unwrap().view_once);
+        assert!(
+            super::super::nip17::open_rumor(&peer, &rumor)
+                .unwrap()
+                .view_once
+        );
+
+        let (mut preview, _) = encrypt(PNG).unwrap();
+        preview.url = format!("https://example.com/{}.preview", preview.hash);
+        let mut ordinary = sent.clone();
+        ordinary.view_once = false;
+        ordinary.preview = Some(Box::new(preview));
+        let ordinary = ordinary.rumor(&owner, &peer, None, 100);
+        assert_eq!(ordinary.tag(VIEW_ONCE_TAG), None);
+        assert!(Descriptor::parse(&ordinary).unwrap().preview.is_some());
+        assert!(
+            !super::super::nip17::open_rumor(&peer, &ordinary)
+                .unwrap()
+                .view_once
+        );
+        let mut tags = ordinary.tags.clone();
+        tags.push(vec![VIEW_ONCE_TAG.into(), "1".into()]);
+        let with_both = event::rumor(&owner, 100, KIND, tags, ordinary.content.clone());
+        let parsed = Descriptor::parse(&with_both).unwrap();
+        assert!(
+            parsed.view_once && parsed.preview.is_none(),
+            "a preview another client attached is never read"
+        );
+
+        job.remove(&owner);
+        let _ = std::fs::remove_file(path.with_extension("cancel"));
     }
 
     #[test]

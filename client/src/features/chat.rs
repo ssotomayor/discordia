@@ -1346,8 +1346,10 @@ pub(super) fn MessageRow(
                         upload_pending: message.image_metadata.as_ref().is_some_and(|metadata| metadata.upload_pending),
                     }
                 }
-                if state.read().dm_images.contains_key(&message_id) {
-                    super::dm_images::EncryptedImage { channel_id, message_id }
+                match state.read().dm_images.get(&message_id).map(|image| image.descriptor.view_once) {
+                    Some(true) => rsx! { super::dm_images::ViewOnce { channel_id, message_id } },
+                    Some(false) => rsx! { super::dm_images::EncryptedImage { channel_id, message_id } },
+                    None => rsx! {},
                 }
                 if let Some(name) = message.image_metadata.as_ref().and_then(|metadata| metadata.name.as_ref()) {
                     div {
@@ -3010,6 +3012,7 @@ fn Composer(
     let loading_image = use_signal(|| false);
     let mut show_format = use_signal(|| false);
     let mut selecting = use_signal(|| false);
+    let mut view_once = use_signal(|| false);
     // A phone's row has no room for another button, so there the bar comes with a selection.
     let format_bar =
         show_format() || (cfg!(any(target_os = "android", target_os = "ios")) && selecting());
@@ -3111,6 +3114,7 @@ fn Composer(
         generation.with_mut(|n| *n = n.wrapping_add(1));
         pending_image.set(None);
         pending_file.set(None);
+        view_once.set(false);
         show_emoji.set(false);
         show_stickers.set(false);
         show_gif.set(false);
@@ -3194,6 +3198,7 @@ fn Composer(
                     preview_data_url: image_preview,
                     text: content,
                     reply_to,
+                    view_once: *view_once.peek(),
                     queued,
                     permit,
                 }) {
@@ -3608,8 +3613,18 @@ fn Composer(
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                        onclick: move |_| { generation.with_mut(|n| *n = n.wrapping_add(1)); pending_image.set(None); },
+                        onclick: move |_| { generation.with_mut(|n| *n = n.wrapping_add(1)); pending_image.set(None); view_once.set(false); },
                         {crate::i18n::text("Remove", &[])}
+                    }
+                    if is_dm {
+                        button {
+                            r#type: "button",
+                            class: if view_once() { "dxf-view-once-toggle dxf-view-once-on" } else { "dxf-view-once-toggle" },
+                            title: crate::i18n::text("They can open it one time, then it is deleted for both of you", &[]),
+                            aria_pressed: view_once(),
+                            onclick: move |_| view_once.toggle(),
+                            {crate::i18n::text("View once", &[])}
+                        }
                     }
                 }
             }

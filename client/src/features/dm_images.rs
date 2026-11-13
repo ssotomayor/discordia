@@ -101,7 +101,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
                     onclick: move |_| {
 
                         let view={let s=state.peek();s.dm_images.get(&message_id).and_then(|image|image.ready().map(|(data,original)|{
-                            let target=(!original).then(||super::image_viewer::Original::Dm {owner:account.clone(),descriptor:descriptor.clone()});
+                            let target=(!original).then(||super::image_viewer::Original::Dm {owner:account.clone(),descriptor:Box::new(descriptor.clone())});
                             super::image_viewer::ImageView::new(data.clone(),target)
                         }))};
                         if let Some(view)=view {state.write().image_viewer=Some(view);}
@@ -151,6 +151,89 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             }
         }
         EncryptedImageDetails { name: details_name }
+    }
+}
+
+/// Never mounts `EncryptedImage`: a view there is what starts a load, and into the cache.
+#[component]
+pub(super) fn ViewOnce(channel_id: Id, message_id: Id) -> Element {
+    let mut state = use_app_state();
+    let identity = use_context::<crate::identity::Identity>();
+    let nostr = use_context::<NostrTx>();
+    let mut opening = use_signal(|| false);
+    let Some(image) = state.read().dm_images.get(&message_id).cloned() else {
+        return rsx! {};
+    };
+    let (mine, accepted) = {
+        let s = state.read();
+        let mine = s.messages.get(&channel_id).is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|m| m.id == message_id && m.author.pubkey == identity.pubkey)
+        });
+        let accepted = s
+            .dm_of(channel_id)
+            .is_some_and(|dm| s.dm_standing(&dm.other_pubkey) == DmStanding::Inbox);
+        (mine, accepted)
+    };
+    let status = image.status().clone();
+    let upload = image.is_upload();
+    if mine {
+        let label = match &status {
+            Status::Uploading => "Sending a view-once picture…",
+            Status::UploadFailed(error) | Status::Failed(error) => error,
+            _ => "View-once picture · not opened yet",
+        };
+        let retry = nostr.clone();
+        return rsx! {
+            div { class: "dxf-view-once",
+                span { {crate::i18n::message(label)} }
+                if matches!(status, Status::UploadFailed(_)) {
+                    button { r#type: "button", onclick: move |_| retry.send(NostrCmd::Retry { message_id }), {crate::i18n::text("Retry", &[])} }
+                }
+                if upload {
+                    button { r#type: "button", onclick: move |_| nostr.send(NostrCmd::CancelImage { message_id }), {crate::i18n::text("Cancel", &[])} }
+                }
+            }
+        };
+    }
+    let descriptor = image.descriptor;
+    rsx! {
+        button {
+            r#type: "button",
+            class: "dxf-view-once dxf-view-once-open",
+            disabled: opening() || !accepted,
+            onclick: move |_| {
+                if opening() {
+                    return;
+                }
+                opening.set(true);
+                let descriptor = descriptor.clone();
+                let nostr = nostr.clone();
+                spawn(async move {
+                    match crate::nostr::dm_image::open_once(&descriptor).await {
+                        Ok(data) => {
+                            let view = super::image_viewer::ImageView::new(std::sync::Arc::new(data), None);
+                            state.write().image_viewer = Some(view);
+                            // Deleting is what makes it once; the viewer holds the only copy left.
+                            nostr.send(NostrCmd::Delete { channel_id, message_id });
+                        }
+                        Err(error) => {
+                            opening.set(false);
+                            state.write().error_toast = Some(error);
+                        }
+                    }
+                });
+            },
+            if opening() {
+                span { class: "dx-spinner" }
+                {crate::i18n::text("Opening…", &[])}
+            } else if accepted {
+                {crate::i18n::text("View-once picture · press to open", &[])}
+            } else {
+                {crate::i18n::text("View-once picture — accept this conversation to open it.", &[])}
+            }
+        }
     }
 }
 

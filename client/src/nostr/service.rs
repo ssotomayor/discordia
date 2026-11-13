@@ -42,6 +42,7 @@ pub enum NostrCmd {
         preview_data_url: Option<String>,
         text: String,
         reply_to: Option<String>,
+        view_once: bool,
         queued: tokio::sync::oneshot::Sender<Result<(), String>>,
         permit: tokio::sync::OwnedSemaphorePermit,
     },
@@ -59,7 +60,8 @@ pub enum NostrCmd {
         text: String,
         emoji: Vec<(String, String)>,
     },
-    /// Delete a direct message and publish the deletion.
+    /// Delete a direct message and publish the deletion. Ours, or a view-once
+    /// picture sent to us: opening one is deleting it for both.
     Delete {
         channel_id: Id,
         message_id: Id,
@@ -381,7 +383,7 @@ pub fn spawn_nostr(
                     }
                 }
                 cmd = rx.recv() => match cmd {
-                    Some(NostrCmd::Image { peer, server, data_url, file_name, preview_data_url, text, reply_to, queued, permit }) => {
+                    Some(NostrCmd::Image { peer, server, data_url, file_name, preview_data_url, text, reply_to, view_once, queued, permit }) => {
                         let _permit = permit;
                         if images.jobs.len() >= super::dm_image::MAX_JOBS || !outbox.fits(2, 0) || state.peek().mutes.contains(&peer) {
                             let _ = queued.send(Err("Image queue is full or this contact is blocked. Your draft was kept.".into()));
@@ -397,6 +399,7 @@ pub fn spawn_nostr(
                                 preview_data_url,
                                 text,
                                 reply_to,
+                                view_once,
                             },
                         )).await;
                         match prepared {
@@ -425,6 +428,7 @@ pub fn spawn_nostr(
                             created_at: now(),
                             reply_to,
                             emoji,
+                            view_once: false,
                         };
                         insert_message_with_settings(&held, &our_pubkey, &mut state, Some(&mut settings), Source::Ours, false);
                         let id = message_id(&held.id);
@@ -478,11 +482,22 @@ pub fn spawn_nostr(
                         let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
                         let original_rumor_id = state.peek().nostr_event_ids.get(&mid).cloned();
                         if let (Some(peer), Some(orig_id)) = (peer, original_rumor_id) {
-                            if !state.peek().messages.get(&channel_id).is_some_and(|messages| messages.iter().any(|m| m.id == mid && m.author.pubkey == our_pubkey)) { continue; }
+                            let is_image = state.peek().dm_images.contains_key(&mid);
+                            let once = state.peek().dm_images.get(&mid).is_some_and(|image| image.descriptor.view_once);
+                            if !once && !state.peek().messages.get(&channel_id).is_some_and(|messages| messages.iter().any(|m| m.id == mid && m.author.pubkey == our_pubkey)) { continue; }
+                            if once {
+                                // Gone here whether or not the word gets out: it must not open twice.
+                                state.write().delete_message_locally(channel_id, mid);
+                                state.write().dm_deleted_ids.insert(orig_id.clone());
+                                let mut next = settings.peek().clone();
+                                next.delete_dm_message(&orig_id);
+                                settings.set(next.clone());
+                                crate::settings::save(&next);
+                            }
                             if !outbox.fits(1, 0) { state.write().error_toast = Some("Too many pending messages to delete.".into()); continue; }
                             let ts = now();
                             let mut rumor = nip17::chat_deletion_rumor(&our_pubkey, &peer, &orig_id, ts);
-                            if state.peek().dm_images.contains_key(&mid) {
+                            if is_image {
                                 for tag in &mut rumor.tags { if tag.first().is_some_and(|t| t == "k") { tag[1] = super::dm_image::KIND.to_string(); } }
                                 rumor = event::rumor(&our_pubkey, ts, nip17::KIND_DELETION, rumor.tags, rumor.content);
                             }
@@ -1165,6 +1180,7 @@ async fn send_draft(
         created_at: ts,
         reply_to,
         emoji,
+        view_once: false,
     };
     insert_message(&msg, our_pubkey, state, Source::Ours, false);
     let id = message_id(&rumor.id);
@@ -1377,6 +1393,7 @@ fn show_image_job(
         created_at: job.created_at,
         reply_to: job.reply_to.clone(),
         emoji: Vec::new(),
+        view_once: job.image.view_once,
     };
     insert_message(&message, owner, state, Source::Ours, false);
     let id = message_id(&job.id);
@@ -1537,7 +1554,12 @@ fn apply_dm_change(
     let key = (target.to_owned(), rumor.pubkey.clone());
     if deletion {
         if let Some((author, _)) = existing {
-            if author != rumor.pubkey {
+            // The issuer is in this conversation, or the target would not be found in it.
+            let opened = s
+                .dm_images
+                .get(&mid)
+                .is_some_and(|image| image.descriptor.view_once);
+            if author != rumor.pubkey && !opened {
                 return true;
             }
             s.dm_deleted_ids.insert(target.to_owned());
@@ -1638,7 +1660,12 @@ fn insert_message_with_settings(
     }
 
     let pending_key = (msg.id.clone(), msg.author.clone());
-    let deleted = s.pending_dm_deletions.remove(&pending_key);
+    // A view-once picture is also deleted by whoever it was sent to, on opening it.
+    let opened = msg.view_once
+        && s.pending_dm_deletions
+            .iter()
+            .any(|(id, by)| id == &msg.id && (by == our_pubkey || by == &msg.peer));
+    let deleted = s.pending_dm_deletions.remove(&pending_key) || opened;
     s.pending_dm_deletions.retain(|(id, _)| id != &msg.id);
     let pending_edit = s
         .pending_dm_edits
@@ -1883,6 +1910,7 @@ mod tests {
                 created_at: now(),
                 reply_to: None,
                 emoji: vec![("wave".into(), "data:image/gif;base64,AA==".into())],
+                view_once: false,
             };
             insert_message(&held, &me, &mut state, Source::Ours, false);
             let mid = message_id("held-1");
@@ -1976,6 +2004,7 @@ mod tests {
             created_at: at,
             reply_to: None,
             emoji: Vec::new(),
+            view_once: false,
         }
     }
 
@@ -2585,6 +2614,74 @@ mod tests {
             assert!(s.dm_deleted_ids.contains("del-target"));
             assert!(s.pending_dm_deletions.is_empty());
         });
+    }
+
+    fn picture(author: &str, to: &str, view_once: bool) -> event::Rumor {
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        let (mut image, _) = super::super::dm_image::encrypt(png).unwrap();
+        image.url = format!("https://example.com/{}.bin", image.hash);
+        image.view_once = view_once;
+        image.rumor(author, to, None, 100)
+    }
+
+    #[test]
+    fn opening_a_view_once_picture_deletes_it_for_both_and_only_that_kind() {
+        let sender = event::xonly_hex(&secp256k1::SecretKey::from_slice(&[3; 32]).unwrap());
+        let viewer = event::xonly_hex(&secp256k1::SecretKey::from_slice(&[4; 32]).unwrap());
+        for (view_once, deleted) in [(true, true), (false, false)] {
+            // The sender's side: the word that it was opened comes from the other person.
+            in_scope(|| {
+                let rumor = picture(&sender, &viewer, view_once);
+                let message = nip17::open_rumor(&sender, &rumor).unwrap();
+                let mut state = Signal::new(AppState::empty());
+                let mut settings = Signal::new(crate::settings::ClientSettings::default());
+                insert_message(&message, &sender, &mut state, Source::Ours, false);
+                note_image(&rumor, &message, &mut state);
+                let opened = nip17::chat_deletion_rumor(&viewer, &sender, &rumor.id, 200);
+                assert!(apply_dm_change(&opened, &sender, &mut state, &mut settings));
+                let s = state.peek();
+                let held = s
+                    .messages
+                    .get(&conversation_id(&viewer))
+                    .is_some_and(|messages| !messages.is_empty());
+                assert_eq!(!held, deleted, "view_once={view_once}");
+                assert_eq!(s.dm_deleted_ids.contains(&rumor.id), deleted);
+            });
+        }
+    }
+
+    #[test]
+    fn a_view_once_picture_opened_elsewhere_never_shows_on_a_device_that_syncs_later() {
+        let sender = event::xonly_hex(&secp256k1::SecretKey::from_slice(&[3; 32]).unwrap());
+        let viewer = event::xonly_hex(&secp256k1::SecretKey::from_slice(&[4; 32]).unwrap());
+        let stranger = key('c');
+        for (view_once, by, deleted) in [
+            (true, &viewer, true),
+            (true, &sender, true),
+            (true, &stranger, false),
+            (false, &viewer, false),
+        ] {
+            // The viewer's second device: the deletion replays before the picture.
+            in_scope(|| {
+                let rumor = picture(&sender, &viewer, view_once);
+                let message = nip17::open_rumor(&viewer, &rumor).unwrap();
+                let mut state = Signal::new(AppState::empty());
+                state
+                    .write()
+                    .pending_dm_deletions
+                    .insert((rumor.id.clone(), by.clone()));
+                insert_message(&message, &viewer, &mut state, Source::Relay, false);
+                note_image(&rumor, &message, &mut state);
+                let s = state.peek();
+                let held = s
+                    .messages
+                    .get(&conversation_id(&sender))
+                    .is_some_and(|messages| !messages.is_empty());
+                assert_eq!(!held, deleted, "view_once={view_once} by={by}");
+                assert_eq!(s.dm_images.is_empty(), deleted);
+                assert!(s.pending_dm_deletions.is_empty());
+            });
+        }
     }
 
     #[test]

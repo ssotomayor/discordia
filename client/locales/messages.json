@@ -1,4 +1,11 @@
 {
+  "View once": ["Ver una vez", "Ver uma vez", "仅看一次", "一度だけ表示"],
+  "They can open it one time, then it is deleted for both of you": ["Podrá abrirla una vez; luego se borra para ambos", "A pessoa pode abrir uma vez; depois é apagada para os dois", "对方只能打开一次，之后会为双方删除", "相手は一度だけ開けます。その後、双方から削除されます"],
+  "Sending a view-once picture…": ["Enviando una imagen de un solo uso…", "Enviando uma imagem de visualização única…", "正在发送仅看一次的图片…", "一度だけ表示の画像を送信中…"],
+  "View-once picture · not opened yet": ["Imagen de un solo uso · aún sin abrir", "Imagem de visualização única · ainda não aberta", "仅看一次的图片 · 尚未打开", "一度だけ表示の画像 · 未開封"],
+  "View-once picture · press to open": ["Imagen de un solo uso · pulsa para abrir", "Imagem de visualização única · pressione para abrir", "仅看一次的图片 · 按下打开", "一度だけ表示の画像 · 押して開く"],
+  "View-once picture — accept this conversation to open it.": ["Imagen de un solo uso: acepta esta conversación para abrirla.", "Imagem de visualização única — aceite esta conversa para abrir.", "仅看一次的图片 — 接受此对话后才能打开。", "一度だけ表示の画像 — 開くにはこの会話を承認してください。"],
+  "Opening…": ["Abriendo…", "Abrindo…", "正在打开…", "開いています…"],
   "Reading the picture…": ["Leyendo la imagen…", "Lendo a imagem…", "正在读取图片…", "画像を読み込んでいます…"],
   "Still reading the last picture.": ["Aún se está leyendo la imagen anterior.", "Ainda lendo a imagem anterior.", "仍在读取上一张图片。", "前の画像をまだ読み込んでいます。"],
   "Text formatting": ["Formato de texto", "Formatação de texto", "文本格式", "テキストの書式"],
