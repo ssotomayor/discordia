@@ -44,6 +44,7 @@ fixture = '''
 class SharedPreferences {
     val values = mutableMapOf<String, String>()
     fun getString(key: String, default: String?): String? = values[key] ?: default
+    fun getBoolean(key: String, default: Boolean): Boolean = values[key]?.toBoolean() ?: default
     fun edit() = Editor(this)
     class Editor(private val owner: SharedPreferences) {
         private val pending = mutableMapOf<String, String>()
@@ -84,10 +85,23 @@ fun main() {
     cold.values["dm"] = " "
     check(label(cold, "mention") == "Menciones") { "The last names Rust gave must be used" }
     check(label(cold, "dm") == "Private messages")
-    println("Notifier dedup and cold channel label checks pass")
+
+    val switch = SharedPreferences()
+    check(wanted(switch)) { "Notifications are on until the person turns them off" }
+    switch.values["enabled"] = "false"
+    check(!wanted(switch)) { "A switch the person turned off stays off" }
+    switch.values["enabled"] = "true"
+    check(wanted(switch))
+    check(asksUnprompted(true, false, 33, false)) { "A switch that is on asks Android for its permission" }
+    check(!asksUnprompted(true, true, 33, false)) { "Android is asked unprompted only once" }
+    check(!asksUnprompted(false, false, 33, false)) { "A switch that is off asks for nothing" }
+    check(!asksUnprompted(true, false, 32, false)) { "Before Android 13 there is nothing to ask" }
+    check(!asksUnprompted(true, false, 34, true))
+    println("Notifier dedup, cold channel label and default switch checks pass")
 }
 '''
-members = ["DEDUP_CAP", "SEEN", "FALLBACK", "decodeSeen", "encodeSeen", "admit", "remember", "label"]
+members = ["DEDUP_CAP", "SEEN", "FALLBACK", "decodeSeen", "encodeSeen", "admit", "remember", "label",
+           "wanted", "asksUnprompted"]
 path = output / "Notifier.kt"
 path.write_text(fixture + "\n".join(map(member, members)) + "\n" + checks, encoding="utf-8")
 subprocess.run([java, "-cp", compiler, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",

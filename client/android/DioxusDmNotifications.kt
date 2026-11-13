@@ -27,6 +27,18 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         account = value.takeIf { validKey(it) }
         DioxusNotifier.saveLabels(activity, labels)
         DioxusNotifier.ensureChannels(activity)
+        if (account != null) askUnprompted()
+    }
+
+    // An account is the first moment there is anything to be told about.
+    private fun askUnprompted() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val granted = activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        val asked = preferences.getBoolean("asked", false)
+        if (!DioxusNotifier.asksUnprompted(DioxusNotifier.wanted(preferences), asked, Build.VERSION.SDK_INT, granted)) return
+        preferences.edit().putBoolean("asked", true).apply()
+        permissionPending = true
+        activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_REQUEST)
     }
 
     fun clearAccount(value: String) {
@@ -37,7 +49,7 @@ class DioxusDmNotifications(private val activity: MainActivity) {
 
     fun state(): String {
         if (permissionPending || settingsPending) return "pending"
-        if (!preferences.getBoolean("enabled", false)) return "disabled"
+        if (!DioxusNotifier.wanted(preferences)) return "disabled"
         val granted = Build.VERSION.SDK_INT < 33 || activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         return if (granted && manager.areNotificationsEnabled() && manager.getNotificationChannel(DioxusNotifier.DM_CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE) "enabled" else "blocked"
     }

@@ -46,8 +46,14 @@ object DioxusNotifier {
     private fun alerted(context: Context) = context.getSharedPreferences("notification-alerted", Context.MODE_PRIVATE)
     private fun push(context: Context) = context.getSharedPreferences("push", Context.MODE_PRIVATE)
 
+    // On until the person turns it off: what is stored is only a choice they made.
+    fun wanted(preferences: SharedPreferences) = preferences.getBoolean("enabled", true)
+
+    // Android 13 grants nothing until asked and lets an app ask twice; one of those is spent unprompted.
+    fun asksUnprompted(wanted: Boolean, asked: Boolean, sdk: Int, granted: Boolean) = wanted && !asked && sdk >= 33 && !granted
+
     fun allowed(context: Context): Boolean {
-        if (!context.getSharedPreferences("dm-notifications", Context.MODE_PRIVATE).getBoolean("enabled", false)) return false
+        if (!wanted(context.getSharedPreferences("dm-notifications", Context.MODE_PRIVATE))) return false
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
         return manager(context).areNotificationsEnabled()
     }
