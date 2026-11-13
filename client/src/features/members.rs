@@ -884,6 +884,7 @@ fn VoiceBadges(muted: bool, deafened: bool) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use crate::render_check::Checked;
     #[test]
     fn owner_has_every_permission_and_can_edit_own_roles_without_self_moderation() {
         let mut state = AppState::empty();
@@ -1031,7 +1032,7 @@ mod tests {
             state.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
             state.selected_channel = Some(next);
         }
-        let changes = dom.render_immediate_to_vec().edits;
+        let changes = dom.render_checked().edits;
         assert!(changes.iter().any(|edit| matches!(edit,
             dioxus::core::Mutation::CreateTextNode { value, .. } if *value == "Another peer"
         )));
@@ -1110,29 +1111,29 @@ mod tests {
             .write()
             .voice_quality
             .insert("bob".into(), crate::state::ConnectionHealth::Poor);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         state
             .write()
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Lost);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         state.write().voice_states[0].speaking = true;
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         state
             .write()
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Good);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         state
             .write()
             .voice
             .force_phase(crate::state::VoicePhase::Idle);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         state
             .write()
             .voice_quality
             .insert("alice".into(), crate::state::ConnectionHealth::Poor);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
     }
 
     #[tokio::test]
@@ -1159,15 +1160,15 @@ mod tests {
             },
             exported.clone(),
         );
-        dom.rebuild_in_place();
-        dom.render_immediate_to_vec();
+        dom.rebuild_checked();
+        dom.render_checked();
         let mut state = exported.borrow().unwrap();
         for i in 0..100 {
             let mut s = state.write();
             s.messages.insert(Id::new_v4(), Vec::new());
             s.voice.speaking = i % 2 == 0;
             drop(s);
-            dom.render_immediate_to_vec();
+            dom.render_checked();
         }
         RENDERS.with_borrow(|counts| {
             println!("unrelated updates: {counts:?}");
@@ -1186,15 +1187,15 @@ mod tests {
                 image: None,
             },
         );
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         let mut expected = before;
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
         state.write().activities.get_mut("alice").unwrap().details = Some("New map".into());
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert_eq!(renders(), expected);
         state.write().activities.remove("alice");
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
 
@@ -1203,32 +1204,32 @@ mod tests {
             .write()
             .voice_states
             .push(voice("alice", guild, Some(channel)));
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
         state.write().voice_states[0].speaking = true;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert_eq!(renders(), expected);
         {
             let mut s = state.write();
             s.voice.force_channel(Some(channel));
             s.voice.force_phase(crate::state::VoicePhase::Connected);
         }
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         assert_eq!(renders(), expected);
         state
             .write()
             .voice
             .force_phase(crate::state::VoicePhase::Idle);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         assert_eq!(renders(), expected);
         state.write().voice_states[0].muted = true;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
 
         state.write().members[0].xp = 10_000;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
         state.write().profiles.insert(
@@ -1240,22 +1241,22 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(!dom.render_immediate_to_vec().edits.is_empty());
+        assert!(!dom.render_checked().edits.is_empty());
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
         state.write().voice_states.clear();
-        assert!(!dom.render_immediate_to_vec().edits.is_empty());
+        assert!(!dom.render_checked().edits.is_empty());
         *expected.get_mut("row:alice").unwrap() += 1;
         assert_eq!(renders(), expected);
         assert!(state.write().note_name("alice", "Zoe".into(), 200));
-        assert!(!dom.render_immediate_to_vec().edits.is_empty());
+        assert!(!dom.render_checked().edits.is_empty());
         assert_eq!(renders()["list"], 2);
         assert_eq!(renders()["row:bob"], 1);
         assert!(!state.write().note_name("alice", "Alice".into(), 100));
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
         assert_eq!(state.read().selected_guild, Some(guild));
         state.write().selected_guild = Some(Id::new_v4());
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert_eq!(renders()["list"], 3);
     }
 

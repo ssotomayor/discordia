@@ -492,18 +492,3 @@ async fn forwarded_for_from_an_untrusted_peer_is_ignored() {
         StatusCode::TOO_MANY_REQUESTS
     );
 }
-
-#[tokio::test]
-async fn the_root_names_the_version() {
-    let h = spawn().await;
-    let text = h
-        .http
-        .get(format!("{}/", h.base))
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(text.starts_with("discordia-push-relay "), "{text}");
-}

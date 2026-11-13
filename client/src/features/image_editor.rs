@@ -12,6 +12,7 @@ pub enum CropShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use dioxus::core::{AttributeValue, ElementId, Mutation};
     use std::{any::Any, cell::RefCell, rc::Rc};
 
@@ -38,7 +39,7 @@ mod tests {
         let data: dioxus::html::SerializedPointerData = serde_json::from_value(value).unwrap();
         let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(data)));
         dom.runtime().handle_event(name, Event::new(data, true), id);
-        dom.render_immediate_to_vec().edits
+        dom.render_checked().edits
     }
 
     #[tokio::test]
@@ -72,7 +73,7 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(5), dom.wait_for_work())
                     .await
                     .unwrap();
-                edits.extend(dom.render_immediate_to_vec().edits);
+                edits.extend(dom.render_checked().edits);
             };
             pointer(&mut dom, "pointerdown", viewport, kind, 7, 100.0, 100.0);
             let moved = pointer(&mut dom, "pointermove", viewport, kind, 7, 140.0, 120.0);
@@ -126,7 +127,7 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(5), dom.wait_for_work())
                     .await
                     .unwrap();
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let decoded = crate::image_edit::decode(
                 output.borrow().as_ref().unwrap(),

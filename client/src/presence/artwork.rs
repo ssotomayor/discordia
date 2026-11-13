@@ -328,25 +328,4 @@ mod tests {
         assert!(from_executable(&path).is_none());
         std::fs::remove_file(path).unwrap();
     }
-
-    #[test]
-    #[ignore = "requires the local Steam Call of Duty image cache"]
-    fn live_steam_call_of_duty_artwork() {
-        let exe = std::env::current_exe().unwrap();
-        let roots = super::super::installed::steam_roots();
-        let expected = roots
-            .iter()
-            .flat_map(|root| steam_candidates(root, 1938090))
-            .find_map(|path| from_file(&path))
-            .expect("Steam must have a cached Call of Duty image");
-        let source = for_game(&exe, Some(1938090), None, &roots)
-            .expect("Steam must have a cached Call of Duty image");
-        assert_eq!(source, expected);
-        assert!(source.len() <= 96_000);
-        assert_eq!(png(&source).dimensions(), (64, 64));
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/call-of-duty-artwork.png");
-        png(&source).save(&output).unwrap();
-        println!("Call of Duty artwork: {}", output.display());
-    }
 }

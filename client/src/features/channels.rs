@@ -2262,6 +2262,7 @@ mod voice_drag_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
 
     fn chan(name: &str, position: u32) -> Channel {
         kinded(name, position, ChannelKind::Text)
@@ -2566,7 +2567,7 @@ mod tests {
             )));
             dom.runtime()
                 .handle_event(name, Event::new(data, false), id);
-            dom.render_immediate_to_vec().edits
+            dom.render_checked().edits
         }
         let shown = mouse(&mut dom, "mouseenter", hover);
         assert!(shown.iter().any(|edit| matches!(
@@ -2575,7 +2576,7 @@ mod tests {
         )));
         let mut lost = export.borrow().unwrap();
         lost.set(true);
-        let changed = dom.render_immediate_to_vec().edits;
+        let changed = dom.render_checked().edits;
         assert!(changed.iter().any(|edit| matches!(edit,
             Mutation::SetAttribute { name: "dangerous_inner_html", value: AttributeValue::Text(svg), id, .. }
                 if *id == icon && *svg == super::super::icons::SIGNAL_LOST

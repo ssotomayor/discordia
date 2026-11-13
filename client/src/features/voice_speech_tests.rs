@@ -191,42 +191,6 @@ fn speech_alignment(clean: &[f32], output: &[f32], start: usize) -> (usize, f64)
 }
 
 #[test]
-#[ignore = "requires exported human_speech_audit WAV comparisons"]
-fn human_speech_saved_metrics() {
-    let dir = std::path::PathBuf::from(std::env::var_os("DISCORDIA_SPEECH_FIXTURES").unwrap());
-    let clean = read_speech(&dir.join("speech-clean.wav"));
-    for name in [
-        "baseline",
-        "clean-denoise",
-        "aec",
-        "aec-denoise",
-        "aec-denoise-agc",
-    ] {
-        let output = read_speech(&dir.join(format!("speech-{name}.wav")));
-        let (delay, correlation) = speech_alignment(&clean, &output, 0);
-        let active: Vec<_> = clean
-            .as_chunks::<FRAME_SAMPLES>()
-            .0
-            .iter()
-            .enumerate()
-            .filter(|(i, chunk)| {
-                (*i + 1) * FRAME_SAMPLES + delay <= output.len() && power(*chunk) > 0.0001
-            })
-            .map(|(i, _)| i)
-            .collect();
-        let lost = active
-            .iter()
-            .filter(|&&i| power(&output[i * FRAME_SAMPLES + delay..][..FRAME_SAMPLES]) < 0.000001)
-            .count();
-        println!(
-            "saved speech {name}: delay {:.2} ms, correlation {correlation:.3}, active silence {lost}/{}",
-            delay as f64 / 48.0,
-            active.len()
-        );
-    }
-}
-
-#[test]
 #[ignore = "requires DISCORDIA_SPEECH_FIXTURES containing Open Speech Repository female.wav and male.wav"]
 fn human_speech_audit() {
     let dir = std::path::PathBuf::from(

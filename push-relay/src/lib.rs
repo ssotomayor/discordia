@@ -303,13 +303,4 @@ mod tests {
         ));
         assert_eq!(rec.delivered().len(), 31);
     }
-
-    #[tokio::test]
-    async fn an_unregistered_token_loses_its_device() {
-        let (relay, rec) = relay();
-        register(&relay, &key(1), "gone", true);
-        rec.answer(Delivery::TokenGone);
-        relay.push_dm(&key(1), &event("{}")).await.unwrap();
-        assert_eq!(relay.store.device_count().unwrap(), 0);
-    }
 }

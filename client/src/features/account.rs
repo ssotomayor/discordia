@@ -343,6 +343,7 @@ fn undo_switch<T>(back: Option<T>, got_in: bool, reason: &str) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use crate::state::ConnectionStatus;
 
     #[test]
@@ -439,7 +440,7 @@ mod tests {
             },
             exported.clone(),
         );
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let (mut state, mut stage) = exported.borrow().unwrap();
         for next in 1..=3 {
             state.write().status = ConnectionStatus::Ready;
@@ -449,7 +450,7 @@ mod tests {
                 .insert(crate::protocol::Id::new_v4(), Vec::new());
             state.write().clear_server_session();
             stage.set(next);
-            dom.render_immediate_to_vec();
+            dom.render_checked();
             assert!(exported.borrow().unwrap().0 == state);
             let s = state.read();
             assert_eq!(s.dm_call.as_ref().unwrap().phase, Phase::Connected);

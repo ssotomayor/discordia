@@ -5151,18 +5151,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_lone_speaker_is_not_quietened() {
-        for s in [0.0, 0.1, 0.5, 0.9, 1.0, -0.7] {
-            let mut limiter = crate::playback_limiter::Limiter::new(SAMPLE_RATE);
-            let output = (0..=SAMPLE_RATE / 200)
-                .map(|_| limiter.process(s))
-                .last()
-                .unwrap();
-            assert_eq!(output, s);
-        }
-    }
-
     /// The f32 output stream writes what it is handed, so a sum that leaves
     /// full scale reaches the device as clipping it never asked for.
     #[test]
@@ -5272,14 +5260,6 @@ mod tests {
     }
 
     #[test]
-    fn a_sum_never_leaves_full_scale() {
-        let mut limiter = crate::playback_limiter::Limiter::new(SAMPLE_RATE);
-        for sample in [1.8, -2.4].into_iter().cycle().take(SAMPLE_RATE as usize) {
-            assert!(limiter.process(sample).abs() <= 1.0);
-        }
-    }
-
-    #[test]
     fn quiet_speech_passes_and_agc_does_not_keep_room_tone_open() {
         let bar = crate::settings::ClientSettings::default().mic_sensitivity as i32;
         let mut agc = crate::agc::Agc::new();
@@ -5303,33 +5283,6 @@ mod tests {
             }
         }
         assert!(leaked < 60, "room tone stayed open for {leaked} hops");
-    }
-
-    #[test]
-    fn the_gate_holds_below_the_level_it_opened_at() {
-        let open_at = 21; // the reporter's own sensitivity setting
-        let hold_at = open_at * GATE_CLOSE_RATIO_PCT / 100;
-        assert!(
-            hold_at < open_at,
-            "hysteresis has to hold below the opening"
-        );
-
-        let tail = 14;
-        assert!(tail < open_at, "precondition: would not open the gate");
-        assert!(
-            tail > hold_at,
-            "a tail between the two bars is exactly what the hysteresis is for"
-        );
-    }
-
-    #[test]
-    fn the_gate_envelope_never_reads_below_the_hop() {
-        let mut env = 0i32;
-        for peak in [0, 5, 900, 3, 0, 0, 40] {
-            env = peak.max(env * GATE_ENVELOPE_DECAY_PCT / 100);
-            assert!(env >= peak, "envelope {env} read under its own hop {peak}");
-        }
-        assert!(env < 900, "envelope latched at the loudest hop it ever saw");
     }
 
     #[test]

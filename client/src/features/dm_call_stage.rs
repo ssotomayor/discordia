@@ -445,12 +445,13 @@ pub(super) fn transition(
 mod tests {
     use super::*;
     use super::{Effect, Event};
+    use crate::render_check::Checked;
     use dioxus::prelude::*;
     use uuid::Uuid;
 
     fn in_scope(test: impl FnOnce()) {
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         dom.in_scope(ScopeId::ROOT, test);
     }
 

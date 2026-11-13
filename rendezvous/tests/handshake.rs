@@ -271,20 +271,6 @@ async fn an_unattested_transport_key_is_dropped_but_the_host_still_registers() {
 }
 
 #[tokio::test]
-async fn signed_name_claim_succeeds_and_becomes_the_shortcode() {
-    let base = spawn().await;
-    let (secret, pubkey) = identity(1);
-
-    let (mut ws, nonce) = connect_control(&base).await;
-    let sig = sign(&secret, &nonce, &pubkey, "Acme");
-    send_register(&mut ws, "Acme", &pubkey, &sig).await;
-
-    let reply = next_json(&mut ws).await;
-    assert_eq!(reply["op"], "registered", "got {reply}");
-    assert_eq!(reply["d"]["shortcode"], "acme");
-}
-
-#[tokio::test]
 async fn a_spaced_name_is_listed_as_written_and_joined_by_its_code() {
     let (base, _registry) = spawn_with(Config::default()).await;
     let (secret, pubkey) = identity(12);

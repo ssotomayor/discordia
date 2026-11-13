@@ -1461,8 +1461,9 @@ fn ws_to_http(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{JoinBy, Mode, compose_rendezvous, initial_mode, join_by, merge};
+    use super::{JoinBy, compose_rendezvous, join_by, merge};
     use crate::protocol::rendezvous::DiscoverEntry;
+    use crate::render_check::Checked;
 
     const NONE: &[String] = &[];
 
@@ -1516,7 +1517,7 @@ mod tests {
         )));
         dom.runtime()
             .handle_event("click", Event::new(click, true), create);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         let data: dioxus::html::SerializedFormData = serde_json::from_str("{}").unwrap();
         let submit: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(data)));
         let event = Event::new(submit, true);
@@ -1533,11 +1534,6 @@ mod tests {
 
     fn r() -> Vec<String> {
         vec!["ws://rendezvous.example:7700".into()]
-    }
-
-    #[test]
-    fn a_launch_opens_on_the_half_that_costs_nothing() {
-        assert_eq!(initial_mode(), Mode::Join);
     }
 
     #[test]

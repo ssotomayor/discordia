@@ -219,6 +219,7 @@ fn Palette(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use dioxus::core::{AttributeValue, ElementId, Mutation};
     use std::{any::Any, cell::RefCell, rc::Rc};
 
@@ -265,7 +266,7 @@ mod tests {
         let data: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(data)));
         dom.runtime()
             .handle_event("input", Event::new(data, true), id);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
     }
 
     fn click(dom: &mut VirtualDom, id: ElementId) {
@@ -339,7 +340,7 @@ mod tests {
     fn clearing_the_accent_is_also_staged_until_apply() {
         let (mut dom, edits, applied) = fixture();
         click(&mut dom, labeled(&edits, "Theme default"));
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(applied.borrow().is_empty());
         click(&mut dom, labeled(&edits, "Apply"));
         assert_eq!(&*applied.borrow(), &[None]);

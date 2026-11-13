@@ -504,23 +504,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires Avatar running and access to native installation metadata"]
-    fn live_game_installation_matches_current_process() {
-        let games = discover();
-        let processes = super::super::processes::ProcessTable::default().scan();
-        let matched = processes
-            .iter()
-            .filter(|process| process.name.eq_ignore_ascii_case("afop.exe"))
-            .filter_map(|process| process.exe.as_deref().and_then(|exe| lookup(&games, exe)))
-            .next();
-        assert!(
-            matched.is_some(),
-            "Avatar's process must match the local Ubisoft installation"
-        );
-        println!("Local installation matched: {}", matched.unwrap());
-    }
-
-    #[test]
     fn steam_app_ids_follow_install_metadata_without_being_guessed_from_the_title() {
         let root = std::env::temp_dir();
         let game = steam_game(

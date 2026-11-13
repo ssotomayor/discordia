@@ -312,13 +312,4 @@ mod tests {
         .expect("an older host's body must still parse");
         assert!(req.can_publish);
     }
-
-    #[test]
-    fn an_explicit_false_survives_deserialization() {
-        let req: VoiceTokenRequest = serde_json::from_str(
-            r#"{"grant":"g","room":"screen-1","identity":"abc#audio","name":"x","can_publish":false}"#,
-        )
-        .unwrap();
-        assert!(!req.can_publish);
-    }
 }

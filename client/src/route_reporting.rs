@@ -93,6 +93,7 @@ pub fn use_route_reports(state: Signal<AppState>, gateway: GatewayTx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use crate::state::ConnectionStatus;
 
     fn snapshot() -> Snapshot {
@@ -191,8 +192,8 @@ mod tests {
         let (tx, mut messages) = tokio::sync::mpsc::unbounded_channel();
         let mut dom =
             VirtualDom::new_with_props(harness, export.clone()).with_root_context(GatewayTx(tx));
-        dom.rebuild_in_place();
-        dom.render_immediate_to_vec();
+        dom.rebuild_checked();
+        dom.render_checked();
         let mut state = export.borrow().unwrap();
         assert!(matches!(
             messages.try_recv().unwrap(),
@@ -205,32 +206,32 @@ mod tests {
                 state.voice_states[0].muted = !state.voice_states[0].muted;
                 state.voice_states[0].speaking = !state.voice_states[0].speaking;
             }
-            dom.render_immediate_to_vec();
+            dom.render_checked();
             assert!(messages.try_recv().is_err());
         }
         let mut peer = state.peek().voice_states[0].clone();
         peer.user_pubkey = "new caller".into();
         state.write().voice_states.push(peer);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(messages.try_recv().is_ok());
         assert!(messages.try_recv().is_err());
         state.write().voice_states.pop();
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(messages.try_recv().is_err());
         state.write().gateway_route = Some("relay".into());
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(matches!(
             messages.try_recv().unwrap(),
             ClientMessage::ConnectionRouteReport { gateway, .. } if gateway == "relay"
         ));
         state.write().status = ConnectionStatus::Reconnecting;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(messages.try_recv().is_err());
         state.write().status = ConnectionStatus::Ready;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(messages.try_recv().is_ok());
         state.write().voice_states[0].channel_id = None;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(messages.try_recv().is_err());
         assert!(Snapshot::from_state(&state.peek()).is_none());
     }

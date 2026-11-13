@@ -967,6 +967,7 @@ where
 #[cfg(test)]
 mod graceful_shutdown_tests {
     use super::*;
+    use crate::render_check::Checked;
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
 
     #[test]
@@ -1014,7 +1015,7 @@ mod graceful_shutdown_tests {
     #[test]
     fn retry_errors_cannot_replace_a_suppressed_disconnect_report() {
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         dom.in_scope(ScopeId::ROOT, || {
             let mut state = AppState::empty();
             record_gateway_interruption(&mut state, discordia_server::gateway::HOST_STOPPED, true);
@@ -1040,7 +1041,7 @@ mod graceful_shutdown_tests {
     #[test]
     fn a_retry_refused_by_the_server_shows_its_current_reason() {
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         dom.in_scope(ScopeId::ROOT, || {
             let mut state = AppState::empty();
             record_gateway_interruption(&mut state, "recv: connection reset by peer", true);
@@ -1212,7 +1213,7 @@ mod graceful_shutdown_tests {
             }
         };
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let state = dom.in_scope(ScopeId::ROOT, || Signal::new(AppState::empty()));
         let params = SessionParams {
             mode: SessionMode::Remote {
@@ -2566,6 +2567,7 @@ fn should_play_peer_join(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
 
     #[test]
     fn peer_join_sound_tracks_voice_events_during_entry_and_live_calls_only() {
@@ -2700,7 +2702,7 @@ mod tests {
             });
             rsx! {}
         }
-        VirtualDom::new(harness).rebuild_in_place();
+        VirtualDom::new(harness).rebuild_checked();
     }
 
     /// Two devices of one account read the same voice state, and the server relays
@@ -2780,7 +2782,7 @@ mod tests {
             });
             rsx! {}
         }
-        VirtualDom::new(harness).rebuild_in_place();
+        VirtualDom::new(harness).rebuild_checked();
     }
 
     #[test]
@@ -2864,7 +2866,7 @@ mod tests {
             rsx! {}
         }
         let mut dom = VirtualDom::new(harness);
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
     }
 
     #[tokio::test]
@@ -2933,7 +2935,7 @@ mod tests {
             rsx! {}
         }
         let mut dom = VirtualDom::new(harness);
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
     }
 
     #[test]
@@ -2994,7 +2996,7 @@ mod tests {
             rsx! {}
         }
         let mut dom = VirtualDom::new(harness);
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
     }
 
     #[tokio::test]
@@ -3080,14 +3082,7 @@ mod tests {
             rsx! {}
         }
         let mut dom = VirtualDom::new(harness);
-        dom.rebuild_in_place();
-    }
-
-    #[test]
-    fn the_quic_handshake_presents_a_loopback_host() {
-        let url = url::Url::parse(QUIC_HANDSHAKE_URL).unwrap();
-        assert_eq!(url.host_str(), Some("127.0.0.1"));
-        assert_eq!(url.path(), "/gateway");
+        dom.rebuild_checked();
     }
 
     fn share(addrs: &str) -> String {

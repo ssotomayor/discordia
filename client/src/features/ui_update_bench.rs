@@ -3,6 +3,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 use dioxus::prelude::*;
 
 use crate::protocol::{Activity, ActivityKind, Id, Member, Profile, User, VoiceState};
+use crate::render_check::Checked;
 use crate::state::AppState;
 
 type Export = Rc<RefCell<Option<Signal<AppState>>>>;
@@ -110,8 +111,8 @@ async fn benchmark_selective_ui() {
         for _ in 0..7 {
             let export = Rc::new(RefCell::new(None));
             let mut dom = VirtualDom::new_with_props(benchmark_view, export.clone());
-            dom.rebuild_in_place();
-            dom.render_immediate_to_vec();
+            dom.rebuild_checked();
+            dom.render_checked();
             let mut state = export.borrow().unwrap();
             let start = Instant::now();
             let cpu_start = cpu_micros();
@@ -130,7 +131,7 @@ async fn benchmark_selective_ui() {
                         }
                     }
                 }
-                edits += dom.render_immediate_to_vec().edits.len();
+                edits += dom.render_checked().edits.len();
             }
             let cpu = cpu_start
                 .zip(cpu_micros())
@@ -151,8 +152,8 @@ async fn benchmark_ram_ui() {
     let scenario = std::env::var("DISCORDIA_UI_RAM_SCENARIO").unwrap_or_else(|_| "messages".into());
     let export = Rc::new(RefCell::new(None));
     let mut dom = VirtualDom::new_with_props(benchmark_view, export.clone());
-    dom.rebuild_in_place();
-    dom.render_immediate_to_vec();
+    dom.rebuild_checked();
+    dom.render_checked();
     let mut state = export.borrow().unwrap();
     println!("UI_RAM mounted");
     std::io::stdout().flush().unwrap();
@@ -171,7 +172,7 @@ async fn benchmark_ram_ui() {
                 _ => panic!("unknown RAM scenario"),
             }
         }
-        dom.render_immediate_to_vec();
+        dom.render_checked();
     }
     println!("UI_RAM finished");
     std::io::stdout().flush().unwrap();
@@ -195,12 +196,12 @@ async fn selective_avatar_handles_blob_arrival_and_person_changes() {
         },
         export.clone(),
     );
-    dom.rebuild_in_place();
-    dom.render_immediate_to_vec();
+    dom.rebuild_checked();
+    dom.render_checked();
     let mut state = export.borrow().unwrap();
     for _ in 0..20 {
         state.write().messages.insert(Id::new_v4(), vec![]);
-        assert!(dom.render_immediate_to_vec().edits.is_empty());
+        assert!(dom.render_checked().edits.is_empty());
     }
     state.write().profiles.insert(
         "alice".into(),
@@ -210,14 +211,14 @@ async fn selective_avatar_handles_blob_arrival_and_person_changes() {
             ..Default::default()
         },
     );
-    assert!(dom.render_immediate_to_vec().edits.is_empty());
+    assert!(dom.render_checked().edits.is_empty());
     state
         .write()
         .emoji_images
         .insert("alice.png".into(), "data:image/png;base64,YQ==".into());
-    assert!(!dom.render_immediate_to_vec().edits.is_empty());
+    assert!(!dom.render_checked().edits.is_empty());
     state.write().profile_card = Some("bob".into());
-    assert!(!dom.render_immediate_to_vec().edits.is_empty());
+    assert!(!dom.render_checked().edits.is_empty());
     state.write().profiles.insert(
         "bob".into(),
         Profile {
@@ -226,5 +227,5 @@ async fn selective_avatar_handles_blob_arrival_and_person_changes() {
             ..Default::default()
         },
     );
-    assert!(!dom.render_immediate_to_vec().edits.is_empty());
+    assert!(!dom.render_checked().edits.is_empty());
 }

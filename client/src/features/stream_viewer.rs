@@ -778,6 +778,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::grid_style;
+    use crate::render_check::Checked;
     use crate::stream_placement::StreamWatches;
 
     #[test]
@@ -812,7 +813,7 @@ mod tests {
             )));
             dom.runtime()
                 .handle_event("click", Event::new(data, false), button);
-            dom.render_immediate_to_vec();
+            dom.render_checked();
             dom.in_runtime(|| {
                 assert_eq!(fullscreen(), entering);
                 assert_eq!(focused().as_deref(), entering.then_some("B"));

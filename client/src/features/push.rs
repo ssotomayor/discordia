@@ -323,6 +323,7 @@ mod tests {
     use super::*;
     use crate::protocol::{Channel, Guild};
     use crate::push::tap::MentionTap;
+    use crate::render_check::Checked;
     use crate::state::ConnectionStatus;
     use crate::state::SessionMode;
 
@@ -413,8 +414,8 @@ mod tests {
         let (tx, messages) = tokio::sync::mpsc::unbounded_channel();
         let mut dom =
             VirtualDom::new_with_props(harness, export.clone()).with_root_context(GatewayTx(tx));
-        dom.rebuild_in_place();
-        dom.render_immediate_to_vec();
+        dom.rebuild_checked();
+        dom.render_checked();
         let state = export.borrow().unwrap();
         (dom, state, messages)
     }
@@ -430,7 +431,7 @@ mod tests {
         let (mut dom, mut state, mut messages) = mount(&[]);
         drain(&mut messages);
         state.write().mention_tap = Some(tap(Id::from_u128(3)));
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         let s = state.peek();
         assert!(s.mention_tap.is_none());
         assert!(!s.dm_mode);
@@ -440,7 +441,7 @@ mod tests {
         assert_eq!(drain(&mut messages), vec!["\"fetch_messages\""]);
 
         state.write().mention_tap = Some(tap(Id::from_u128(4)));
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert_eq!(
             state.peek().selected_channel,
             Some(Id::from_u128(3)),
@@ -462,7 +463,7 @@ mod tests {
         let mut unknown = tap(Id::from_u128(3));
         unknown.tap.origin = "unknown.example:443".into();
         state.write().mention_tap = Some(unknown);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(state.peek().mention_tap.is_none());
         assert!(state.peek().dm_mode);
 
@@ -470,7 +471,7 @@ mod tests {
         there.tap.origin = THERE.into();
         state.write().voice.force_channel(Some(Id::from_u128(4)));
         state.write().mention_tap = Some(there);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         let s = state.peek();
         assert!(s.mention_tap.is_none());
         assert!(s.error_toast.is_some(), "the call stays, and says why");
@@ -482,7 +483,7 @@ mod tests {
         let mut there = tap(Id::from_u128(3));
         there.tap.origin = THERE.into();
         state.write().mention_tap = Some(there);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(
             state
                 .peek()
@@ -498,11 +499,11 @@ mod tests {
     async fn a_server_without_push_is_never_told_about_attention() {
         let (mut dom, mut state, mut messages) = mount(&[]);
         state.write().server_info.push = None;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         state.write().app_foreground = false;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         tokio::time::sleep(crate::push::attention::DEBOUNCE * 2).await;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(drain(&mut messages).is_empty());
     }
 
@@ -510,28 +511,28 @@ mod tests {
     async fn attention_follows_focus_after_ready_without_a_message_per_flap() {
         let (mut dom, mut state, mut messages) = mount(&[]);
         state.write().server_info.push = Some("https://push.example".into());
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(
             drain(&mut messages).is_empty(),
             "focused: the default holds"
         );
         state.write().app_foreground = false;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         state.write().app_foreground = true;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         tokio::time::sleep(crate::push::attention::DEBOUNCE * 2).await;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert_eq!(drain(&mut messages), Vec::<String>::new());
 
         state.write().app_foreground = false;
         state.write().status = ConnectionStatus::Reconnecting;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         {
             let mut s = state.write();
             s.status = ConnectionStatus::Ready;
             s.readies += 1;
         }
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert_eq!(drain(&mut messages), vec!["\"set_attention\""]);
     }
 }

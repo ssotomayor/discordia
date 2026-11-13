@@ -296,14 +296,4 @@ mod tests {
             Some("Avatar: Frontiers of Pandora")
         );
     }
-
-    #[test]
-    #[ignore = "requires a running game and access to native process metadata"]
-    fn live_game_detection() {
-        let activity = Detector::new(&[])
-            .scan()
-            .expect("a running game should be detected");
-        println!("Detected game: {}", activity.name);
-        assert_eq!(activity.name, "Avatar: Frontiers of Pandora");
-    }
 }

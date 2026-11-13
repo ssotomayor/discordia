@@ -437,6 +437,7 @@ pub fn UpdatePanel() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use dioxus::core::{AttributeValue, Mutation};
     use std::{cell::RefCell, rc::Rc};
 
@@ -581,7 +582,7 @@ mod tests {
             },
             export.clone(),
         );
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let mut updates = export.borrow().unwrap();
         updates.check();
         updates.download();

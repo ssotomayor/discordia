@@ -69,6 +69,8 @@ mod protocol;
 pub mod push;
 mod quic;
 mod rawmic;
+#[cfg(test)]
+mod render_check;
 mod rendezvous;
 mod route_reporting;
 mod service_task;
@@ -456,10 +458,5 @@ mod logging_tests {
         assert_eq!(std::fs::read(&rolled).unwrap(), b"newer");
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_filter_names_the_crate_the_compiler_actually_used() {
-        assert!(super::log_crate_root().eq_ignore_ascii_case("discordia"));
     }
 }

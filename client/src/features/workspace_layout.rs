@@ -342,6 +342,7 @@ pub(super) fn dock_rail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use std::{cell::RefCell, rc::Rc};
 
     #[derive(Clone, Copy)]
@@ -426,15 +427,15 @@ mod tests {
         for dock in [Dock::Left, Dock::Right, Dock::Top, Dock::Bottom] {
             let export: Export = Rc::new(RefCell::new(None));
             let mut dom = VirtualDom::new_with_props(harness, export.clone());
-            dom.rebuild_in_place();
+            dom.rebuild_checked();
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let mut controls = export.borrow().unwrap();
             controls.active.set(true);
             controls.editing.set(true);
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let current = Arrangement {
                 cells: controls.layout.snapshot(),
@@ -453,14 +454,14 @@ mod tests {
             }
             controls.editing.set(false);
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let expected = controls.layout.get_free("guilds").unwrap();
             let channels = controls.layout.get_free("channels");
             let members = controls.layout.get_free("members");
             controls.active.set(false);
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             assert_eq!(controls.layout.get_free("guilds"), Some(expected));
             assert_eq!(controls.layout.get_free("channels"), channels);
@@ -494,9 +495,9 @@ mod tests {
         for dock in [Dock::Left, Dock::Right, Dock::Top, Dock::Bottom] {
             let export: Export = Rc::new(RefCell::new(None));
             let mut dom = VirtualDom::new_with_props(harness, export.clone());
-            dom.rebuild_in_place();
+            dom.rebuild_checked();
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let mut controls = export.borrow().unwrap();
             let current = Arrangement {
@@ -515,14 +516,14 @@ mod tests {
                 controls.layout.set_free(id, rect);
             }
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let original = controls.layout.get_free("chat").unwrap();
             let channels = controls.layout.get_free("channels").unwrap();
             let members = controls.layout.get_free("members").unwrap();
             controls.active.set(true);
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let chat = controls.layout.get_free("chat").unwrap();
             let stream = controls.layout.get_free("streams").unwrap();
@@ -539,7 +540,7 @@ mod tests {
             assert_eq!(controls.layout.get_free("members"), Some(members));
             controls.active.set(false);
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let restored = controls.layout.get_free("chat").unwrap();
             assert!((restored.x - original.x).abs() < 1e-6);
@@ -553,9 +554,9 @@ mod tests {
     async fn watching_restoring_and_resizing_keep_the_live_rail_compact() {
         let export: Export = Rc::new(RefCell::new(None));
         let mut dom = VirtualDom::new_with_props(harness, export.clone());
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         for _ in 0..4 {
-            dom.render_immediate_to_vec();
+            dom.render_checked();
         }
         let mut controls = export.borrow().unwrap();
         for (active, width) in [
@@ -569,7 +570,7 @@ mod tests {
             controls.active.set(active);
             controls.size.set(Some((width, 1440.0)));
             for _ in 0..4 {
-                dom.render_immediate_to_vec();
+                dom.render_checked();
             }
             let rail = controls.layout.get_free("guilds").unwrap();
             assert!((rail.w * width - 8.0 - f64::from(RAIL_DEFAULT)).abs() < 1e-6);

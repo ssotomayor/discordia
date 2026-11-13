@@ -1,5 +1,6 @@
 use super::*;
 use crate::nostr::nip02::Contact;
+use crate::render_check::Checked;
 use futures_util::StreamExt;
 use libwebrtc::{
     audio_frame::AudioFrame,
@@ -12,7 +13,7 @@ fn harness(
     test: impl FnOnce(&mut Actor, &mut tokio::sync::mpsc::UnboundedReceiver<(String, CallSignal)>),
 ) {
     let mut dom = VirtualDom::new(|| rsx! {});
-    dom.rebuild_in_place();
+    dom.rebuild_checked();
     dom.in_scope(ScopeId::ROOT, || {
         let mut initial = AppState::empty();
         initial.contacts.contacts.push(Contact {

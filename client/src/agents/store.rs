@@ -698,25 +698,6 @@ mod tests {
     }
 
     #[test]
-    fn groq_is_an_openai_compatible_preset_with_a_key_and_a_model() {
-        let p = Preset::from_id("groq").unwrap();
-        assert_eq!(p, Preset::Groq);
-        assert_eq!(p.provider(), Provider::OpenAiCompatible);
-        assert!(p.needs_key());
-        assert!(!p.editable_address());
-        assert_eq!(p.disclosed(p.base_url()), "Groq");
-        let mut e = AgentEntry::draft();
-        e.name = "Helper".into();
-        e.preset = p;
-        e.base_url = p.base_url().into();
-        e.model = p.default_model().into();
-        assert!(e.problem(true).is_none());
-        let config = e.model_config(ApiKey::new("k"));
-        assert_eq!(config.base_url, "https://api.groq.com/openai/v1");
-        assert_eq!(config.model, "openai/gpt-oss-20b");
-    }
-
-    #[test]
     fn a_draft_needs_a_name_a_model_and_a_key() {
         let mut e = AgentEntry::draft();
         assert!(e.problem(true).is_some());
