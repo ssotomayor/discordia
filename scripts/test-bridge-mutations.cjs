@@ -39,6 +39,16 @@ const mutations = [
     to: "if (false) out += '\\n';",
   },
   {
+    name: 'kept-draft-overwrites-typing', test: composer,
+    from: "if (field && field.innerHTML === '') {",
+    to: 'if (field) {',
+  },
+  {
+    name: 'kept-draft-announces-typing', test: composer,
+    from: 'if (kept === true) message.kept = true;',
+    to: 'void kept;',
+  },
+  {
     name: 'paste-listener-duplicates-on-remount', test: attachment,
     from: 'if (window.__dxfPasteWired) return;',
     to: 'void window.__dxfPasteWired;',

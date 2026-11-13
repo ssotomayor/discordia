@@ -2208,7 +2208,9 @@ return (async function () {
     if (!el || !alive) return;
     const text = serialize(el);
     if (text === '' && el.innerHTML !== '') el.innerHTML = '';
-    dioxus.send({ k: 'input', text: text, before: beforeCaret(el), kept: kept === true });
+    const message = { k: 'input', text: text, before: beforeCaret(el) };
+    if (kept === true) message.kept = true;
+    dioxus.send(message);
   };
   const remember = () => {
     const el = find();

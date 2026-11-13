@@ -2,21 +2,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(`${__dirname}/../src/features/chat.rs`, 'utf8');
-const script = source.match(/const COMPOSER_JS: &str = r#"([\s\S]*?)"#;/)[1]
+const template = source.match(/const COMPOSER_JS: &str = r#"([\s\S]*?)"#;/)[1]
   .replace('__ID__', 'composer').replace('__GEN__', 'test');
 const text = value => ({ nodeType: 3, nodeValue: value });
 const element = (tagName, children = [], dataset = {}) => ({
   nodeType: 1, tagName, childNodes: children, dataset,
 });
 
-function fixture() {
+function fixture(kept = null, existing = []) {
+  const script = template.replace('__KEPT__', JSON.stringify(kept));
   const listeners = new Map();
   const messages = [];
   const inserted = [];
   const operations = [];
   const commands = [];
-  const el = element('DIV');
-  el.innerHTML = '';
+  const el = element('DIV', existing);
+  el.innerHTML = existing.length ? 'typed' : '';
+  Object.defineProperty(el, 'textContent', {
+    set(value) { el.childNodes = [text(value)]; el.innerHTML = value; },
+  });
   el.contains = node => node === el || el.childNodes.includes(node);
   el.focus = () => operations.push('focus');
   let before = [];
@@ -196,6 +200,23 @@ function fixture() {
   assert.equal(f.el.childNodes[0].nodeValue, 'mensaje sin enviar');
   assert.equal(f.selection.getRangeAt(0).startOffset, 7);
   assert.equal(f.messages.length, sent);
+}
+
+{
+  const f = fixture('line one\nline two __ID__');
+  assert.deepEqual(f.messages, [
+    { k: 'input', text: 'line one\nline two __ID__', before: '', kept: true },
+  ], 'a draft kept across a restart is put back and marked, so it is not typing');
+  assert(!f.operations.includes('focus'), 'putting it back does not raise the keyboard');
+  f.event('input');
+  assert.equal('kept' in f.messages.at(-1), false, 'what is typed after is typing');
+}
+
+{
+  const f = fixture('kept', [text('typed since')]);
+  assert.equal(f.messages.length, 0);
+  assert.equal(f.el.childNodes[0].nodeValue, 'typed since');
+  assert.equal(fixture().messages.length, 0, 'nothing kept, nothing reported');
 }
 
 console.log('Chat composer tests passed');
