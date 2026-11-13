@@ -723,6 +723,7 @@ fn address_mode(typed: &str) -> Option<SessionMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
 
     #[test]
     fn disconnected_community_photos_use_disk_cache_and_misses_have_no_image() {
@@ -753,7 +754,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 dom.wait_for_work().await;
-                let edits = dom.render_immediate_to_vec().edits;
+                let edits = dom.render_checked().edits;
                 if edits.iter().any(|edit| {
                     matches!(edit,
                         Mutation::SetAttribute { name: "src", value: AttributeValue::Text(src), .. }

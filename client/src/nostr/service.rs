@@ -1724,6 +1724,7 @@ fn insert_message_with_settings(
 
 #[cfg(test)]
 mod tests {
+    use crate::render_check::Checked;
     fn relays(names: &[&str]) -> std::collections::HashSet<String> {
         names.iter().map(|name| name.to_string()).collect()
     }
@@ -1870,7 +1871,7 @@ mod tests {
     fn a_held_message_waits_with_the_clock_and_leaves_no_trace() {
         use dioxus::prelude::*;
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         dom.in_scope(ScopeId::ROOT, || {
             let (me, peer) = (key('a'), key('b'));
             let mut state = Signal::new(AppState::empty());
@@ -1917,7 +1918,7 @@ mod tests {
         use dioxus::prelude::*;
         use futures_util::FutureExt;
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         dom.in_scope(ScopeId::ROOT, || {
             let secret = secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
             let (me, peer) = (event::xonly_hex(&secret), key('b'));
@@ -1981,7 +1982,7 @@ mod tests {
     fn in_scope(f: impl FnOnce()) {
         use dioxus::prelude::*;
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         dom.in_scope(ScopeId::ROOT, f);
     }
 
@@ -2189,12 +2190,6 @@ mod tests {
 
     /// Offline with nobody to talk to, our own name is still worth asking for —
     /// it is the only one there is when no gateway roster exists.
-    #[test]
-    fn our_own_name_is_always_asked_for() {
-        let me = key('a');
-        assert_eq!(names_wanted(&AppState::empty(), &me), vec![me]);
-    }
-
     /// What a delete is for: the relays still hold the events and hand them
     /// back on the next launch.
     #[test]

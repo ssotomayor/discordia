@@ -322,6 +322,7 @@ pub fn LanguageDocument() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
 
     #[test]
     fn regional_languages_and_unsupported_languages() {
@@ -536,12 +537,12 @@ mod tests {
         let popup_output = Output::default();
         let mut main = VirtualDom::new_with_props(owner, exported.clone())
             .with_root_context(main_output.clone());
-        main.rebuild_in_place();
+        main.rebuild_checked();
         let mut locale = exported.borrow().unwrap();
         let mut popup = VirtualDom::new(probe)
             .with_root_context(Locale(locale))
             .with_root_context(popup_output.clone());
-        popup.rebuild_in_place();
+        popup.rebuild_checked();
         for (language, expected) in [
             (Language::Spanish, "Ajustes / 1 clave"),
             (Language::Portuguese, "Configurações / 1 chave"),
@@ -554,7 +555,7 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(1), window.wait_for_work())
                     .await
                     .unwrap();
-                window.render_immediate_to_vec();
+                window.render_checked();
             }
             assert_eq!(main_output.borrow().last().unwrap(), expected);
             assert_eq!(popup_output.borrow().last().unwrap(), expected);

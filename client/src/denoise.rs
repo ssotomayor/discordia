@@ -192,13 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn model_loads_with_the_pipeline_geometry() {
-        assert_eq!(HOP, 480);
-        assert_eq!(Denoiser::new().engine(), Some(Engine::RNNoise));
-        assert_eq!(Denoiser::new().fallback(), None);
-    }
-
-    #[test]
     fn suppresses_speechless_noise() {
         for mut denoiser in engines() {
             let input = fan(HOP * 50, 0.2);

@@ -127,6 +127,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     type ExportedState = Rc<RefCell<Option<Signal<AppState>>>>;
     type InlineExport = Rc<RefCell<Option<(Signal<bool>, EventHandler<()>)>>>;
 
@@ -140,29 +141,29 @@ mod tests {
     fn inline_social_opens_closes_and_reopens_without_a_desktop_window() {
         let export = InlineExport::default();
         let mut dom = VirtualDom::new_with_props(inline_fixture, export.clone());
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let (mut open, show) = export.borrow().as_ref().copied().unwrap();
         assert!(!*open.peek());
         for _ in 0..3 {
             show.call(());
-            let edits = dom.render_immediate_to_vec();
+            let edits = dom.render_checked();
             assert!(*open.peek());
             assert!(
                 !edits.edits.is_empty(),
                 "opening must mount the inline view"
             );
             show.call(());
-            let edits = dom.render_immediate_to_vec();
+            let edits = dom.render_checked();
             assert!(!*open.peek());
             assert!(
                 !edits.edits.is_empty(),
                 "the same button must unmount Social"
             );
             show.call(());
-            dom.render_immediate_to_vec();
+            dom.render_checked();
             assert!(*open.peek());
             open.set(false);
-            dom.render_immediate_to_vec();
+            dom.render_checked();
             assert!(!*open.peek());
         }
     }
@@ -233,7 +234,7 @@ mod tests {
             },
             (exported.clone(), owner_muted.clone()),
         );
-        owner.rebuild_in_place();
+        owner.rebuild_checked();
         let mut state = exported.borrow().unwrap();
         let popup_muted = Rc::new(Cell::new(false));
         let mut popup = VirtualDom::new_with_props(
@@ -241,22 +242,22 @@ mod tests {
             popup_muted.clone(),
         )
         .with_root_context(state);
-        assert_eq!(hoist_warnings(|| popup.rebuild_in_place()), 0);
+        assert_eq!(hoist_warnings(|| popup.rebuild_checked()), 0);
         state.write().voice.force_mute(true, false);
         tokio::time::timeout(std::time::Duration::from_secs(1), popup.wait_for_work())
             .await
             .unwrap();
         assert_eq!(
             hoist_warnings(|| {
-                popup.render_immediate_to_vec();
+                popup.render_checked();
             }),
             0
         );
-        owner.render_immediate_to_vec();
+        owner.render_checked();
         assert!(popup_muted.get() && owner_muted.get());
         drop(popup);
         state.write().voice.force_mute(false, false);
-        owner.render_immediate_to_vec();
+        owner.render_checked();
         assert!(!owner_muted.get());
         state.manually_drop();
     }

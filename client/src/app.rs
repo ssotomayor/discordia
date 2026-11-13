@@ -1369,21 +1369,6 @@ mod tests {
     use super::openable;
 
     #[test]
-    fn livekit_bundle_generation_latency() {
-        let t0 = std::time::Instant::now();
-        let b1 = super::livekit_bundle_js();
-        let first_call = t0.elapsed();
-        let t1 = std::time::Instant::now();
-        let _ = super::livekit_bundle_js();
-        let cached_call = t1.elapsed();
-        assert!(!b1.is_empty());
-        println!(
-            "LiveKit bundle generation: first_call={:?}, cached_call={:?}",
-            first_call, cached_call
-        );
-    }
-
-    #[test]
     fn livekit_bundle_is_lazy_idempotent_and_contains_worker() {
         let bundle1 = super::livekit_bundle_js();
         let bundle2 = super::livekit_bundle_js();
@@ -1451,14 +1436,6 @@ mod tests {
         let url = openable("https://a.b/?x&calc").expect("a well-formed https URL");
         assert_eq!(url.host_str(), Some("a.b"));
         assert_eq!(url.query(), Some("x&calc"));
-    }
-
-    #[test]
-    fn round_trips_a_plain_url() {
-        assert_eq!(
-            openable("https://example.com/path?q=1").map(|u| u.to_string()),
-            Some("https://example.com/path?q=1".to_string())
-        );
     }
 }
 

@@ -997,6 +997,7 @@ fn SavedEmojiSection() -> Element {
 #[cfg(test)]
 mod profile_name_tests {
     use super::*;
+    use crate::render_check::Checked;
     use dioxus::core::{AttributeValue, ElementId, Mutation};
     use std::{any::Any, cell::RefCell, rc::Rc};
 
@@ -1081,7 +1082,7 @@ mod profile_name_tests {
         let initial = dom.rebuild_to_vec();
         let trigger = labeled(&initial.edits, "Edit your profile");
         click(&dom, trigger);
-        let opened = dom.render_immediate_to_vec();
+        let opened = dom.render_checked();
         let field = labeled(&opened.edits, "Display name");
         let save = labeled(&opened.edits, "Save");
         let cancel = labeled(&opened.edits, "Cancel");
@@ -1089,25 +1090,20 @@ mod profile_name_tests {
             Mutation::SetAttribute { name: "value", value: AttributeValue::Text(value), id, .. } if *id == field && *value == "Current name"
         )));
         input(&dom, field, " \u{202e}New name\u{2029} ");
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         click(&dom, save);
         assert_eq!(*requests.borrow(), vec!["New name"]);
-        assert!(
-            dom.render_immediate_to_vec()
-                .edits
-                .iter()
-                .any(|edit| matches!(edit,
-                    Mutation::CreateTextNode { value, .. } if *value == "rename failed"
-                ))
-        );
+        assert!(dom.render_checked().edits.iter().any(|edit| matches!(edit,
+            Mutation::CreateTextNode { value, .. } if *value == "rename failed"
+        )));
         input(&dom, field, "   ");
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         click(&dom, save);
         assert_eq!(requests.borrow().len(), 1);
         click(&dom, cancel);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         click(&dom, trigger);
-        let reopened = dom.render_immediate_to_vec();
+        let reopened = dom.render_checked();
         let field = labeled(&reopened.edits, "Display name");
         assert!(reopened.edits.iter().any(|edit| matches!(edit,
             Mutation::SetAttribute { name: "value", value: AttributeValue::Text(value), id, .. } if *id == field && *value == "Current name"
@@ -1119,6 +1115,7 @@ mod profile_name_tests {
 #[cfg(test)]
 mod picker_race_tests {
     use super::*;
+    use crate::render_check::Checked;
     use futures_util::poll;
     use std::{
         cell::{Cell, RefCell},
@@ -1150,7 +1147,7 @@ mod picker_race_tests {
             },
             export.clone(),
         );
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let draft = export.borrow().unwrap();
         (dom, draft)
     }
@@ -1261,6 +1258,7 @@ mod picker_race_tests {
 
 #[cfg(test)]
 mod account_avatar_tests {
+    use crate::render_check::Checked;
     #[test]
     fn native_profile_picker_reads_an_extensionless_jpeg_and_keeps_it_crop_ready() {
         let root =
@@ -1351,7 +1349,7 @@ mod account_avatar_tests {
             .into(),
         ));
         assert!(has_source(
-            &dom.render_immediate_to_vec().edits,
+            &dom.render_checked().edits,
             "data:image/png;base64,bmV3"
         ));
     }

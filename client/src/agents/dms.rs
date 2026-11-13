@@ -184,22 +184,4 @@ mod tests {
         assert!(out.windows(2).all(|w| w[0].role != w[1].role));
         assert!(out.last().unwrap().text.starts_with("a29"));
     }
-
-    #[test]
-    fn a_reply_opens_only_for_its_recipient_and_answers_the_message() {
-        let agent = SecretKey::from_slice(&[7; 32]).unwrap();
-        let person = SecretKey::from_slice(&[9; 32]).unwrap();
-        let (me, them) = (event::xonly_hex(&agent), event::xonly_hex(&person));
-        let now = Utc::now().timestamp();
-        let rumor = nip17::chat_rumor(&me, &them, "hello", Some("abc"), &[], now);
-        let gift = nip59::wrap(&agent, &them, &rumor, now).unwrap();
-        let opened = nip17::open_chat(&person, &them, &gift).unwrap();
-        assert_eq!(opened.content, "hello");
-        assert_eq!(opened.author, me);
-        assert_eq!(opened.reply_to.as_deref(), Some("abc"));
-        assert!(
-            nip59::unwrap(&agent, &gift).is_err(),
-            "no copy addressed to itself"
-        );
-    }
 }

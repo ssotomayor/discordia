@@ -126,6 +126,7 @@ impl Bridge {
 mod tests {
     use super::*;
     use crate::protocol::{User, VoiceState};
+    use crate::render_check::Checked;
     use crate::state::VoicePhase;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -139,7 +140,7 @@ mod tests {
 
     fn setup() -> Fixture {
         let mut dom = VirtualDom::new(|| rsx! {});
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let state = dom.in_scope(ScopeId::ROOT, || {
             let mut state = AppState::empty();
             let channel = Uuid::new_v4();

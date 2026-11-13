@@ -254,6 +254,7 @@ repeated here.
 |---|---|---|
 | Wire, end to end | `server/tests/*.rs` | spawn a real gateway, drive it through the bot SDK; copy a helper block |
 | Partial failure | `server/tests/voice.rs` | `ScriptedMinter` answers per request — the delegation seam doubles as a fault injector |
+| A component under test | `client/src/render_check.rs` | `rebuild_checked`/`render_checked`, never `rebuild_in_place`/`render_immediate_to_vec`: dioxus-core catches a panicking render and only logs it, so an assert inside a component passes either way |
 | Platform paths | `client/tests/live_sfu.rs`, `#[ignore]`d unit tests | need an SFU, an audio device or a screen grant — hence ignored, not optional |
 | Windows native screen capture | `client/src/sysvideo/windows.rs` | ignored `selected_windows_and_monitors_feed_livekit_and_stop` needs an interactive desktop |
 | A received screen share at half size and 3 FPS | `client/src/features/voice.rs` | `screen_video_options` uses one quality by default; optional `screenshare_adaptive_quality` adds an explicit lower layer instead of LiveKit's 3 FPS default. `previewStats` feeds `StreamQualityNotice`. A sustained receiver-side reduction pins Medium, then probes High again. `scripts/test-stream-quality.mjs` |

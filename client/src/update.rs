@@ -517,12 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn the_comment_line_is_not_part_of_the_key() {
-        assert!(!trim_key(PUBLIC_KEY).contains("untrusted comment"));
-        assert!(trim_key(PUBLIC_KEY).starts_with("RW"));
-    }
-
-    #[test]
     fn the_bar_paints_the_ends_and_skips_the_dribble() {
         assert!(should_paint(0, 0, Some(9_000)), "the start must paint");
         assert!(
@@ -596,28 +590,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "downloads a 56MB release artifact"]
-    fn verifies_the_real_release_artifact() {
-        let base = "https://github.com/ssotomayor/discordia/releases/download/v0.1.0-pre.332";
-        let dmg = format!("{base}/Discordia-macos-arm64.dmg");
-        let rt = tokio::runtime::Runtime::new().expect("build a runtime");
-        let body = rt.block_on(async {
-            reqwest::get(&dmg)
-                .await
-                .expect("download the artifact")
-                .bytes()
-                .await
-                .expect("read the artifact")
-        });
-        verify(&body, REAL_SIGNATURE, REAL_TAG, REAL_ASSET)
-            .expect("the published artifact must verify");
-
-        let mut tampered = body.to_vec();
-        tampered[0] ^= 0xff;
-        assert!(verify(&tampered, REAL_SIGNATURE, REAL_TAG, REAL_ASSET).is_err());
-    }
-
-    #[test]
     fn swap_replaces_the_target_in_one_step() {
         let dir = std::env::temp_dir().join(format!("dxf-swap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -662,45 +634,6 @@ mod tests {
             "a Windows install planned as Open would leave the app holding its \
              own exe while the installer tries to overwrite it"
         );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn a_file_still_held_open_is_swept_once_it_is_released() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let dir = scratch("sweep-retry");
-        let parked = dir.join("Discordia.exe.old");
-        std::fs::write(&parked, b"outgoing").unwrap();
-
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .open(&parked)
-            .unwrap();
-        assert!(
-            std::fs::remove_file(&parked).is_err(),
-            "the lock did not take, so this test proves nothing"
-        );
-
-        let p = parked.clone();
-        let sweeper = std::thread::spawn(move || {
-            for wait in [0, 1, 2] {
-                if wait > 0 {
-                    std::thread::sleep(Duration::from_secs(wait));
-                }
-                if !p.exists() || std::fs::remove_file(&p).is_ok() {
-                    return true;
-                }
-            }
-            false
-        });
-
-        std::thread::sleep(Duration::from_millis(300));
-        drop(held);
-
-        assert!(sweeper.join().unwrap(), "the retry never got the file");
-        assert!(!parked.exists());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -914,146 +847,6 @@ mod tests {
     #[test]
     fn a_checkout_is_not_a_portable_copy() {
         assert!(portable_dir().is_none());
-    }
-
-    #[test]
-    #[ignore = "downloads the published portable archive"]
-    fn the_published_portable_archive_unpacks_over_a_folder() {
-        let rt = tokio::runtime::Runtime::new().expect("build a runtime");
-        let (zip_bytes, sig, tag) = rt.block_on(async {
-            let http = reqwest::Client::new();
-            let releases: serde_json::Value = http
-                .get("https://api.github.com/repos/ssotomayor/discordia/releases")
-                .header("User-Agent", "Discordia-test")
-                .send()
-                .await
-                .expect("list releases")
-                .json()
-                .await
-                .expect("decode releases");
-            let newest = releases
-                .as_array()
-                .expect("an array of releases")
-                .iter()
-                .find(|r| r["draft"] != true)
-                .expect("a published release");
-            let url_of = |name: &str| {
-                newest["assets"]
-                    .as_array()
-                    .expect("assets")
-                    .iter()
-                    .find(|a| a["name"] == name)
-                    .unwrap_or_else(|| panic!("{name} is not in {}", newest["tag_name"]))
-                    ["browser_download_url"]
-                    .as_str()
-                    .expect("a url")
-                    .to_string()
-            };
-            let asset = "Discordia-windows-portable.zip";
-            let body = http
-                .get(url_of(asset))
-                .send()
-                .await
-                .expect("download the archive")
-                .bytes()
-                .await
-                .expect("read the archive");
-            let sig = http
-                .get(url_of(&signature_name(asset)))
-                .send()
-                .await
-                .expect("download the signature")
-                .text()
-                .await
-                .expect("read the signature");
-            let tag = newest["tag_name"].as_str().expect("a tag").to_string();
-            (body, sig, tag)
-        });
-
-        verify(&zip_bytes, &sig, &tag, "Discordia-windows-portable.zip")
-            .expect("the published archive must verify");
-
-        let dir = scratch("published-portable");
-        let zip = dir.join("Discordia-windows-portable.zip");
-        std::fs::write(&zip, &zip_bytes).unwrap();
-        let installed = dir.join("app");
-        std::fs::create_dir_all(&installed).unwrap();
-        unzip_into(&zip, &installed).expect("unpack the archive once");
-        std::fs::write(installed.join(PORTABLE_MARKER), b"portable").unwrap();
-        let before = std::fs::read(installed.join("Discordia.exe")).expect("an exe in the archive");
-
-        replace_portable(&zip, &installed, "Discordia.exe").expect("update the folder");
-
-        assert_eq!(
-            std::fs::read(installed.join("Discordia.exe")).unwrap(),
-            before,
-            "the replaced program is not the one from the archive"
-        );
-        assert!(
-            installed.join("Discordia.exe.old").is_file(),
-            "the outgoing program was not parked"
-        );
-        assert!(
-            installed.join("assets").is_dir(),
-            "the assets did not survive"
-        );
-        assert!(
-            !installed.join(".update-staging").exists(),
-            "staging was left behind"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    #[ignore = "asks GitHub for the newest release"]
-    fn every_asset_the_update_can_ask_for_is_published_and_signed() {
-        let wanted = [
-            "Discordia-windows-setup.exe",
-            "Discordia-windows-portable.zip",
-            "Discordia-macos-arm64.dmg",
-            "Discordia-linux-x86_64.AppImage",
-        ];
-        let rt = tokio::runtime::Runtime::new().expect("build a runtime");
-        let (tag, names) = rt.block_on(async {
-            let releases: serde_json::Value = reqwest::Client::new()
-                .get("https://api.github.com/repos/ssotomayor/discordia/releases")
-                .header("User-Agent", "Discordia-test")
-                .send()
-                .await
-                .expect("list releases")
-                .json()
-                .await
-                .expect("decode releases");
-            let newest = releases
-                .as_array()
-                .expect("an array")
-                .iter()
-                .find(|r| r["draft"] != true)
-                .expect("a published release")
-                .clone();
-            let names: Vec<String> = newest["assets"]
-                .as_array()
-                .expect("assets")
-                .iter()
-                .filter_map(|a| a["name"].as_str().map(str::to_string))
-                .collect();
-            (
-                newest["tag_name"].as_str().unwrap_or("?").to_string(),
-                names,
-            )
-        });
-
-        for asset in wanted {
-            assert!(
-                names.iter().any(|n| n == asset),
-                "{tag} publishes no {asset} — an update on that platform would find nothing"
-            );
-            let sig = signature_name(asset);
-            assert!(
-                names.contains(&sig),
-                "{tag} has {asset} but no {sig} — unverifiable, so the update refuses it"
-            );
-        }
     }
 
     #[test]

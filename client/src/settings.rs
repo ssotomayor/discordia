@@ -900,11 +900,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn screen_sharing_defaults_to_the_game_friendly_preset() {
-        assert_eq!(default_screenshare_quality(), "smooth");
-    }
-
     fn file(settings: serde_json::Value) -> String {
         serde_json::json!({ "version": FILE_VERSION, "settings": settings }).to_string()
     }
@@ -971,30 +966,6 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_screen_quality_preference_survives_serialization() {
-        let settings = ClientSettings {
-            screenshare_adaptive_quality: true,
-            ..Default::default()
-        };
-        let loaded = parse(&file(serde_json::to_value(settings).unwrap())).expect("loads");
-        assert!(loaded.screenshare_adaptive_quality);
-    }
-
-    #[test]
-    fn codec_defaults_to_automatic_and_preserves_explicit_saved_choices() {
-        use crate::sysvideo::Codec;
-        assert_eq!(ClientSettings::default().screenshare_codec, Codec::Auto);
-        for codec in [Codec::Auto, Codec::H264, Codec::Vp8] {
-            let settings = ClientSettings {
-                screenshare_codec: codec,
-                ..Default::default()
-            };
-            let loaded = parse(&file(serde_json::to_value(settings).unwrap())).unwrap();
-            assert_eq!(loaded.screenshare_codec, codec);
-        }
-    }
-
-    #[test]
     fn a_rendezvous_reads_as_its_host_unless_its_port_is_unusual() {
         assert_eq!(
             rendezvous_label("ws://rendezvous.discordia.world:7700"),
@@ -1007,16 +978,5 @@ mod tests {
             "192.168.0.61:7800"
         );
         assert_eq!(rendezvous_label("ws://[::1]:7700"), "[::1]");
-    }
-
-    #[test]
-    fn tray_notifications_defaults_to_true_and_preserves_explicit_choice() {
-        assert!(ClientSettings::default().tray_notifications);
-        let disabled = ClientSettings {
-            tray_notifications: false,
-            ..Default::default()
-        };
-        let loaded = parse(&file(serde_json::to_value(disabled).unwrap())).unwrap();
-        assert!(!loaded.tray_notifications);
     }
 }

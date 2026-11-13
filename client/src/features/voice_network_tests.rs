@@ -1,4 +1,5 @@
 use super::*;
+use crate::render_check::Checked;
 use livekit::webrtc::stats::{InboundRtpStats, OutboundRtpStats, RemoteInboundRtpStats};
 
 #[test]
@@ -256,7 +257,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
         }
     });
     let mut dom = VirtualDom::new(|| rsx! {});
-    dom.rebuild_in_place();
+    dom.rebuild_checked();
     let (controls, task) = dom.in_scope(ScopeId::ROOT, || {
         let mut initial = AppState::empty();
         initial.voice.force_phase(VoicePhase::Connected);
@@ -277,7 +278,7 @@ async fn a_live_sender_negotiates_fec_and_takes_a_new_ceiling_without_reconnecti
     let mut after = None;
     while started.elapsed() < Duration::from_secs(12) {
         tokio::select! {
-            _ = dom.wait_for_work() => { dom.render_immediate_to_vec(); }
+            _ = dom.wait_for_work() => { dom.render_checked(); }
             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
         }
         if before.is_none() && started.elapsed() > Duration::from_secs(3) {

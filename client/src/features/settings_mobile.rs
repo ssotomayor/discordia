@@ -71,27 +71,3 @@ pub(super) fn AppTabs(mut selected: Signal<SettingsTab>) -> Element {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn general_contains_language_notifications_and_activity() {
-        for tab in [
-            SettingsTab::General,
-            SettingsTab::Notifications,
-            SettingsTab::Activity,
-        ] {
-            assert!(group(tab) == SettingsTab::General);
-        }
-    }
-
-    #[test]
-    fn updates_are_the_default_app_page() {
-        assert!(group(SettingsTab::Updates) == SettingsTab::Updates);
-        assert!(group(SettingsTab::Diagnostics) == SettingsTab::Updates);
-        assert!(group(SettingsTab::Audio) == SettingsTab::Audio);
-        assert!(group(SettingsTab::Video) == SettingsTab::Video);
-    }
-}

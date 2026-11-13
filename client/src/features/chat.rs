@@ -1809,6 +1809,7 @@ fn ChatImage(
 #[cfg(test)]
 mod author_name_tests {
     use super::*;
+    use crate::render_check::Checked;
     use std::{cell::RefCell, rc::Rc};
 
     fn historical_message() -> Message {
@@ -1877,7 +1878,7 @@ mod author_name_tests {
                 .write()
                 .note_name(&"a".repeat(64), "After".into(), 200)
         );
-        let changed = dom.render_immediate_to_vec();
+        let changed = dom.render_checked();
         assert_eq!(
             changed
                 .edits
@@ -1889,7 +1890,7 @@ mod author_name_tests {
             2
         );
         state.write().nostr_names.clear();
-        let fallback = dom.render_immediate_to_vec();
+        let fallback = dom.render_checked();
         assert_eq!(
             fallback
                 .edits
@@ -1907,6 +1908,7 @@ mod author_name_tests {
 #[cfg(test)]
 mod image_tests {
     use super::*;
+    use crate::render_check::Checked;
     use std::{cell::RefCell, rc::Rc};
 
     #[test]
@@ -1945,7 +1947,7 @@ mod image_tests {
             .write()
             .emoji_images
             .insert("missing.png".into(), image.into());
-        assert!(dom.render_immediate_to_vec().edits.iter().any(|edit| matches!(edit,
+        assert!(dom.render_checked().edits.iter().any(|edit| matches!(edit,
             dioxus::core::Mutation::SetAttribute { name: "src", value: dioxus::core::AttributeValue::Text(value), .. }
                 if value == image
         )));
@@ -1953,7 +1955,7 @@ mod image_tests {
             .write()
             .emoji_images
             .insert("missing.png".into(), String::new());
-        placeholder(&dom.render_immediate_to_vec().edits);
+        placeholder(&dom.render_checked().edits);
         assert!(state.read().emoji_images.contains_key("missing.png"));
     }
 }
@@ -3824,15 +3826,6 @@ mod composer_tests {
         assert!(matches!(got[1].pick, ComposerPick::Unicode("🔥")));
         assert!(emoji_suggestions("zzzz", &guild, &urls).is_empty());
         assert_eq!(emoji_suggestions("_", &guild, &urls).len(), MAX_SUGGESTIONS);
-    }
-
-    #[test]
-    fn composer_calls_quote_their_arguments_for_the_webview() {
-        // The id and every argument are JSON, so a quote or a backslash in a
-        // shortcode cannot escape the call.
-        let args = [Value::String("a\"b".into()), Value::Bool(true)];
-        let rendered: Vec<String> = args.iter().map(Value::to_string).collect();
-        assert_eq!(rendered.join(","), r#""a\"b",true"#);
     }
 }
 

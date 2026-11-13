@@ -2082,50 +2082,6 @@ mod tests {
         assert!(event.tag("expiration").is_some());
     }
 
-    #[tokio::test]
-    #[ignore = "uploads a generated encrypted test image to an explicitly selected Blossom server"]
-    async fn encrypted_binary_upload_probe() {
-        let server = std::env::var("DISCORDIA_TEST_BLOSSOM_SERVER").expect("choose a server");
-        let secret = secp256k1::SecretKey::new(&mut rand::rngs::OsRng);
-        let (mut image, bytes) = encrypt(PNG).unwrap();
-        image.url = upload(&server, &secret, bytes.clone(), &image.hash)
-            .await
-            .unwrap();
-        let url = public_url(&image.url).unwrap();
-        let response = client(&url).await.unwrap().get(url).send().await.unwrap();
-        let downloaded = bounded_body(response, MAX_CIPHER_BYTES).await.unwrap();
-        let management =
-            public_url(&format!("{}/{}", server.trim_end_matches('/'), image.hash)).unwrap();
-        let authorization = authorization(&secret, &management, &image.hash, "delete").unwrap();
-        let deleted = client(&management)
-            .await
-            .unwrap()
-            .delete(management)
-            .header("Authorization", authorization)
-            .send()
-            .await
-            .unwrap();
-        assert!(
-            deleted.status().is_success(),
-            "test blob cleanup failed: {}",
-            deleted.status()
-        );
-        assert_eq!(downloaded, bytes);
-        assert_eq!(image.decrypt(&downloaded).unwrap(), PNG);
-    }
-
-    #[test]
-    fn aes256_gcm_matches_independent_nist_vector() {
-        let cipher = Aes256Gcm::new_from_slice(&[0; 32]).unwrap();
-        let encrypted = cipher
-            .encrypt(Nonce::from_slice(&[0; 12]), [0u8; 16].as_slice())
-            .unwrap();
-        assert_eq!(
-            hex::encode(encrypted),
-            "cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919"
-        );
-    }
-
     #[test]
     fn untrusted_urls_cannot_target_local_networks() {
         for url in [

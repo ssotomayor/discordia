@@ -1560,6 +1560,7 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use crate::state::ConnectionStatus;
 
     #[tokio::test]
@@ -1590,7 +1591,7 @@ mod tests {
                 picker: picker.clone(),
             },
         );
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let id = Id::new_v4();
         let session = Session::new(Vec::new(), None, Some(id));
         let window = session.window;
@@ -1668,7 +1669,7 @@ mod tests {
             let names: Names = Rc::new(RefCell::new(Vec::new()));
             VirtualDom::new(probe)
                 .with_root_context((language, names.clone()))
-                .rebuild_in_place();
+                .rebuild_checked();
             // Dioxus catches component panics, so assertions must run outside the render boundary.
             assert_eq!(*names.borrow(), [expected, "Dice Roller"]);
         }
@@ -1690,8 +1691,8 @@ mod tests {
             },
             (exported.clone(), GatewayTx(tx)),
         );
-        dom.rebuild_in_place();
-        dom.render_immediate_to_vec();
+        dom.rebuild_checked();
+        dom.render_checked();
         assert!(rx.try_recv().is_err());
         let mut state = exported.borrow().unwrap();
         let guild = Id::new_v4();
@@ -1702,7 +1703,7 @@ mod tests {
             s.selected_guild = Some(guild);
             s.selected_channel = Some(channel);
         }
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(
             matches!(rx.try_recv().unwrap(), ClientMessage::FetchGuildActivityInstances { guild_id } if guild_id == guild)
         );
@@ -1712,27 +1713,27 @@ mod tests {
                 s.activity_instances.insert(channel, Vec::new());
                 s.voice.speaking = i % 2 == 0;
             }
-            dom.render_immediate_to_vec();
+            dom.render_checked();
         }
         state.write().selected_channel = Some(Id::new_v4());
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(rx.try_recv().is_err(), "pushes keep the guild current");
         state.write().status = ConnectionStatus::Reconnecting;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(rx.try_recv().is_err());
         state.write().status = ConnectionStatus::Ready;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(
             matches!(rx.try_recv().unwrap(), ClientMessage::FetchGuildActivityInstances { guild_id } if guild_id == guild)
         );
         let next = Id::new_v4();
         state.write().selected_guild = Some(next);
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(
             matches!(rx.try_recv().unwrap(), ClientMessage::FetchGuildActivityInstances { guild_id } if guild_id == next)
         );
         state.write().dm_mode = true;
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         assert!(rx.try_recv().is_err());
     }
 
@@ -1914,7 +1915,7 @@ mod tests {
             });
             rsx! {}
         }
-        VirtualDom::new(harness).rebuild_in_place();
+        VirtualDom::new(harness).rebuild_checked();
     }
 
     #[tokio::test]
@@ -1945,7 +1946,7 @@ mod tests {
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut dom = VirtualDom::new_with_props(harness, Props(tx));
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         for _ in 0..60 {
             if tokio::time::timeout(std::time::Duration::from_millis(20), dom.wait_for_work())
                 .await
@@ -2059,6 +2060,6 @@ mod tests {
             });
             rsx! {}
         }
-        VirtualDom::new(harness).rebuild_in_place();
+        VirtualDom::new(harness).rebuild_checked();
     }
 }

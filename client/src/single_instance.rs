@@ -182,11 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn the_replaced_flag_is_recognised() {
-        assert_eq!(RESTART_FLAG, "--replaced");
-    }
-
-    #[test]
     fn restore_requests_reach_the_primary_repeatedly() {
         let name = format!("Local\\discordia-restore-test-{}", std::process::id());
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();

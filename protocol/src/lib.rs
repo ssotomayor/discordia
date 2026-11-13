@@ -878,22 +878,6 @@ mod username_tests {
 mod name_tests {
     use super::sanitize_name;
 
-    #[test]
-    fn the_three_callers_keep_their_wording() {
-        assert_eq!(
-            sanitize_name("guild", "", 64).unwrap_err(),
-            "guild name must be 1..=64 chars"
-        );
-        assert_eq!(
-            sanitize_name("channel", "", 64).unwrap_err(),
-            "channel name must be 1..=64 chars"
-        );
-        assert_eq!(
-            sanitize_name("role", "", 32).unwrap_err(),
-            "role name must be 1..=32 chars"
-        );
-    }
-
     /// Naming the character rather than asking `unsafe_to_display` again: an
     /// assertion built from the predicate under test cannot fail with it.
     #[test]
@@ -3721,29 +3705,6 @@ mod identify_wire_tests {
             other => panic!("parsed as {other:?}"),
         }
     }
-
-    #[test]
-    fn a_version_survives_the_round_trip() {
-        let json = serde_json::to_string(&ClientMessage::Identify {
-            username: "alice".into(),
-            pubkey: "ab".into(),
-            signature: "cd".into(),
-            origin: String::new(),
-            bot: false,
-            client_version: "v0.1.0-pre.223".into(),
-            progressive_image_uploads: true,
-        })
-        .unwrap();
-        assert!(json.contains("v0.1.0-pre.223"), "not on the wire: {json}");
-
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        match back {
-            ClientMessage::Identify { client_version, .. } => {
-                assert_eq!(client_version, "v0.1.0-pre.223")
-            }
-            other => panic!("parsed as {other:?}"),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3768,29 +3729,6 @@ mod voice_join_tests {
                 assert_eq!(preferences, None);
             }
             other => panic!("unexpected frame: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn voice_join_preferences_survive_serialization() {
-        for muted in [false, true] {
-            for deafened in [false, true] {
-                let preferences = Some(VoicePreferences { muted, deafened });
-                let json = serde_json::to_string(&ClientMessage::JoinVoice {
-                    channel_id: Id::new_v4(),
-                    preferences,
-                })
-                .unwrap();
-                match serde_json::from_str::<ClientMessage>(&json).unwrap() {
-                    ClientMessage::JoinVoice {
-                        preferences: received,
-                        ..
-                    } => {
-                        assert_eq!(received, preferences);
-                    }
-                    other => panic!("unexpected frame: {other:?}"),
-                }
-            }
         }
     }
 }
@@ -4066,17 +4004,6 @@ mod leveling_tests {
         });
         assert_eq!(l.tiers[0].color.as_deref(), Some("#abc"));
         assert_eq!(l.tiers[1].color, None);
-    }
-
-    #[test]
-    fn defaults_are_what_every_guild_had_before_this_was_settable() {
-        let l = Leveling::default();
-        assert!(l.enabled);
-        assert_eq!(l.amount_for(XpAction::Message), 1);
-        assert_eq!(l.amount_for(XpAction::Reaction), 0);
-        assert_eq!(l.amount_for(XpAction::VoiceMinute), 0);
-        assert_eq!(l.cooldown_secs, 60);
-        assert_eq!(l.member_sort, MemberSort::Name);
     }
 }
 

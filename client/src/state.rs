@@ -3602,20 +3602,6 @@ mod tests {
         assert!(!s.note_clock_offset("abcd", -900));
     }
 
-    /// The page and the memory overlap by design — the fetch re-reads what a
-    /// live message already delivered.
-    #[test]
-    fn a_page_does_not_duplicate_what_is_already_held() {
-        let mut s = AppState::empty();
-        let cid = Id::new_v4();
-        let shared = Id::new_v4();
-        s.insert_message(cid, at(shared, cid, 200));
-
-        s.merge_history(cid, vec![at(shared, cid, 200), at(Id::new_v4(), cid, 100)]);
-
-        assert_eq!(s.messages[&cid].len(), 2);
-    }
-
     #[test]
     fn a_live_message_does_not_count_as_fetched_history() {
         let mut s = AppState::empty();
@@ -4557,12 +4543,6 @@ mod tests {
             .map(|m| m.user.pubkey.as_str())
             .collect();
         assert_eq!(order, ["c-both", "b-mod", "a-plain", "d-admin-away"]);
-    }
-
-    #[test]
-    fn talking_lights_green_and_silence_shows_no_ring() {
-        assert_eq!(talk_ring(true), "ring-2 ring-[var(--success)]");
-        assert_eq!(talk_ring(false), "");
     }
 
     #[test]

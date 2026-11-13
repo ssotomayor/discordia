@@ -544,32 +544,4 @@ mod tests {
     fn a_short_address_is_left_exactly_as_it_is() {
         assert_eq!(ellipsize("host:443", 30), "host:443");
     }
-
-    /// Not an assertion — a way to look at the thing. `cargo test -p discordia
-    /// -- --ignored render_the_diagram --nocapture` writes it to the temp
-    /// directory and prints the path, because the diagram is the one part of
-    /// this file no assertion can judge.
-    #[test]
-    #[ignore]
-    fn render_the_diagram() {
-        let mut key = leg("your key", "Stays here", Seal::Local, false);
-        key.travels = false;
-        key.where_to = "never sent".into();
-        let mut gateway = leg("channels · members", "Server", Seal::EndToEnd, true);
-        gateway.where_to = "chat.example.test:443".into();
-        gateway.via = Some("via relay".into());
-        let mut rz = leg("discovery", "Rendezvous", Seal::InTransit, false);
-        rz.where_to = "rz.discordia.test:443".into();
-        let legs = vec![
-            gateway,
-            leg("direct messages", "Nostr relays", Seal::EndToEnd, false),
-            leg("voice · screen", "SFU", Seal::InTransit, false),
-            rz,
-            key,
-        ];
-        let svg = diagram_svg(&legs, "this client");
-        let path = std::env::temp_dir().join("topology-preview.svg");
-        std::fs::write(&path, &svg).expect("write preview");
-        println!("wrote {} ({} bytes)", path.display(), svg.len());
-    }
 }

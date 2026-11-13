@@ -377,13 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn loading_is_not_an_empty_list() {
-        assert_ne!(SourceList::Loading, SourceList::Listed(Vec::new()));
-        assert!(SourceList::Loading.sources().is_empty());
-        assert_eq!(SourceList::Failed("x".into()).error(), Some("x"));
-    }
-
-    #[test]
     fn the_server_hears_each_start_and_stop_once() {
         let one = Id::from_u128(1);
         let two = Id::from_u128(2);

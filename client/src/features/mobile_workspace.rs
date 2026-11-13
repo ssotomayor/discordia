@@ -100,6 +100,7 @@ enum PagerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_check::Checked;
     use dioxus::core::{AttributeValue, Mutation};
     use std::{
         cell::{Cell, RefCell},
@@ -232,19 +233,19 @@ mod tests {
                 paged,
             ),
         );
-        dom.rebuild_in_place();
+        dom.rebuild_checked();
         let mut active = active_export.borrow().unwrap();
         let mut draft = draft_export.borrow().unwrap();
         draft.set("keep this draft".into());
-        dom.render_immediate_to_vec();
+        dom.render_checked();
         for _ in 0..10 {
             active.set(false);
-            let hidden = dom.render_immediate_to_vec();
+            let hidden = dom.render_checked();
             assert!(hidden.edits.iter().any(|edit| matches!(edit,
                 Mutation::SetAttribute { name: "inert", value: AttributeValue::Text(value), .. } if value.is_empty()
             )));
             active.set(true);
-            dom.render_immediate_to_vec();
+            dom.render_checked();
             assert_eq!(counts.mounts.get(), 1);
             assert_eq!(counts.drops.get(), 0);
             assert_eq!(&*draft.read(), "keep this draft");

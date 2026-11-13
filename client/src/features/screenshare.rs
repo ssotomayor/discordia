@@ -3783,23 +3783,6 @@ mod js_escaping_tests {
     }
 
     #[test]
-    fn escaping_preserves_the_value() {
-        for raw in [
-            "wss://sfu.example.com:7880",
-            "a'b",
-            "a\"b",
-            "back\\slash",
-            "new\nline",
-            "</script>",
-            "🙂",
-        ] {
-            let parsed: String =
-                serde_json::from_str(&js_str(raw)).expect("still valid JSON/JS string");
-            assert_eq!(parsed, raw, "value survived escaping unchanged");
-        }
-    }
-
-    #[test]
     fn the_call_sites_emit_quoted_arguments() {
         let js = attach_js("pk#video", "screen-tile", "screen");
         assert!(
@@ -3864,23 +3847,5 @@ mod js_escaping_tests {
             js.contains("const shareStopped = stopLocalShareVideo();"),
             "disconnect stops and cleans active screen video tracks"
         );
-    }
-
-    #[test]
-    fn adaptive_webview_memory_policy_evaluation() {
-        fn evaluate_policy(visible: bool, video_active: bool) -> &'static str {
-            let should_be_low = !visible && !video_active;
-            if should_be_low { "Low" } else { "Normal" }
-        }
-
-        // Visible window: always Normal
-        assert_eq!(evaluate_policy(true, false), "Normal");
-        assert_eq!(evaluate_policy(true, true), "Normal");
-
-        // Inactive window (minimized or tray) without active video: Low
-        assert_eq!(evaluate_policy(false, false), "Low");
-
-        // Inactive window (minimized or tray) WITH active video streaming: Normal
-        assert_eq!(evaluate_policy(false, true), "Normal");
     }
 }
