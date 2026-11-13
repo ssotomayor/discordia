@@ -1962,9 +1962,10 @@ impl ScreenVideoRoom {
         state: Signal<AppState>,
     ) -> Result<Self, String> {
         let mut publish_settings = settings;
-        publish_settings.codec = crate::sysvideo::codec_capabilities()
-            .await?
-            .resolve(settings.codec, settings.encoder)?;
+        let capabilities = crate::sysvideo::codec_capabilities().await?;
+        publish_settings.codec = capabilities.resolve(settings.codec, settings.encoder)?;
+        let automatic_hardware = cfg!(target_os = "windows")
+            && capabilities.supports(publish_settings.codec, crate::sysvideo::Encoder::Gpu);
         if settings.adaptive_quality || cfg!(target_os = "android") {
             let sources = tokio::task::spawn_blocking(crate::sysvideo::sources)
                 .await
@@ -2037,8 +2038,10 @@ impl ScreenVideoRoom {
                         && s.screen_share
                             .on(crate::local_share::ShareEvent::Failed(target))
                     {
-                        s.error_toast =
-                            Some(format!("Your screen stopped being shared: {e}. Try again."));
+                        s.error_toast = Some(crate::i18n::text(
+                            "Your screen stopped being shared: {0}. Try again.",
+                            &[e],
+                        ));
                     }
                 }
             })
@@ -2107,6 +2110,8 @@ impl ScreenVideoRoom {
         let status_room = room.clone();
         let network_task = network::spawn_video_budget(state, track.clone(), 300_000);
         let stats_task = crate::service_task::spawn(async move {
+            #[cfg(target_os = "windows")]
+            let mut output_progress = crate::sysvideo::fallback::OutputProgress::default();
             #[cfg(target_os = "android")]
             let mut mobile_budget =
                 crate::sysvideo::mobile_budget::MobileBudget::warm_start(settings, Instant::now());
@@ -2137,10 +2142,34 @@ impl ScreenVideoRoom {
                 let capture_copy_ms = captured.copy_ms_since(capture_previous);
                 capture_previous = captured;
                 sampled = now;
+                #[cfg(target_os = "windows")]
+                let report = match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    track.get_stats(),
+                )
+                .await
+                {
+                    Ok(Ok(report)) => report,
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, "screen encoder statistics unavailable");
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::warn!("screen encoder statistics timed out; stopping the share");
+                        if encoder_fatal.send(crate::i18n::text(
+                            "Screen-sharing statistics stopped responding. Sharing was stopped.",
+                            &[],
+                        )).is_err() {
+                            eprintln!("[screen] encoder timeout after session teardown");
+                        }
+                        break;
+                    }
+                };
+                #[cfg(not(target_os = "windows"))]
                 let Ok(report) = track.get_stats().await else {
                     continue;
                 };
-                let Some(outbound) = report
+                let outbound = report
                     .iter()
                     .filter_map(|entry| match entry {
                         RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
@@ -2151,24 +2180,53 @@ impl ScreenVideoRoom {
                             o.outbound.rid == "f",
                             o.outbound.frame_width as u64 * o.outbound.frame_height as u64,
                         )
-                    })
-                else {
+                    });
+                #[cfg(target_os = "windows")]
+                let active_output = crate::sysvideo::fallback::active_output(&report);
+                #[cfg(target_os = "windows")]
+                if output_progress.stalled(
+                    Instant::now(),
+                    capture_fps > 0.0 && active_output.is_some(),
+                    active_output,
+                ) {
+                    tracing::warn!(
+                        "screen capture has frames but encoding made no progress; stopping the share"
+                    );
+                    if encoder_fatal.send(crate::i18n::text(
+                        "The screen-sharing encoder stopped producing frames. Sharing was stopped.",
+                        &[],
+                    )).is_err() {
+                        eprintln!("[screen] encoder stall after session teardown");
+                    }
+                    break;
+                }
+                let Some(outbound) = outbound else {
                     continue;
                 };
-                if settings.encoder == crate::sysvideo::Encoder::Gpu && {
-                    let implementation = outbound
-                        .outbound
-                        .encoder_implementation
-                        .to_ascii_lowercase();
-                    implementation.contains("openh264") || implementation.contains("libvpx")
-                } {
-                    if encoder_fatal
-                        .send(format!(
-                            "{} encoding failed. Choose Automatic or CPU.",
-                            crate::sysvideo::hardware_encoder_label()
-                        ))
-                        .is_err()
-                    {
+                if crate::sysvideo::fallback::stop_software_encoding(
+                    publish_settings,
+                    automatic_hardware,
+                    &outbound.outbound.encoder_implementation,
+                ) {
+                    tracing::warn!(
+                        implementation = %outbound.outbound.encoder_implementation,
+                        width = publish_settings.width,
+                        height = publish_settings.height,
+                        fps = publish_settings.fps,
+                        "stopping screen share after unexpected software encoding"
+                    );
+                    let message = if settings.encoder == crate::sysvideo::Encoder::Gpu {
+                        crate::i18n::text(
+                            "{0} encoding failed. Choose Automatic or CPU.",
+                            &[crate::sysvideo::hardware_encoder_label().into()],
+                        )
+                    } else {
+                        crate::i18n::text(
+                            "Sharing stopped to avoid high CPU encoding load. Try 720p30 or choose CPU explicitly.",
+                            &[],
+                        )
+                    };
+                    if encoder_fatal.send(message).is_err() {
                         eprintln!("[screen] encoder failure after session teardown");
                     }
                     break;
@@ -4864,6 +4922,11 @@ mod tests {
             settings.codec = codec;
             settings.encoder = encoder;
             settings.adaptive_quality = verify_simulcast;
+            if verify_mf_fallback {
+                settings.width = 1280;
+                settings.height = 720;
+                settings.fps = 30;
+            }
             if verify_nvenc_rates {
                 settings.width = 1280;
                 settings.height = 720;

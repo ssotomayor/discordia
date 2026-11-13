@@ -9,6 +9,27 @@
 #include <wrl/client.h>
 #endif
 
+void TestSoftwareFallbackBudget() {
+  using webrtc::mf::SoftwareFallbackWithinBudget;
+  assert(SoftwareFallbackWithinBudget(1280, 720, 30));
+  assert(SoftwareFallbackWithinBudget(720, 1280, 30));
+  assert(SoftwareFallbackWithinBudget(640, 360, 60));
+  assert(!SoftwareFallbackWithinBudget(1920, 1080, 60));
+  assert(!SoftwareFallbackWithinBudget(1920, 1080, 30));
+  assert(!SoftwareFallbackWithinBudget(1280, 720, 60));
+  assert(!SoftwareFallbackWithinBudget(3840, 720, 30));
+  assert(!SoftwareFallbackWithinBudget(UINT32_MAX, UINT32_MAX, UINT32_MAX));
+  assert(!SoftwareFallbackWithinBudget(0, 720, 30));
+  int initialized = 0;
+  auto init = [&] { ++initialized; return 0; };
+  auto denied = [] { return -7; };
+  assert(webrtc::mf::InitializeSoftwareFallback(true, 1920, 1080, 60, init, denied) == -7);
+  assert(initialized == 0);
+  assert(webrtc::mf::InitializeSoftwareFallback(true, 1280, 720, 30, init, denied) == 0);
+  assert(webrtc::mf::InitializeSoftwareFallback(false, 1920, 1080, 60, init, denied) == 0);
+  assert(initialized == 2);
+}
+
 void TestInputRetries() {
   using namespace webrtc::mf;
   struct Metadata { int frame; int64_t timestamp; bool keyframe; };
@@ -64,6 +85,7 @@ void TestInputBuffers() {
 #endif
 
 int main() {
+  TestSoftwareFallbackBudget();
   TestInputRetries();
 #ifdef _WIN32
   TestInputBuffers();
