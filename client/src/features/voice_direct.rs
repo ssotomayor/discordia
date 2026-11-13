@@ -348,6 +348,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "opens local microphone and playback devices"]
     async fn changing_dm_input_and_bypass_reopens_capture_without_replacing_track() {
+        use crate::render_check::Checked;
         let mut dom = VirtualDom::new(|| rsx! {});
         dom.rebuild_checked();
         let factory = PeerConnectionFactory::default();
