@@ -834,6 +834,11 @@ impl RtcSession {
         self.inner.remove_track(sender)
     }
 
+    /// Hands a resubscribed track the transceiver still carrying it.
+    pub fn redispatch_track(&self, sid: &str) {
+        self.inner.redispatch_track(sid)
+    }
+
     pub fn publisher_negotiation_needed(&self) {
         self.inner.publisher_negotiation_needed()
     }
@@ -1161,6 +1166,24 @@ impl SessionInner {
                 });
             }
         }
+    }
+
+    // An unsubscribe drops the track locally at once, but the SFU may merge it with the
+    // resubscribe that follows and never renegotiate, so nothing would hand the track back.
+    fn redispatch_track(&self, sid: &str) {
+        log::debug!("redispatching resubscribed track {sid}");
+        let pc = match &self.subscriber_pc {
+            Some(subscriber) => subscriber.peer_connection(),
+            None => self.publisher_pc.peer_connection(),
+        };
+        {
+            let mids = self.mid_to_track_id.lock();
+            self.dispatched_streams.lock().retain(|(mid, stream)| {
+                stream.split('|').nth(1) != Some(sid)
+                    && mids.get(mid).map(String::as_str) != Some(sid)
+            });
+        }
+        self.process_remote_track_addition(&pc);
     }
 
     async fn rtc_session_task(
