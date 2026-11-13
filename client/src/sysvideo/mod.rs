@@ -1,5 +1,12 @@
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
+pub(crate) mod fallback;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(

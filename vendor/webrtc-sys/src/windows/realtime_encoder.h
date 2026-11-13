@@ -8,6 +8,18 @@
 #include <utility>
 
 namespace webrtc::mf {
+inline bool SoftwareFallbackWithinBudget(uint32_t width, uint32_t height, uint32_t fps) {
+  constexpr uint64_t budget = 1280 * 720 * 30;
+  return width && height && fps && width <= budget / height / fps;
+}
+
+template <typename Init, typename Denied>
+int32_t InitializeSoftwareFallback(bool screen, uint32_t width, uint32_t height, uint32_t fps,
+                                   Init init, Denied denied) {
+  if (screen && !SoftwareFallbackWithinBudget(width, height, fps)) return denied();
+  return init();
+}
+
 template <typename Metadata, typename Sample>
 class RetriableInput {
  public:

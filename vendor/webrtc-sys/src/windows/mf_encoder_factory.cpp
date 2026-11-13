@@ -359,6 +359,41 @@ struct Session {
   }
 };
 
+class SoftwareFallbackGuard final : public VideoEncoder {
+ public:
+  explicit SoftwareFallbackGuard(std::unique_ptr<VideoEncoder> encoder)
+      : encoder_(std::move(encoder)) {}
+  void SetFecControllerOverride(FecControllerOverride* controller) override {
+    encoder_->SetFecControllerOverride(controller);
+  }
+  int InitEncode(const VideoCodec* codec, const Settings& settings) override {
+    // Stats polling is too late to prevent a large CPU spike after hardware failure.
+    if (!codec) return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+    return mf::InitializeSoftwareFallback(
+        codec->mode == VideoCodecMode::kScreensharing, codec->width, codec->height, codec->maxFramerate,
+        [&] { return encoder_->InitEncode(codec, settings); },
+        [&] {
+          RTC_LOG(LS_WARNING) << "Refusing high-load Media Foundation software fallback: "
+                             << codec->width << "x" << codec->height << "@" << codec->maxFramerate;
+          return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
+        });
+  }
+  int32_t RegisterEncodeCompleteCallback(EncodedImageCallback* callback) override {
+    return encoder_->RegisterEncodeCompleteCallback(callback);
+  }
+  int32_t Release() override { return encoder_->Release(); }
+  int32_t Encode(const VideoFrame& frame, const std::vector<VideoFrameType>* types) override {
+    return encoder_->Encode(frame, types);
+  }
+  void SetRates(const RateControlParameters& parameters) override { encoder_->SetRates(parameters); }
+  void OnPacketLossRateUpdate(float loss) override { encoder_->OnPacketLossRateUpdate(loss); }
+  void OnRttUpdate(int64_t rtt) override { encoder_->OnRttUpdate(rtt); }
+  void OnLossNotification(const LossNotification& loss) override { encoder_->OnLossNotification(loss); }
+  EncoderInfo GetEncoderInfo() const override { return encoder_->GetEncoderInfo(); }
+ private:
+  std::unique_ptr<VideoEncoder> encoder_;
+};
+
 class WindowsMfEncoder : public VideoEncoder {
  public:
   ~WindowsMfEncoder() override { Release(); }
@@ -558,6 +593,7 @@ std::unique_ptr<VideoEncoder> WindowsMfEncoderFactory::Create(
       VideoEncoderFactoryTemplate<OpenH264EncoderTemplateAdapter> software_factory;
       auto software = software_factory.Create(env, format);
       if (!software) return std::make_unique<WindowsMfEncoder>();
+      software = std::make_unique<SoftwareFallbackGuard>(std::move(software));
       return CreateVideoEncoderSoftwareFallbackWrapper(
           env, std::move(software), std::make_unique<WindowsMfEncoder>(), false);
     }

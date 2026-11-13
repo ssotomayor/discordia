@@ -22,7 +22,7 @@ Source: [LiveKit Rust SDK](https://github.com/livekit/rust-sdks), crates.io rele
 bindings and libraries must move together; `LK_CUSTOM_WEBRTC` overrides require
 the same API/ABI. Windows MFT NAL parsing now uses the current `ArrayView` API.
 
-`client/build.rs` delay-loads CUDA and Media Foundation so unavailable optional runtimes do not prevent startup. Missing CUDA build dependencies omit NVENC; Windows hardware MFTs remain available without CUDA. Media Foundation falls back through WebRTC's software wrapper on initialization/encoding failure. Explicit GPU mode stops on a detected software fallback.
+`client/build.rs` delay-loads CUDA and Media Foundation so unavailable optional runtimes do not prevent startup. Missing CUDA build dependencies omit NVENC; Windows hardware MFTs remain available without CUDA. Media Foundation falls back through WebRTC's software wrapper on initialization/encoding failure. Screen-share fallback above the 720p30 pixel-rate budget per encoder is refused before OpenH264 initialization; cameras and explicitly selected CPU use their existing paths. The Windows client stops unexpected high-budget software, stalled active output or a stats timeout; paused layers do not establish encoder demand. See `docs/AUDIT_AMD_WARZONE_STREAM.md`.
 
 MFT slice headers must fit LiveKit's two clear H.264 bytes (NAL header plus one slice-header byte). Longer headers fall back before publication: encrypting the PPS identifier makes WebRTC discard frames before decryption. This compatibility guard also applies to unencrypted MFT tracks; NVENC is unchanged.
 
