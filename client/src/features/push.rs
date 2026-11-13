@@ -50,6 +50,25 @@ pub(crate) fn use_device(identity: &Identity, settings: Signal<ClientSettings>) 
     use_effect(move || replace(&sender, relays()));
 }
 
+/// A desktop in front of the account keeps its phone quiet for DMs (`attention::Lease`).
+pub(crate) fn use_dm_attention(state: Signal<AppState>, identity: &Identity) {
+    let focused = use_memo(move || state.read().app_foreground);
+    let identity = identity.clone();
+    let sender = use_hook(move || {
+        let (sender, receiver) = watch::channel(*focused.peek());
+        // A phone holds none: it is the device that would ring.
+        if !cfg!(any(target_os = "android", target_os = "ios"))
+            && let Some(relay) = relay()
+        {
+            crate::service_task::spawn(crate::push::attention::keep_lease(
+                relay, identity, receiver,
+            ));
+        }
+        Rc::new(sender)
+    });
+    use_effect(move || replace(&sender, focused()));
+}
+
 /// Called with the outgoing identity before it is dropped; the call outlives
 /// the account's view, which unmounts as the sign-out lands.
 pub(crate) fn sign_out(identity: Identity) {
