@@ -301,6 +301,40 @@ def package_sources(project):
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 
 
+def package_for_dx(project, env):
+    """What our Kotlin compiles against. dx rewrites its templates and keeps these."""
+    package_resources(project)
+    package_firebase(project, env)
+    resources = project / "app/src/main/res"
+    for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
+        (resources / f"mipmap-{density}/ic_launcher.png").unlink(missing_ok=True)
+
+
+def build_with_dx(dx, project, target_dir, target, profile, env):
+    """dx compiles Kotlin in the same command that builds the Rust, and only then
+    is there a WebRTC jar to copy in. A first pass over a clean project therefore
+    stops at Kotlin; the second, with the jar, the init script, our sources and
+    the resources they name in place, is the one that must succeed.
+    """
+    if project.is_dir():
+        package_for_dx(project, env)
+    first = run_quiet(dx, ROOT / "client", env)
+    if first.returncode != 0:
+        print("First dx pass did not assemble; retrying with the WebRTC jar")
+    jar = matching_jar(target_dir, target, profile)
+    destination = project / "app" / "libs" / "libwebrtc.jar"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(jar, destination)
+    auto_init = install_auto_init(env)
+    try:
+        # Not only on a project that already existed: a clean one is made by the first pass.
+        package_for_dx(project, env)
+        package_sources(project)
+        run(dx, ROOT / "client", env)
+    finally:
+        auto_init.unlink(missing_ok=True)
+
+
 def install_auto_init(env):
     """dx runs gradle itself, and that run takes no --init-script.
 
@@ -352,34 +386,11 @@ def main():
     ))
     target_dir = Path(metadata["target_directory"])
     project = target_dir / "dx" / "Discordia" / profile / "android" / "app"
-    if project.is_dir():
-        resources = project / "app/src/main/res"
-        # dx rewrites its templates but retains our extra resources on incremental builds.
-        package_resources(project)
-        package_firebase(project, env)
-        for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
-            (resources / f"mipmap-{density}/ic_launcher.png").unlink(missing_ok=True)
     dx = ["dx", "build", "--android", "--target", args.target,
           "--no-default-features", "--features", "mobile", "--bin", "Discordia"]
     if args.release:
         dx.append("--release")
-    # dx compiles Kotlin in the same command that builds the Rust, and it only
-    # then writes the WebRTC jar this script has to copy in. A first pass over a
-    # clean project therefore stops there; the second pass, with the jar and the
-    # auto-applied init script in place, is the one that must succeed.
-    first = run_quiet(dx, ROOT / "client", env)
-    if first.returncode != 0:
-        print("First dx pass did not assemble; retrying with the WebRTC jar")
-    jar = matching_jar(target_dir, args.target, profile)
-    destination = project / "app" / "libs" / "libwebrtc.jar"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(jar, destination)
-    auto_init = install_auto_init(env)
-    try:
-        package_sources(project)
-        run(dx, ROOT / "client", env)
-    finally:
-        auto_init.unlink(missing_ok=True)
+    build_with_dx(dx, project, target_dir, args.target, profile, env)
     package_resources(project)
     package_firebase(project, env)
     package_sources(project)
