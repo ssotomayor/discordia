@@ -77,6 +77,11 @@ fun main() {
     check(decodeSeen("x y\\n5\\n 7 z\\n8 ok:tag with space") == linkedMapOf("ok:tag with space" to 8L))
     check(decodeSeen(encodeSeen(capped)) == capped)
 
+    check(unseen(null, null, 7, "first") == listOf(7L to "first")) { "A first message is the only line" }
+    val five = unseen(longArrayOf(1, 2, 3, 4, 5), arrayOf("a", "b", "c", "d", "e"), 6, "f")
+    check(five == listOf(2L to "b", 3L to "c", 4L to "d", 5L to "e", 6L to "f")) { "The last five unseen lines, oldest first" }
+    check(unseen(longArrayOf(1, 2), arrayOf("a"), 3, "c") == listOf(3L to "c")) { "Lines that do not pair up are not shown" }
+
     val cold = SharedPreferences()
     check(label(cold, "dm") == "Private messages") { "A cold process names channels in English" }
     check(label(cold, "mention") == "Mentions")
@@ -100,8 +105,8 @@ fun main() {
     println("Notifier dedup, cold channel label and default switch checks pass")
 }
 '''
-members = ["DEDUP_CAP", "SEEN", "FALLBACK", "decodeSeen", "encodeSeen", "admit", "remember", "label",
-           "wanted", "asksUnprompted"]
+members = ["DEDUP_CAP", "SEEN", "FALLBACK", "DM_LINES", "decodeSeen", "encodeSeen", "admit", "remember", "label",
+           "wanted", "asksUnprompted", "unseen"]
 path = output / "Notifier.kt"
 path.write_text(fixture + "\n".join(map(member, members)) + "\n" + checks, encoding="utf-8")
 subprocess.run([java, "-cp", compiler, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",

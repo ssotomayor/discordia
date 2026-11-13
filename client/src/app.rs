@@ -148,7 +148,11 @@ pub fn open_external(url: &str) {
             );
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "android")]
+    if let Err(error) = crate::android::open_external(url.as_str()) {
+        tracing::warn!(%error, "could not hand the link to Android");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
     {
         #[cfg(target_os = "macos")]
         let opener = "open";

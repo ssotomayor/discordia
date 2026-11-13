@@ -25,6 +25,9 @@ object DioxusNotifier {
     const val DM_PREFIX = "discordia-dm:"
     const val MENTION_PREFIX = "discordia-mention:"
     const val READ_TIME = "discordia-dm-at"
+    private const val LINE_TIMES = "discordia-dm-line-times"
+    private const val LINE_TEXTS = "discordia-dm-line-texts"
+    private const val DM_LINES = 5
     private const val PING_TAG = "discordia-ping"
     private const val SHOWN_LIMIT = 20
     private const val DEDUP_CAP = 64
@@ -115,6 +118,12 @@ object DioxusNotifier {
         return true
     }
 
+    // The notification on screen is the memory: read or swiped away, the next one starts over.
+    fun unseen(times: LongArray?, texts: Array<String>?, at: Long, text: String): List<Pair<Long, String>> {
+        val earlier = if (times != null && texts != null && times.size == texts.size) times.toList().zip(texts.toList()) else emptyList()
+        return (earlier + (at to text)).takeLast(DM_LINES)
+    }
+
     private fun launch(context: Context, uri: Uri?): PendingIntent? {
         val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
         if (uri != null) {
@@ -151,6 +160,7 @@ object DioxusNotifier {
         }
     }
 
+    @Suppress("DEPRECATION")
     fun showDm(context: Context, value: JSONObject) {
         val owner = value.getString("account")
         val peer = value.getString("peer")
@@ -161,7 +171,17 @@ object DioxusNotifier {
         if (!remember(alerted(context), tag, at)) return
         ensureChannels(context)
         val text = value.getString("message").take(301)
+        val sender = value.getString("sender").take(100)
         val channel = if (value.optBoolean("silent", false)) QUIET_CHANNEL else DM_CHANNEL
+        val shown = try {
+            manager(context).activeNotifications.firstOrNull { it.tag == tag }?.notification?.extras
+        } catch (_: Exception) {
+            null
+        }
+        val lines = unseen(shown?.getLongArray(LINE_TIMES), shown?.getStringArray(LINE_TEXTS), at, text)
+        // The names, not `Person`: that needs API 28 and this runs from 26.
+        val style = Notification.MessagingStyle(context.getString(R.string.app_name))
+        for ((time, line) in lines) style.addMessage(line, time * 1000, sender)
         // `message` may be the message itself; a locked screen gets the line that never is.
         val publicVersion = Notification.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
@@ -170,15 +190,19 @@ object DioxusNotifier {
             .build()
         val notification = Notification.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(value.getString("sender").take(100))
+            .setContentTitle(sender)
             .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setStyle(style)
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
             .setContentIntent(pending)
             .setAutoCancel(true)
-            .setExtras(Bundle().apply { putLong(READ_TIME, at) })
+            .setExtras(Bundle().apply {
+                putLong(READ_TIME, at)
+                putLongArray(LINE_TIMES, lines.map { it.first }.toLongArray())
+                putStringArray(LINE_TEXTS, lines.map { it.second }.toTypedArray())
+            })
             .setOnlyAlertOnce(false)
             .build()
         publish(context, tag, DM_PREFIX, notification)
