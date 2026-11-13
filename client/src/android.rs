@@ -45,7 +45,9 @@ pub(crate) fn note_resume() {
 pub extern "system" fn Java_dev_dioxus_main_MainActivity_onProcessEnding(
     _env: JNIEnv,
     _activity: JObject,
+    restarting: jni::sys::jboolean,
 ) {
+    crate::left_off::keep(restarting != 0);
     crate::net::say_goodbye(Duration::from_millis(400));
 }
 

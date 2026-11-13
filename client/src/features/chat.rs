@@ -2203,12 +2203,12 @@ return (async function () {
     pre.setEnd(r.startContainer, r.startOffset);
     return serialize(pre.cloneContents(), true);
   };
-  const report = () => {
+  const report = (kept) => {
     const el = find();
     if (!el || !alive) return;
     const text = serialize(el);
     if (text === '' && el.innerHTML !== '') el.innerHTML = '';
-    dioxus.send({ k: 'input', text: text, before: beforeCaret(el) });
+    dioxus.send({ k: 'input', text: text, before: beforeCaret(el), kept: kept === true });
   };
   const remember = () => {
     const el = find();
@@ -2324,6 +2324,9 @@ return (async function () {
   document.addEventListener('paste', onPaste);
   document.addEventListener('selectionchange', remember);
   window.__dxfComposers[id] = api;
+  const kept = __KEPT__;
+  const field = kept && find();
+  if (field && field.innerHTML === '') { field.textContent = kept; report(true); }
   try {
     while (alive) {
       const m = await new Promise(resolve => dioxus.recv().then(resolve, () => resolve(null)));
@@ -2956,7 +2959,10 @@ fn Composer(
     {
         let id = composer_id.clone();
         let instance = instance.clone();
-        use_drop(move || composer_call(&id, "off", &[Value::String(instance)]));
+        use_drop(move || {
+            composer_call(&id, "off", &[Value::String(instance)]);
+            crate::left_off::note_draft(channel_id, "");
+        });
     }
 
     let mut generation = use_signal(|| 0_u64);
@@ -3378,9 +3384,12 @@ fn Composer(
         let notify_typing = notify_typing.clone();
         let pick = pick.clone();
         use_future(move || {
+            let kept = Value::from(crate::left_off::take_draft(channel_id)).to_string();
             let js = COMPOSER_JS
                 .replace("__ID__", &id)
-                .replace("__GEN__", &instance);
+                .replace("__GEN__", &instance)
+                // Last: a kept draft may itself spell a placeholder.
+                .replace("__KEPT__", &kept);
             let mut submit = submit.clone();
             let mut notify_typing = notify_typing.clone();
             let mut pick = pick.clone();
@@ -3394,9 +3403,12 @@ fn Composer(
                                 .get("before")
                                 .and_then(Value::as_str)
                                 .and_then(completion_token);
+                            // A draft put back after a restart is not someone typing.
+                            let kept = msg.get("kept").and_then(Value::as_bool).unwrap_or(false);
+                            crate::left_off::note_draft(channel_id, text);
                             if *draft.peek() != text {
                                 draft.set(text.to_string());
-                                if !text.is_empty() {
+                                if !text.is_empty() && !kept {
                                     notify_typing();
                                 }
                             }

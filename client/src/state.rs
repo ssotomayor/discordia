@@ -551,6 +551,8 @@ pub struct AppState {
     pub composer_focus_request: Option<(Id, u64)>,
     /// Set when following a voice invite; joins this voice channel upon ready or guild join.
     pub voice_invite_on_ready: Option<PendingVoiceInvite>,
+    /// The call a restart made on purpose cut short (#507); asked for once, at the next Ready.
+    pub rejoin_voice_on_ready: Option<crate::left_off::Rejoin>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
     /// The connected server's own agents; only ever sent to an operator.
@@ -752,6 +754,7 @@ impl AppState {
             readies: 0,
             composer_focus_request: None,
             voice_invite_on_ready: None,
+            rejoin_voice_on_ready: None,
             gateway_failure: None,
             is_operator: false,
             server_agents: Vec::new(),
@@ -872,6 +875,29 @@ impl AppState {
         Some(self.voice.join_message(pending.channel_id))
     }
 
+    pub fn rejoin_left_call(&mut self, now_ms: i64) -> Option<ClientMessage> {
+        let rejoin = self.rejoin_voice_on_ready.take()?;
+        let channel = rejoin.call.channel;
+        let free = self.dm_call.is_none()
+            && self.voice.channel_id().is_none()
+            && self.voice.joining_channel_id().is_none();
+        let known = self
+            .channels
+            .iter()
+            .any(|c| c.id == channel && c.kind == crate::protocol::ChannelKind::Voice);
+        if !(rejoin.fresh(now_ms) && free && known) {
+            return None;
+        }
+        // Mute before deafen, so undeafening later returns to a muted microphone.
+        let _ = self
+            .voice
+            .change_mute(MuteChange::SetMuted(rejoin.call.muted));
+        let _ = self
+            .voice
+            .change_mute(MuteChange::SetDeafened(rejoin.call.deafened));
+        Some(self.voice.join_message(channel))
+    }
+
     /// Names every field, so none can be added without saying whether it
     /// outlives the server (trap 7).
     pub fn clear_server_session(&mut self) {
@@ -966,6 +992,7 @@ impl AppState {
             invites,
             open_guild_on_ready,
             voice_invite_on_ready,
+            rejoin_voice_on_ready,
             gateway_failure,
             is_operator,
             server_agents,
@@ -1156,6 +1183,7 @@ impl AppState {
         invites.clear();
         *open_guild_on_ready = None;
         *voice_invite_on_ready = None;
+        *rejoin_voice_on_ready = None;
         *gateway_failure = None;
         *is_operator = false;
         server_agents.clear();
@@ -3080,6 +3108,10 @@ mod tests {
                     channel_id: channel,
                     code: None,
                     expires_at: None,
+                }) => |v| v.is_none();
+                rejoin_voice_on_ready = Some(crate::left_off::Rejoin {
+                    call: crate::left_off::Call { channel, muted: false, deafened: false },
+                    left_at_ms: 0,
                 }) => |v| v.is_none();
                 gateway_failure = Some("refused".into()) => |v| v.is_none();
                 is_operator = true => |v| !*v;

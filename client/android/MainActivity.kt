@@ -122,7 +122,7 @@ class MainActivity : WryActivity() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     external fun onNetworkChanged()
-    external fun onProcessEnding()
+    external fun onProcessEnding(restarting: Boolean)
     private var started = false
 
     // The page cannot be rebuilt against the running VirtualDom (#507), so the app starts
@@ -132,18 +132,20 @@ class MainActivity : WryActivity() {
         val now = System.currentTimeMillis()
         val looping = now - restarts.getLong("restarted", 0L) in 0L until 60_000L
         android.util.Log.w("Discordia", "WebView renderer gone crashed=$crashed visible=$started looping=$looping")
-        if (started && !looping) {
+        val restarting = started && !looping
+        if (restarting) {
             restarts.edit().putLong("restarted", now).commit()
             startActivity(Intent.makeRestartActivityTask(componentName))
         } else if (started) {
             finishAndRemoveTask()
         }
-        endProcess()
+        endProcess(restarting)
     }
 
-    private fun endProcess() {
+    // Only a restart made here returns to the call; any other end is the call's end too.
+    private fun endProcess(restarting: Boolean = false) {
         try {
-            onProcessEnding()
+            onProcessEnding(restarting)
         } catch (error: Throwable) {
             android.util.Log.w("Discordia", "Could not close the gateway before ending", error)
         }

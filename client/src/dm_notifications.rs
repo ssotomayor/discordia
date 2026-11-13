@@ -242,6 +242,9 @@ mod native {
         events().send_modify(|state| state.resumed = resumed != 0);
         if resumed != 0 {
             crate::android::note_resume();
+        } else {
+            // Android may end the process any time after this without another word.
+            crate::left_off::keep(false);
         }
     }
 
