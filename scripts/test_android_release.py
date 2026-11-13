@@ -128,6 +128,41 @@ class AndroidReleaseTests(unittest.TestCase):
             output.write_text(f"cargo:rustc-link-search=native={library}\n", encoding="utf-8")
             self.assertEqual(building.matching_jar(root, "aarch64-linux-android", "release"), jar)
 
+    def test_a_clean_project_has_its_sources_and_their_resources_before_the_pass_that_must_succeed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            project = root / "dx/Discordia/release/android/app"
+            jar = root / "libwebrtc.jar"
+            jar.write_bytes(b"jar")
+            init = root / "init.gradle"
+            seen = []
+
+            def first_pass(args, cwd, env):
+                # dx makes the project; nothing of ours is in it yet.
+                (project / "app/src/main/res").mkdir(parents=True)
+                return type("Failed", (), {"returncode": 1})()
+
+            def second_pass(args, cwd, env):
+                seen.append({
+                    "drawable": (project / "app/src/main/res/drawable/ic_call_mic.xml").is_file(),
+                    "service": (project / "app/src/main/kotlin/com/discordia/app/DioxusForegroundService.kt").is_file(),
+                    "jar": (project / "app/libs/libwebrtc.jar").is_file(),
+                    "init": init.is_file(),
+                })
+
+            def auto_init(env):
+                init.write_text("init", encoding="utf-8")
+                return init
+
+            with patch.object(building, "run_quiet", first_pass), \
+                    patch.object(building, "run", second_pass), \
+                    patch.object(building, "matching_jar", lambda *args: jar), \
+                    patch.object(building, "install_auto_init", auto_init), \
+                    patch("builtins.print"):
+                building.build_with_dx(["dx"], project, root, "aarch64-linux-android", "release", {})
+            self.assertEqual(seen, [{"drawable": True, "service": True, "jar": True, "init": True}])
+            self.assertFalse(init.exists())
+
     def test_release_metadata_rejects_debug_builds_and_wrong_versions(self):
         env = {"ANDROID_HOME": "sdk", "DISCORDIA_ANDROID_VERSION_CODE": "862", "DISCORDIA_ANDROID_VERSION_NAME": "v0.1.0-pre.862"}
         permission = "uses-permission: name='android.permission.REQUEST_INSTALL_PACKAGES'\n"
