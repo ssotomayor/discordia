@@ -17,6 +17,10 @@ use crate::state::{
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
 
+/// The channel a guild pick on the rail selected, until the phone's pager has seen it.
+#[derive(Clone, Copy)]
+pub(crate) struct RailPick(pub Signal<Option<crate::protocol::Id>>);
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MobileTab {
     Channels,

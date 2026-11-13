@@ -37,6 +37,18 @@ fn open_media_chat(s: &mut crate::state::AppState) {
     }
 }
 
+type Selection = (bool, Option<crate::protocol::Id>);
+
+/// Whether a new selection turns the phone to the chat. Not on entry, where preselecting
+/// a DM must leave the list showing, and not for the channel a guild pick brought with it.
+fn opens_chat(
+    previous: Selection,
+    current: Selection,
+    rail_pick: Option<crate::protocol::Id>,
+) -> bool {
+    previous.1.is_some() && previous.0 == current.0 && current.1.is_some() && rail_pick != current.1
+}
+
 #[component]
 fn MobilePanel(
     active: bool,
@@ -101,6 +113,30 @@ mod tests {
     }
 
     type Export<T> = Rc<RefCell<Option<Signal<T>>>>;
+
+    #[test]
+    fn a_channel_picked_opens_the_chat_and_a_guild_picked_shows_its_channels() {
+        let (a, b) = (crate::protocol::Id::new_v4(), crate::protocol::Id::new_v4());
+        let guild = |channel| (false, channel);
+        let dm = |channel| (true, channel);
+        let table = [
+            (guild(Some(a)), guild(Some(b)), None, true),
+            (guild(Some(a)), guild(Some(b)), Some(b), false),
+            // A pick that changed nothing must not swallow a later selection from elsewhere.
+            (guild(Some(a)), guild(Some(b)), Some(a), true),
+            (guild(None), guild(Some(a)), None, false),
+            (guild(Some(a)), guild(None), None, false),
+            (guild(Some(a)), dm(Some(b)), None, false),
+            (dm(Some(a)), dm(Some(b)), None, true),
+        ];
+        for (previous, current, pick, expected) in table {
+            assert_eq!(
+                opens_chat(previous, current, pick),
+                expected,
+                "{previous:?} -> {current:?} with {pick:?}"
+            );
+        }
+    }
 
     #[test]
     fn media_stays_in_its_guild_chat_and_opening_it_returns_to_that_guild() {
@@ -241,6 +277,8 @@ pub(super) fn MobileWorkspace(
         move |_| tab.set(MobileTab::Channels),
     );
     use_context_provider(move || tab);
+    let mut rail_pick = use_signal(|| None::<crate::protocol::Id>);
+    use_context_provider(move || super::workspace::RailPick(rail_pick));
     #[cfg(target_os = "android")]
     {
         let media = use_memo(move || {
@@ -290,11 +328,11 @@ pub(super) fn MobileWorkspace(
     use_effect(move || {
         let current = selected_channel();
         if current != *previous_channel.peek() {
-            // Preselecting a DM on entry must leave its conversation list visible.
-            let open_chat = previous_channel.peek().1.is_some()
-                && previous_channel.peek().0 == current.0
-                && current.1.is_some();
+            let open_chat = opens_chat(*previous_channel.peek(), current, *rail_pick.peek());
             previous_channel.set(current);
+            if rail_pick.peek().is_some() {
+                rail_pick.set(None);
+            }
             if open_chat {
                 tab.set(MobileTab::Chat);
             }

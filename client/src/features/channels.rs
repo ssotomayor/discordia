@@ -2211,6 +2211,11 @@ pub(crate) fn select_text_channel(
     if let Some(mut tab) = try_consume_context::<Signal<super::workspace::MobileTab>>() {
         tab.set(super::workspace::MobileTab::Chat);
     }
+    open_text_channel(state, gateway, channel_id);
+}
+
+/// `select_text_channel` without turning a phone to the chat page.
+pub(crate) fn open_text_channel(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) {
     let needs_fetch = {
         let mut s = state.write();
         s.selected_channel = Some(channel_id);
