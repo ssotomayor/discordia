@@ -33,11 +33,42 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import android.provider.OpenableColumns
+import android.graphics.Bitmap
 import android.webkit.MimeTypeMap
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.WebViewClient
 
 typealias BuildConfig = com.discordia.app.BuildConfig
+
+// wry's client does not answer a dead renderer, and WebView's default is to kill the app
+// as a crash. Every callback wry overrides is forwarded; the rest keep their defaults.
+private class RendererGuard(
+    private val inner: WebViewClient,
+    private val gone: (crashed: Boolean) -> Unit,
+) : WebViewClient() {
+    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+        inner.shouldInterceptRequest(view, request)
+
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+        inner.shouldOverrideUrlLoading(view, request)
+
+    override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) = inner.onPageStarted(view, url, favicon)
+
+    override fun onPageFinished(view: WebView, url: String) = inner.onPageFinished(view, url)
+
+    override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) =
+        inner.onReceivedError(view, request, error)
+
+    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+        gone(detail.didCrash())
+        return true
+    }
+}
 
 class MainActivity : WryActivity() {
     private val dmNotifications by lazy { com.discordia.app.DioxusDmNotifications(this) }
@@ -91,6 +122,46 @@ class MainActivity : WryActivity() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     external fun onNetworkChanged()
+    external fun onProcessEnding()
+    private var started = false
+
+    // The page cannot be rebuilt against the running VirtualDom (#507), so the app starts
+    // over on purpose; `session::resumes` returns the person to the server they were in.
+    private fun rendererGone(crashed: Boolean) {
+        val restarts = getSharedPreferences("discordia-renderer", Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val looping = now - restarts.getLong("restarted", 0L) in 0L until 60_000L
+        android.util.Log.w("Discordia", "WebView renderer gone crashed=$crashed visible=$started looping=$looping")
+        if (started && !looping) {
+            restarts.edit().putLong("restarted", now).commit()
+            startActivity(Intent.makeRestartActivityTask(componentName))
+        } else if (started) {
+            finishAndRemoveTask()
+        }
+        endProcess()
+    }
+
+    private fun endProcess() {
+        try {
+            onProcessEnding()
+        } catch (error: Throwable) {
+            android.util.Log.w("Discordia", "Could not close the gateway before ending", error)
+        }
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
+    private fun logEarlierExits() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            try {
+                val manager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                for (exit in manager.getHistoricalProcessExitReasons(packageName, 0, 3)) {
+                    android.util.Log.i("Discordia", "Earlier exit: reason=${exit.reason} status=${exit.status} importance=${exit.importance} at=${exit.timestamp} ${exit.description ?: ""}")
+                }
+            } catch (error: Exception) {
+                android.util.Log.w("Discordia", "Could not read earlier exits", error)
+            }
+        }
+    }
 
     private fun watchDefaultNetwork() {
         val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -808,6 +879,17 @@ class MainActivity : WryActivity() {
         }
         watchDefaultNetwork()
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        logEarlierExits()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        started = true
+    }
+
+    override fun onStop() {
+        started = false
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -852,7 +934,7 @@ class MainActivity : WryActivity() {
         super.onDestroy()
         // Tao starts `main` again for the next Activity and exits from the old loop at its
         // leisure; a process that outlives its Activity is two apps or none. End it here.
-        android.os.Process.killProcess(android.os.Process.myPid())
+        endProcess()
     }
 
     // The page is served over https (dioxus.index.html) while the gateway mints the
@@ -862,6 +944,10 @@ class MainActivity : WryActivity() {
         super.onWebViewCreate(webView)
         navigationWebView = webView
         webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        // wry installs its client right after this returns; wrap it on the looper's next turn.
+        Handler(Looper.getMainLooper()).post {
+            webView.webViewClient = RendererGuard(webView.webViewClient) { crashed -> rendererGone(crashed) }
+        }
     }
 
     @Volatile var microphonePermissionResult: Int = 0

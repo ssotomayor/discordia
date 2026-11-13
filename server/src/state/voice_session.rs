@@ -40,6 +40,8 @@ impl VoiceSession {
 pub struct VoiceJoin {
     /// The call this join replaced, read under the same lock that replaced it.
     pub previous: Option<VoiceState>,
+    /// The call it replaced was another socket's: the same account, a different device.
+    pub took_over: bool,
     pub state: VoiceState,
     pub call: VoiceCall,
 }
@@ -211,6 +213,10 @@ impl AppState {
         preferences: Option<VoicePreferences>,
     ) -> VoiceJoin {
         let previous = self.voice_states.get(user_pubkey).map(|v| v.clone());
+        let took_over = sessions
+            .by_key
+            .get(user_pubkey)
+            .is_some_and(|session| session.owner != owner);
         let deafened = preferences
             .map(|p| p.deafened)
             .unwrap_or_else(|| previous.as_ref().is_some_and(|p| p.deafened));
@@ -242,6 +248,7 @@ impl AppState {
             .insert(user_pubkey.to_string(), state.clone());
         VoiceJoin {
             previous,
+            took_over,
             state,
             call: session.call(user_pubkey),
         }

@@ -877,6 +877,77 @@ async fn drain_quiet(session: &mut Bot) -> Vec<ServerMessage> {
     out
 }
 
+fn channels_seen(frames: &[ServerMessage], pubkey: &str) -> Vec<Option<Id>> {
+    frames
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::VoiceStateUpdate(vs) if vs.user_pubkey == pubkey => Some(vs.channel_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn media_keys(frames: &[ServerMessage]) -> Vec<String> {
+    frames
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::MediaKey { blob, .. } => Some(blob.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_second_device_taking_the_call_is_a_leave_and_a_join_for_the_others() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let host = BotIdentity::generate();
+    let mut owner = connect_user(&url, &host, "owner").await;
+    let (guild, channel) = voice_channel(&mut owner).await;
+    let person = BotIdentity::generate();
+    let mut first = connect_user(&url, &person, "person").await;
+    join_guild(&mut first, guild).await;
+    join_voice(&mut owner, channel).await;
+    join_voice(&mut first, channel).await;
+    let mut second = connect_user(&url, &person, "person").await;
+    drain_quiet(&mut owner).await;
+    drain_quiet(&mut first).await;
+
+    let joined = join_voice(&mut second, channel).await;
+    assert!(has_voice_token(&joined), "the second device gets the grant");
+    assert_eq!(
+        channels_seen(&drain_quiet(&mut owner).await, person.pubkey()),
+        vec![None, Some(channel)],
+        "only a leave makes the others send the newcomer the media key again"
+    );
+    // The account never left: its first device is told by losing its room, not by a leave.
+    assert_eq!(
+        channels_seen(&drain_quiet(&mut first).await, person.pubkey()),
+        vec![Some(channel)]
+    );
+    assert_eq!(channels_seen(&joined, person.pubkey()), vec![Some(channel)]);
+
+    let share = |blob: &str| ClientMessage::ShareMediaKey {
+        channel_id: channel,
+        to: host.pubkey().to_string(),
+        epoch: 1,
+        blob: blob.into(),
+    };
+    first.send(&share("from-the-first")).await.unwrap();
+    second.send(&share("from-the-second")).await.unwrap();
+    assert_eq!(
+        media_keys(&drain_quiet(&mut owner).await),
+        vec!["from-the-second".to_string()],
+        "a key is relayed only for the device that holds the call"
+    );
+
+    // The same device joining again is not a takeover.
+    join_voice(&mut second, channel).await;
+    assert_eq!(
+        channels_seen(&drain_quiet(&mut owner).await, person.pubkey()),
+        vec![Some(channel)]
+    );
+}
+
 fn camera_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
     frames
         .iter()

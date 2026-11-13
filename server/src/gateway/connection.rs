@@ -1979,27 +1979,37 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         }
-                        let crate::state::VoiceJoin { previous, state: new_state, call } =
+                        let crate::state::VoiceJoin { previous, took_over, state: new_state, call } =
                             ctx.state.join_voice(conn_id, &u.pubkey, guild_id, channel_id, preferences);
+                        // The flags they left with: the new room's are its own business.
+                        let left = |old: &crate::protocol::VoiceState| crate::protocol::VoiceState {
+                            channel_id: None,
+                            speaking: false,
+                            camera_on: false,
+                            screen_sharing: false,
+                            screen_watching: Vec::new(),
+                            camera_watching: Vec::new(),
+                            ..old.clone()
+                        };
                         // A move is a leave and then a join, for everyone including the
                         // mover. The leave goes first: one client can be in both guilds.
                         if let Some(old) = &previous
                             && let Some(old_channel) = old.channel_id
                             && old_channel != channel_id
                         {
-                            // The flags they left with: the new room's are its own business.
-                            let left = crate::protocol::VoiceState {
-                                channel_id: None,
-                                speaking: false,
-                                camera_on: false,
-                                screen_sharing: false,
-                                screen_watching: Vec::new(),
-                                camera_watching: Vec::new(),
-                                ..old.clone()
-                            };
                             let targets = ctx.state.guild_member_pubkeys(old.guild_id);
-                            send_voice_state(&ctx.state, targets, Some(old_channel), left);
+                            send_voice_state(&ctx.state, targets, Some(old_channel), left(old));
                             evict_from_call(&ctx, &u.pubkey, old_channel);
+                        }
+                        // Another device of the account took the call where it was. The others
+                        // owe the newcomer the media key, and only a leave makes them send it again.
+                        let replaced = previous
+                            .as_ref()
+                            .filter(|old| took_over && old.channel_id == Some(channel_id));
+                        if let Some(old) = replaced {
+                            let mut others = ctx.state.guild_member_pubkeys(guild_id);
+                            others.retain(|pubkey| pubkey != &u.pubkey);
+                            send_voice_state(&ctx.state, others, Some(channel_id), left(old));
                         }
                         // After a leave above, the join starts from outside any call.
                         let stayed = previous
