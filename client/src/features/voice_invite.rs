@@ -101,6 +101,7 @@ mod tests {
                 },
                 guild_id: guild,
                 online: true,
+                mobile: false,
                 bot,
                 roles: vec![],
                 xp: 0,

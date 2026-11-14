@@ -729,14 +729,18 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
         };
         let dim = if member.online { "" } else { "opacity-60" };
 
-        let (dot_color, pulse) = {
+        let (dot_color, pulse, mobile_online) = {
             let status = state.peek().presence_of(&member.user.pubkey).to_string();
             let pulse = if status == "online" {
                 "dxf-dot-pulse"
             } else {
                 ""
             };
-            (crate::features::profiles::status_color(&status), pulse)
+            (
+                crate::features::profiles::status_color(&status),
+                pulse,
+                member.online && member.mobile && status == "online",
+            )
         };
 
         // A ranked member wears the rank's emoji by their name, never its name on
@@ -763,10 +767,19 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
         };
 
         (
-            is_self, name_class, dim, dot_color, pulse, level, crown, operator,
+            is_self,
+            name_class,
+            dim,
+            dot_color,
+            pulse,
+            mobile_online,
+            level,
+            crown,
+            operator,
         )
     }));
-    let (is_self, name_class, dim, dot_color, pulse, level, crown, operator) = metadata();
+    let (is_self, name_class, dim, dot_color, pulse, mobile_online, level, crown, operator) =
+        metadata();
     let subtitle_pk = member.user.pubkey.clone();
     let subtitle = use_memo(move || sources.subtitles.read().get(&subtitle_pk).cloned());
     let voice_pk = member.user.pubkey.clone();
@@ -797,9 +810,20 @@ fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> El
                     name: name.clone(),
                     size: "w-7 h-7 {dim}",
                 }
-                span {
-                    class: "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel-solid)] {pulse}",
-                    style: "background-color:{dot_color}; color:{dot_color};",
+                if mobile_online {
+                    span {
+                        class: "absolute -bottom-0.5 -right-0.5 rounded-sm",
+                        style: "width:10px;height:14px;background-color:var(--panel-solid);color:{dot_color};",
+                        title: crate::i18n::text("Online on mobile", &[]),
+                        role: "img",
+                        aria_label: crate::i18n::text("Online on mobile", &[]),
+                        dangerous_inner_html: crate::features::icons::SMARTPHONE,
+                    }
+                } else {
+                    span {
+                        class: "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel-solid)] {pulse}",
+                        style: "background-color:{dot_color}; color:{dot_color};",
+                    }
                 }
             }
             div { class: "flex flex-col min-w-0 flex-1",
@@ -1051,6 +1075,63 @@ mod tests {
     }
 
     #[test]
+    fn mobile_badge_tracks_online_presence_without_replacing_other_statuses() {
+        use dioxus::core::{AttributeValue, Mutation};
+        use std::{cell::RefCell, rc::Rc};
+        type Export = Rc<RefCell<Option<Signal<AppState>>>>;
+        let export: Export = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let state = use_signal(|| {
+                    let mut s = AppState::empty();
+                    s.selected_guild = Some(Id::nil());
+                    s.members = vec![member("alice", Id::nil(), true)];
+                    s
+                });
+                provide_context(state);
+                *export.borrow_mut() = Some(state);
+                rsx! { MembersPanel {} }
+            },
+            export.clone(),
+        );
+        dom.rebuild_checked();
+        let has_phone = |edits: &[Mutation]| {
+            edits.iter().any(|edit| matches!(edit,
+            Mutation::SetAttribute { name: "dangerous_inner_html", value: AttributeValue::Text(value), .. }
+                if *value == super::super::icons::SMARTPHONE
+        ))
+        };
+        let mut state = export.borrow().unwrap();
+        state.write().members[0].mobile = true;
+        assert!(has_phone(&dom.render_checked().edits));
+        for status in ["away", "dnd", "invisible"] {
+            state.write().profiles.insert(
+                "alice".into(),
+                crate::protocol::Profile {
+                    pubkey: "alice".into(),
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+            );
+            let edits = dom.render_checked().edits;
+            assert!(!edits.is_empty());
+            assert!(!has_phone(&edits));
+            state.write().profiles.clear();
+            assert!(has_phone(&dom.render_checked().edits));
+        }
+        state.write().members[0].online = false;
+        let edits = dom.render_checked().edits;
+        assert!(!edits.is_empty());
+        assert!(!has_phone(&edits));
+        state.write().members[0].online = true;
+        assert!(has_phone(&dom.render_checked().edits));
+        state.write().members[0].mobile = false;
+        let edits = dom.render_checked().edits;
+        assert!(!edits.is_empty());
+        assert!(!has_phone(&edits));
+    }
+
+    #[test]
     fn member_rows_hide_connection_icons_channel_names_and_speech_indication() {
         use dioxus::core::{AttributeValue, Mutation};
         use std::{cell::RefCell, rc::Rc};
@@ -1268,6 +1349,7 @@ mod tests {
             },
             guild_id: guild,
             online,
+            mobile: false,
             bot: false,
             roles: Vec::new(),
             xp: 0,

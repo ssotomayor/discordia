@@ -32,6 +32,7 @@ async fn connect(url: &str, identity: &BotIdentity, progressive: bool) -> Socket
         bot: false,
         client_version: "test".into(),
         progressive_image_uploads: progressive,
+        mobile: false,
     };
     socket
         .send(WsMessage::Text(serde_json::to_string(&identify).unwrap()))

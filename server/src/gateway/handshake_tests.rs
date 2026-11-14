@@ -122,6 +122,7 @@ async fn identified_socket_survives_the_handshake_deadline() {
         bot: false,
         client_version: String::new(),
         progressive_image_uploads: false,
+        mobile: false,
     };
     incoming
         .send(WsMessage::Text(serde_json::to_string(&frame).unwrap()))
@@ -165,6 +166,7 @@ fn identify_frame(identity: &discordia_bot::BotIdentity, nonce: &str) -> WsMessa
         bot: false,
         client_version: String::new(),
         progressive_image_uploads: false,
+        mobile: false,
     };
     WsMessage::Text(serde_json::to_string(&frame).unwrap())
 }

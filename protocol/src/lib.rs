@@ -342,6 +342,8 @@ pub struct Member {
     pub guild_id: Id,
     pub online: bool,
     #[serde(default)]
+    pub mobile: bool,
+    #[serde(default)]
     pub bot: bool,
     #[serde(default)]
     pub roles: Vec<Id>,
@@ -2573,6 +2575,8 @@ pub enum ClientMessage {
         client_version: String,
         #[serde(default)]
         progressive_image_uploads: bool,
+        #[serde(default)]
+        mobile: bool,
     },
     FetchMessages {
         channel_id: Id,
@@ -3678,6 +3682,17 @@ mod identify_wire_tests {
     }
 
     #[test]
+    fn older_members_default_to_desktop_presence() {
+        let member: super::Member = serde_json::from_value(serde_json::json!({
+            "user": { "pubkey": "alice", "username": "Alice" },
+            "guild_id": super::Id::nil(), "online": true
+        }))
+        .unwrap();
+        assert!(member.online);
+        assert!(!member.mobile);
+    }
+
+    #[test]
     fn an_identify_without_a_version_still_parses() {
         let old = r#"{
             "op": "identify",
@@ -3694,9 +3709,11 @@ mod identify_wire_tests {
             ClientMessage::Identify {
                 username,
                 client_version,
+                mobile,
                 ..
             } => {
                 assert_eq!(username, "alice", "the fields that were there survive");
+                assert!(!mobile, "older clients keep desktop presence");
                 assert!(
                     client_version.is_empty(),
                     "an absent version is empty — 'it did not say', not a version"

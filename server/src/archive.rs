@@ -80,6 +80,7 @@ impl Store {
                         .unwrap_or(crate::protocol::User { pubkey, username }),
                     guild_id: gid,
                     online: false,
+                    mobile: false,
                     bot,
                     roles,
                     xp,

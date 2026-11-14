@@ -1849,6 +1849,7 @@ mod tests {
                 },
                 guild_id: Id::new_v4(),
                 online: true,
+                mobile: false,
                 bot,
                 roles: vec![],
                 xp: 0,

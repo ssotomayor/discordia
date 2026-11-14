@@ -270,6 +270,7 @@ impl Bot {
             bot,
             client_version: concat!("bot-sdk/", env!("CARGO_PKG_VERSION")).to_string(),
             progressive_image_uploads: false,
+            mobile: false,
         };
         let mut bot = Bot {
             write,

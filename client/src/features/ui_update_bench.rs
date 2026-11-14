@@ -53,6 +53,7 @@ fn benchmark_view(export: Export) -> Element {
                 },
                 guild_id: Id::nil(),
                 online: true,
+                mobile: false,
                 bot: false,
                 roles: vec![],
                 xp: 0,

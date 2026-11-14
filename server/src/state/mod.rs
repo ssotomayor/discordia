@@ -74,6 +74,7 @@ struct Conn {
     host: Option<String>,
     route: crate::connection_routes::RouteSource,
     progressive_image_uploads: bool,
+    mobile: bool,
     /// `SetAttention`. True until told otherwise, so a client that never
     /// says is never pushed while it is connected.
     attended: bool,
@@ -345,6 +346,7 @@ impl AppState {
                     user: User { pubkey, username },
                     guild_id: gid,
                     online: false,
+                    mobile: false,
                     bot,
                     roles: role_ids,
                     xp: 0,
@@ -568,6 +570,7 @@ impl AppState {
                 host: None,
                 route: crate::connection_routes::RouteSource::Socket(ip),
                 progressive_image_uploads: false,
+                mobile: false,
                 attended: true,
             },
         );
@@ -589,6 +592,25 @@ impl AppState {
         if let Some(mut conn) = self.conns.get_mut(&conn_id) {
             conn.progressive_image_uploads = enabled;
         }
+    }
+
+    pub(crate) fn set_mobile(&self, conn_id: u64, mobile: bool) {
+        if let Some(mut conn) = self.conns.get_mut(&conn_id) {
+            conn.mobile = mobile;
+        }
+    }
+
+    fn mobile_connected(&self, pubkey: &str) -> bool {
+        let ids: Vec<u64> = self
+            .conn_ids_by_pubkey
+            .get(pubkey)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default();
+        ids.into_iter().any(|id| {
+            self.conns
+                .get(&id)
+                .is_some_and(|conn| !conn.closing && conn.mobile)
+        })
     }
 
     pub(crate) fn set_attention(&self, conn_id: u64, attended: bool) {
@@ -866,6 +888,7 @@ impl AppState {
 
     pub fn stamp_xp(&self, mut member: Member) -> Member {
         member.xp = self.xp_of(member.guild_id, &member.user.pubkey);
+        member.mobile = member.online && !member.bot && self.mobile_connected(&member.user.pubkey);
         member
     }
 
@@ -1451,6 +1474,7 @@ impl AppState {
             user: creator.clone(),
             guild_id: gid,
             online: true,
+            mobile: false,
             bot: false,
             roles: Vec::new(),
             xp: 0,
@@ -2198,6 +2222,7 @@ impl AppState {
                 user: user.clone(),
                 guild_id,
                 online: true,
+                mobile: false,
                 bot: false,
                 roles: Vec::new(),
                 xp: 0,

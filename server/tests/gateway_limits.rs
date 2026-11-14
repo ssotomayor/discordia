@@ -54,6 +54,7 @@ fn bad_identify() -> String {
         bot: false,
         client_version: String::new(),
         progressive_image_uploads: false,
+        mobile: false,
     })
     .expect("serialize")
 }
@@ -85,6 +86,7 @@ async fn identified(url: &str) -> Socket {
         bot: false,
         client_version: String::new(),
         progressive_image_uploads: true,
+        mobile: false,
     };
     ws.send(WsMessage::Text(serde_json::to_string(&identify).unwrap()))
         .await
