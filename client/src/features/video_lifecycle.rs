@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Target {
@@ -115,6 +116,13 @@ impl Lifecycle {
         }
     }
 
+    fn expired(&mut self) -> Option<Action> {
+        match self.phase {
+            Phase::Trying { attempt } => self.connect(attempt.saturating_add(1)),
+            _ => self.retry(),
+        }
+    }
+
     fn blocked(&self) -> bool {
         self.phase == Phase::Blocked
     }
@@ -140,13 +148,23 @@ fn step(phase: Phase, status: Status) -> (Phase, Option<Duration>) {
 }
 
 pub(super) async fn run(
+    targets: watch::Receiver<Option<Target>>,
+    events: mpsc::UnboundedReceiver<Event>,
+    dispatch: impl FnMut(Action),
+) {
+    run_with_timeout(targets, events, dispatch, ATTEMPT_TIMEOUT).await;
+}
+
+async fn run_with_timeout(
     mut targets: watch::Receiver<Option<Target>>,
     mut events: mpsc::UnboundedReceiver<Event>,
     mut dispatch: impl FnMut(Action),
+    attempt_timeout: Duration,
 ) {
     let mut lifecycle = Lifecycle::default();
     let mut deadline = None;
     if let Some(action) = lifecycle.change(targets.borrow_and_update().clone()) {
+        deadline = Some(Instant::now() + attempt_timeout);
         dispatch(action);
     }
     loop {
@@ -156,7 +174,7 @@ pub(super) async fn run(
                 if changed.is_err() { break; }
                 let target = targets.borrow_and_update().clone();
                 if let Some(action) = lifecycle.change(target) {
-                    deadline = None;
+                    deadline = lifecycle.target.as_ref().map(|_| Instant::now() + attempt_timeout);
                     dispatch(action);
                 }
             }
@@ -165,7 +183,7 @@ pub(super) async fn run(
                 if let Some(delay) = lifecycle.event(event) {
                     deadline = Some(Instant::now() + delay);
                 }
-                if lifecycle.blocked() { deadline = None; }
+                if lifecycle.blocked() || lifecycle.phase == Phase::Connected { deadline = None; }
             }
             _ = async {
                 match deadline {
@@ -174,7 +192,10 @@ pub(super) async fn run(
                 }
             } => {
                 deadline = None;
-                if let Some(action) = lifecycle.retry() { dispatch(action); }
+                if let Some(action) = lifecycle.expired() {
+                    deadline = Some(Instant::now() + attempt_timeout);
+                    dispatch(action);
+                }
             }
         }
     }
@@ -394,6 +415,50 @@ mod tests {
             }),
             Some(Duration::from_millis(1500))
         );
+    }
+
+    #[tokio::test]
+    async fn an_attempt_without_any_page_report_is_replaced_and_late_reports_are_ignored() {
+        let (_targets, receiver) = watch::channel(Some(target("a", 1)));
+        let (events, event_receiver) = mpsc::unbounded_channel();
+        let (actions, mut action_receiver) = mpsc::unbounded_channel();
+        let task = tokio::spawn(run_with_timeout(
+            receiver,
+            event_receiver,
+            move |action| {
+                actions.send(action).unwrap();
+            },
+            Duration::from_millis(150),
+        ));
+        let first = generation(action_receiver.recv().await);
+        let next = tokio::time::timeout(Duration::from_secs(2), action_receiver.recv())
+            .await
+            .unwrap();
+        let second = generation(next);
+        assert_ne!(first, second);
+        events
+            .send(Event {
+                generation: first,
+                status: Status::Blocked,
+            })
+            .unwrap();
+        events
+            .send(Event {
+                generation: second,
+                status: Status::Connected,
+            })
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), action_receiver.recv())
+                .await
+                .is_err()
+        );
+        drop(events);
+        assert!(matches!(
+            action_receiver.recv().await,
+            Some(Action::Disconnect)
+        ));
+        task.await.unwrap();
     }
 
     #[tokio::test]

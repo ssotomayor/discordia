@@ -111,6 +111,54 @@ window.dxScreen = window.dxScreen || (function () {
     return s === 'camera' ? 'camera' : 'screen';
   }
   const attached = {};
+  const screenRecoveries = new Map();
+  function screenWanted(identity) {
+    const base = baseIdentity(identity);
+    return viewerVisible && mediaPanelVisible && (viewerTargets !== null
+      ? viewerTargets.includes(base) : inlineScreens.includes(base) && !detachedScreens.includes(base));
+  }
+  function screenPublication(identity) {
+    let found = null;
+    if (room && room.remoteParticipants) room.remoteParticipants.forEach(function (participant) {
+      if (baseIdentity(participant.identity) !== baseIdentity(identity)) return;
+      participant.trackPublications.forEach(function (pub) {
+        if (pub.kind === 'video' && kindOf(pub, pub.track) === 'screen') found = pub;
+      });
+    });
+    return found;
+  }
+  function recoverScreen(identity, request) {
+    if (connectionRequest !== request || !room || !screenWanted(identity)) return;
+    const now = Date.now();
+    const policy = screenRecoveries.get(identity) || { attempts: 0, at: 0 };
+    if (policy.at && now - policy.at < 20000) return;
+    const pub = screenPublication(identity);
+    if (!pub || policy.attempts >= 3) {
+      // A subscriber retry must not end a browser-owned local capture.
+      if (!localShareVideoTrack && !localCameraTrack && request) {
+        reportRoomProblem('screen-room-reconnecting', 'No decodable video arrived; retrying the video room');
+        post('screen-room-state', { generation: request.generation, status: 'retry' });
+      }
+      return;
+    }
+    policy.at = now; policy.attempts++;
+    screenRecoveries.set(identity, policy);
+    try {
+      pub.setSubscribed(false);
+      setTimeout(function () {
+        if (connectionRequest !== request || !screenWanted(identity) || screenPublication(identity) !== pub) return;
+        pub.setSubscribed(true);
+        requestHighQuality(pub);
+      }, 300);
+    } catch (error) { console.warn('[dxScreen] video recovery failed', error); }
+  }
+  function awaitFirstFrame(cid, entry, request) {
+    entry.startupTimer = setTimeout(function () {
+      if (attached[cid] !== entry || connectionRequest !== request || entry.firstFrame || !screenWanted(entry.identity)) return;
+      recoverScreen(entry.identity, request);
+      awaitFirstFrame(cid, entry, request);
+    }, 12000);
+  }
   let viewerTargets = null;
   let viewerVisible = true;
   let mediaPanelVisible = window.__dxMediaPanelVisible !== false;
@@ -295,6 +343,7 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function attachInto(track, c, cid, identity, kind) {
     const prev = attached[cid];
+    if (prev && prev.startupTimer) clearTimeout(prev.startupTimer);
     if (prev && prev.cameraObserver) prev.cameraObserver.disconnect();
     if (prev && prev.track && prev.el) { try { prev.track.detach(prev.el); } catch (e) {} }
     c.innerHTML = '';
@@ -304,14 +353,20 @@ window.dxScreen = window.dxScreen || (function () {
     el.style.objectFit = 'contain';
     if (kind === 'camera' && cid === 'camera-self') el.style.transform = 'scaleX(-1)';
     c.appendChild(el);
-    attached[cid] = { identity: identity, kind: kind, track: track, el: el };
-    if (c.getAttribute('data-connecting')) {
+    const entry = { identity: identity, kind: kind, track: track, el: el, firstFrame: false };
+    attached[cid] = entry;
+    if (kind === 'screen' || c.getAttribute('data-connecting')) {
       c.setAttribute('data-frame-ready', 'false');
       const ready = function () {
-        if (attached[cid] && attached[cid].el === el) c.setAttribute('data-frame-ready', 'true');
+        if (attached[cid] !== entry) return;
+        entry.firstFrame = true;
+        if (entry.startupTimer) clearTimeout(entry.startupTimer);
+        screenRecoveries.delete(identity);
+        c.setAttribute('data-frame-ready', 'true');
       };
       if (typeof el.requestVideoFrameCallback === 'function') el.requestVideoFrameCallback(ready);
       else el.addEventListener('loadeddata', ready, { once: true });
+      if (kind === 'screen' && identity !== selfPreviewIdentity) awaitFirstFrame(cid, entry, connectionRequest);
     }
     if (kind === 'camera' && typeof ResizeObserver !== 'undefined') {
       const observer = new ResizeObserver(function () { requestCameraDimensions(track); });
@@ -367,6 +422,7 @@ window.dxScreen = window.dxScreen || (function () {
     try { window.postMessage({ __dxf: kind, detail: safe, authentication: authentication, generation: connectionRequest ? connectionRequest.generation : 0 }, '*'); } catch (e) {}
   }
   function clearRemoteTracks() {
+    screenRecoveries.clear();
     qualityReports.clear();
     healthReports.clear();
     screenPubs.clear();
@@ -379,6 +435,7 @@ window.dxScreen = window.dxScreen || (function () {
     for (const k in audioTracks) delete audioTracks[k];
     Object.keys(attached).forEach(function (cid) {
       const a = attached[cid];
+      if (a && a.startupTimer) clearTimeout(a.startupTimer);
       if (a && a.cameraObserver) { a.cameraObserver.disconnect(); a.cameraObserver = null; }
       if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
       const c = document.getElementById(cid);
@@ -520,8 +577,24 @@ window.dxScreen = window.dxScreen || (function () {
       reportRoomProblem('screen-room-reconnecting', reason || 'disconnected');
       reportState('retry');
     });
+    let reconnectTimer = null;
+    let reconnectRevision = 0;
     thisRoom.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
       console.log('[dxScreen] connection state', st);
+      if (!current() || room !== thisRoom) return;
+      const reconnecting = st === 'reconnecting' || st === 'signalReconnecting';
+      if (reconnecting && reconnectTimer) return;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      const revision = ++reconnectRevision;
+      if (reconnecting) {
+        reconnectTimer = setTimeout(function () {
+          if (!current() || room !== thisRoom || revision !== reconnectRevision) return;
+          if (localShareVideoTrack || localCameraTrack) return;
+          reportRoomProblem('screen-room-reconnecting', 'Video reconnection timed out');
+          reportState('retry');
+        }, 12000);
+      }
     });
     thisRoom.on(lk.RoomEvent.TrackPublished, function (pub, participant) {
       if (room !== thisRoom) return;
@@ -600,7 +673,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (kind === 'camera') notifyCameraEnded(); else notifyShareEnded();
     });
     try {
-      const connectOptions = { autoSubscribe: viewerTargets === null };
+      const connectOptions = { autoSubscribe: viewerTargets === null, maxRetries: 0, websocketTimeout: 8000, peerConnectionTimeout: 12000 };
       if (Array.isArray(iceServers) && iceServers.length) connectOptions.rtcConfig = { iceServers: iceServers };
       await thisRoom.connect(url, token, connectOptions);
       if (!current() || room !== thisRoom) { try { await thisRoom.disconnect(); } catch (e) {} return; }
@@ -608,11 +681,10 @@ window.dxScreen = window.dxScreen || (function () {
     } catch (e) {
       if (!current()) { try { await thisRoom.disconnect(); } catch (ignored) {} return; }
       console.warn('[dxScreen] connect failed');
-      if (room === thisRoom) room = null;
-      try { await thisRoom.disconnect(); } catch (ignored) {}
-      if (!current()) return;
+      if (room === thisRoom) { room = null; clearRemoteTracks(); }
       reportRoomProblem('screen-room-error', e && e.message ? e.message : e);
       reportState('retry');
+      try { await thisRoom.disconnect(); } catch (ignored) {}
       return;
     }
     applyAudioSubscriptions();
@@ -798,19 +870,21 @@ window.dxScreen = window.dxScreen || (function () {
     c.setAttribute('data-identity', identity);
     if (!attached[cid]) attached[cid] = { identity: identity, kind: kind, track: null, el: null };
     const t = videoTrackFor(identity, kind);
-    if (t) attachInto(t, c, cid, identity, kind); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
-    if (!t && kind === 'screen') {
-      setTimeout(function () {
-        const current = document.getElementById(cid);
-        if (current && current.getAttribute('data-identity') === identity && !videoTrackFor(identity, 'screen')) {
-          reportRoomProblem('screen-track-timeout', identity);
-        }
-      }, 10000);
+    if (t) attachInto(t, c, cid, identity, kind);
+    else {
+      const prev = attached[cid];
+      if (prev && prev.startupTimer) clearTimeout(prev.startupTimer);
+      c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+      const entry = { identity: identity, kind: kind, track: null, el: null, firstFrame: false };
+      attached[cid] = entry;
+      c.setAttribute('data-frame-ready', 'false');
+      if (kind === 'screen' && identity !== selfPreviewIdentity) awaitFirstFrame(cid, entry, connectionRequest);
     }
     if (cid.startsWith('screenshare-viewer-') && !nativeStreamAudio) attachAudio(identity);
   }
   function detach(cid) {
     const a = attached[cid];
+    if (a && a.startupTimer) clearTimeout(a.startupTimer);
     if (a && a.cameraObserver) a.cameraObserver.disconnect();
     if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
     delete attached[cid];
@@ -1004,6 +1078,14 @@ window.dxScreen = window.dxScreen || (function () {
           policy.probingSince = now;
         }
         qualityPolicy.set(track.sid, policy);
+      }
+      // A lost publisher status packet must not leave a receiver pinned to Medium forever.
+      if (result && (!sample || Date.now() - sample.at >= 10000)) {
+        const policy = qualityPolicy.get(track.sid);
+        if (policy && policy.probeAt > 0 && !policy.probingSince && Date.now() >= policy.probeAt && !participantIsPoor(track.sid)) {
+          requestHighQuality(screenPubs.get(track.sid));
+          policy.probingSince = Date.now();
+        }
       }
       return result;
     } catch (e) { return null; }
@@ -2084,13 +2166,6 @@ pub fn ScreenShareBridge() -> Element {
                             .and_then(|v| v.as_str())
                             .unwrap_or("disconnected");
                         eprintln!("[screen] screen room disconnected: {detail}; reconnecting");
-                    }
-                    Some("screen-track-timeout") => {
-                        eprintln!("[screen] no video track arrived within 10 seconds");
-                        state.write().error_toast = Some(
-                                "Connected to the stream room, but no video arrived. Make sure the sharer is running the latest Discordia build and restart the share."
-                                    .into(),
-                            );
                     }
                     Some("screen-stats") | Some("screen-stats-in") => {
                         let outbound =

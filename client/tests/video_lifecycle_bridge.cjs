@@ -5,11 +5,13 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
 const script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0]
-  .replace('return { connect: connect', 'return { testTracks: tracks, testAudioTracks: audioTracks, connect: connect');
+  .replace('return { connect: connect', 'return { testTracks: tracks, testAudioTracks: audioTracks, testSetBrowserCapture(on) { localShareVideoTrack = on ? {} : null; }, connect: connect');
 
 function element(kind) {
   return {
-    kind, style: {}, children: [], attributes: {},
+    kind, style: {}, children: [], attributes: {}, listeners: {},
+    addEventListener(name, fn) { this.listeners[name] = fn; },
+    dispatch(name) { this.listeners[name]?.(); },
     appendChild(child) { child.parent = this; this.children.push(child); },
     querySelectorAll(selector) { return this.children.filter(child => child.kind === selector); },
     setAttribute(key, value) { this.attributes[key] = value; },
@@ -46,6 +48,7 @@ function deferred() {
 
 function fixture({ encrypted = false, constructorFailure = false } = {}) {
   const messages = [], rooms = [], timers = [], workers = [];
+  let now = 1000;
   const containers = new Map(), body = element('body');
   class Room {
     constructor() {
@@ -76,6 +79,7 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
     window: { LivekitClient: { Room, RoomEvent, Track: { Source: { Camera: 'camera' } } }, postMessage(m) { messages.push(m); } },
     document: { body, getElementById(id) { return containers.get(id) || null; } },
     navigator: { mediaDevices: { addEventListener() {} } },
+    Date: { now: () => now },
     setTimeout(fn, ms) { timers.push({ fn, ms }); }, clearTimeout() {},
     console: { log() {}, warn() {}, error() {} },
   };
@@ -92,12 +96,98 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
   }
   vm.runInNewContext(script, context);
   return { bridge: context.window.dxScreen, rooms, messages, timers, workers, containers, body,
-    devices: context.navigator.mediaDevices };
+    devices: context.navigator.mediaDevices, advance(ms) { now += ms; } };
 }
 
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 
 (async () => {
+  {
+    const f = fixture();
+    const failed = f.bridge.connect('wss://test', 'token', null, false, 100);
+    await settle();
+    const old = f.rooms[0];
+    old.leave = deferred();
+    old.join.reject(new Error('signaling failed'));
+    await settle();
+    assert.equal(f.messages.at(-1).status, 'retry', 'a failed join must report before waiting for teardown');
+    const replacement = f.bridge.connect('wss://next', 'token', null, false, 101);
+    await settle(); f.rooms[1].join.resolve(); await replacement;
+    const before = f.messages.length;
+    old.leave.resolve(); await failed;
+    assert.equal(f.messages.length, before, 'late cleanup cannot report an old failure over the replacement room');
+  }
+  {
+    const f = fixture();
+    const joined = f.bridge.connect('wss://test', 'token', null, false, 101);
+    await settle();
+    const room = f.rooms[0];
+    room.join.resolve(); await joined;
+    const stream = media(f, room, 'sender');
+    const calls = [];
+    const pub = { kind: 'video', source: 'screen_share', setSubscribed(on) { calls.push(on); } };
+    room.remoteParticipants.set('sender#video', { identity: 'sender#video', trackPublications: new Map([['screen', pub]]) });
+    f.timers.findLast(t => t.ms === 12000).fn();
+    assert.deepEqual(calls, [false], 'a subscribed track without a decoded first frame must recover');
+    f.timers.findLast(t => t.ms === 300).fn();
+    assert.deepEqual(calls, [false, true], 'resubscribe without touching the publisher');
+    stream.video.elements.at(-1).dispatch('loadeddata');
+    f.advance(21000);
+    f.timers.findLast(t => t.ms === 12000).fn();
+    assert.deepEqual(calls, [false, true], 'a decoded frame cancels recovery');
+  }
+  {
+    const f = fixture();
+    const joined = f.bridge.connect('wss://test', 'token', null, false, 102);
+    await settle(); f.rooms[0].join.resolve(); await joined;
+    media(f, f.rooms[0], 'sender');
+    const timer = f.timers.findLast(t => t.ms === 12000);
+    const before = f.messages.length;
+    f.bridge.setViewerVisibility(false);
+    timer.fn();
+    assert.equal(f.messages.length, before, 'a hidden viewer must not reconnect');
+    f.bridge.setViewerVisibility(true);
+    f.bridge.detach('screenshare-viewer-sender');
+    const afterDetach = f.messages.length;
+    timer.fn();
+    assert.equal(f.messages.length, afterDetach, 'a detached tile must not reconnect');
+  }
+  {
+    const f = fixture();
+    const joined = f.bridge.connect('wss://test', 'token', null, false, 104);
+    await settle(); const room = f.rooms[0]; room.join.resolve(); await joined;
+    media(f, room, 'sender');
+    const calls = [];
+    const pub = { kind: 'video', source: 'screen_share', setSubscribed(on) { calls.push(on); } };
+    room.remoteParticipants.set('sender#video', { identity: 'sender#video', trackPublications: new Map([['screen', pub]]) });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      f.advance(21000);
+      f.timers.findLast(t => t.ms === 12000).fn();
+      f.timers.findLast(t => t.ms === 300).fn();
+    }
+    assert.deepEqual(calls, [false, true, false, true, false, true]);
+    f.advance(21000);
+    f.timers.findLast(t => t.ms === 12000).fn();
+    assert.equal(calls.length, 6, 'subscription retries must be bounded');
+    assert.equal(f.messages.at(-1).status, 'retry', 'escalate to the video-room lifecycle');
+    assert.equal(f.messages.at(-1).generation, 104);
+    assert.equal(f.messages.some(m => m.__dxf === 'screen-share-ended'), false);
+  }
+  for (const publishing of [false, true]) {
+    const f = fixture();
+    const joined = f.bridge.connect('wss://test', 'token', null, false, 103);
+    await settle(); const room = f.rooms[0]; room.join.resolve(); await joined;
+    room.emit('ConnectionStateChanged', 'reconnecting');
+    const timer = f.timers.findLast(t => t.ms === 12000);
+    room.emit('ConnectionStateChanged', 'connected');
+    const before = f.messages.length;
+    timer.fn();
+    assert.equal(f.messages.length, before, 'a completed SDK reconnect cancels the timeout');
+    f.bridge.testSetBrowserCapture(publishing);
+    room.emit('ConnectionStateChanged', 'reconnecting');
+    f.timers.findLast(t => t.ms === 12000).fn();
+    assert.equal(f.messages.at(-1).status, publishing ? 'connected' : 'retry', 'subscriber recovery must preserve a browser publisher');
+  }
   for (const explicitLeave of [false, true]) {
     const f = fixture();
     const a = f.bridge.connect('wss://a', 'a-token', null, false, 20);
