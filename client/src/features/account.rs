@@ -31,6 +31,7 @@ pub(super) fn dm_relays(saved: &ClientSettings) -> Vec<String> {
 
 fn initial_state(saved: &ClientSettings) -> AppState {
     let mut s = AppState::empty();
+    s.show_mobile_presence = saved.show_mobile_presence;
     s.last_text_channels = saved.last_text_channels.clone();
     s.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();

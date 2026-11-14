@@ -1,4 +1,8 @@
 {
+  "On this server, changes apply the next time you connect.": ["En este servidor, los cambios se aplican la próxima vez que te conectes.", "Neste servidor, as alterações são aplicadas na próxima vez que você se conectar.", "在此服务器上，更改会在下次连接时生效。", "このサーバーでは、変更は次回の接続時に適用されます。"],
+  "This message is still sending. Try reacting again in a moment.": ["Este mensaje todavía se está enviando. Intenta reaccionar de nuevo en un momento.", "Esta mensagem ainda está sendo enviada. Tente reagir novamente em instantes.", "这条消息仍在发送中。请稍后再试。", "このメッセージはまだ送信中です。少し待ってからもう一度リアクションしてください。"],
+  "Show that I am on mobile": ["Mostrar que estoy desde el celular", "Mostrar que estou no celular", "显示我正在使用手机", "モバイル端末の使用を表示"],
+  "Show a phone icon instead of the online dot in community member lists. Turn this off to keep the dot.": ["Muestra un celular en lugar del punto de conexión en las listas de miembros de comunidades. Desactívalo para mantener el punto.", "Mostra um celular no lugar do ponto de conexão nas listas de membros das comunidades. Desative para manter o ponto.", "在社区成员列表中用手机图标代替在线圆点。关闭后保留圆点。", "コミュニティのメンバー一覧でオンラインの点の代わりにスマートフォンを表示します。オフにすると点を表示します。"],
   "Online on mobile": ["En línea desde el celular", "Online no celular", "手机在线", "モバイルでオンライン"],
   "View once": ["Ver una vez", "Ver uma vez", "仅看一次", "一度だけ表示"],
   "They can open it one time, then it is deleted for both of you": ["Podrá abrirla una vez; luego se borra para ambos", "A pessoa pode abrir uma vez; depois é apagada para os dois", "对方只能打开一次，之后会为双方删除", "相手は一度だけ開けます。その後、双方から削除されます"],

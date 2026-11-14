@@ -1054,6 +1054,23 @@ pub(super) fn MessageRow(
         .iter()
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
+    let reaction_gateway = gateway.clone();
+    let reaction_nostr = nostr.clone();
+    let react = use_callback(move |emoji: String| {
+        if state.peek().dm_of(channel_id).is_some() {
+            reaction_nostr.send(crate::nostr::service::NostrCmd::React {
+                channel_id,
+                message_id,
+                emoji,
+            });
+        } else {
+            reaction_gateway.send(ClientMessage::React {
+                channel_id,
+                message_id,
+                emoji,
+            });
+        }
+    });
 
     let rank = guild_id.and_then(|gid| rank_of(&state.read(), gid, &message.author.pubkey));
     let name_color = rank
@@ -1372,7 +1389,6 @@ pub(super) fn MessageRow(
                                     "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]"
                                 };
                                 let emoji = r.emoji.clone();
-                                let g = gateway.clone();
                                 let count = r.users.len();
                                 let who = reactors(&state.read(), &r.users, self_pubkey.as_deref());
                                 rsx! {
@@ -1383,7 +1399,7 @@ pub(super) fn MessageRow(
                                         "data-tip-side": "top",
                                         "data-tip-wrap": "true",
                                         aria_label: "{r.emoji} {count}: {who}",
-                                        onclick: move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.clone() }),
+                                        onclick: move |_| react.call(emoji.clone()),
                                         span { class: "flex items-center", EmojiText { text: r.emoji.clone(), guild_id, reaction: true } }
                                         span { class: "text-[10px]", "{count}" }
                                     }
@@ -1466,7 +1482,7 @@ pub(super) fn MessageRow(
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                         title: crate::i18n::text("Add reaction", &[]),
-                        "data-context-action": if guild_id.is_some() { "react" } else { "" },
+                        "data-context-action": "react",
                         onclick: move |_| show_react.set(!show_react()),
                         "☺"
                     }
@@ -1489,18 +1505,13 @@ pub(super) fn MessageRow(
                             "🗑"
                         }
                     }
-                    if guild_id.is_some() {
-                        div { hidden: true,
+                    div { hidden: true,
                             for emoji in QUICK_REACTIONS.iter().take(4).copied() {
                                 button {
                                     "data-context-emoji": "{emoji}",
-                                    onclick: {
-                                        let g = gateway.clone();
-                                        move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.to_string() })
-                                    },
+                                    onclick: move |_| react.call(emoji.to_string()),
                                 }
                             }
-                        }
                     }
                     if confirm_delete() {
                         div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
@@ -1533,12 +1544,11 @@ pub(super) fn MessageRow(
                             div { class: "flex gap-1",
                                 for emoji in QUICK_REACTIONS.iter().copied() {
                                     {
-                                        let g = gateway.clone();
                                         rsx! {
                                             button {
                                                 class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                                 onclick: move |_| {
-                                                    g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.to_string() });
+                                                    react.call(emoji.to_string());
                                                     show_react.set(false);
                                                 },
                                                 "{emoji}"
@@ -1823,6 +1833,73 @@ mod author_name_tests {
     use super::*;
     use crate::render_check::Checked;
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn a_dm_quick_reaction_uses_nostr_without_a_gateway_connection() {
+        use dioxus::core::{AttributeValue, Mutation};
+        use std::any::Any;
+        use tokio::sync::mpsc::UnboundedReceiver;
+        type Export = Rc<
+            RefCell<
+                Option<(
+                    Signal<bool>,
+                    UnboundedReceiver<crate::nostr::service::NostrCmd>,
+                    UnboundedReceiver<ClientMessage>,
+                )>,
+            >,
+        >;
+        let export: Export = Rc::default();
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let show = use_signal(|| false);
+                let state = use_signal(|| {
+                    let mut state = crate::state::AppState::empty();
+                    state.dms.push(crate::state::DmInfo {
+                        channel_id: Id::nil(),
+                        other_pubkey: "a".repeat(64),
+                    });
+                    state
+                });
+                provide_context(state);
+                let (nostr, gateway) = use_hook(|| {
+                    let (nostr, dm_rx) = crate::nostr::service::NostrTx::test_channel_pair();
+                    let (gateway, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+                    *export.borrow_mut() = Some((show, dm_rx, gateway_rx));
+                    (nostr, crate::state::GatewayTx(gateway))
+                });
+                provide_context(nostr);
+                provide_context(gateway);
+                rsx! { if show() { MessageRow { message: historical_message(), grouped: false } } }
+            },
+            export.clone(),
+        );
+        dom.rebuild_checked();
+        let (mut show, mut dm, mut gateway) = export.borrow_mut().take().unwrap();
+        show.set(true);
+        let edits = dom.render_checked();
+        let button = edits
+            .edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "data-context-emoji",
+                    value: AttributeValue::Text(value),
+                    id,
+                    ..
+                } if *value == "👍" => Some(*id),
+                _ => None,
+            })
+            .expect("DM reactions must be available in the touch context menu");
+        let click: Rc<dyn Any> = Rc::new(dioxus::html::PlatformEventData::new(Box::new(
+            dioxus::html::SerializedMouseData::default(),
+        )));
+        dom.runtime()
+            .handle_event("click", Event::new(click, true), button);
+        assert!(
+            matches!(dm.try_recv(), Ok(crate::nostr::service::NostrCmd::React { channel_id, message_id, emoji }) if channel_id == Id::nil() && message_id == Id::nil() && emoji == "👍")
+        );
+        assert!(gateway.try_recv().is_err());
+    }
 
     fn historical_message() -> Message {
         Message {

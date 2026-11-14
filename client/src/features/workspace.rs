@@ -401,6 +401,23 @@ pub fn WorkspaceView(
         (gateway_tx, gateway_shutdown, voice_tx)
     });
     provide_context(gateway_tx.clone());
+    let presence_gateway = gateway_tx.clone();
+    let mut sent_presence = use_signal(|| None::<bool>);
+    use_effect(move || {
+        let visible = settings.read().show_mobile_presence;
+        if state.peek().show_mobile_presence != visible {
+            state.write().show_mobile_presence = visible;
+        }
+        if state.read().server_session() != ServerSession::Live {
+            sent_presence.set(None);
+        } else if cfg!(any(target_os = "android", target_os = "ios"))
+            && state.read().server_mobile_presence_updates
+            && *sent_presence.peek() != Some(visible)
+        {
+            presence_gateway.send(ClientMessage::SetMobilePresence { mobile: visible });
+            sent_presence.set(Some(visible));
+        }
+    });
     let name_gateway = gateway_tx.clone();
     let mut sent_name = use_signal(|| None::<String>);
     use_effect(use_reactive((&display_name,), move |(name,)| {

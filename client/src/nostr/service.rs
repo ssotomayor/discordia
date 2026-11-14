@@ -53,6 +53,11 @@ pub enum NostrCmd {
     Retry {
         message_id: Id,
     },
+    React {
+        channel_id: Id,
+        message_id: Id,
+        emoji: String,
+    },
     /// Edit an existing direct message and publish the update.
     Edit {
         channel_id: Id,
@@ -277,10 +282,12 @@ pub fn spawn_nostr(
             {
                 let is_delete = rumor.kind == nip17::KIND_DELETION;
                 let is_edit = nip17::edit_target(&rumor).is_some();
+                let is_reaction =
+                    super::reactions::receive(&mut state.write(), &our_pubkey, &rumor);
                 let history = super::call_history::open(&our_pubkey, &rumor)
                     .ok()
                     .flatten();
-                let system = history.is_some() || is_delete || is_edit;
+                let system = history.is_some() || is_delete || is_edit || is_reaction;
                 if is_edit || is_delete {
                     apply_dm_change(&rumor, &our_pubkey, &mut state, &mut settings);
                 }
@@ -295,6 +302,7 @@ pub fn spawn_nostr(
                     );
                 } else if !is_delete
                     && !is_edit
+                    && !is_reaction
                     && let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor)
                     && msg.author == our_pubkey
                     && msg.peer == peer
@@ -435,6 +443,41 @@ pub fn spawn_nostr(
                         let nip17::ChatMessage { id: key, peer, content: text, reply_to, emoji, .. } = held;
                         outbox.hold(id, key, Draft { peer, text, reply_to, emoji });
                         show(&mut state, &outbox, id);
+                    }
+                    Some(NostrCmd::React { channel_id, message_id: mid, emoji }) => {
+                        if !super::reactions::valid_emoji(&emoji) { continue; }
+                        let target = {
+                            let s = state.peek();
+                            s.dm_of(channel_id).and_then(|dm| {
+                                let message = s.messages.get(&channel_id)?.iter().find(|message| message.id == mid)?;
+                                let id = s.nostr_event_ids.get(&mid)?.clone();
+                                let added = !message.reactions.iter().any(|reaction| reaction.emoji == emoji && reaction.users.contains(&our_pubkey));
+                                let ts = s.dm_reactions.next_time(channel_id, mid, &our_pubkey, &emoji, now());
+                                Some((dm.other_pubkey.clone(), id, added, ts))
+                            })
+                        };
+                        let Some((peer, target, added, ts)) = target else {
+                            state.write().error_toast = Some(crate::i18n::text("This message is still sending. Try reacting again in a moment.", &[]));
+                            continue;
+                        };
+                        if !outbox.fits(1, 0) {
+                            state.write().error_toast = Some("Too many pending messages to react.".into());
+                            continue;
+                        }
+                        let rumor = super::reactions::rumor(&our_pubkey, &peer, &target, &emoji, added, ts);
+                        match nip17::wrap_both(&secret, &peer, &rumor, ts) {
+                            Ok((theirs, ours)) => {
+                                let id = message_id(&rumor.id);
+                                let due = routes.ready_at(&peer, std::time::Instant::now());
+                                outbox.queue(id, Wraps { peer, theirs, ours }, Kind::System { attempts: 0 }, due, true);
+                                show(&mut state, &outbox, id);
+                                if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
+                                    state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
+                                }
+                                super::reactions::receive(&mut state.write(), &our_pubkey, &rumor);
+                            }
+                            Err(error) => state.write().error_toast = Some(format!("Not sent — {error}")),
+                        }
                     }
                     Some(NostrCmd::Edit { channel_id, message_id: mid, text, emoji }) => {
                         let peer = state.peek().dm_of(channel_id).map(|d| d.other_pubkey.clone());
@@ -868,7 +911,8 @@ pub fn spawn_nostr(
                                 Err(error) => { tracing::warn!(%error, "Rejected call history record"); continue; }
                                 Ok(None) => {},
                             }
-                            if apply_dm_change(&rumor, &our_pubkey, &mut state, &mut settings) {
+                            let is_reaction = super::reactions::receive(&mut state.write(), &our_pubkey, &rumor);
+                            if is_reaction || apply_dm_change(&rumor, &our_pubkey, &mut state, &mut settings) {
                                 continue;
                             }
                             let live = replay.live(&state.peek().nostr_relays_up, &from);
@@ -1724,6 +1768,7 @@ fn insert_message_with_settings(
     if !fresh {
         return;
     }
+    super::reactions::apply_pending(&mut s, cid, mid);
 
     if !msg.emoji.is_empty() {
         s.dm_emoji.insert(mid, msg.emoji.clone());

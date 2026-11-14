@@ -30,6 +30,8 @@ pub struct SavedEmoji {
 pub struct ClientSettings {
     #[serde(default)]
     pub language: crate::i18n::Language,
+    #[serde(default = "default_enabled")]
+    pub show_mobile_presence: bool,
     pub theme: String,
     #[serde(default = "default_ui_size")]
     pub text_size_percent: u16,
@@ -396,6 +398,7 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             language: crate::i18n::Language::System,
+            show_mobile_presence: true,
             theme: "ember".into(),
             text_size_percent: default_ui_size(),
             emoji_size_percent: default_ui_size(),
@@ -865,6 +868,7 @@ mod tests {
             "noise_cancellation",
             "bypass_system_audio_processing",
             "share_activity",
+            "show_mobile_presence",
             "detect_games",
         ];
         let defaults = serde_json::to_value(ClientSettings::default()).unwrap();

@@ -729,7 +729,8 @@ where
         bot: false,
         client_version: crate::version::VERSION.to_string(),
         progressive_image_uploads: true,
-        mobile: cfg!(any(target_os = "android", target_os = "ios")),
+        mobile: cfg!(any(target_os = "android", target_os = "ios"))
+            && state.peek().show_mobile_presence,
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), "identify").await?;
@@ -1539,6 +1540,7 @@ fn apply_ready(
         image_previews,
         progressive_image_uploads,
         media_token_refresh,
+        mobile_presence_updates,
         user,
         guilds,
         channels,
@@ -1574,6 +1576,7 @@ fn apply_ready(
     s.server_image_previews = image_previews;
     s.server_progressive_image_uploads = progressive_image_uploads;
     s.server_media_token_refresh = media_token_refresh;
+    s.server_mobile_presence_updates = mobile_presence_updates;
     s.guilds = guilds;
     s.channels = channels;
     s.members = members;
@@ -3212,6 +3215,7 @@ mod tests {
                     image_previews: false,
                     progressive_image_uploads: false,
                     media_token_refresh: false,
+                    mobile_presence_updates: false,
                     user,
                     guilds: vec![],
                     channels: vec![],
@@ -3271,6 +3275,7 @@ mod tests {
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: false,
+            mobile_presence_updates: false,
             user: crate::protocol::User {
                 pubkey: "ab".repeat(32),
                 username: "Alice".into(),
