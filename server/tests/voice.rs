@@ -1495,3 +1495,205 @@ async fn heartbeat_closes_a_session_that_stops_reading_probes() {
     .await
     .expect("dead gateway must close its socket");
 }
+
+async fn renewed_token(
+    user: &mut Bot,
+    channel: Id,
+    kind: discordia_server::protocol::MediaTokenKind,
+    id: u64,
+) -> (String, Vec<discordia_server::protocol::IceServer>) {
+    user.send(&ClientMessage::RefreshMediaToken {
+        channel_id: channel,
+        route_revision: 0,
+        kind,
+        request_id: id,
+    })
+    .await
+    .unwrap();
+    loop {
+        match next_timeout(user).await {
+            ServerMessage::MediaToken {
+                channel_id,
+                route_revision,
+                kind: received,
+                request_id,
+                token,
+                ice_servers,
+            } => {
+                assert_eq!(
+                    (channel_id, route_revision, received, request_id),
+                    (channel, 0, kind, id)
+                );
+                return (token, ice_servers);
+            }
+            ServerMessage::VoiceToken { .. } | ServerMessage::VoiceStateUpdate(_) => {
+                panic!("renewal must not rejoin the call")
+            }
+            ServerMessage::Error { message } => panic!("renewal failed: {message}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn media_renewal_preserves_each_identity_room_and_publish_permission() {
+    use discordia_server::protocol::MediaTokenKind::*;
+    let cfg = local_signing();
+    let ice = cfg.ice_servers.clone();
+    let (url, handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "member").await;
+    let (_, channel) = voice_channel(&mut user).await;
+    let initial = join_voice(&mut user, channel).await;
+    let latest_ice = vec![discordia_server::protocol::IceServer {
+        urls: vec!["turn:relay.test:3478".into()],
+        username: "fresh".into(),
+        credential: "fresh-credential".into(),
+    }];
+    *ice.write().unwrap() = latest_ice.clone();
+    let verifier = TokenVerifier::with_api_key(API_KEY, API_SECRET);
+    let initial_voice = initial
+        .iter()
+        .find_map(|frame| match frame {
+            ServerMessage::VoiceToken { token, .. } => Some(token),
+            _ => None,
+        })
+        .expect("initial voice token");
+    let initial_claims = verifier.verify(initial_voice).unwrap();
+    assert!(
+        initial_claims.exp - initial_claims.nbf
+            <= discordia_server::protocol::MEDIA_TOKEN_TTL.as_secs() as usize + 5
+    );
+    for (kind, identity, publish) in [
+        (Screen, id.pubkey().to_string(), true),
+        (ScreenAudio, screen_audio_identity(id.pubkey()), false),
+        (ScreenVideo, screen_video_identity(id.pubkey()), true),
+        (ScreenViewer, screen_viewer_identity(id.pubkey()), false),
+    ] {
+        let (token, ice) = renewed_token(&mut user, channel, kind, 42).await;
+        assert_eq!(ice, latest_ice);
+        let claims = verifier.verify(&token).unwrap();
+        assert!(claims.exp > claims.nbf);
+        assert!(
+            claims.exp - claims.nbf
+                <= discordia_server::protocol::MEDIA_TOKEN_TTL.as_secs() as usize
+        );
+        assert_eq!(claims.sub, identity);
+        assert_eq!(claims.video.room, screen_room_name(channel));
+        assert!(claims.video.room_join && claims.video.can_subscribe);
+        assert_eq!(claims.video.can_publish, publish);
+        assert_eq!(claims.video.can_publish_data, publish);
+    }
+    handle.abort();
+}
+
+async fn renewal_denied(user: &mut Bot, channel: Id, route: u32) {
+    user.send(&ClientMessage::RefreshMediaToken {
+        channel_id: channel,
+        route_revision: route,
+        kind: discordia_server::protocol::MediaTokenKind::Screen,
+        request_id: 7,
+    })
+    .await
+    .unwrap();
+    loop {
+        match next_timeout(user).await {
+            ServerMessage::Error { message } => {
+                assert!(message.contains("media access is no longer available"));
+                break;
+            }
+            ServerMessage::MediaToken { .. } => panic!("unauthorized renewal issued a token"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn media_renewal_requires_the_owning_device_and_current_channel_and_route() {
+    let (url, handle) = spawn_gateway(local_signing()).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "member").await;
+    let (_, channel) = voice_channel(&mut user).await;
+    renewal_denied(&mut user, channel, 0).await;
+    join_voice(&mut user, channel).await;
+    renewal_denied(&mut user, Id::new_v4(), 0).await;
+    renewal_denied(&mut user, channel, 1).await;
+    let mut sibling = connect_user(&url, &id, "member").await;
+    renewal_denied(&mut sibling, channel, 0).await;
+    let mut outsider = connect_user(&url, &BotIdentity::generate(), "outsider").await;
+    renewal_denied(&mut outsider, channel, 0).await;
+    user.send(&ClientMessage::LeaveVoice).await.unwrap();
+    let left = next_voice_state(&mut user, id.pubkey()).await;
+    assert!(left.channel_id.is_none());
+    renewal_denied(&mut user, channel, 0).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn media_renewal_is_revoked_when_channel_access_is_removed() {
+    let (url, handle) = spawn_gateway(local_signing()).await;
+    let mut owner = connect_user(&url, &BotIdentity::generate(), "owner").await;
+    let (guild, channel) = voice_channel(&mut owner).await;
+    let id = BotIdentity::generate();
+    let mut member = connect_user(&url, &id, "member").await;
+    join_guild(&mut member, guild).await;
+    join_voice(&mut member, channel).await;
+    owner
+        .send(&ClientMessage::SetChannelAccess {
+            channel_id: channel,
+            access: Some(Default::default()),
+        })
+        .await
+        .unwrap();
+    let left = next_voice_state(&mut member, id.pubkey()).await;
+    assert!(left.channel_id.is_none());
+    renewal_denied(&mut member, channel, 0).await;
+    handle.abort();
+}
+
+#[tokio::test]
+async fn media_renewals_are_bounded_and_a_slow_mint_cannot_survive_a_rejoin() {
+    let (cfg, release) = stalling();
+    release.send_replace(true);
+    let (url, handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "member").await;
+    let (_, channel) = voice_channel(&mut user).await;
+    join_voice(&mut user, channel).await;
+    release.send_replace(false);
+    for request_id in 0..5 {
+        user.send(&ClientMessage::RefreshMediaToken {
+            channel_id: channel,
+            route_revision: 0,
+            kind: discordia_server::protocol::MediaTokenKind::Screen,
+            request_id,
+        })
+        .await
+        .unwrap();
+    }
+    loop {
+        if let ServerMessage::Error { message } = next_timeout(&mut user).await {
+            assert!(message.contains("rate limited"));
+            break;
+        }
+    }
+    user.send(&ClientMessage::LeaveVoice).await.unwrap();
+    let left = next_voice_state(&mut user, id.pubkey()).await;
+    assert!(left.channel_id.is_none());
+    user.send(&ClientMessage::JoinVoice {
+        channel_id: channel,
+        preferences: None,
+    })
+    .await
+    .unwrap();
+    let rejoined = next_voice_state(&mut user, id.pubkey()).await;
+    assert_eq!(rejoined.channel_id, Some(channel));
+    release.send_replace(true);
+    assert!(
+        !drain_quiet(&mut user)
+            .await
+            .iter()
+            .any(|m| matches!(m, ServerMessage::MediaToken { .. }))
+    );
+    handle.abort();
+}

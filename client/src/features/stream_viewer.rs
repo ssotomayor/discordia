@@ -31,6 +31,7 @@ enum Command {
     Volume(String, u32),
     Mute(String, bool),
     DockAll,
+    Renew { epoch: u64, token: String },
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +42,7 @@ pub(super) struct Popouts {
 pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     let locale = use_context::<crate::i18n::Locale>();
     let gateway = crate::state::use_gateway();
+    let renewal_gateway = gateway.clone();
     let mut reported = use_signal(|| None);
     use_effect(move || {
         let s = state.read();
@@ -189,6 +191,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     use_future(move || {
         let rx = command_rx.borrow_mut().take();
         let handle = command_handle.clone();
+        let gateway = renewal_gateway.clone();
         async move {
             let Some(mut rx) = rx else {
                 return;
@@ -218,6 +221,21 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                             state.write().stream_muted.insert(pk);
                         } else {
                             state.write().stream_muted.remove(&pk);
+                        }
+                    }
+                    Command::Renew { epoch, token } => {
+                        let kind = crate::protocol::MediaTokenKind::ScreenViewer;
+                        let current = state.peek().voice_session_epoch == epoch
+                            && state
+                                .peek()
+                                .screen_viewer_token
+                                .as_ref()
+                                .is_some_and(|r| r.1 == token);
+                        if current
+                            && let Some(message) =
+                                crate::media_tokens::request(&mut state.write(), kind)
+                        {
+                            gateway.send(message);
                         }
                     }
                     Command::DockAll => {
@@ -403,8 +421,11 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
         }
     });
     let events = lifecycle.2.clone();
+    let renew_commands = props.commands.clone();
+    let window_generation = props.generation;
     use_future(move || {
         let events = events.clone();
+        let commands = renew_commands.clone();
         async move {
             let mut eval = document::eval(
                 r#"
@@ -434,12 +455,22 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                         .into(),
                     );
                 } else {
-                    status.set(
-                        value["detail"]
-                            .as_str()
-                            .unwrap_or("Could not connect")
-                            .to_owned(),
-                    );
+                    if value["authentication"].as_bool() == Some(true)
+                        && value["generation"].as_u64() == Some(*active_generation.peek())
+                        && let Some(snapshot) = model.peek().as_ref()
+                    {
+                        send(
+                            &commands,
+                            window_generation,
+                            Command::Renew {
+                                epoch: snapshot.target.voice_epoch,
+                                token: snapshot.target.token.clone(),
+                            },
+                        );
+                    }
+                    status.set(crate::media_tokens::error_detail(
+                        value["detail"].as_str().unwrap_or("Could not connect"),
+                    ));
                 }
             }
         }

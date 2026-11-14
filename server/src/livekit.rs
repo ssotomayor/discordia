@@ -341,6 +341,7 @@ pub fn mint_token(
 ) -> Result<String, String> {
     let room = room_name(channel_id);
     AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
+        .with_ttl(crate::protocol::MEDIA_TOKEN_TTL)
         .with_identity(user_pubkey)
         .with_name(username)
         .with_grants(VideoGrants {
@@ -410,6 +411,23 @@ pub async fn screen_token_as(
         None if cfg.local_refused() => Err(NO_LOCAL_SFU.into()),
         None => mint_screen_token(cfg, identity, username, channel_id, can_publish),
     }
+}
+
+pub async fn media_token(
+    cfg: &LiveKitConfig,
+    kind: crate::protocol::MediaTokenKind,
+    pubkey: &str,
+    username: &str,
+    channel: Id,
+) -> Result<String, String> {
+    use crate::protocol::MediaTokenKind::*;
+    let (identity, publish) = match kind {
+        Screen => (pubkey.to_string(), true),
+        ScreenAudio => (screen_audio_identity(pubkey), false),
+        ScreenVideo => (screen_video_identity(pubkey), true),
+        ScreenViewer => (screen_viewer_identity(pubkey), false),
+    };
+    screen_token_as(cfg, &identity, username, channel, publish).await
 }
 
 impl LiveKitConfig {
@@ -507,6 +525,7 @@ pub fn mint_screen_token(
 ) -> Result<String, String> {
     let room = screen_room_name(channel_id);
     AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
+        .with_ttl(crate::protocol::MEDIA_TOKEN_TTL)
         .with_identity(identity)
         .with_name(username)
         .with_grants(VideoGrants {

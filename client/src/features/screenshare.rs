@@ -361,7 +361,10 @@ window.dxScreen = window.dxScreen || (function () {
   }
   async function ensureLib(current) { for (let i = 0; i < 100 && !LK() && (!current || current()); i++) { await new Promise(function (r) { setTimeout(r, 100); }); } return !!LK(); }
   function reportRoomProblem(kind, detail) {
-    try { window.postMessage({ __dxf: kind, detail: String(detail || '') }, '*'); } catch (e) {}
+    const raw = String(detail || '');
+    const authentication = /token is expired|token expired|invalid token|unauthorized|status(?: code)?:? 401/i.test(raw);
+    const safe = authentication ? 'Stream access expired or was rejected.' : raw.replace(/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[redacted token]').slice(0, 300);
+    try { window.postMessage({ __dxf: kind, detail: safe, authentication: authentication, generation: connectionRequest ? connectionRequest.generation : 0 }, '*'); } catch (e) {}
   }
   function clearRemoteTracks() {
     qualityReports.clear();
@@ -604,7 +607,7 @@ window.dxScreen = window.dxScreen || (function () {
       reportState('connected');
     } catch (e) {
       if (!current()) { try { await thisRoom.disconnect(); } catch (ignored) {} return; }
-      console.warn('[dxScreen] connect failed', e);
+      console.warn('[dxScreen] connect failed');
       if (room === thisRoom) room = null;
       try { await thisRoom.disconnect(); } catch (ignored) {}
       if (!current()) return;
@@ -1704,7 +1707,11 @@ fn capture_settings_for_session(
     if let Some(previous) = previous
         && previous.0 == epoch
         && previous.4.is_some()
-        && &previous.4 == room
+        && previous
+            .4
+            .as_ref()
+            .zip(room.as_ref())
+            .is_some_and(|(old, next)| crate::media_tokens::same_room(old, next))
         && previous.5 == target
     {
         previous.6
@@ -1753,6 +1760,18 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
     let gateway = use_gateway();
+    let renewal_gateway = gateway.clone();
+    use_future(move || {
+        let gateway = renewal_gateway.clone();
+        async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                crate::media_tokens::poll(state, &gateway);
+            }
+        }
+    });
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let watching = use_memo(move || state.read().screen_viewing.sharers());
     let stream_levels = use_memo(move || {
@@ -1838,6 +1857,7 @@ pub fn ScreenShareBridge() -> Element {
     use_effect(move || {
         targets.send_replace(token());
     });
+    let mut active_generation = use_signal(|| 0_u64);
     let target_rx = lifecycle.1.clone();
     let event_rx = lifecycle.3.clone();
     use_future(move || {
@@ -1848,6 +1868,7 @@ pub fn ScreenShareBridge() -> Element {
                 super::video_lifecycle::run(targets, events, |action| {
                     let js = match action {
                         super::video_lifecycle::Action::Connect { target, generation } => {
+                            active_generation.set(generation);
                             let (url, token) = (js_str(&target.url), js_str(&target.token));
                             let key = crate::e2ee::current_key().map(|k| js_str(&k)).unwrap_or_else(|| "null".into());
                             let encrypt = crate::e2ee::enabled();
@@ -1865,6 +1886,7 @@ pub fn ScreenShareBridge() -> Element {
         let _ = document::eval("window.dxScreen.disconnect();");
     });
     let lifecycle_events = lifecycle.2.clone();
+    let renewal_gateway = gateway.clone();
 
     let native_audio_live = use_memo(move || state.read().screen_audio_joined);
     use_effect(move || {
@@ -1969,6 +1991,7 @@ pub fn ScreenShareBridge() -> Element {
     use_future(move || {
         let mut state = state;
         let lifecycle_events = lifecycle_events.clone();
+        let renewal_gateway = renewal_gateway.clone();
         async move {
             let bridge_js = r#"
             window.__dxfShareSink = function (m) { try { dioxus.send(m); } catch (err) {} };
@@ -2029,10 +2052,27 @@ pub fn ScreenShareBridge() -> Element {
                         state.write().screen_share.on(ShareEvent::Stopped);
                     }
                     Some("screen-room-error") => {
+                        if msg
+                            .get("generation")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|g| g != *active_generation.peek())
+                        {
+                            continue;
+                        }
                         let detail = msg
                             .get("detail")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown connection error");
+                        if (msg.get("authentication").and_then(Value::as_bool) == Some(true)
+                            || crate::media_tokens::authentication_error(detail))
+                            && let Some(message) = crate::media_tokens::request(
+                                &mut state.write(),
+                                crate::protocol::MediaTokenKind::Screen,
+                            )
+                        {
+                            renewal_gateway.send(message);
+                        }
+                        let detail = crate::media_tokens::error_detail(detail);
                         eprintln!("[screen] screen room connection failed: {detail}");
                         state.write().error_toast = Some(format!(
                             "Couldn't connect to the screen stream: {detail}. Retrying…"
@@ -3548,12 +3588,22 @@ mod js_escaping_tests {
             codec: Codec::Vp8,
             encoder: Encoder::Cpu,
         };
-        let room = Some(("url".into(), "token".into()));
+        use base64::Engine as _;
+        let jwt = |exp| {
+            format!("e30.{}.signature", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"exp":exp,"iss":"issuer","sub":"me#video","video":{"room":"screen-one"}}).to_string()))
+        };
+        let room = Some(("url".into(), jwt(100)));
         let target = Some(Target::Display(0));
         let previous = (1, None, true, true, room.clone(), target, original);
         let retained =
             super::capture_settings_for_session(Some(&previous), 1, &room, target, selected);
         assert_eq!(retained, original);
+        let renewed = Some(("url".into(), jwt(1000)));
+        assert_eq!(
+            super::capture_settings_for_session(Some(&previous), 1, &renewed, target, selected),
+            original
+        );
         assert_eq!(
             (1, None, true, true, room.clone(), target, retained),
             previous

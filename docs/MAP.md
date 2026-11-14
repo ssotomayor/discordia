@@ -12,15 +12,15 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 5450 |
-| `server/src/state/mod.rs` | 4692 |
-| `client/src/state.rs` | 4750 |
-| `server/src/gateway/connection.rs` | 4533 |
-| `protocol/src/lib.rs` | 4381 |
+| `client/src/features/voice.rs` | 5680 |
+| `server/src/state/mod.rs` | 4694 |
+| `client/src/state.rs` | 4760 |
+| `server/src/gateway/connection.rs` | 4596 |
+| `protocol/src/lib.rs` | 4413 |
 | `client/src/features/chat.rs` | 3999 |
-| `client/src/features/screenshare.rs` | 3886 |
+| `client/src/features/screenshare.rs` | 3901 |
 | `server/tests/owner_controls.rs` | 3460 |
-| `client/src/net.rs` | 3362 |
+| `client/src/net.rs` | 3384 |
 | `client/src/features/channels.rs` | 2728 |
 | `client/src/nostr/service.rs` | 2725 |
 | `client/src/features/activities.rs` | 2064 |
@@ -39,6 +39,7 @@ Everything else: `wc -l` answers faster than a list here could stay true.
 | Encrypted DM images | `client/src/nostr/dm_image.rs`, `features/dm_images.rs`, `nostr/service.rs`, `nostr/nip17.rs` | AES-256-GCM before Blossom upload; NIP-17 kind 15 inside the existing gift wraps, captions as related kind-14 replies. Optional sender-generated previews are separately encrypted and uploaded before the original; old descriptors remain valid. Durable encrypted upload jobs; cancellation markers prevent resurrection. Binary HTTPS pins public DNS addresses and bounds redirects/downloads. Only accepted conversations load images. `dm_image::Image` keeps the bytes inside `Status::Ready`; its methods and `finish_load` are every load transition, and an unmounting view hands back the load it owns. The file-server selector is independent of emoji uploads A view-once picture (`Descriptor::view_once`, the `view-once` tag, the composer's toggle) mounts `ViewOnce`, never `EncryptedImage`: no preview is sent or read, nothing is cached on either side, and `open_once` hands the bytes to the image viewer just before the message is deleted |
 | DM edits and deletions | `client/src/nostr/service.rs`, `nostr/nip17.rs`, `state.rs`, `settings.rs` | Encrypted change rumors stay off the gateway. `apply_dm_change` validates recipients and authors, with bounded pre-original candidates keyed by target and author. Tombstones persist; pending operations recover and retry. Empty emoji tags clear previous mappings One exception to author-only deletion: a view-once picture is deleted by either person, because opening it is `NostrCmd::Delete` from the one it was sent to (`apply_dm_change`, and `ChatMessage::view_once` for a deletion that replays before its picture). It is a courtesy between honest clients: the wrap stays on its relays |
 | Android guild media/history reception | `client/src/net/background_socket.rs`, `server/src/gateway/connection.rs` | The native transport accepts the server's full frame size; its byte queue holds two maximum frames and keeps the frame-count cap. `scripts/build-android.py --gateway-diagnostics` (`DISCORDIA_GATEWAY_DIAGNOSTICS=1` at compile time) builds payload-free USB traces |
+| Media token renewal | `client/src/media_tokens.rs`, `features/video_lifecycle.rs`, `features/screenshare.rs`, `features/stream_viewer.rs`, `features/voice.rs`, `protocol/src/lib.rs` (`MediaTokenKind`), `server/src/gateway/connection.rs` (`media_call`), `livekit.rs` | `Ready::media_token_refresh` negotiates per-seat renewal; server/rendezvous join grants last `MEDIA_TOKEN_TTL` (10 minutes), so older clients need updating. Current owner, join, route and channel access gate minting and delivery; replies match request/epoch. Renewals preserve connected rooms; native voice restarts use the SDK’s current token. Renewals refresh cached TURN credentials for later attempts, throttle requests and redact JWTs |
 | Stream controls on video | `client/assets/stream-controls.js`, `stream-viewer.css`, `features/screenshare.rs`, `features/stream_viewer.rs`, `scripts/test-stream-controls.cjs` | Tile headers/footers overlay the video in app, popouts and full screen; per-tile hide timers, kept under focus or a volume drag. Touch reveals controls without triggering video actions |
 | Mobile member presence | `protocol/src/lib.rs` (`Identify`, `Member`), `server/src/state/mod.rs` (`stamp_xp`, `mobile_connected`), `gateway/connection.rs` (`cleanup_session`), `client/src/net.rs`, `features/members.rs` | Any active mobile session replaces the green dot with a phone only in guild member rows; device presence is session-owned, never persisted |
 | Cross-server community logos | `client/src/net.rs` (`EmojiBlobs`), `media_cache.rs`, `emoji.rs`, `features/server_rail.rs` (`OtherGuildTile`) | Received community logos join the reusable disk cache; disconnected tiles read it without fetching from the active server. Background jobs carry their originating config directory |

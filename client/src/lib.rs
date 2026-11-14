@@ -58,6 +58,7 @@ mod livekit_start_bitrate_tests;
 mod local_camera;
 mod local_share;
 mod media_cache;
+mod media_tokens;
 mod mediakey;
 mod native_sounds;
 mod net;

@@ -182,3 +182,22 @@ test('native playback and external viewer rooms never attach WebView audio', () 
   assert.equal(f.attachments(), 0);
   assert.equal(f.subscriptions.at(-1), false);
 });
+
+
+test('stream errors identify rejected grants without sending bearer tokens to the page', () => {
+  const reports = [];
+  const context = vm.createContext({ connectionRequest: { generation: 7 }, window: { postMessage(value) { reports.push(value); } } });
+  vm.runInContext(bridge.slice(bridge.indexOf('  function reportRoomProblem('), bridge.indexOf('  function clearRemoteTracks(')), context);
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3MDAwMDAwMDB9.bearer_signature';
+  for (const detail of [
+    'could not establish signal connection: invalid token: ' + jwt + ': token is expired',
+    'SFU rejected ' + jwt,
+    'network timeout',
+  ]) context.reportRoomProblem('screen-room-error', detail);
+  assert.equal(reports[0].authentication, true);
+  assert.equal(reports[0].generation, 7);
+  assert.equal(reports[1].authentication, false);
+  assert.equal(reports[2].detail, 'network timeout');
+  assert.ok(!JSON.stringify(reports).includes(jwt));
+  assert.ok(!JSON.stringify(reports).includes('eyJleHA'));
+});

@@ -147,3 +147,48 @@ async fn eviction_reports_sfu_failure_instead_of_claiming_success() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
+
+#[tokio::test]
+async fn media_grants_are_short_lived_scoped_and_reject_unknown_authority() {
+    let registry = Arc::new(Registry::new());
+    let grant = registry.issue_voice_grant("host-a");
+    let secret = "test-secret-must-be-at-least-32-characters";
+    let url = serve(router(AppCtx {
+        registry,
+        config: Arc::new(Config {
+            livekit_url: Some("wss://sfu.invalid".into()),
+            livekit_api_key: Some("test-key".into()),
+            livekit_api_secret: Some(secret.into()),
+            ..Config::default()
+        }),
+    }))
+    .await;
+    let client = reqwest::Client::new();
+    let request = serde_json::json!({ "grant":grant, "room":"screen-one", "identity":"member#viewer", "can_publish":false });
+    let response = client
+        .post(format!("{url}/voice-token"))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let claims = livekit_api::access_token::TokenVerifier::with_api_key("test-key", secret)
+        .verify(body["token"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(claims.sub, "member#viewer");
+    assert_eq!(claims.video.room, "host-a--screen-one");
+    assert!(claims.video.room_join && claims.video.can_subscribe);
+    assert!(!claims.video.can_publish && !claims.video.can_publish_data);
+    assert!(claims.exp > claims.nbf);
+    assert!(claims.exp - claims.nbf <= discordia_protocol::MEDIA_TOKEN_TTL.as_secs() as usize + 5);
+    let mut forged = request;
+    forged["grant"] = "unknown-grant".into();
+    let response = client
+        .post(format!("{url}/voice-token"))
+        .json(&forged)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+}

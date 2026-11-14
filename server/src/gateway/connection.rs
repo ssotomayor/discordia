@@ -90,10 +90,22 @@ pub(crate) async fn handle_connection_with_route<S>(
     let mut last_received = tokio::time::Instant::now();
     let mut graceful = false;
     let mut preview_jobs = tokio::task::JoinSet::<ServerMessage>::new();
+    let mut media_jobs = tokio::task::JoinSet::new();
+    let mut media_refreshes = RateLimiter::new(8, RATE_WINDOW);
 
     loop {
         watch.finish(&who);
         tokio::select! {
+            finished = media_jobs.join_next(), if !media_jobs.is_empty() => {
+                match finished {
+                    Some(Ok((call, revision, message))) if ctx.state.is_current_call(&call)
+                        && media_call(&ctx, conn_id, &call.pubkey, call.channel_id, revision).is_some() => {
+                        if send(&mut ws_tx, &message).await.is_err() { break; }
+                    }
+                    Some(Err(_)) => tracing::warn!("media token renewal task failed"),
+                    _ => {}
+                }
+            }
             finished = preview_jobs.join_next(), if !preview_jobs.is_empty() => {
                 match finished {
                     Some(Ok(message)) => if send(&mut ws_tx,&message).await.is_err() {break;},
@@ -1959,6 +1971,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }).await;
                             continue;
                         };
+                        if !limiter.allow() { reject_rate_limited(&mut ws_tx).await; continue; }
                         let Some(guild_id) = ctx.state.voice_channel_guild(channel_id) else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "not a voice channel".into(),
@@ -2031,6 +2044,26 @@ pub(crate) async fn handle_connection_with_route<S>(
                             }
                         }
                         grant_voice(&ctx, call, u.username.clone());
+                    }
+                    ClientMessage::RefreshMediaToken { channel_id, route_revision, kind, request_id } => {
+                        let Some(u) = phase.user() else { continue };
+                        if !media_refreshes.allow() || media_jobs.len() >= 4 {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        let Some(call) = media_call(&ctx, conn_id, &u.pubkey, channel_id, route_revision) else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "media access is no longer available for this call".into() }).await;
+                            continue;
+                        };
+                        let (cfg, _) = ctx.livekit.route();
+                        let name = u.username.clone();
+                        media_jobs.spawn(async move {
+                            let message = match minted(livekit::media_token(&cfg, kind, &call.pubkey, &name, channel_id)).await {
+                                Ok(token) => ServerMessage::MediaToken { channel_id, route_revision, kind, request_id, token, ice_servers: cfg.ice_servers() },
+                                Err(_) => ServerMessage::Error { message: "Could not renew stream access. Try again or check the voice server configuration.".into() },
+                            };
+                            (call, route_revision, message)
+                        });
                     }
                     ClientMessage::VoiceConnectionReport { channel_id, route_revision, connected } => {
                         let Some(u) = phase.user() else { continue };
@@ -3208,6 +3241,36 @@ fn valid_reported_routes(gateway: &str, sent: Option<&str>, received: Option<&st
             | "route unknown"
     ) && sent.is_none_or(media_valid)
         && received.is_none_or(media_valid)
+}
+
+fn media_call(
+    ctx: &AppContext,
+    owner: u64,
+    pubkey: &str,
+    channel: crate::protocol::Id,
+    revision: u32,
+) -> Option<crate::state::VoiceCall> {
+    let session = ctx.state.voice_session(pubkey)?;
+    let guild = ctx.state.voice_channel_guild(channel)?;
+    let visible = ctx
+        .state
+        .channel(channel)
+        .is_some_and(|c| ctx.state.can_see_channel(pubkey, &c));
+    if session.owner != owner
+        || session.owner_lost
+        || session.channel_id != channel
+        || revision != ctx.livekit.route_revision()
+        || !visible
+        || !ctx.state.is_guild_member(guild, pubkey)
+    {
+        return None;
+    }
+    Some(crate::state::VoiceCall {
+        pubkey: pubkey.to_owned(),
+        owner,
+        channel_id: channel,
+        join: session.join,
+    })
 }
 
 async fn move_voice_to_shared(ctx: Arc<AppContext>) {
