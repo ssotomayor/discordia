@@ -232,7 +232,7 @@ fn use_profile_image(
 ) -> Memo<Option<crate::image_assets::ImageSource>> {
     let state = use_app_state();
     let pubkey = pubkey.to_owned();
-    use_memo(use_reactive(
+    let live = use_memo(use_reactive(
         (&pubkey, &account),
         move |(pubkey, account)| {
             let s = state.read();
@@ -274,7 +274,51 @@ fn use_profile_image(
             }?;
             Some(crate::image_assets::source(data))
         },
-    ))
+    ));
+    let request = use_memo(use_reactive((&pubkey,), move |(pubkey,)| {
+        if banner || live().is_some() {
+            return None;
+        }
+        let s = state.read();
+        let address = s.avatar_address(&pubkey).map(str::to_owned);
+        // An explicit deletion outranks an older disk copy.
+        if address.is_none()
+            && (s.profiles.contains_key(&pubkey)
+                || s.account_pictures
+                    .as_ref()
+                    .is_some_and(|(owner, _)| owner == &pubkey))
+        {
+            return None;
+        }
+        Some((pubkey, address))
+    }));
+    let cached = use_resource(move || async move {
+        let (owner, address) = request()?;
+        let key = (owner.clone(), address.clone());
+        let root = crate::identity::config_dir();
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        match runtime
+            .spawn_blocking(move || crate::avatar_cache::load(&root, &owner, address.as_deref()))
+            .await
+        {
+            Ok(data) => Some((key, data.map(std::sync::Arc::new))),
+            Err(error) => {
+                tracing::debug!(%error, "could not read cached avatar");
+                None
+            }
+        }
+    });
+    use_memo(move || {
+        live().or_else(|| {
+            let key = request()?;
+            let value = cached.read();
+            let (loaded_key, data) = value.as_ref()?.as_ref()?;
+            (loaded_key == &key)
+                .then(|| data.clone())
+                .flatten()
+                .map(crate::image_assets::source)
+        })
+    })
 }
 
 #[component]
@@ -1259,6 +1303,38 @@ mod picker_race_tests {
 #[cfg(test)]
 mod account_avatar_tests {
     use crate::render_check::Checked;
+
+    #[tokio::test]
+    async fn a_dm_avatar_renders_from_disk_without_a_server_profile() {
+        let root = crate::identity::test_config_dir();
+        let owner = "ab".repeat(32);
+        let blob = format!("{}.png", "cd".repeat(32));
+        let data = "data:image/png;base64,YXZhdGFy";
+        crate::avatar_cache::store(
+            &root,
+            vec![(owner.clone(), Some(format!("media:{blob}")), 1)],
+        );
+        crate::emoji::store_cached(&root, &blob, data);
+        let mut dom = VirtualDom::new_with_props(
+            |owner: String| {
+                let state = use_signal(crate::state::AppState::empty);
+                provide_context(state);
+                rsx! { Avatar { pubkey: owner, name: "Peer", size: "w-8 h-8" } }
+            },
+            owner,
+        );
+        dom.rebuild_checked();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                dom.wait_for_work().await;
+                if dom.render_checked().edits.iter().any(|edit| matches!(edit,
+                    Mutation::SetAttribute { name: "src", value: AttributeValue::Text(src), .. } if *src == data
+                )) { break; }
+            }
+        }).await.unwrap();
+        drop(dom);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn native_profile_picker_reads_an_extensionless_jpeg_and_keeps_it_crop_ready() {
         let root =

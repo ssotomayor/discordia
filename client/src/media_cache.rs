@@ -245,6 +245,7 @@ enum DiskJob {
         Weak<Updates>,
     ),
     Store(std::path::PathBuf, String, Arc<String>),
+    Avatars(std::path::PathBuf, Vec<(String, Option<String>, i64)>),
 }
 
 fn disk_worker() -> Option<&'static mpsc::SyncSender<DiskJob>> {
@@ -257,6 +258,9 @@ fn disk_worker() -> Option<&'static mpsc::SyncSender<DiskJob>> {
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
                         match job {
+                            DiskJob::Avatars(root, profiles) => {
+                                crate::avatar_cache::store(&root, profiles);
+                            }
                             DiskJob::Store(root, address, data) => {
                                 crate::emoji::store_cached(&root, &address, &data)
                             }
@@ -331,6 +335,16 @@ pub(crate) fn store(address: &str, data: Arc<String>) {
             .is_err()
     {
         tracing::debug!("media disk cache queue full; keeping memory copy");
+    }
+}
+
+pub(crate) fn store_avatars(profiles: Vec<(String, Option<String>, i64)>) {
+    if let Some(worker) = disk_worker()
+        && worker
+            .try_send(DiskJob::Avatars(crate::identity::config_dir(), profiles))
+            .is_err()
+    {
+        tracing::debug!("peer avatar cache queue full");
     }
 }
 

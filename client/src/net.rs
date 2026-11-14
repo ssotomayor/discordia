@@ -1461,6 +1461,26 @@ const MEDIA_TICK: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
     let now = std::time::Instant::now();
+    // Android can leave the guild rail hidden for the entire server session.
+    for image in s
+        .guilds
+        .iter()
+        .filter_map(|guild| guild.icon_image.as_deref())
+    {
+        if let Some(address) = image.strip_prefix("media:") {
+            s.emoji_images.get(address);
+        }
+    }
+    for dm in &s.dms {
+        if let Some(address) = s
+            .profiles
+            .get(&dm.other_pubkey)
+            .and_then(|profile| profile.avatar.as_deref())
+            .and_then(|image| image.strip_prefix("media:"))
+        {
+            s.emoji_images.get(address);
+        }
+    }
     let (loaded, mut wanted) = s.emoji_images.take_work();
     for (address, data) in loaded {
         s.emoji_requested.remove(&address);
@@ -1566,6 +1586,18 @@ fn apply_ready(
         .into_iter()
         .map(|p| (p.pubkey.clone(), p))
         .collect();
+    crate::media_cache::store_avatars(
+        s.profiles
+            .values()
+            .map(|profile| {
+                (
+                    profile.pubkey.clone(),
+                    profile.avatar.clone(),
+                    profile.updated_at,
+                )
+            })
+            .collect(),
+    );
     s.activities = activities
         .into_iter()
         .filter_map(|u| u.activity.map(|a| (u.pubkey, a)))
@@ -1887,6 +1919,11 @@ fn apply(
                 profile.avatar.is_some(),
                 profile.banner.is_some()
             );
+            crate::media_cache::store_avatars(vec![(
+                profile.pubkey.clone(),
+                profile.avatar.clone(),
+                profile.updated_at,
+            )]);
             s.profiles.insert(profile.pubkey.clone(), profile);
             resolve_media(&mut s, tx);
         }
@@ -2098,6 +2135,11 @@ fn apply(
                 s.guilds
                     .iter()
                     .filter_map(|guild| guild.icon_image.as_deref().and_then(media_address)),
+            );
+            shared.extend(
+                s.profiles
+                    .values()
+                    .filter_map(|profile| profile.avatar.as_deref().and_then(media_address)),
             );
             for blob in blobs {
                 let data = std::sync::Arc::new(blob.data_url);
@@ -2598,6 +2640,48 @@ fn should_play_peer_join(
 mod tests {
     use super::*;
     use crate::render_check::Checked;
+
+    #[tokio::test]
+    async fn hidden_guild_logos_and_known_dm_avatars_are_requested_once() {
+        let root = crate::identity::test_config_dir();
+        let mut state = AppState::empty();
+        let logo = format!("{}.png", "a".repeat(64));
+        let avatar = format!("{}.png", "b".repeat(64));
+        let peer = "cd".repeat(32);
+        state.guilds.push(
+            serde_json::from_value(serde_json::json!({
+                "id": Id::new_v4(), "name": "Community", "owner_pubkey": "",
+                "icon_image": format!("media:{logo}")
+            }))
+            .unwrap(),
+        );
+        state.dms.push(crate::state::DmInfo {
+            channel_id: Id::new_v4(),
+            other_pubkey: peer.clone(),
+        });
+        state.profiles.insert(
+            peer.clone(),
+            crate::protocol::Profile {
+                pubkey: peer,
+                avatar: Some(format!("media:{avatar}")),
+                ..Default::default()
+            },
+        );
+        let (tx, mut rx) = unbounded_channel();
+        resolve_media(&mut state, &tx);
+        let Some(ClientMessage::FetchEmoji { mut images }) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+        else {
+            panic!("missing image request")
+        };
+        images.sort();
+        assert_eq!(images, [logo, avatar]);
+        resolve_media(&mut state, &tx);
+        assert!(rx.try_recv().is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn community_logo_is_saved_before_the_session_cache_is_cleared() {
