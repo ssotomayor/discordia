@@ -33,6 +33,7 @@
 #endif
 
 namespace livekit_ffi {
+struct MfFallbackProbe;
 class RtcRuntime;
 class LogSink;
 }  // namespace livekit_ffi
@@ -117,5 +118,10 @@ rust::String create_random_uuid();
 
 rust::Vec<VideoEncoderBackend> video_encoder_backend_list();
 rust::Vec<rust::String> video_encoder_codec_list(VideoEncoderBackend backend);
+
+#ifdef WEBRTC_WIN
+MfFallbackProbe probe_mf_fallback(uint16_t width, uint16_t height, uint32_t fps,
+                                   bool screen, bool fail_initialization, bool guarded);
+#endif
 
 }  // namespace livekit_ffi

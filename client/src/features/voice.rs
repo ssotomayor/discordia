@@ -1953,6 +1953,32 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
     }
 }
 
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
+fn fail_screen_share(
+    state: &mut AppState,
+    target: crate::sysvideo::Target,
+    epoch: u64,
+    error: String,
+) -> bool {
+    if state.voice_session_epoch != epoch
+        || !state
+            .screen_share
+            .on(crate::local_share::ShareEvent::Failed(target))
+    {
+        return false;
+    }
+    state.error_toast = Some(crate::i18n::text(
+        "Your screen stopped being shared: {0}. Try again.",
+        &[error],
+    ));
+    true
+}
+
 impl ScreenVideoRoom {
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     async fn connect(
@@ -2033,16 +2059,7 @@ impl ScreenVideoRoom {
             crate::service_task::spawn(async move {
                 if let Some(e) = fatal_rx.recv().await {
                     eprintln!("[voice] screen capture died mid-share: {e}");
-                    let mut s = state.write();
-                    if s.voice_session_epoch == capture_epoch
-                        && s.screen_share
-                            .on(crate::local_share::ShareEvent::Failed(target))
-                    {
-                        s.error_toast = Some(crate::i18n::text(
-                            "Your screen stopped being shared: {0}. Try again.",
-                            &[e],
-                        ));
-                    }
+                    fail_screen_share(&mut state.write(), target, capture_epoch, e);
                 }
             })
         };
@@ -4420,6 +4437,86 @@ impl Drop for RemotePlaybackGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sharing_in_a_call() -> (AppState, Id, crate::sysvideo::Target) {
+        let mut state = AppState::empty();
+        let channel = Id::new_v4();
+        let target = crate::sysvideo::Target::Display(1);
+        state.voice_event(VoiceEvent::Granted(channel));
+        state.voice_event(VoiceEvent::RoomUp(channel));
+        state
+            .screen_share
+            .on(crate::local_share::ShareEvent::Chosen {
+                target,
+                audio: true,
+            });
+        state
+            .screen_share
+            .on(crate::local_share::ShareEvent::Published(target));
+        (state, channel, target)
+    }
+
+    #[test]
+    fn an_encoder_failure_ends_sharing_without_ending_the_voice_call() {
+        let (mut state, channel, target) = sharing_in_a_call();
+        let voice = state.voice.clone();
+        let epoch = state.voice_session_epoch;
+        assert!(fail_screen_share(
+            &mut state,
+            target,
+            epoch,
+            "forced encoder failure".into()
+        ));
+        assert!(!state.screen_share.is_live());
+        assert_eq!(state.voice, voice);
+        assert_eq!(state.voice.phase(), VoicePhase::Connected);
+        assert_eq!(state.voice_session_epoch, epoch);
+        let (_, message) = crate::local_share::announce(
+            Some(channel),
+            state.screen_share.is_live(),
+            state.voice.channel_id(),
+        );
+        assert!(matches!(
+            message,
+            Some(ClientMessage::SetScreenShare { sharing: false, .. })
+        ));
+        let toast = state.error_toast.clone();
+        assert!(!fail_screen_share(
+            &mut state,
+            target,
+            epoch,
+            "duplicate failure".into()
+        ));
+        assert_eq!(state.error_toast, toast);
+    }
+
+    #[test]
+    fn stale_encoder_failure_cannot_end_another_share_or_voice_session() {
+        for stale_epoch in [false, true] {
+            let (mut state, _, target) = sharing_in_a_call();
+            let voice = state.voice.clone();
+            let epoch = state.voice_session_epoch;
+            let failed_target = if stale_epoch {
+                target
+            } else {
+                crate::sysvideo::Target::Display(2)
+            };
+            let failed_epoch = if stale_epoch {
+                epoch.wrapping_sub(1)
+            } else {
+                epoch
+            };
+            assert!(!fail_screen_share(
+                &mut state,
+                failed_target,
+                failed_epoch,
+                "stale failure".into()
+            ));
+            assert_eq!(state.screen_share.native_target(), Some(target));
+            assert_eq!(state.voice, voice);
+            assert!(state.error_toast.is_none());
+        }
+    }
 
     #[tokio::test]
     async fn direct_sources_take_one_dsp_block_per_call_and_refuse_other_sizes() {

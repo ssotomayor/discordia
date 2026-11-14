@@ -26,6 +26,8 @@ the same API/ABI. Windows MFT NAL parsing now uses the current `ArrayView` API.
 
 MFT slice headers must fit LiveKit's two clear H.264 bytes (NAL header plus one slice-header byte). Longer headers fall back before publication: encrypting the PPS identifier makes WebRTC discard frames before decryption. This compatibility guard also applies to unencrypted MFT tracks; NVENC is unchanged.
 
+`probe_mf_fallback` runs the production guarded constructor and real WebRTC fallback wrapper with simulated encoders. Client tests force initialization and mid-stream failures without a GPU, checking software is never initialized above budget and low-budget/camera fallback still works. An unguarded control runs only simulated encoders and demonstrates that the same failure would initialize software.
+
 | Diagnostic environment variable | Purpose |
 |---|---|
 | `LIVEKIT_PREFERRED_HW_ENCODER=mediafoundation` | Prefer Windows hardware MFTs over NVENC. |
