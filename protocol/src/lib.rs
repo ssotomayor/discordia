@@ -14,6 +14,9 @@ pub const DEFAULT_GUILD_STICKER_BYTES: u64 = MAX_IMAGE_BYTES as u64;
 pub const MAX_GUILD_UPLOAD_BYTES: usize = 10_000_000;
 pub const MAX_GUILD_UPLOAD_DATA_LEN: usize = MAX_GUILD_UPLOAD_BYTES.div_ceil(3) * 4 + 128;
 
+// Self-hosted SFUs cannot revoke a cached join grant when a member is removed.
+pub const MEDIA_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 pub const GATEWAY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 pub const GATEWAY_HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -335,6 +338,15 @@ pub struct ChannelAccess {
 
 pub const MAX_ACCESS_ROLES: usize = 50;
 pub const MAX_ACCESS_USERS: usize = 200;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaTokenKind {
+    Screen,
+    ScreenAudio,
+    ScreenVideo,
+    ScreenViewer,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Member {
@@ -3137,6 +3149,12 @@ pub enum ClientMessage {
         preferences: Option<VoicePreferences>,
     },
     LeaveVoice,
+    RefreshMediaToken {
+        channel_id: Id,
+        route_revision: u32,
+        kind: MediaTokenKind,
+        request_id: u64,
+    },
     VoiceConnectionReport {
         channel_id: Id,
         route_revision: u32,
@@ -3223,6 +3241,8 @@ pub enum ServerMessage {
         image_previews: bool,
         #[serde(default)]
         progressive_image_uploads: bool,
+        #[serde(default)]
+        media_token_refresh: bool,
         user: User,
         guilds: Vec<Guild>,
         channels: Vec<Channel>,
@@ -3506,6 +3526,15 @@ pub enum ServerMessage {
         voice_send: Option<String>,
         voice_receive: Option<String>,
     },
+    MediaToken {
+        channel_id: Id,
+        route_revision: u32,
+        kind: MediaTokenKind,
+        request_id: u64,
+        token: String,
+        #[serde(default)]
+        ice_servers: Vec<IceServer>,
+    },
     ScreenToken {
         channel_id: Id,
         livekit_url: String,
@@ -3589,12 +3618,14 @@ mod identify_wire_tests {
                 chat_tools: false,
                 image_previews: false,
                 progressive_image_uploads: false,
+                media_token_refresh: false,
                 ..
             }
         ));
         frame["d"]["chat_tools"] = serde_json::json!(true);
         frame["d"]["image_previews"] = serde_json::json!(true);
         frame["d"]["progressive_image_uploads"] = serde_json::json!(true);
+        frame["d"]["media_token_refresh"] = serde_json::json!(true);
         let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             current,
@@ -3602,6 +3633,7 @@ mod identify_wire_tests {
                 chat_tools: true,
                 image_previews: true,
                 progressive_image_uploads: true,
+                media_token_refresh: true,
                 ..
             }
         ));

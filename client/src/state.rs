@@ -313,6 +313,7 @@ pub struct AppState {
     pub server_chat_tools: bool,
     pub server_image_previews: bool,
     pub server_progressive_image_uploads: bool,
+    pub server_media_token_refresh: bool,
     pub guild_file_policies: BTreeMap<Id, crate::protocol::FilePolicy>,
     pub guild_stickers: BTreeMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub voice_states: Vec<VoiceState>,
@@ -434,6 +435,7 @@ pub struct AppState {
     /// somebody messaging you directly are not the same event.
     pub dm_notify_tick: u64,
     pub screen_token: Option<(String, String)>,
+    pub(crate) media_token_renewals: crate::media_tokens::Renewals,
     pub voice_endpoint: Option<String>,
     pub voice_location: Option<String>,
     /// `ws://127.0.0.1:<port>/sfu` while a gateway session is up: the host's
@@ -599,6 +601,7 @@ impl AppState {
             server_chat_tools: false,
             server_image_previews: false,
             server_progressive_image_uploads: false,
+            server_media_token_refresh: false,
             guild_file_policies: BTreeMap::new(),
             guild_stickers: BTreeMap::new(),
             voice_states: Vec::new(),
@@ -665,6 +668,7 @@ impl AppState {
             notify_tick: 0,
             dm_notify_tick: 0,
             screen_token: None,
+            media_token_renewals: Default::default(),
             voice_endpoint: None,
             sfu_tunnel_url: None,
             voice_location: None,
@@ -789,6 +793,7 @@ impl AppState {
         self.voice_event(VoiceEvent::Ended);
         self.drop_media_key();
         self.screen_token = None;
+        self.media_token_renewals = Default::default();
         self.voice_endpoint = None;
         self.voice_location = None;
         self.voice_send_route = None;
@@ -924,6 +929,7 @@ impl AppState {
             server_chat_tools,
             server_image_previews,
             server_progressive_image_uploads,
+            server_media_token_refresh,
             guild_file_policies,
             guild_stickers,
             voice_states,
@@ -1011,6 +1017,7 @@ impl AppState {
             screen_share: _,
             screen_viewing: _,
             screen_token: _,
+            media_token_renewals: _,
             screen_audio_token: _,
             screen_video_token: _,
             screen_viewer_token: _,
@@ -1115,6 +1122,7 @@ impl AppState {
         *server_chat_tools = false;
         *server_image_previews = false;
         *server_progressive_image_uploads = false;
+        *server_media_token_refresh = false;
         guild_file_policies.clear();
         guild_stickers.clear();
         voice_states.clear();
@@ -3001,6 +3009,7 @@ mod tests {
                 server_chat_tools = true => |v| !*v;
                 server_image_previews = true => |v| !*v;
                 server_progressive_image_uploads = true => |v| !*v;
+                server_media_token_refresh = true => |v| !*v;
                 guild_file_policies = BTreeMap::from([(guild, Default::default())]) => |v| v.is_empty();
                 guild_stickers = BTreeMap::from([(guild, Vec::new())]) => |v| v.is_empty();
                 voice_states = vec![VoiceState {
@@ -3161,6 +3170,7 @@ mod tests {
                 screen_share = share => |v| !v.is_live();
                 screen_viewing = watches => |v| v.is_empty();
                 screen_token = token() => |v| v.is_none();
+                media_token_renewals = Default::default() => |v| crate::media_tokens::empty(v);
                 screen_audio_token = token() => |v| v.is_none();
                 screen_video_token = token() => |v| v.is_none();
                 screen_viewer_token = token() => |v| v.is_none();

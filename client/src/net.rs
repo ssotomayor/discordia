@@ -1518,6 +1518,7 @@ fn apply_ready(
         chat_tools,
         image_previews,
         progressive_image_uploads,
+        media_token_refresh,
         user,
         guilds,
         channels,
@@ -1552,6 +1553,7 @@ fn apply_ready(
     s.server_chat_tools = chat_tools;
     s.server_image_previews = image_previews;
     s.server_progressive_image_uploads = progressive_image_uploads;
+    s.server_media_token_refresh = media_token_refresh;
     s.guilds = guilds;
     s.channels = channels;
     s.members = members;
@@ -2495,6 +2497,24 @@ fn apply(
                 ice_servers,
             });
         }
+        ServerMessage::MediaToken {
+            channel_id,
+            route_revision,
+            kind,
+            request_id,
+            token,
+            ice_servers,
+        } => {
+            crate::media_tokens::accept(
+                &mut s,
+                channel_id,
+                route_revision,
+                kind,
+                request_id,
+                token,
+                ice_servers,
+            );
+        }
         ServerMessage::ScreenToken {
             channel_id,
             route_revision,
@@ -3107,6 +3127,7 @@ mod tests {
                     chat_tools: false,
                     image_previews: false,
                     progressive_image_uploads: false,
+                    media_token_refresh: false,
                     user,
                     guilds: vec![],
                     channels: vec![],
@@ -3165,6 +3186,7 @@ mod tests {
             chat_tools: false,
             image_previews: false,
             progressive_image_uploads: false,
+            media_token_refresh: false,
             user: crate::protocol::User {
                 pubkey: "ab".repeat(32),
                 username: "Alice".into(),

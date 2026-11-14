@@ -37,10 +37,15 @@ pub(super) enum Action {
 /// Where the current target's attempts stand: one value, so a blocked room cannot also await a retry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    /// An attempt is out, or connected; `attempt` counts the failures before it.
-    Trying { attempt: u8 },
+    /// An attempt is out; `attempt` counts the failures before it.
+    Trying {
+        attempt: u8,
+    },
+    Connected,
     /// The last attempt asked for a retry, which the deadline will start.
-    Waiting { attempt: u8 },
+    Waiting {
+        attempt: u8,
+    },
     /// Encryption failed: retrying cannot help until the target changes.
     Blocked,
 }
@@ -76,7 +81,20 @@ impl Lifecycle {
         if self.target == target {
             return None;
         }
+        let renewed = self.phase == Phase::Connected
+            && self
+                .target
+                .as_ref()
+                .zip(target.as_ref())
+                .is_some_and(|(old, next)| {
+                    old.url == next.url
+                        && crate::media_tokens::same_token_scope(&old.token, &next.token)
+                        && old.voice_epoch == next.voice_epoch
+                });
         self.target = target;
+        if renewed {
+            return None;
+        }
         self.phase = Phase::Trying { attempt: 0 };
         self.connect(0).or(Some(Action::Disconnect))
     }
@@ -93,7 +111,7 @@ impl Lifecycle {
     fn retry(&mut self) -> Option<Action> {
         match self.phase {
             Phase::Waiting { attempt } => self.connect(attempt),
-            Phase::Trying { .. } | Phase::Blocked => None,
+            Phase::Trying { .. } | Phase::Connected | Phase::Blocked => None,
         }
     }
 
@@ -106,7 +124,8 @@ impl Lifecycle {
 fn step(phase: Phase, status: Status) -> (Phase, Option<Duration>) {
     match (phase, status) {
         (Phase::Blocked, _) | (_, Status::Blocked) => (Phase::Blocked, None),
-        (Phase::Trying { .. }, Status::Connected) => (Phase::Trying { attempt: 0 }, None),
+        (Phase::Trying { .. } | Phase::Connected, Status::Connected) => (Phase::Connected, None),
+        (Phase::Connected, Status::Retry) => step(Phase::Trying { attempt: 0 }, Status::Retry),
         (Phase::Trying { attempt }, Status::Retry) => {
             let delay = Duration::from_millis((1500_u64 << attempt.min(4)).min(15000));
             (
@@ -187,18 +206,8 @@ mod tests {
         use Phase::*;
         let ms = |n| Some(Duration::from_millis(n));
         let cases = [
-            (
-                Trying { attempt: 0 },
-                Status::Connected,
-                Trying { attempt: 0 },
-                None,
-            ),
-            (
-                Trying { attempt: 3 },
-                Status::Connected,
-                Trying { attempt: 0 },
-                None,
-            ),
+            (Trying { attempt: 0 }, Status::Connected, Connected, None),
+            (Trying { attempt: 3 }, Status::Connected, Connected, None),
             (
                 Trying { attempt: 0 },
                 Status::Retry,
@@ -250,6 +259,47 @@ mod tests {
         ] {
             assert_eq!(serde_json::from_str::<Event>(json).is_ok(), ok, "{json}");
         }
+    }
+
+    #[test]
+    fn renewed_tokens_keep_a_connected_room_and_are_used_after_disconnect() {
+        let mut lifecycle = Lifecycle::default();
+        use base64::Engine as _;
+        let jwt = |exp| {
+            format!("e30.{}.signature", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"exp": exp, "iss":"issuer", "sub":"me", "video":{"room":"screen-one"}}).to_string()))
+        };
+        let old = jwt(100);
+        let renewed = jwt(1000);
+        let current = generation(lifecycle.change(Some(target(&old, 1))));
+        lifecycle.event(Event {
+            generation: current,
+            status: Status::Connected,
+        });
+        let mut refreshed = target(&renewed, 1);
+        refreshed.ice_servers = vec![crate::protocol::IceServer {
+            urls: vec!["turn:relay.test:3478".into()],
+            ..Default::default()
+        }];
+        assert!(lifecycle.change(Some(refreshed)).is_none());
+        assert_eq!(lifecycle.generation, current);
+        assert!(
+            lifecycle
+                .event(Event {
+                    generation: current,
+                    status: Status::Retry
+                })
+                .is_some()
+        );
+        match lifecycle.retry().unwrap() {
+            Action::Connect { target, .. } => {
+                assert_eq!(target.token, renewed);
+                assert_eq!(target.ice_servers.len(), 1);
+            }
+            Action::Disconnect => panic!("retry must use the renewed token"),
+        }
+        let next = generation(lifecycle.change(Some(target("next-call", 2))));
+        assert_ne!(next, current);
     }
 
     #[test]

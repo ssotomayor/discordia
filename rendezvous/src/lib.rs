@@ -193,6 +193,7 @@ async fn voice_token(
     };
     let room = format!("{shortcode}--{}", req.room);
     let token = AccessToken::with_api_key(key, secret)
+        .with_ttl(discordia_protocol::MEDIA_TOKEN_TTL)
         .with_identity(&req.identity)
         .with_name(&req.name)
         .with_grants(grants_for(room, req.can_publish))

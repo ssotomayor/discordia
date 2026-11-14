@@ -348,6 +348,24 @@ pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd>
     tx
 }
 
+fn renew_media_access(
+    mut state: Signal<AppState>,
+    gateway: Option<&crate::state::GatewayTx>,
+    kind: crate::protocol::MediaTokenKind,
+    error: &str,
+) -> bool {
+    if !crate::media_tokens::authentication_error(error) {
+        return false;
+    }
+    let Some(gateway) = gateway else { return false };
+    let message = crate::media_tokens::request(&mut state.write(), kind);
+    if let Some(message) = message {
+        gateway.send(message);
+        return true;
+    }
+    crate::media_tokens::pending(&state.peek(), kind)
+}
+
 async fn service_loop(
     mut rx: UnboundedReceiver<VoiceCmd>,
     mut state: Signal<AppState>,
@@ -355,6 +373,7 @@ async fn service_loop(
 ) -> Result<(), String> {
     let mut session: Option<ActiveVoice> = None;
     let mut last_connect: Option<LastConnect> = None;
+    let mut token_gateway = None;
 
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -372,6 +391,7 @@ async fn service_loop(
                 token,
                 ice_servers,
             } => {
+                token_gateway = None;
                 let channel_id = call.channel;
                 eprintln!("[voice] Connect to {livekit_url} channel={channel_id}");
                 last_connect = None;
@@ -426,13 +446,13 @@ async fn service_loop(
                         }
                         last_connect = Some(LastConnect {
                             url: url.clone(),
-                            token,
                             call,
                             ice_servers,
                         });
                         state.write().set_voice_endpoint(url);
                         eprintln!("[voice] connected ok — phase Connected");
                         state.write().voice_event(VoiceEvent::RoomUp(channel_id));
+                        token_gateway = Some(crate::state::GatewayTx(report_tx));
                         session = Some(active);
                     }
                     Err(error) => {
@@ -442,6 +462,7 @@ async fn service_loop(
                 }
             }
             VoiceCmd::Disconnect { done } => {
+                token_gateway = None;
                 eprintln!("[voice] Disconnect");
                 if let Some(prev) = session.take() {
                     prev.shutdown(state).await;
@@ -562,7 +583,8 @@ async fn service_loop(
             }
             VoiceCmd::SetScreenAudio { room } => {
                 if let Some(active) = session.as_mut() {
-                    active.set_screen_audio(room, state, &controls).await;
+                    active.ice_servers = state.peek().ice_servers.clone();
+                    active.set_screen_audio(room, state, &controls, token_gateway.as_ref()).await;
                 } else if room.is_some() {
                     eprintln!("[voice] SetScreenAudio ignored — no voice session");
                 }
@@ -573,8 +595,13 @@ async fn service_loop(
                 settings,
             } => {
                 if let Some(active) = session.as_mut() {
+                    active.ice_servers = state.peek().ice_servers.clone();
                     let publishing = room.is_some();
+                    let guard = crate::media_tokens::CallGuard::new(&state.peek());
                     if let Err(e) = active.set_screen_video(room, target, settings, state).await {
+                        if !guard.current(&state.peek()) { continue; }
+                        if renew_media_access(state, token_gateway.as_ref(), crate::protocol::MediaTokenKind::ScreenVideo, &e) { continue; }
+                        let e = crate::media_tokens::error_detail(&e);
                         eprintln!("[voice] screen video failed: {e}");
                         let mut s = state.write();
                         if publishing
@@ -595,11 +622,16 @@ async fn service_loop(
                 gateway,
             } => {
                 let epoch = state.read().voice_session_epoch;
+                let guard = crate::media_tokens::CallGuard::new(&state.peek());
+                if let Some(active) = session.as_mut() { active.ice_servers = state.peek().ice_servers.clone(); }
                 if let Some(active) = session.as_mut()
                     && let Err(e) = active
                         .set_camera(room, device, state, settings, gateway.clone())
                         .await
                 {
+                    if !guard.current(&state.peek()) { continue; }
+                    if renew_media_access(state, Some(&gateway), crate::protocol::MediaTokenKind::ScreenVideo, &e) { continue; }
+                    let e = crate::media_tokens::error_detail(&e);
                     let mut s = state.write();
                     if s.voice_session_epoch == epoch {
                         let followup = s.camera.on(crate::local_camera::CameraEvent::Failed);
@@ -654,6 +686,7 @@ async fn service_loop(
                         dead.shutdown(state).await;
                     }
                     last_connect = None;
+                    token_gateway = None;
                 }
                 if let Some(active) = session.as_mut() {
                     active.maintain(state, &controls).await;
@@ -669,7 +702,6 @@ async fn service_loop(
 #[derive(Clone)]
 struct LastConnect {
     url: String,
-    token: String,
     call: VoiceCall,
     ice_servers: Vec<IceServer>,
 }
@@ -693,9 +725,10 @@ async fn restart_session(
     controls: &AudioControls,
     why: &str,
 ) {
-    if session.is_none() {
+    let Some(active) = session.as_ref() else {
         return;
-    }
+    };
+    let token = active.room.token();
     let Some(last) = last_connect.clone() else {
         return;
     };
@@ -711,9 +744,13 @@ async fn restart_session(
     }
     let result = ActiveVoice::connect(
         &last.url,
-        &last.token,
+        &token,
         channel,
-        last.ice_servers,
+        if state.peek().server_voice_channel().is_some() {
+            state.peek().ice_servers.clone()
+        } else {
+            last.ice_servers
+        },
         state,
         controls.clone(),
     )
@@ -841,7 +878,12 @@ impl ActiveVoice {
         );
         let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
-            .map_err(|e| format!("livekit connect: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "livekit connect: {}",
+                    crate::media_tokens::error_detail(&e.to_string())
+                )
+            })?;
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
@@ -1436,6 +1478,12 @@ impl ActiveVoice {
 
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     async fn video_room(&mut self, key: (String, String)) -> Result<&mut NativeVideoRoom, String> {
+        if let Some(room) = self.screen_video.as_mut()
+            && crate::media_tokens::same_room(&room.key, &key)
+            && room.room.connection_state() == ConnectionState::Connected
+        {
+            room.key = key.clone();
+        }
         if self
             .screen_video
             .as_ref()
@@ -1484,10 +1532,17 @@ impl ActiveVoice {
         }
         #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
         {
+            let guard = crate::media_tokens::CallGuard::new(&state.peek());
             if let Some(channel) = state.peek().server_voice_channel() {
                 crate::e2ee::ensure_channel_key(channel, state).await?;
             }
+            if !guard.current(&state.peek()) {
+                return Err("call changed while waiting for encryption".into());
+            }
             let room = self.video_room(key).await?;
+            if !guard.current(&state.peek()) {
+                return Err("call changed while joining video".into());
+            }
             if room
                 .screen
                 .as_ref()
@@ -1500,6 +1555,10 @@ impl ActiveVoice {
             }
             match ScreenVideoRoom::connect(room.room.clone(), target, settings, state).await {
                 Ok(screen) => {
+                    if !guard.current(&state.peek()) {
+                        screen.shutdown().await;
+                        return Err("call changed while starting capture".into());
+                    }
                     room.screen = Some(screen);
                     let mut state = state;
                     state
@@ -1536,10 +1595,17 @@ impl ActiveVoice {
             self.close_unused_video_room().await;
             return Ok(());
         };
+        let guard = crate::media_tokens::CallGuard::new(&state.peek());
         if let Some(channel) = state.peek().server_voice_channel() {
             crate::e2ee::ensure_channel_key(channel, state).await?;
         }
+        if !guard.current(&state.peek()) {
+            return Err("call changed while waiting for camera encryption".into());
+        }
         let room = self.video_room(key).await?;
+        if !guard.current(&state.peek()) {
+            return Err("call changed while joining the camera".into());
+        }
         if room.camera.as_ref().is_some_and(|camera| {
             camera.key == device && camera.quality == settings.read().camera_quality.normalized()
         }) {
@@ -1552,6 +1618,12 @@ impl ActiveVoice {
         let result =
             CameraPublisher::connect(room.room.clone(), device, state, settings, gateway).await;
         room.camera_starting = false;
+        if !guard.current(&state.peek()) {
+            if let Ok(camera) = result {
+                camera.shutdown().await;
+            }
+            return Err("call changed while starting the camera".into());
+        }
         let mut failure = None;
         match result {
             Ok(camera) => room.camera = Some(camera),
@@ -1569,6 +1641,7 @@ impl ActiveVoice {
         room: Option<(String, String)>,
         mut state: Signal<AppState>,
         controls: &AudioControls,
+        token_gateway: Option<&crate::state::GatewayTx>,
     ) {
         let Some(key) = room else {
             if let Some(prev) = self.screen_audio.take() {
@@ -1581,8 +1654,12 @@ impl ActiveVoice {
             }
             return;
         };
-        match &self.screen_audio {
-            Some(existing) if existing.key == key && existing.alive.load(Ordering::Relaxed) => {
+        match &mut self.screen_audio {
+            Some(existing)
+                if crate::media_tokens::same_room(&existing.key, &key)
+                    && existing.alive.load(Ordering::Relaxed) =>
+            {
+                existing.key = key;
                 return;
             }
             Some(_) => {
@@ -1605,7 +1682,8 @@ impl ActiveVoice {
             return;
         };
         let (url, token) = key.clone();
-        match ScreenAudioRoom::connect(
+        let guard = crate::media_tokens::CallGuard::new(&state.peek());
+        let result = ScreenAudioRoom::connect(
             &url,
             &token,
             self.mixer.clone(),
@@ -1614,8 +1692,14 @@ impl ActiveVoice {
             &self.ice_servers,
             controls.watched_streams.subscribe(),
         )
-        .await
-        {
+        .await;
+        if !guard.current(&state.peek()) {
+            if let Ok(room) = result {
+                room.shutdown().await;
+            }
+            return;
+        }
+        match result {
             Ok(r) => {
                 self.screen_audio = Some(r);
                 state.write().screen_audio_joined = true;
@@ -1623,6 +1707,15 @@ impl ActiveVoice {
                 crate::dlog!("voice screen_audio_joined=true (native owns stream playback)");
             }
             Err(e) => {
+                if renew_media_access(
+                    state,
+                    token_gateway,
+                    crate::protocol::MediaTokenKind::ScreenAudio,
+                    &e,
+                ) {
+                    return;
+                }
+                let e = crate::media_tokens::error_detail(&e);
                 eprintln!("[voice] screen audio room failed: {e}");
                 let mut s = state.write();
                 s.screen_audio_joined = false;
@@ -1834,9 +1927,12 @@ impl NativeVideoRoom {
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
         options.rtc_config = rtc_config(ice_servers);
-        let (room, mut events) = Room::connect(&key.0, &key.1, options)
-            .await
-            .map_err(|e| format!("livekit connect: {e}"))?;
+        let (room, mut events) = Room::connect(&key.0, &key.1, options).await.map_err(|e| {
+            format!(
+                "livekit connect: {}",
+                crate::media_tokens::error_detail(&e.to_string())
+            )
+        })?;
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
         tokio::spawn(async move { while events.recv().await.is_some() {} });
@@ -2543,9 +2639,12 @@ impl ScreenAudioRoom {
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
         options.rtc_config = rtc_config(ice_servers);
-        let (room, mut events) = Room::connect(url, token, options)
-            .await
-            .map_err(|e| format!("livekit connect: {e}"))?;
+        let (room, mut events) = Room::connect(url, token, options).await.map_err(|e| {
+            format!(
+                "livekit connect: {}",
+                crate::media_tokens::error_detail(&e.to_string())
+            )
+        })?;
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
