@@ -25,6 +25,8 @@
 #include <thread>
 
 #include "api/video/encoded_image.h"
+#include "api/video/video_frame.h"
+#include "api/environment/environment_factory.h"
 #include "api/array_view.h"
 #include "api/video/i420_buffer.h"
 #include "api/video_codecs/video_encoder.h"
@@ -394,6 +396,14 @@ class SoftwareFallbackGuard final : public VideoEncoder {
   std::unique_ptr<VideoEncoder> encoder_;
 };
 
+std::unique_ptr<VideoEncoder> GuardedMfFallback(
+    const Environment& env, std::unique_ptr<VideoEncoder> software,
+    std::unique_ptr<VideoEncoder> hardware) {
+  software = std::make_unique<SoftwareFallbackGuard>(std::move(software));
+  return CreateVideoEncoderSoftwareFallbackWrapper(
+      env, std::move(software), std::move(hardware), false);
+}
+
 class WindowsMfEncoder : public VideoEncoder {
  public:
   ~WindowsMfEncoder() override { Release(); }
@@ -593,10 +603,76 @@ std::unique_ptr<VideoEncoder> WindowsMfEncoderFactory::Create(
       VideoEncoderFactoryTemplate<OpenH264EncoderTemplateAdapter> software_factory;
       auto software = software_factory.Create(env, format);
       if (!software) return std::make_unique<WindowsMfEncoder>();
-      software = std::make_unique<SoftwareFallbackGuard>(std::move(software));
-      return CreateVideoEncoderSoftwareFallbackWrapper(
-          env, std::move(software), std::make_unique<WindowsMfEncoder>(), false);
+      return GuardedMfFallback(env, std::move(software), std::make_unique<WindowsMfEncoder>());
     }
   return nullptr;
+}
+}
+
+namespace livekit_ffi {
+namespace {
+class FailingEncoderFixture final : public webrtc::VideoEncoder {
+ public:
+  FailingEncoderFixture(bool hardware, bool fail_initialization, MfFallbackProbe& probe)
+      : hardware_(hardware), fail_initialization_(fail_initialization), probe_(probe) {}
+  int InitEncode(const webrtc::VideoCodec*, const Settings&) override {
+    if (!hardware_) ++probe_.software_initializations;
+    return hardware_ && fail_initialization_
+        ? WEBRTC_VIDEO_CODEC_ENCODER_FAILURE : WEBRTC_VIDEO_CODEC_OK;
+  }
+  int32_t RegisterEncodeCompleteCallback(webrtc::EncodedImageCallback*) override {
+    return WEBRTC_VIDEO_CODEC_OK;
+  }
+  int32_t Release() override { return WEBRTC_VIDEO_CODEC_OK; }
+  int32_t Encode(const webrtc::VideoFrame&, const std::vector<webrtc::VideoFrameType>*) override {
+    if (!hardware_) ++probe_.software_frames;
+    return hardware_ && ++frames_ > 1
+        ? WEBRTC_VIDEO_CODEC_FALLBACK_SOFTWARE : WEBRTC_VIDEO_CODEC_OK;
+  }
+  void SetRates(const RateControlParameters&) override {}
+  EncoderInfo GetEncoderInfo() const override {
+    EncoderInfo info;
+    info.implementation_name = hardware_ ? "MFT failure fixture" : "Software fixture";
+    info.is_hardware_accelerated = hardware_;
+    return info;
+  }
+ private:
+  bool hardware_;
+  bool fail_initialization_;
+  uint32_t frames_ = 0;
+  MfFallbackProbe& probe_;
+};
+}
+
+MfFallbackProbe probe_mf_fallback(uint16_t width, uint16_t height, uint32_t fps,
+                                  bool screen, bool fail_initialization, bool guarded) {
+  MfFallbackProbe probe{};
+  auto env = webrtc::CreateEnvironment();
+  auto software = std::make_unique<FailingEncoderFixture>(false, false, probe);
+  auto hardware = std::make_unique<FailingEncoderFixture>(true, fail_initialization, probe);
+  auto encoder = guarded
+      ? webrtc::GuardedMfFallback(env, std::move(software), std::move(hardware))
+      : webrtc::CreateVideoEncoderSoftwareFallbackWrapper(
+          env, std::move(software), std::move(hardware), false);
+  webrtc::VideoCodec codec{};
+  codec.codecType = webrtc::kVideoCodecH264;
+  codec.width = width;
+  codec.height = height;
+  codec.maxFramerate = fps;
+  codec.mode = screen ? webrtc::VideoCodecMode::kScreensharing : webrtc::VideoCodecMode::kRealtimeVideo;
+  probe.init_result = encoder->InitEncode(
+      &codec, webrtc::VideoEncoder::Settings(webrtc::VideoEncoder::Capabilities(false), 1, 1200));
+  probe.encode_result = probe.init_result;
+  if (probe.init_result == WEBRTC_VIDEO_CODEC_OK) {
+    auto frame = webrtc::VideoFrame::Builder()
+        .set_video_frame_buffer(webrtc::I420Buffer::Create(16, 16))
+        .set_timestamp_us(1)
+        .build();
+    const std::vector<webrtc::VideoFrameType> types{webrtc::VideoFrameType::kVideoFrameKey};
+    encoder->Encode(frame, &types);
+    probe.encode_result = encoder->Encode(frame, &types);
+  }
+  encoder->Release();
+  return probe;
 }
 }

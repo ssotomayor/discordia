@@ -84,6 +84,60 @@ pub(crate) fn stop_software_encoding(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn real_webrtc_wrapper_refuses_large_fallback_before_starting_software() {
+        for fail_initialization in [false, true] {
+            let control = webrtc_sys::webrtc::ffi::probe_mf_fallback(
+                1920,
+                1080,
+                60,
+                true,
+                fail_initialization,
+                false,
+            );
+            assert!(control.software_initializations > 0, "{control:?}");
+            assert!(control.software_frames > 0, "{control:?}");
+            let result = webrtc_sys::webrtc::ffi::probe_mf_fallback(
+                1920,
+                1080,
+                60,
+                true,
+                fail_initialization,
+                true,
+            );
+            assert_eq!(result.software_initializations, 0, "{result:?}");
+            assert_eq!(result.software_frames, 0, "{result:?}");
+            if fail_initialization {
+                assert_ne!(result.init_result, 0, "{result:?}");
+            } else {
+                assert_eq!(result.init_result, 0, "{result:?}");
+                assert_ne!(result.encode_result, 0, "{result:?}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn real_webrtc_wrapper_keeps_low_budget_fallback_and_camera_paths() {
+        for fail_initialization in [false, true] {
+            for (width, height, fps, screen) in [(1280, 720, 30, true), (1920, 1080, 60, false)] {
+                let result = webrtc_sys::webrtc::ffi::probe_mf_fallback(
+                    width,
+                    height,
+                    fps,
+                    screen,
+                    fail_initialization,
+                    true,
+                );
+                assert_eq!(result.init_result, 0, "{result:?}");
+                assert_eq!(result.encode_result, 0, "{result:?}");
+                assert!(result.software_initializations > 0, "{result:?}");
+                assert!(result.software_frames > 0, "{result:?}");
+            }
+        }
+    }
+
     fn outbound(
         ssrc: u32,
         frames: u32,

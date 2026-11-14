@@ -21,8 +21,9 @@
 | `client/src/sysvideo/windows.rs` | Capture errors propagate to the fatal channel; capture start/stop already run outside the UI event loop |
 | Capture / MFT conversion | BGRA readback → I420 → NV12; capture scratch is reused, pending queues are bounded |
 
-Fallback under load is plausible, but no sender log establishes that it happened in
-this incident. TDR, RAM/VRAM exhaustion, driver version and anti-cheat interference
+Sender logs will not be available. The mitigation therefore covers the confirmed
+fallback path without assigning a unique cause to this incident. TDR, RAM/VRAM
+exhaustion, driver version and anti-cheat interference
 remain unconfirmed. A 497.664 MB/s BGRA pixel flow at 1080p60 does not mean that
 497 MB of RAM accumulates each second. CPU thread counts and utilization cannot be
 deduced from the processor model alone.
@@ -48,24 +49,27 @@ The async deadlines can act only while the application executor is being schedul
 
 ## Validation
 
-Windows validation on 2026-11-13, based on `origin/master` at `7f21ee50`:
-1241 client library tests passed (16 ignored); all-target client/grid Clippy with
+Windows validation completed on 2026-11-14, based on `origin/master` at `c4b0fc77`:
+1257 client library tests passed (16 ignored); all-target client/grid Clippy with
 `-D warnings`, formatting and five translation checks passed.
 
 | Check | Coverage |
 |---|---|
 | C++ encoder regression suite | Budget boundary, overflow-sized inputs, refused initializer never invoked, permitted low-budget/camera initialization; existing queue/retry/timestamp/watchdog cases |
+| Real WebRTC fallback wrapper, simulated encoders | Fail hardware initialization or fail while encoding. The unguarded control initializes/uses software at 1080p60; the production guarded constructor does neither. 720p30 and camera fallback remain permitted; no GPU or sender telemetry required |
 | Rust policy tests | Hardware→software reports, unknown names, CPU explicit, no advertised hardware, portrait/ultrawide, pixel/FPS limits, stalled output, idle input, progress and stream/counter replacement |
+| Application failure transition | The actual share-failure handler turns off the share without changing the connected voice session; it ignores duplicate failures, wrong targets and obsolete epochs |
 | Existing real-SFU MF fallback probe | Uses 720p30 so it continues testing the permitted fallback path; requires suitable hardware |
 | RX 5700 XT / Warzone reproduction | Not performed; no claim of a confirmed driver fix |
 
-The decisive sender evidence is the actual encoder name, capture/encode FPS and
-processing times at failure, plus `discordia.log` and any matching Windows
-Display/Application Hang events. Missing one Display event does not exclude every
-device-loss scenario. GPU stress, disabling HAGS or switching to software VP8 are
-not prerequisites and were not applied.
+Acceptance does not require sender logs or reproducing a GPU reset. The criteria
+are bounded fallback, a scoped share-failure transition and no false stop for
+paused/idle encoding. The controlled tests establish those properties; they do
+not establish why the RX 5700 XT stopped encoding or guarantee that an operating
+system driver hang can be interrupted. GPU stress, HAGS changes and switching to
+software VP8 were not applied.
 
-Distinguish these sender log messages before attributing the failure:
+Diagnostic signatures remain useful references, not prerequisites for this work:
 
 | Log | What it establishes |
 |---|---|

@@ -66,6 +66,15 @@ pub mod ffi {
         PreEncoded,
     }
 
+    #[cfg(target_os = "windows")]
+    #[derive(Debug)]
+    pub struct MfFallbackProbe {
+        pub init_result: i32,
+        pub encode_result: i32,
+        pub software_initializations: u32,
+        pub software_frames: u32,
+    }
+
     extern "Rust" {
         fn log_media_foundation_failure(operation: &str, hresult: i32);
     }
@@ -78,6 +87,15 @@ pub mod ffi {
         fn create_random_uuid() -> String;
         fn video_encoder_backend_list() -> Vec<VideoEncoderBackend>;
         fn video_encoder_codec_list(backend: VideoEncoderBackend) -> Vec<String>;
+        #[cfg(target_os = "windows")]
+        fn probe_mf_fallback(
+            width: u16,
+            height: u16,
+            fps: u32,
+            screen: bool,
+            fail_initialization: bool,
+            guarded: bool,
+        ) -> MfFallbackProbe;
         fn new_log_sink(fnc: fn(String, LoggingSeverity)) -> UniquePtr<LogSink>;
     }
 }
