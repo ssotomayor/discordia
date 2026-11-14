@@ -416,7 +416,12 @@ fn garbage_truncated_or_forged_events_never_unlock_the_key() {
     let gift = f.wrap(&f.peer, &f.chat_from(&f.peer, NOW - 10));
     let json = serde_json::to_string(&gift).unwrap();
     let mut forged = gift.clone();
-    forged.sig = format!("{}00", &forged.sig[..forged.sig.len() - 2]);
+    assert!(gift.verify());
+    let mut signature = hex::decode(&gift.sig).unwrap();
+    *signature.last_mut().unwrap() ^= 1;
+    forged.sig = hex::encode(signature);
+    assert_ne!(forged.sig, gift.sig);
+    assert!(!forged.verify());
     let mut altered = gift.clone();
     altered.content.push('A');
     let mut not_a_wrap = gift.clone();
