@@ -21,6 +21,8 @@ pub struct ChatMessage {
     /// NIP-30: `:code:` in the content draws `url`. The url is a data URL
     /// today (see `features::chat::dm_emoji_tags`).
     pub emoji: Vec<(String, String)>,
+    /// A picture either person may delete: the one it was sent to, by opening it.
+    pub view_once: bool,
 }
 
 /// What an image message carries as text; the picture itself is in its tags.
@@ -203,6 +205,8 @@ pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String
         created_at: rumor.created_at,
         reply_to,
         emoji: emoji_tags(rumor),
+        view_once: rumor.kind == super::dm_image::KIND
+            && rumor.tag(super::dm_image::VIEW_ONCE_TAG).is_some(),
     })
 }
 

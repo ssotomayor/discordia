@@ -27,6 +27,12 @@ pub const INLINE_WRAP_MAX_BYTES: usize = 3000;
 
 pub const HANDLE_BYTES: usize = 32;
 
+/// `PUT /v1/attention` holds DM pushes for the signing key this long; `DELETE` ends it.
+/// A desktop that quits without a word stops quieting the phone when it lapses.
+pub const ATTENTION_LEASE_SECS: u64 = 90;
+/// How often a desktop in front renews. One lost renewal costs a ring, nothing more.
+pub const ATTENTION_RENEW_SECS: u64 = 60;
+
 /// The host part of the relay URL a client dialled, lowercased; the port is
 /// left out so a TLS proxy in front does not change it.
 pub fn push_audience(url: &str) -> Option<String> {

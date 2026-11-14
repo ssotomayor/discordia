@@ -204,6 +204,11 @@ pub(crate) fn from_bytes_with_limit(bytes: &[u8], max_bytes: usize) -> Result<St
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn read_clipboard(max_bytes: usize) -> Result<String, String> {
+    // The system clipboard is not to be read from two threads at once; a second ask is refused, not queued.
+    static READING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _reading = READING
+        .try_lock()
+        .ok_or("Still reading the last picture.")?;
     let mut clipboard = arboard::Clipboard::new().map_err(|_| "Clipboard unavailable.")?;
     let image = clipboard
         .get_image()

@@ -118,6 +118,16 @@ class MainActivity : WryActivity() {
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() { navigateBack() }
 
+    fun openExternal(url: String) {
+        runOnUiThread {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            } catch (error: Exception) {
+                android.util.Log.w("Discordia", "Nothing on this phone opens the link", error)
+            }
+        }
+    }
+
     private var appUpdater: com.discordia.app.DioxusUpdater? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 

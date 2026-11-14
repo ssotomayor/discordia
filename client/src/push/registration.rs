@@ -219,6 +219,24 @@ impl RelayClient {
         Ok(Self::json::<HandleCreated>(response).await?.handle)
     }
 
+    /// `false`: the relay knows no phone of this key that takes DMs, or predates the route.
+    pub async fn hold_attention(&self, identity: &Identity) -> Result<bool, RelayError> {
+        match self
+            .signed(identity, Method::PUT, "/v1/attention", Vec::new())
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(RelayError::Status(404, _)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn release_attention(&self, identity: &Identity) -> Result<(), RelayError> {
+        self.signed(identity, Method::DELETE, "/v1/attention", Vec::new())
+            .await
+            .map(drop)
+    }
+
     pub async fn delete_handle(&self, identity: &Identity, handle: &str) -> Result<(), RelayError> {
         if handle.is_empty()
             || !handle
@@ -748,6 +766,67 @@ pub(crate) mod tests {
         );
         let after = PushState::load(&dir);
         assert!(after.account.is_none() && after.servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_desktop_quiets_only_a_key_that_has_a_phone() {
+        let (client, relay) = spawn_relay().await;
+        let dir = sandbox();
+        let me = identity(5);
+        assert_eq!(client.hold_attention(&me).await, Ok(false));
+        register_device(
+            &dir,
+            &client,
+            &me,
+            "token-1",
+            "com.discordia.app",
+            true,
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(client.hold_attention(&me).await, Ok(true));
+        assert!(relay.attended(&me.pubkey, now_unix()));
+        client.release_attention(&me).await.unwrap();
+        assert!(!relay.attended(&me.pubkey, now_unix()));
+    }
+
+    #[tokio::test]
+    async fn a_lease_is_held_while_in_front_and_given_up_with_the_account() {
+        use crate::push::attention::{HOLD_AFTER, Lease, run_lease};
+        let (client, relay) = spawn_relay().await;
+        let dir = sandbox();
+        let me = identity(6);
+        register_device(
+            &dir,
+            &client,
+            &me,
+            "token-1",
+            "com.discordia.app",
+            true,
+            vec![],
+        )
+        .await
+        .unwrap();
+        let (focus, focused) = tokio::sync::watch::channel(true);
+        let settled = Lease::new(true, tokio::time::Instant::now() - HOLD_AFTER);
+        let keeper = tokio::spawn(run_lease(settled, client, me.clone(), focused));
+        let attended = |wanted: bool| {
+            let (relay, key) = (relay.clone(), me.pubkey.clone());
+            async move {
+                for _ in 0..200 {
+                    if relay.attended(&key, now_unix()) == wanted {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                false
+            }
+        };
+        assert!(attended(true).await, "in front: held");
+        drop(focus);
+        assert!(attended(false).await, "signed out: released");
+        keeper.await.unwrap();
     }
 
     #[tokio::test]

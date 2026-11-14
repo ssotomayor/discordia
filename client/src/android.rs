@@ -508,6 +508,21 @@ pub(crate) fn notification_command(method: &'static str, payload: String) {
     }
 }
 
+/// Android picks what opens it: the app that claims the link, else the browser.
+pub(crate) fn open_external(url: &str) -> Result<(), String> {
+    with_activity(|env, activity| {
+        let value = env.new_string(url).map_err(system_error)?;
+        env.call_method(
+            activity,
+            "openExternal",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&value)],
+        )
+        .map(|_| ())
+        .map_err(system_error)
+    })
+}
+
 /// Kotlin reports the stored token and the notification switch through
 /// `DioxusNotifier.onPushPlatform` before this returns, then fetches a fresh token.
 pub(crate) fn request_push_token() -> Result<(), String> {

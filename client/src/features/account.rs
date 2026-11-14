@@ -248,6 +248,7 @@ pub fn AccountView(
     crate::state::use_dm_standing_persistence(state);
     crate::push::peers::use_push_peers(state, identity.pubkey.clone());
     super::push::use_device(&identity, settings);
+    super::push::use_dm_attention(state, &identity);
     super::push::use_mention_taps(
         state,
         identity.pubkey.clone(),

@@ -423,6 +423,10 @@ mod tests {
         let (client, mut server) = sockets().await;
         let (sink, reader) = client.split();
         let (_writer, _ui, _transport) = start(sink, reader);
+        // The transport pings as it starts. Answered now, or the pong is written into a pipe
+        // the goodbye has already closed and the read fails before it reaches the close.
+        assert!(server.next().await.unwrap().unwrap().is_ping());
+        server.flush().await.unwrap();
         let goodbye = tokio::task::spawn_blocking(|| say_goodbye(Duration::from_secs(2)));
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {

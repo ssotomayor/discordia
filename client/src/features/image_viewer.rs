@@ -9,7 +9,7 @@ pub(crate) enum Original {
     Community(String),
     Dm {
         owner: String,
-        descriptor: crate::nostr::dm_image::Descriptor,
+        descriptor: Box<crate::nostr::dm_image::Descriptor>,
     },
 }
 #[derive(Clone, Copy, PartialEq, Eq)]

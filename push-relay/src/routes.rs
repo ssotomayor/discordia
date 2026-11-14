@@ -69,6 +69,7 @@ pub fn router(relay: Arc<Relay>) -> Router {
         .route("/v1/devices", put(put_device).delete(delete_device))
         .route("/v1/handles", post(create_handle))
         .route("/v1/handles/:handle", delete(delete_handle))
+        .route("/v1/attention", put(put_attention).delete(delete_attention))
         .layer(DefaultBodyLimit::max(SIGNED_BODY_BYTES));
     let push = Router::new()
         .route("/v1/push/:handle", post(push))
@@ -249,6 +250,34 @@ async fn delete_handle(
     } else {
         Err(ApiError::new(StatusCode::NOT_FOUND, "no such handle"))
     }
+}
+
+/// 404 tells a desktop there is no phone to quiet, so it stops asking.
+async fn put_attention(
+    State(relay): State<Arc<Relay>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let pubkey = authenticate(&relay, &method, &uri, &headers, &body)?;
+    if relay.attend(&pubkey, now_unix())? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(StatusCode::NOT_FOUND, "no device takes DMs"))
+    }
+}
+
+async fn delete_attention(
+    State(relay): State<Arc<Relay>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let pubkey = authenticate(&relay, &method, &uri, &headers, &body)?;
+    relay.release(&pubkey);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// NIP-44 output is base64; anything else cannot be a payload the phone opens.

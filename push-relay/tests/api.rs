@@ -192,6 +192,45 @@ async fn a_registered_handle_carries_a_push_to_its_device() {
 }
 
 #[tokio::test]
+async fn a_desktop_in_front_holds_and_ends_its_keys_dm_pushes() {
+    let h = spawn().await;
+    let attention = |seed, method| Signed::new(key(seed), method, "/v1/attention", json!(null));
+    let pubkey = sign_request(&key(1), "PUT", "/v1/attention", AUDIENCE, 0, b"")
+        .unwrap()
+        .0;
+    assert_eq!(
+        attention(1, Method::PUT).send(&h).await.status(),
+        StatusCode::NOT_FOUND,
+        "no phone to quiet, so the desktop is told to stop asking"
+    );
+    assert_eq!(register(&h, 1, "tok-1").await, StatusCode::OK);
+    assert_eq!(
+        attention(1, Method::PUT).send(&h).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(h.relay.attended(&pubkey, now_unix()));
+
+    assert_eq!(
+        attention(2, Method::DELETE).send(&h).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        h.relay.attended(&pubkey, now_unix()),
+        "another key ends only its own"
+    );
+    let mut forged = attention(2, Method::DELETE);
+    forged.pubkey_override = Some(pubkey.clone());
+    assert_eq!(forged.send(&h).await.status(), StatusCode::UNAUTHORIZED);
+    assert!(h.relay.attended(&pubkey, now_unix()));
+
+    assert_eq!(
+        attention(1, Method::DELETE).send(&h).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!h.relay.attended(&pubkey, now_unix()));
+}
+
+#[tokio::test]
 async fn a_request_the_signature_does_not_cover_is_refused() {
     let h = spawn().await;
     let base = || Signed::new(key(1), Method::PUT, "/v1/devices", device("tok"));

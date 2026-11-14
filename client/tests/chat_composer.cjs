@@ -203,6 +203,37 @@ function fixture(kept = null, existing = []) {
 }
 
 {
+  const f = fixture();
+  f.event('selectionchange');
+  assert.equal(f.messages.length, 0, 'a caret is not a selection');
+  f.selection.isCollapsed = false;
+  f.event('selectionchange');
+  f.event('selectionchange');
+  assert.deepEqual(f.messages, [{ k: 'selection', on: true }], 'said once, when it starts');
+  for (const [kind, mark] of [['b', '**'], ['i', '*'], ['u', '__'], ['s', '~~'], ['spoiler', '||']]) {
+    f.inserted.length = 0;
+    f.api.format(kind);
+    assert.deepEqual(f.inserted.map(n => n.nodeValue), [mark, mark], kind);
+  }
+  f.inserted.length = 0;
+  f.api.format('script');
+  assert.equal(f.inserted.length, 0, 'only the marks the app reads');
+  f.selection.isCollapsed = true;
+  f.event('selectionchange');
+  assert.deepEqual(f.messages.at(-1), { k: 'selection', on: false });
+  assert.equal(f.event('keydown', { key: 's', ctrlKey: true }), false, 'Ctrl+S is not a mark');
+}
+
+{
+  const f = fixture();
+  f.selection.isCollapsed = false;
+  f.event('selectionchange');
+  f.selection.rangeCount = 0;
+  f.api.format('spoiler');
+  assert(f.operations.includes('focus'), 'a menu that took the focus gets the last selection back');
+}
+
+{
   const f = fixture('line one\nline two __ID__');
   assert.deepEqual(f.messages, [
     { k: 'input', text: 'line one\nline two __ID__', before: '', kept: true },

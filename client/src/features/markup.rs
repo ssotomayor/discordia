@@ -9,6 +9,8 @@ pub enum Node {
     Italic(Vec<Node>),
     Underline(Vec<Node>),
     Strike(Vec<Node>),
+    /// Hidden until the reader asks for it.
+    Spoiler(Vec<Node>),
     Code(String),
     /// `None` when the target is not a web address: the text shows, nothing opens.
     Link(Option<String>, Vec<Node>),
@@ -21,10 +23,13 @@ pub enum Node {
     Rule,
 }
 
-const MARKS: [&str; 4] = ["**", "__", "*", "_"];
+const MARKS: [&str; 6] = ["**", "__", "||", "~~", "*", "_"];
+const MARK_CHARS: [char; 4] = ['*', '_', '|', '~'];
+const SPOILER: &str = "||";
 const MAX_DEPTH: usize = 6;
 
-/// `**bold**`, `__underline__`, `*italic*` and `_italic_`, nested; an unmatched mark is text.
+/// `**bold**`, `__underline__`, `~~strike~~`, `||spoiler||`, `*italic*` and `_italic_`,
+/// nested; an unmatched mark is text.
 pub fn inline(s: &str) -> Vec<Node> {
     // Where each opening mark closes. One only reads those after it, so filling
     // right to left needs no recursion and keeps a hostile message quadratic at worst.
@@ -73,7 +78,7 @@ fn closing(s: &str, from: usize, mark: &str, span: &[Option<(usize, usize)>]) ->
             continue;
         }
         let ch = s[j..].chars().next().unwrap_or_default();
-        content |= ch != '*' && ch != '_';
+        content |= !MARK_CHARS.contains(&ch);
         j += ch.len_utf8().max(1);
     }
     None
@@ -111,6 +116,8 @@ fn build(
             out.push(match MARKS[k] {
                 "**" => Node::Bold(inner),
                 "__" => Node::Underline(inner),
+                "~~" => Node::Strike(inner),
+                SPOILER => Node::Spoiler(inner),
                 _ => Node::Italic(inner),
             });
             i = c + MARKS[k].len();
@@ -231,7 +238,92 @@ pub fn markdown(src: &str) -> Vec<Node> {
             _ => {}
         }
     }
-    stack.into_iter().next().map(|(_, n)| n).unwrap_or_default()
+    spoilers(stack.into_iter().next().map(|(_, n)| n).unwrap_or_default())
+}
+
+/// CommonMark has no spoiler, so `||` is paired among siblings after the parse, by
+/// `inline`'s rule: it opens before a word and closes after one.
+fn spoilers(nodes: Vec<Node>) -> Vec<Node> {
+    let mut out = Vec::new();
+    let mut open: Option<usize> = None;
+    for node in nodes {
+        let text = match node {
+            Node::Text(text) => text,
+            Node::Bold(c) => Node::Bold(spoilers(c)).pushed(&mut out),
+            Node::Italic(c) => Node::Italic(spoilers(c)).pushed(&mut out),
+            Node::Underline(c) => Node::Underline(spoilers(c)).pushed(&mut out),
+            Node::Strike(c) => Node::Strike(spoilers(c)).pushed(&mut out),
+            Node::Link(href, c) => Node::Link(href, spoilers(c)).pushed(&mut out),
+            Node::Paragraph(c) => Node::Paragraph(spoilers(c)).pushed(&mut out),
+            Node::Heading(level, c) => Node::Heading(level, spoilers(c)).pushed(&mut out),
+            Node::Quote(c) => Node::Quote(spoilers(c)).pushed(&mut out),
+            Node::List(start, c) => Node::List(start, spoilers(c)).pushed(&mut out),
+            Node::Item(c) => Node::Item(spoilers(c)).pushed(&mut out),
+            other => other.pushed(&mut out),
+        };
+        let mut rest = text.as_str();
+        let mut plain = String::new();
+        while let Some(at) = rest.find(SPOILER) {
+            plain.push_str(&rest[..at]);
+            let after = &rest[at + SPOILER.len()..];
+            let word_before = !plain.chars().next_back().is_some_and(char::is_whitespace);
+            let word_after = !after.chars().next().is_some_and(char::is_whitespace);
+            match open {
+                Some(start) if word_before && (start < out.len() || !plain.is_empty()) => {
+                    Node::Text(std::mem::take(&mut plain)).pushed_if_text(&mut out);
+                    let hidden = out.split_off(start);
+                    out.push(Node::Spoiler(hidden));
+                    open = None;
+                }
+                None if word_after => {
+                    Node::Text(std::mem::take(&mut plain)).pushed_if_text(&mut out);
+                    open = Some(out.len());
+                }
+                _ => plain.push_str(SPOILER),
+            }
+            rest = after;
+        }
+        plain.push_str(rest);
+        Node::Text(plain).pushed_if_text(&mut out);
+    }
+    if let Some(start) = open {
+        out.insert(start, Node::Text(SPOILER.to_string()));
+    }
+    out
+}
+
+impl Node {
+    /// Pushes and yields no text, so a `match` arm can finish a node that is not one.
+    fn pushed(self, into: &mut Vec<Node>) -> String {
+        into.push(self);
+        String::new()
+    }
+
+    fn pushed_if_text(self, into: &mut Vec<Node>) {
+        if !matches!(&self, Node::Text(text) if text.is_empty()) {
+            into.push(self);
+        }
+    }
+}
+
+/// A message as one line of plain words for an alert or a reply excerpt: marks dropped,
+/// and what a spoiler hides replaced, since neither place can ask before showing.
+pub fn plain(s: &str) -> String {
+    fn flatten(nodes: &[Node], out: &mut String) {
+        for node in nodes {
+            match node {
+                Node::Text(text) => out.push_str(text),
+                Node::Spoiler(_) => out.push_str("▒▒▒▒▒"),
+                Node::Bold(c) | Node::Italic(c) | Node::Underline(c) | Node::Strike(c) => {
+                    flatten(c, out)
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = String::with_capacity(s.len());
+    flatten(&inline(s), &mut out);
+    out
 }
 
 #[component]
@@ -276,6 +368,7 @@ fn Nodes(
                 Node::Italic(c) => rsx! { em { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
                 Node::Underline(c) => rsx! { u { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
                 Node::Strike(c) => rsx! { s { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
+                Node::Spoiler(c) => rsx! { Spoiler { Nodes { nodes: c, guild_id, extra: extra.clone(), mentions: mentions.clone() } } },
                 Node::Code(text) => rsx! { code { "{text}" } },
                 Node::Link(Some(href), c) => rsx! {
                     span {
@@ -297,6 +390,33 @@ fn Nodes(
                 Node::CodeBlock(text) => rsx! { pre { code { "{text}" } } },
                 Node::Rule => rsx! { hr {} },
             }
+        }
+    }
+}
+
+/// The inner span is what is hidden, so a link or a picture inside cannot be reached early.
+#[component]
+fn Spoiler(children: Element) -> Element {
+    let mut shown = use_signal(|| false);
+    rsx! {
+        span {
+            class: if shown() { "dxf-spoiler dxf-spoiler-shown" } else { "dxf-spoiler" },
+            role: (!shown()).then_some("button"),
+            tabindex: (!shown()).then_some("0"),
+            aria_label: (!shown()).then(|| crate::i18n::text("Spoiler, press to show", &[])),
+            onclick: move |event| {
+                if !shown() {
+                    event.stop_propagation();
+                    shown.set(true);
+                }
+            },
+            onkeydown: move |event| {
+                if !shown() && matches!(event.key(), Key::Enter) {
+                    event.prevent_default();
+                    shown.set(true);
+                }
+            },
+            span { aria_hidden: (!shown()).then_some("true"), {children} }
         }
     }
 }
@@ -490,6 +610,76 @@ mod tests {
             inline("__**x**__"),
             vec![Node::Underline(vec![Node::Bold(vec![t("x")])])]
         );
+    }
+
+    #[test]
+    fn strike_and_spoiler_are_marks_like_the_rest() {
+        assert_eq!(
+            inline("~~gone~~ and ||the **end**||"),
+            vec![
+                Node::Strike(vec![t("gone")]),
+                t(" and "),
+                Node::Spoiler(vec![t("the "), Node::Bold(vec![t("end")])]),
+            ]
+        );
+        assert_eq!(
+            inline("**a ||b|| c**"),
+            vec![Node::Bold(vec![
+                t("a "),
+                Node::Spoiler(vec![t("b")]),
+                t(" c")
+            ])]
+        );
+        for typed in ["a || b || c", "||", "||||", "x ||unclosed", "a ~ b ~~ c"] {
+            assert_eq!(inline(typed), vec![t(typed)], "{typed}");
+        }
+    }
+
+    #[test]
+    fn markdown_hides_a_spoiler_among_its_siblings() {
+        assert_eq!(
+            markdown("see ||the **end**|| now"),
+            vec![Node::Paragraph(vec![
+                t("see "),
+                Node::Spoiler(vec![t("the "), Node::Bold(vec![t("end")])]),
+                t(" now"),
+            ])]
+        );
+        assert_eq!(
+            markdown("**a ||b|| c**"),
+            vec![Node::Paragraph(vec![Node::Bold(vec![
+                t("a "),
+                Node::Spoiler(vec![t("b")]),
+                t(" c"),
+            ])])]
+        );
+        for typed in ["a || b || c", "x ||unclosed", "||||"] {
+            let flat: String = match &markdown(typed)[..] {
+                [Node::Paragraph(children)] => children
+                    .iter()
+                    .map(|n| match n {
+                        Node::Text(text) => text.clone(),
+                        other => panic!("{typed}: {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("{typed}: {other:?}"),
+            };
+            assert_eq!(flat, typed);
+        }
+        assert_eq!(
+            markdown("`||code||`"),
+            vec![Node::Paragraph(vec![Node::Code("||code||".into())])]
+        );
+    }
+
+    #[test]
+    fn a_plain_line_drops_marks_and_never_says_what_a_spoiler_hides() {
+        assert_eq!(
+            plain("**well** ||he *dies*|| at the end"),
+            "well ▒▒▒▒▒ at the end"
+        );
+        assert_eq!(plain("a || b || c"), "a || b || c");
+        assert_eq!(plain("snake_case stays"), "snake_case stays");
     }
 
     #[test]

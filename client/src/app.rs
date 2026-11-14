@@ -148,7 +148,11 @@ pub fn open_external(url: &str) {
             );
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "android")]
+    if let Err(error) = crate::android::open_external(url.as_str()) {
+        tracing::warn!(%error, "could not hand the link to Android");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
     {
         #[cfg(target_os = "macos")]
         let opener = "open";
@@ -532,6 +536,20 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-file-type { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 44px; height: 52px; flex-shrink: 0; border-radius: 8px; background-color: var(--accent-soft); color: var(--accent); }
 .dxf-file-type svg { display: block; width: 22px; height: 22px; }
 .dxf-badge svg { display: block; width: 100%; height: 100%; }
+.dxf-spoiler { background-color: var(--text-dim); border-radius: 3px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.dxf-spoiler > span { visibility: hidden; }
+.dxf-spoiler-shown { background-color: color-mix(in srgb, var(--text-dim) 22%, transparent); cursor: auto; user-select: auto; -webkit-user-select: auto; }
+.dxf-spoiler-shown > span { visibility: visible; }
+.dxf-view-once { margin-top: 4px; display: inline-flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background-color: var(--panel2); color: var(--text-muted); font-size: 12px; }
+.dxf-view-once button { color: var(--accent); }
+.dxf-view-once-open { color: var(--accent); border-color: var(--accent); cursor: pointer; }
+.dxf-view-once-open:disabled { color: var(--text-muted); border-color: var(--border); cursor: default; }
+.dxf-view-once-toggle { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+.dxf-view-once-on { color: var(--accent); border-color: var(--accent); background-color: var(--accent-soft); }
+.dxf-format-bar { display: flex; gap: 4px; margin-bottom: 6px; }
+.dxf-format-bar button { min-width: 28px; height: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background-color: var(--panel2); color: var(--text-muted); font-size: 12px; line-height: 1; }
+.dxf-format-bar button:hover { color: var(--accent); border-color: var(--accent); }
+.dxf-platform-mobile .dxf-format-bar button { min-width: 40px; height: 36px; font-size: 14px; }
 .dxf-md { white-space: normal; }
 .dxf-md > :first-child { margin-top: 0; }
 .dxf-md p { margin: 0.15em 0; }

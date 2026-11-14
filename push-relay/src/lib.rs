@@ -10,11 +10,11 @@ pub mod sender;
 pub mod store;
 pub mod watcher;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use discordia_protocol::push::{DmWrap, INLINE_WRAP_MAX_BYTES, PushData};
+use discordia_protocol::push::{ATTENTION_LEASE_SECS, DmWrap, INLINE_WRAP_MAX_BYTES, PushData};
 
 use crate::limits::Limits;
 use crate::sender::{Delivery, Sender, short};
@@ -80,6 +80,8 @@ pub struct Relay {
     pub config: Config,
     pub limits: Limits,
     in_flight: Arc<tokio::sync::Semaphore>,
+    /// Keys whose person is at another device, and until when. Memory only: a restart rings.
+    attended: Mutex<HashMap<String, u64>>,
 }
 
 /// What `push_dm` did, for the watcher's log and the tests.
@@ -87,6 +89,8 @@ pub struct Relay {
 pub enum DmPush {
     /// The key has no unexpired device with DMs on.
     NoDevices,
+    /// The person is in front of another device, which holds a lease saying so.
+    Attended,
     RateLimited,
     /// Sends attempted, and how many FCM accepted.
     Sent {
@@ -112,7 +116,35 @@ impl Relay {
             config,
             limits,
             in_flight,
+            attended: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// `false` when the key has no device to quiet, and then nothing is kept:
+    /// a key costs memory only once it has registered a phone.
+    pub fn attend(&self, pubkey: &str, now: u64) -> Result<bool, store::StoreError> {
+        if self.store.devices_of(pubkey, true, now)?.is_empty() {
+            return Ok(false);
+        }
+        let mut attended = self.attended.lock().unwrap_or_else(|e| e.into_inner());
+        attended.retain(|_, until| *until > now);
+        attended.insert(pubkey.to_string(), now + ATTENTION_LEASE_SECS);
+        Ok(true)
+    }
+
+    pub fn release(&self, pubkey: &str) {
+        self.attended
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(pubkey);
+    }
+
+    pub fn attended(&self, pubkey: &str, now: u64) -> bool {
+        self.attended
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(pubkey)
+            .is_some_and(|until| *until > now)
     }
 
     /// Sends to one device and drops it if FCM says the token is dead.
@@ -143,6 +175,9 @@ impl Relay {
             .map_err(|e| format!("{e:?}"))?;
         if targets.is_empty() {
             return Ok(DmPush::NoDevices);
+        }
+        if self.attended(pubkey, now_unix()) {
+            return Ok(DmPush::Attended);
         }
         // Counted only for keys that have devices, so a flood at strangers grows nothing.
         if !self.limits.dm_per_key.admit(&pubkey.to_string()) {
@@ -302,5 +337,53 @@ mod tests {
             DmPush::Sent { .. }
         ));
         assert_eq!(rec.delivered().len(), 31);
+    }
+
+    #[tokio::test]
+    async fn a_key_attended_elsewhere_is_not_woken_until_the_lease_ends() {
+        let (relay, rec) = relay();
+        register(&relay, &key(1), "t", true);
+        register(&relay, &key(2), "u", true);
+        let now = now_unix();
+        assert!(relay.attend(&key(1), now).unwrap());
+        assert_eq!(
+            relay.push_dm(&key(1), &event("{}")).await.unwrap(),
+            DmPush::Attended
+        );
+        assert!(matches!(
+            relay.push_dm(&key(2), &event("{}")).await.unwrap(),
+            DmPush::Sent { .. }
+        ));
+        assert!(relay.attended(&key(1), now + ATTENTION_LEASE_SECS - 1));
+        assert!(
+            !relay.attended(&key(1), now + ATTENTION_LEASE_SECS),
+            "a desktop that went away without a word stops quieting the phone"
+        );
+
+        relay.release(&key(1));
+        assert!(matches!(
+            relay.push_dm(&key(1), &event("{}")).await.unwrap(),
+            DmPush::Sent { .. }
+        ));
+        assert_eq!(rec.delivered().len(), 2);
+    }
+
+    #[test]
+    fn a_key_without_a_dm_device_holds_nothing_and_lapsed_leases_are_dropped() {
+        let (relay, _rec) = relay();
+        register(&relay, &key(1), "t", true);
+        register(&relay, &key(2), "mentions-only", false);
+        let now = now_unix();
+        assert!(!relay.attend(&key(2), now).unwrap());
+        assert!(!relay.attend(&key(3), now).unwrap());
+        assert!(relay.attended.lock().unwrap().is_empty());
+
+        assert!(relay.attend(&key(1), now).unwrap());
+        register(&relay, &key(4), "v", true);
+        assert!(relay.attend(&key(4), now + ATTENTION_LEASE_SECS).unwrap());
+        assert_eq!(
+            relay.attended.lock().unwrap().keys().collect::<Vec<_>>(),
+            [&key(4)]
+        );
     }
 }

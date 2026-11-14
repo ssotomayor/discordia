@@ -401,7 +401,7 @@ pub(super) fn SocialPanel(
                     let body = if m.content.trim().is_empty() && m.image.is_some() {
                         crate::i18n::text("📎 image", &[])
                     } else {
-                        m.content.clone()
+                        super::markup::plain(&m.content)
                     };
                     if m.author.pubkey == self_pk {
                         crate::i18n::text("You: {0}", &[body])

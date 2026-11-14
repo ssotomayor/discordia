@@ -89,6 +89,30 @@ test('copy message preserves raw text and reuses only available message actions'
   assert.equal(f.requests.length, 1, 'message actions use the existing permission-gated handler');
 });
 
+test('a selection in the chat composer can be wrapped in a mark, and no other field offers it', () => {
+  const f = fixture();
+  Object.assign(f.window.__dxfTextMenuLabels, { b: 'Bold', i: 'Italic', u: 'Underline', s: 'Strikethrough', spoiler: 'Spoiler' });
+  const asked = [];
+  f.window.__dxfComposers = { composer: { format: kind => asked.push(kind) } };
+  const composer = f.field(); composer.id = 'composer';
+  f.event('contextmenu', composer);
+  assert.deepEqual(f.labels(), ['Copy', 'Bold', 'Italic', 'Underline', 'Strikethrough', 'Spoiler', 'Cut', 'Paste', 'Select all']);
+  composer.setSelectionRange(0, 0);
+  f.choose('Spoiler');
+  assert.deepEqual(asked, ['spoiler']);
+  assert.deepEqual([composer.selectionStart, composer.selectionEnd], [1, 3], 'the selection the menu opened on');
+  assert.equal(f.menu(), undefined);
+
+  const other = f.field();
+  f.event('contextmenu', other);
+  assert.deepEqual(f.labels(), ['Copy', 'Cut', 'Paste', 'Select all']);
+  f.event('pointerdown', f.document.body);
+
+  composer.setSelectionRange(2, 2);
+  f.event('contextmenu', composer);
+  assert.deepEqual(f.labels(), ['Paste', 'Select all'], 'nothing selected, nothing to wrap');
+});
+
 test('paste replaces the original selection and notifies controlled inputs', async () => {
   const f = fixture(), input = f.field(); let changes = 0;
   input.addEventListener('input', () => changes++);
