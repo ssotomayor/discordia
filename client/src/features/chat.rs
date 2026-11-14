@@ -857,9 +857,16 @@ fn composer_locked(s: &crate::state::AppState, channel_id: Id) -> bool {
         .unwrap_or(false)
 }
 
+fn shown_quote(message: &Message) -> Option<&crate::protocol::ReplyRef> {
+    message
+        .reply_to
+        .as_ref()
+        .filter(|q| !crate::nostr::replies::waiting(q))
+}
+
 /// A reply always heads its own group: the connector to the quote starts at its avatar.
 fn groups_with(prev: &Message, cur: &Message) -> bool {
-    cur.reply_to.is_none()
+    shown_quote(cur).is_none()
         && prev.author.pubkey == cur.author.pubkey
         && (cur.created_at - prev.created_at).num_seconds().abs() < GROUP_WINDOW_SECS
 }
@@ -1046,7 +1053,7 @@ pub(super) fn MessageRow(
             flat
         }
     };
-    let quoted = message.reply_to.clone();
+    let quoted = shown_quote(&message).cloned();
 
     let guild_id = state
         .read()

@@ -42,6 +42,7 @@ pub mod outbox;
 pub mod profile;
 pub mod reactions;
 pub mod read_marks;
+pub mod replies;
 pub mod service;
 pub mod xp;
 
