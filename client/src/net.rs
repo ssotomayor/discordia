@@ -2089,9 +2089,14 @@ fn apply(
             }
         }
         ServerMessage::EmojiBlobs { blobs } => {
-            // Guild emoji and sounds are reused across connections; message pictures aren't.
+            // A disconnected community has no gateway to reload its icon.
             let mut shared = emoji_addresses(&s);
             shared.extend(sound_addresses(&s));
+            shared.extend(
+                s.guilds
+                    .iter()
+                    .filter_map(|guild| guild.icon_image.as_deref().and_then(media_address)),
+            );
             for blob in blobs {
                 let data = std::sync::Arc::new(blob.data_url);
                 if !data.is_empty() && shared.contains(&blob.image) {
@@ -2573,6 +2578,57 @@ fn should_play_peer_join(
 mod tests {
     use super::*;
     use crate::render_check::Checked;
+
+    #[tokio::test]
+    async fn community_logo_is_saved_before_the_session_cache_is_cleared() {
+        let root = crate::identity::test_config_dir();
+        let address = format!("{}.png", "c".repeat(64));
+        const DATA: &str = "data:image/png;base64,logo";
+        let mut dom = dioxus::prelude::VirtualDom::new_with_props(
+            |address: String| {
+                let mut state = use_signal(AppState::empty);
+                use_hook(move || {
+                    state.write().guilds.push(
+                        serde_json::from_value(serde_json::json!({
+                            "id": Id::new_v4(), "name": "Community", "owner_pubkey": "",
+                            "icon_image": format!("media:{address}")
+                        }))
+                        .unwrap(),
+                    );
+                    let (tx, _) = unbounded_channel();
+                    let (voice_tx, _) = unbounded_channel();
+                    apply(
+                        &mut state,
+                        ServerMessage::EmojiBlobs {
+                            blobs: vec![crate::protocol::EmojiBlob {
+                                image: address.clone(),
+                                data_url: DATA.into(),
+                            }],
+                        },
+                        &tx,
+                        &voice_tx,
+                    );
+                    assert!(state.peek().emoji_images.contains_key(&address));
+                    state.write().clear_server_session();
+                    assert!(!state.peek().emoji_images.contains_key(&address));
+                });
+                rsx! {}
+            },
+            address.clone(),
+        );
+        dom.rebuild_checked();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if crate::emoji::load_cached(&address).as_deref() == Some(DATA) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the disconnected community's logo must remain on disk");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn peer_join_sound_tracks_voice_events_during_entry_and_live_calls_only() {

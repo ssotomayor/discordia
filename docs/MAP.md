@@ -20,7 +20,7 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | `client/src/features/chat.rs` | 3999 |
 | `client/src/features/screenshare.rs` | 3886 |
 | `server/tests/owner_controls.rs` | 3460 |
-| `client/src/net.rs` | 3306 |
+| `client/src/net.rs` | 3362 |
 | `client/src/features/channels.rs` | 2728 |
 | `client/src/nostr/service.rs` | 2725 |
 | `client/src/features/activities.rs` | 2064 |
@@ -41,6 +41,7 @@ Everything else: `wc -l` answers faster than a list here could stay true.
 | Android guild media/history reception | `client/src/net/background_socket.rs`, `server/src/gateway/connection.rs` | The native transport accepts the server's full frame size; its byte queue holds two maximum frames and keeps the frame-count cap. `scripts/build-android.py --gateway-diagnostics` (`DISCORDIA_GATEWAY_DIAGNOSTICS=1` at compile time) builds payload-free USB traces |
 | Stream controls on video | `client/assets/stream-controls.js`, `stream-viewer.css`, `features/screenshare.rs`, `features/stream_viewer.rs`, `scripts/test-stream-controls.cjs` | Tile headers/footers overlay the video in app, popouts and full screen; per-tile hide timers, kept under focus or a volume drag. Touch reveals controls without triggering video actions |
 | Mobile member presence | `protocol/src/lib.rs` (`Identify`, `Member`), `server/src/state/mod.rs` (`stamp_xp`, `mobile_connected`), `gateway/connection.rs` (`cleanup_session`), `client/src/net.rs`, `features/members.rs` | Any active mobile session replaces the green dot with a phone only in guild member rows; device presence is session-owned, never persisted |
+| Cross-server community logos | `client/src/net.rs` (`EmojiBlobs`), `media_cache.rs`, `emoji.rs`, `features/server_rail.rs` (`OtherGuildTile`) | Received community logos join the reusable disk cache; disconnected tiles read it without fetching from the active server. Background jobs carry their originating config directory |
 | Desktop guild rail | `client/src/features/workspace.rs`, `features/workspace_layout.rs`, `features/guilds.rs`, `client/src/app.rs`, `grid-layout/src/item.rs` | A docked rail (`dock_of`) holds `ClientSettings::rail_size` px as the window resizes; "Done rearranging" saves it. `RailDock` docks it Left/Right/Top/Bottom and fits the other panels into the rest. `.dxf-guilds-frame` is a size container (CSS in `app.rs`): wider than tall, the rail is a row. `GridItem` `min_w_px`/`min_h_px` go below the free-mode floor |
 | Voice invitation dialog | `client/src/features/voice_invite.rs`, `client/assets/voice-invite.css` | Channel card, search, per-person send/Open DM. Queued means queued, not delivered |
 | XP bar repainting | `client/src/features/channels.rs`, `features/profiles.rs`, `scripts/test-xp-bars.cjs` | Background longhands (trap 31); the regression runs the pinned Dioxus interpreter in Chromium |

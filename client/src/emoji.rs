@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::identity::config_dir;
 
@@ -172,10 +172,6 @@ pub fn dm_emoji_tags(
     (tags, skipped)
 }
 
-fn cache_dir() -> PathBuf {
-    config_dir().join("emoji")
-}
-
 /// Saved emoji keep their own copy: the media cache is a cache, and leaving
 /// the guild or a sweep must not take a picture the person chose to keep.
 fn saved_dir() -> PathBuf {
@@ -219,17 +215,21 @@ fn safe_name(image: &str) -> Option<&str> {
 }
 
 pub fn load_cached(image: &str) -> Option<String> {
+    load_cached_in(&config_dir(), image)
+}
+
+pub(crate) fn load_cached_in(root: &Path, image: &str) -> Option<String> {
     let name = safe_name(image)?;
-    let path = cache_dir().join(name);
+    let path = root.join("emoji").join(name);
     if std::fs::metadata(&path).ok()?.len() > 8 * 1024 * 1024 {
         return None;
     }
     std::fs::read_to_string(path).ok()
 }
 
-pub fn store_cached(image: &str, data_url: &str) {
+pub fn store_cached(root: &Path, image: &str, data_url: &str) {
     let Some(name) = safe_name(image) else { return };
-    let dir = cache_dir();
+    let dir = root.join("emoji");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }

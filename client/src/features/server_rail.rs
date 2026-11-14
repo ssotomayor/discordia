@@ -407,7 +407,8 @@ fn OtherGuildTile(
     let mut tip_at = use_signal(|| (0.0f64, 0.0f64));
     let cached = use_resource(use_reactive((&image,), move |(image,)| async move {
         let image = image?;
-        match tokio::task::spawn_blocking(move || cached_icon(&image)).await {
+        let root = crate::identity::config_dir();
+        match tokio::task::spawn_blocking(move || cached_icon(&root, &image)).await {
             Ok(image) => image,
             Err(error) => {
                 tracing::debug!(%error, "could not read the saved community icon");
@@ -442,10 +443,10 @@ fn OtherGuildTile(
     }
 }
 
-fn cached_icon(image: &str) -> Option<String> {
+fn cached_icon(root: &std::path::Path, image: &str) -> Option<String> {
     match image.strip_prefix("media:") {
         // A disconnected server's cache miss must not fetch from the current server.
-        Some(address) => crate::emoji::load_cached(address),
+        Some(address) => crate::emoji::load_cached_in(root, address),
         None => Some(image.to_owned()),
     }
 }
@@ -731,26 +732,32 @@ mod tests {
         let address = format!("{}.png", "a".repeat(64));
         let reference = format!("media:{address}");
         let data = "data:image/png;base64,cached";
-        assert_eq!(cached_icon(&reference), None);
-        crate::emoji::store_cached(&address, data);
-        assert_eq!(cached_icon(&reference).as_deref(), Some(data));
-        assert_eq!(cached_icon(data).as_deref(), Some(data));
-        assert_eq!(cached_icon("media:../../outside.png"), None);
+        assert_eq!(cached_icon(&root, &reference), None);
+        crate::emoji::store_cached(&root, &address, data);
+        assert_eq!(cached_icon(&root, &reference).as_deref(), Some(data));
+        assert_eq!(cached_icon(&root, data).as_deref(), Some(data));
+        assert_eq!(cached_icon(&root, "media:../../outside.png"), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
     async fn other_server_tile_renders_its_photo_after_loading() {
         use dioxus::core::{AttributeValue, Mutation};
-        let mut dom = VirtualDom::new(|| {
-            rsx! {
-                OtherGuildTile {
-                    mark: "C", image: Some("data:image/png;base64,cached".to_string()),
-                    tip: "Community", tint: "orange", pending: false, on_click: |_| {}
+        let root = crate::identity::test_config_dir();
+        let address = format!("{}.png", "b".repeat(64));
+        crate::emoji::store_cached(&root, &address, "data:image/png;base64,cached");
+        let mut dom = VirtualDom::new_with_props(
+            |image: String| {
+                rsx! {
+                    OtherGuildTile {
+                        mark: "C", image: Some(image),
+                        tip: "Community", tint: "orange", pending: false, on_click: |_| {}
+                    }
                 }
-            }
-        });
-        dom.rebuild_to_vec();
+            },
+            format!("media:{address}"),
+        );
+        dom.rebuild_checked();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 dom.wait_for_work().await;
@@ -767,6 +774,7 @@ mod tests {
         })
         .await
         .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
