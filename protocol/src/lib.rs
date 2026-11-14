@@ -1048,6 +1048,18 @@ mod camera_wire_tests {
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, ClientMessage::SetCamera { on: true }));
     }
+
+    #[test]
+    fn mobile_presence_can_be_hidden_and_restored_without_reidentifying() {
+        for mobile in [false, true] {
+            let json = serde_json::to_string(&ClientMessage::SetMobilePresence { mobile }).unwrap();
+            let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+            assert!(
+                matches!(decoded, ClientMessage::SetMobilePresence { mobile: value } if value == mobile)
+            );
+            assert!(json.contains("set_mobile_presence"));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2654,6 +2666,9 @@ pub enum ClientMessage {
     SetAttention {
         attended: bool,
     },
+    SetMobilePresence {
+        mobile: bool,
+    },
     SendMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_name: Option<String>,
@@ -3243,6 +3258,8 @@ pub enum ServerMessage {
         progressive_image_uploads: bool,
         #[serde(default)]
         media_token_refresh: bool,
+        #[serde(default)]
+        mobile_presence_updates: bool,
         user: User,
         guilds: Vec<Guild>,
         channels: Vec<Channel>,
@@ -3619,6 +3636,7 @@ mod identify_wire_tests {
                 image_previews: false,
                 progressive_image_uploads: false,
                 media_token_refresh: false,
+                mobile_presence_updates: false,
                 ..
             }
         ));
@@ -3626,6 +3644,7 @@ mod identify_wire_tests {
         frame["d"]["image_previews"] = serde_json::json!(true);
         frame["d"]["progressive_image_uploads"] = serde_json::json!(true);
         frame["d"]["media_token_refresh"] = serde_json::json!(true);
+        frame["d"]["mobile_presence_updates"] = serde_json::json!(true);
         let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             current,
@@ -3634,6 +3653,7 @@ mod identify_wire_tests {
                 image_previews: true,
                 progressive_image_uploads: true,
                 media_token_refresh: true,
+                mobile_presence_updates: true,
                 ..
             }
         ));

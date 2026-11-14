@@ -34,7 +34,7 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
     (
         "",
         SettingsTab::General,
-        "Language",
+        "General",
         crate::features::icons::PALETTE,
     ),
     (
@@ -243,8 +243,37 @@ pub fn SettingsDialog() -> Element {
                             super::settings_mobile::AppTabs { selected: settings_tab }
                         }
                         if settings_tab() == SettingsTab::General {
-                            h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text(if cfg!(target_os = "android") { "General" } else { "Language" }, &[])} }
+                            h3 { class: "dxf-display text-[17px] font-bold text-[var(--text)]", {crate::i18n::text("General", &[])} }
                             div { class: "dxf-general-language mt-4", crate::i18n::LanguageSelector {} }
+                            if cfg!(any(target_os = "android", target_os = "ios")) {
+                                div { class: "mt-4 mb-3",
+                                    label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                        style: "min-height:44px;",
+                                        input {
+                                            r#type: "checkbox",
+                                            class: "accent-[var(--accent)]",
+                                            checked: settings.read().show_mobile_presence,
+                                            onchange: move |event| {
+                                                let mut next = settings.read().clone();
+                                                next.show_mobile_presence = event.checked();
+                                                settings.set(next.clone());
+                                                crate::settings::save(&next);
+                                            },
+                                        }
+                                        span { class: "text-[13px] text-[var(--text)]", {crate::i18n::text("Show that I am on mobile", &[])} }
+                                    }
+                                    p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
+                                        {crate::i18n::text("Show a phone icon instead of the online dot in community member lists. Turn this off to keep the dot.", &[])}
+                                    }
+                                    if state.read().server_session() == crate::state::ServerSession::Live
+                                        && !state.read().server_mobile_presence_updates
+                                    {
+                                        p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
+                                            {crate::i18n::text("On this server, changes apply the next time you connect.", &[])}
+                                        }
+                                    }
+                                }
+                            }
                             if cfg!(target_os = "android") {
                                 div { class: "dxf-general-notifications", { notification_settings() } }
                                 div { class: "dxf-general-level",

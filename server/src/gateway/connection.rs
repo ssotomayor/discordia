@@ -689,6 +689,21 @@ pub(crate) async fn handle_connection_with_route<S>(
                     ClientMessage::SetAttention { attended } => {
                         ctx.state.set_attention(conn_id, attended);
                     }
+                    ClientMessage::SetMobilePresence { mobile } => {
+                        let Some(user) = phase.user() else { continue };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        ctx.state.set_mobile(conn_id, mobile && !phase.is_bot());
+                        let members: Vec<_> = ctx.state.members.iter()
+                            .filter_map(|guild| guild.get(&user.pubkey).map(|member| member.value().clone()))
+                            .collect();
+                        for member in members {
+                            let targets = ctx.state.guild_member_pubkeys(member.guild_id);
+                            ctx.state.deliver(targets, ServerMessage::MemberUpdate(ctx.state.stamp_xp(member)));
+                        }
+                    }
                     ClientMessage::CreateGuild { name, template } => {
                         let Some(creator) = phase.user().cloned() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {

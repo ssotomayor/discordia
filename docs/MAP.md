@@ -13,16 +13,16 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 5680 |
-| `server/src/state/mod.rs` | 4694 |
-| `client/src/state.rs` | 4760 |
-| `server/src/gateway/connection.rs` | 4596 |
-| `protocol/src/lib.rs` | 4413 |
-| `client/src/features/chat.rs` | 3999 |
+| `server/src/state/mod.rs` | 4696 |
+| `client/src/state.rs` | 4772 |
+| `server/src/gateway/connection.rs` | 4611 |
+| `protocol/src/lib.rs` | 4433 |
+| `client/src/features/chat.rs` | 4076 |
 | `client/src/features/screenshare.rs` | 3901 |
 | `server/tests/owner_controls.rs` | 3460 |
-| `client/src/net.rs` | 3468 |
+| `client/src/net.rs` | 3473 |
 | `client/src/features/channels.rs` | 2728 |
-| `client/src/nostr/service.rs` | 2725 |
+| `client/src/nostr/service.rs` | 2770 |
 | `client/src/features/activities.rs` | 2064 |
 | `server/src/store.rs` | 1996 |
 | `client/src/identity.rs` | 1437 |
@@ -41,7 +41,8 @@ Everything else: `wc -l` answers faster than a list here could stay true.
 | Android guild media/history reception | `client/src/net/background_socket.rs`, `server/src/gateway/connection.rs` | The native transport accepts the server's full frame size; its byte queue holds two maximum frames and keeps the frame-count cap. `scripts/build-android.py --gateway-diagnostics` (`DISCORDIA_GATEWAY_DIAGNOSTICS=1` at compile time) builds payload-free USB traces |
 | Media token renewal | `client/src/media_tokens.rs`, `features/video_lifecycle.rs`, `features/screenshare.rs`, `features/stream_viewer.rs`, `features/voice.rs`, `protocol/src/lib.rs` (`MediaTokenKind`), `server/src/gateway/connection.rs` (`media_call`), `livekit.rs` | `Ready::media_token_refresh` negotiates per-seat renewal; server/rendezvous join grants last `MEDIA_TOKEN_TTL` (10 minutes), so older clients need updating. Current owner, join, route and channel access gate minting and delivery; replies match request/epoch. Renewals preserve connected rooms; native voice restarts use the SDK’s current token. Renewals refresh cached TURN credentials for later attempts, throttle requests and redact JWTs |
 | Stream controls on video | `client/assets/stream-controls.js`, `stream-viewer.css`, `features/screenshare.rs`, `features/stream_viewer.rs`, `scripts/test-stream-controls.cjs` | Tile headers/footers overlay the video in app, popouts and full screen; per-tile hide timers, kept under focus or a volume drag. Touch reveals controls without triggering video actions |
-| Mobile member presence | `protocol/src/lib.rs` (`Identify`, `Member`), `server/src/state/mod.rs` (`stamp_xp`, `mobile_connected`), `gateway/connection.rs` (`cleanup_session`), `client/src/net.rs`, `features/members.rs` | Any active mobile session replaces the green dot with a phone only in guild member rows; device presence is session-owned, never persisted |
+| Mobile member presence | `protocol/src/lib.rs` (`Identify`, `SetMobilePresence`, `Member`), `server/src/state/mod.rs` (`stamp_xp`, `mobile_connected`), `gateway/connection.rs`, `client/src/net.rs`, `features/{members,workspace,settings_dialog}.rs` | General → Show that I am on mobile defaults on and persists per device. Hidden sessions identify without the mobile flag; `Ready::mobile_presence_updates` enables live changes without reconnecting, older hosts apply it on the next connection. Any remaining visible mobile session keeps the phone; presence is session-owned |
+| DM reactions | `client/src/nostr/reactions.rs`, `nostr/service.rs`, `features/chat.rs`, `state.rs` | Unicode reactions use encrypted kind-7 gift wraps and the durable system outbox, never the gateway. Add/remove versions converge across replay and devices; pending reactions apply when the message arrives. Bounded state survives server navigation; deletion clears held versions. Touch context menus route to the same DM callback |
 | Cross-server community logos | `client/src/net.rs` (`resolve_media`, `EmojiBlobs`), `media_cache.rs`, `emoji.rs`, `features/server_rail.rs` (`OtherGuildTile`) | Community logos are requested even with Android's rail hidden; received bytes join the reusable disk cache. Disconnected tiles read it without fetching from the active server. Background jobs carry their originating config directory |
 | Cached DM avatars | `client/src/avatar_cache.rs`, `media_cache.rs`, `net.rs`, `features/profiles.rs` | Server profile avatar references persist in a bounded index; received bytes share the media disk cache. Known DM peers preload while connected; offline avatars read disk off the UI thread. Explicit removal overrides cached bytes; no public profile publication |
 | Desktop guild rail | `client/src/features/workspace.rs`, `features/workspace_layout.rs`, `features/guilds.rs`, `client/src/app.rs`, `grid-layout/src/item.rs` | A docked rail (`dock_of`) holds `ClientSettings::rail_size` px as the window resizes; "Done rearranging" saves it. `RailDock` docks it Left/Right/Top/Bottom and fits the other panels into the rest. `.dxf-guilds-frame` is a size container (CSS in `app.rs`): wider than tall, the rail is a row. `GridItem` `min_w_px`/`min_h_px` go below the free-mode floor |

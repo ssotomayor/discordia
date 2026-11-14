@@ -145,6 +145,19 @@ async fn mobile_presence_follows_all_live_sessions_and_survives_member_updates()
     );
     presence(&mut watcher, person.pubkey(), guild_id, true).await;
     send(
+        &mut mobile,
+        ClientMessage::SetMobilePresence { mobile: false },
+    )
+    .await;
+    presence(&mut watcher, person.pubkey(), guild_id, false).await;
+    presence(&mut mobile, person.pubkey(), guild_id, false).await;
+    send(
+        &mut mobile,
+        ClientMessage::SetMobilePresence { mobile: true },
+    )
+    .await;
+    presence(&mut watcher, person.pubkey(), guild_id, true).await;
+    send(
         &mut desktop,
         ClientMessage::UpdateUsername {
             username: "renamed".into(),
@@ -162,6 +175,12 @@ async fn mobile_presence_follows_all_live_sessions_and_survives_member_updates()
         }
     }
     let (mut second_mobile, _) = connect(&url, &person, true).await;
+    presence(&mut watcher, person.pubkey(), guild_id, true).await;
+    send(
+        &mut mobile,
+        ClientMessage::SetMobilePresence { mobile: false },
+    )
+    .await;
     presence(&mut watcher, person.pubkey(), guild_id, true).await;
     mobile.close(None).await.unwrap();
     presence(&mut watcher, person.pubkey(), guild_id, true).await;

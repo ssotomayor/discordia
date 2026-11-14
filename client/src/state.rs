@@ -305,6 +305,7 @@ pub struct AppState {
     /// server gets it too; `net` sends the account cache only on connect.
     pub profile_synced_at: i64,
     pub account_pictures: Option<(String, crate::profile::Pictures)>,
+    pub show_mobile_presence: bool,
     pub account_dnd: Option<(String, bool)>,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
     /// A search result to bring into view: channel, message, its time in ms.
@@ -314,6 +315,7 @@ pub struct AppState {
     pub server_image_previews: bool,
     pub server_progressive_image_uploads: bool,
     pub server_media_token_refresh: bool,
+    pub server_mobile_presence_updates: bool,
     pub guild_file_policies: BTreeMap<Id, crate::protocol::FilePolicy>,
     pub guild_stickers: BTreeMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub voice_states: Vec<VoiceState>,
@@ -364,6 +366,7 @@ pub struct AppState {
     pub dm_deleted_ids: HashSet<String>,
     pub pending_dm_edits: HashMap<(String, String), PendingDmEdit>,
     pub dm_edit_versions: HashMap<Id, (i64, String)>,
+    pub dm_reactions: crate::nostr::reactions::Reactions,
     pub pending_dm_deletions: HashSet<(String, String)>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
     /// `nostr::outbox::Outbox::pending`, for the composer's cap.
@@ -594,6 +597,7 @@ impl AppState {
             history_loaded: HashSet::new(),
             profile_synced_at: 0,
             account_pictures: None,
+            show_mobile_presence: true,
             account_dnd: None,
             message_search: None,
             message_jump: None,
@@ -602,6 +606,7 @@ impl AppState {
             server_image_previews: false,
             server_progressive_image_uploads: false,
             server_media_token_refresh: false,
+            server_mobile_presence_updates: false,
             guild_file_policies: BTreeMap::new(),
             guild_stickers: BTreeMap::new(),
             voice_states: Vec::new(),
@@ -629,6 +634,7 @@ impl AppState {
             dm_deleted_ids: HashSet::new(),
             pending_dm_edits: HashMap::new(),
             dm_edit_versions: HashMap::new(),
+            dm_reactions: Default::default(),
             pending_dm_deletions: HashSet::new(),
             dm_delivery: HashMap::new(),
             dm_pending: 0,
@@ -930,6 +936,7 @@ impl AppState {
             server_image_previews,
             server_progressive_image_uploads,
             server_media_token_refresh,
+            server_mobile_presence_updates,
             guild_file_policies,
             guild_stickers,
             voice_states,
@@ -1031,6 +1038,7 @@ impl AppState {
             identity: _,
             profile_synced_at: _,
             account_pictures: _,
+            show_mobile_presence: _,
             account_dnd: _,
             last_text_channels: _,
             channel_read_at: _,
@@ -1048,6 +1056,7 @@ impl AppState {
             dm_deleted_ids: _,
             pending_dm_edits: _,
             dm_edit_versions: _,
+            dm_reactions: _,
             pending_dm_deletions: _,
             dm_delivery: _,
             dm_pending: _,
@@ -1123,6 +1132,7 @@ impl AppState {
         *server_image_previews = false;
         *server_progressive_image_uploads = false;
         *server_media_token_refresh = false;
+        *server_mobile_presence_updates = false;
         guild_file_policies.clear();
         guild_stickers.clear();
         voice_states.clear();
@@ -1974,6 +1984,7 @@ impl AppState {
     pub fn delete_message_locally(&mut self, channel_id: Id, message_id: Id) {
         self.dm_images.remove(&message_id);
         self.dm_edit_versions.remove(&message_id);
+        self.dm_reactions.forget(message_id);
         if let Some(msgs) = self.messages.get_mut(&channel_id) {
             msgs.retain(|m| m.id != message_id);
         }
@@ -3010,6 +3021,7 @@ mod tests {
                 server_image_previews = true => |v| !*v;
                 server_progressive_image_uploads = true => |v| !*v;
                 server_media_token_refresh = true => |v| !*v;
+                server_mobile_presence_updates = true => |v| !*v;
                 guild_file_policies = BTreeMap::from([(guild, Default::default())]) => |v| v.is_empty();
                 guild_stickers = BTreeMap::from([(guild, Vec::new())]) => |v| v.is_empty();
                 voice_states = vec![VoiceState {
@@ -3185,11 +3197,11 @@ mod tests {
                 })]) => |v| v.is_empty();
             }
             account {
-                identity, profile_synced_at, account_pictures, account_dnd,
+                identity, profile_synced_at, account_pictures, show_mobile_presence, account_dnd,
                 last_text_channels, channel_read_at, muted_channels, muted_guilds,
                 unread_from, dms, dm_emoji, saved_emoji, dm_unread, dm_cleared_at,
                 dm_read_at, dm_clock_offset, nostr_event_ids, dm_deleted_ids,
-                pending_dm_edits, dm_edit_versions, pending_dm_deletions, dm_delivery,
+                pending_dm_edits, dm_edit_versions, dm_reactions, pending_dm_deletions, dm_delivery,
                 dm_pending, dm_images, dm_call_history, dm_call, contacts, mutes,
                 dm_choices, nostr_relays_up, nostr_names, relay_app_manifests,
                 relay_blocklists, global_xp, dm_pane_open, app_foreground,

@@ -40,6 +40,7 @@ pub mod nip51;
 pub mod nip59;
 pub mod outbox;
 pub mod profile;
+pub mod reactions;
 pub mod read_marks;
 pub mod service;
 pub mod xp;
