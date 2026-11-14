@@ -18,7 +18,7 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | `server/src/gateway/connection.rs` | 4611 |
 | `protocol/src/lib.rs` | 4433 |
 | `client/src/features/chat.rs` | 4076 |
-| `client/src/features/screenshare.rs` | 3901 |
+| `client/src/features/screenshare.rs` | 3976 |
 | `server/tests/owner_controls.rs` | 3460 |
 | `client/src/net.rs` | 3473 |
 | `client/src/features/channels.rs` | 2728 |
@@ -288,6 +288,7 @@ repeated here.
 | Screen preview measurements | `client/src/features/screenshare.rs` | `AppHead` installs `SCREEN_JS` once; commands send only arguments. `previewStats` is shared with Diagnostics; `ScreenWatchTile` skips hidden windows |
 | WebView screen statistics | `client/src/features/screen_stats.rs`, `client/src/features/screenshare.rs` | `WebViewStats` derives bitrate/FPS from raw counters with separate inbound/outbound baselines. Reports accept `kind` or legacy `mediaType`. Native publisher metrics stay in `voice.rs` |
 | WebView video connections | `client/src/features/video_lifecycle.rs`, `client/src/features/screenshare.rs` | Native-capture platforms connect the WebView room only for screens or cameras. Rust owns targets and cancellable retries, ignoring old attempt generations; `step` moves one `Phase` (Trying, Waiting, Blocked) per report; encryption failures block retries; a room joins only with the channel key, reporting `retry` rather than joining in the clear (trap 29). `SCREEN_JS` runs SDK operations |
+| Stream startup recovery | `client/src/features/video_lifecycle.rs`, `client/src/features/screenshare.rs`, `client/tests/video_lifecycle_bridge.cjs`, `scripts/test-stream-quality.mjs` | Failed joins report before teardown; silent attempts expire after 45 s. Subscriber SDK reconnects and first-frame waits have 12 s guards; missing frames resubscribe at most three times, spaced by 20 s, then retry the video room. Hidden/detached/stale views cancel recovery; browser-owned local capture blocks room replacement. Medium → High probes survive expired publisher metadata |
 | Client media cache | `client/src/media_cache.rs`, `client/src/net.rs` | `MediaCache` queues misses on lookup, shares payloads across clones, LRU-bounded. `Updates::ready` wakes the socket only for demand/completions. A bounded disk worker loads/stores emoji and sounds off the socket |
 | Everything else | beside the code | the suite stays headless and green |
 | Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs`, `scripts/test-stream-quality.mjs` | `node client/tests/screenshare_bridge.cjs` (includes `video_lifecycle_bridge.cjs`); `node --test scripts/test-stream-quality.mjs`; both in CI |

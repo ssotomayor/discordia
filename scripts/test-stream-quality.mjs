@@ -169,6 +169,25 @@ test('a Poor participant blocks the High probe until its connection recovers', a
   assert.deepEqual(calls, [2], 'probes High once the connection is not Poor');
 });
 
+test('a stale or missing publisher report cannot permanently pin the receiver to Medium', async () => {
+  for (const missing of [false, true]) {
+    reports.clear(); policy.clear(); screenPubs.clear(); participants.clear();
+    const calls = [];
+    screenPubs.set('screen', { setVideoQuality: quality => calls.push(quality) });
+    incoming = { width: 1280, height: 720, fps: 30 };
+    now += 50000;
+    reports.set('screen', { status: full, at: now, reason: 'receiver', since: now - 3000 });
+    await context.previewStats('viewer');
+    assert.deepEqual(calls, [1]);
+    if (missing) reports.clear();
+    now += 30001;
+    await context.previewStats('viewer');
+    assert.deepEqual(calls, [1, 2], 'probe High even without fresh publisher metadata');
+    await context.previewStats('viewer');
+    assert.deepEqual(calls, [1, 2], 'do not flood repeat quality requests');
+  }
+});
+
 test('quality reports must belong to the sending participant and preserve the warning timer', () => {
   let handler;
   const room = { on: (event, callback) => { handler = callback; } };
