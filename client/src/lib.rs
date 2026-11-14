@@ -15,6 +15,7 @@ mod app_badge;
 mod audio_device;
 mod audio_diag;
 mod audio_queue;
+mod avatar_cache;
 mod bookmarks;
 #[cfg(any(target_os = "android", test))]
 mod call_notifications;
