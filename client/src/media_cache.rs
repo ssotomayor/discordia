@@ -238,8 +238,13 @@ impl MediaCache {
 }
 
 enum DiskJob {
-    Load(Vec<String>, UnboundedSender<ClientMessage>, Weak<Updates>),
-    Store(String, Arc<String>),
+    Load(
+        std::path::PathBuf,
+        Vec<String>,
+        UnboundedSender<ClientMessage>,
+        Weak<Updates>,
+    ),
+    Store(std::path::PathBuf, String, Arc<String>),
 }
 
 fn disk_worker() -> Option<&'static mpsc::SyncSender<DiskJob>> {
@@ -252,16 +257,16 @@ fn disk_worker() -> Option<&'static mpsc::SyncSender<DiskJob>> {
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
                         match job {
-                            DiskJob::Store(address, data) => {
-                                crate::emoji::store_cached(&address, &data)
+                            DiskJob::Store(root, address, data) => {
+                                crate::emoji::store_cached(&root, &address, &data)
                             }
-                            DiskJob::Load(addresses, tx, updates) => {
+                            DiskJob::Load(root, addresses, tx, updates) => {
                                 let Some(updates) = updates.upgrade() else {
                                     continue;
                                 };
                                 let mut missing = Vec::new();
                                 for address in addresses {
-                                    match crate::emoji::load_cached(&address) {
+                                    match crate::emoji::load_cached_in(&root, &address) {
                                         Some(data) => updates.queue_loaded(address, data),
                                         None => missing.push(address),
                                     }
@@ -293,7 +298,12 @@ pub(crate) fn load(
     tx: &UnboundedSender<ClientMessage>,
     cache: &MediaCache,
 ) {
-    let job = DiskJob::Load(addresses, tx.clone(), Arc::downgrade(&cache.updates));
+    let job = DiskJob::Load(
+        crate::identity::config_dir(),
+        addresses,
+        tx.clone(),
+        Arc::downgrade(&cache.updates),
+    );
     let result = match disk_worker() {
         Some(worker) => worker.try_send(job),
         None => Err(mpsc::TrySendError::Disconnected(job)),
@@ -302,7 +312,7 @@ pub(crate) fn load(
         let job = match error {
             mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job,
         };
-        if let DiskJob::Load(images, tx, _) = job
+        if let DiskJob::Load(_, images, tx, _) = job
             && tx.send(ClientMessage::FetchEmoji { images }).is_err()
         {
             tracing::debug!("media request session closed");
@@ -313,7 +323,11 @@ pub(crate) fn load(
 pub(crate) fn store(address: &str, data: Arc<String>) {
     if let Some(worker) = disk_worker()
         && worker
-            .try_send(DiskJob::Store(address.into(), data))
+            .try_send(DiskJob::Store(
+                crate::identity::config_dir(),
+                address.into(),
+                data,
+            ))
             .is_err()
     {
         tracing::debug!("media disk cache queue full; keeping memory copy");
@@ -415,9 +429,12 @@ mod tests {
         let data = Arc::new("12345678".to_string());
         let weak = Arc::downgrade(&data);
         cache.insert_shared("a".into(), data.clone());
-        assert!(tx.try_send(DiskJob::Store("a".into(), data)).is_ok());
+        assert!(
+            tx.try_send(DiskJob::Store(std::path::PathBuf::new(), "a".into(), data))
+                .is_ok()
+        );
 
-        let DiskJob::Store(_, queued) = rx.recv().unwrap() else {
+        let DiskJob::Store(_, _, queued) = rx.recv().unwrap() else {
             panic!("expected store job");
         };
         let visible = cache.get_shared("a").unwrap();
