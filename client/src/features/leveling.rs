@@ -121,6 +121,7 @@ mod tests {
             user: s.self_user.clone().unwrap(),
             guild_id: crate::protocol::Id::nil(),
             online: true,
+            mobile: false,
             bot: false,
             roles: Vec::new(),
             xp: 120,

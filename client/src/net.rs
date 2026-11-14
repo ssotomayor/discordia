@@ -729,6 +729,7 @@ where
         bot: false,
         client_version: crate::version::VERSION.to_string(),
         progressive_image_uploads: true,
+        mobile: cfg!(any(target_os = "android", target_os = "ios")),
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), "identify").await?;
@@ -2280,6 +2281,7 @@ fn apply(
                 .find(|m| m.guild_id == guild_id && m.user.pubkey == user_pubkey)
             {
                 m.online = false;
+                m.mobile = false;
             }
         }
         ServerMessage::MediaKey {

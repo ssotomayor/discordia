@@ -1,4 +1,5 @@
 {
+  "Online on mobile": ["En línea desde el celular", "Online no celular", "手机在线", "モバイルでオンライン"],
   "View once": ["Ver una vez", "Ver uma vez", "仅看一次", "一度だけ表示"],
   "They can open it one time, then it is deleted for both of you": ["Podrá abrirla una vez; luego se borra para ambos", "A pessoa pode abrir uma vez; depois é apagada para os dois", "对方只能打开一次，之后会为双方删除", "相手は一度だけ開けます。その後、双方から削除されます"],
   "Sending a view-once picture…": ["Enviando una imagen de un solo uso…", "Enviando uma imagem de visualização única…", "正在发送仅看一次的图片…", "一度だけ表示の画像を送信中…"],

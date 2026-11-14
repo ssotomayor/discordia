@@ -564,6 +564,7 @@ mod upload {
                 bot: false,
                 client_version: "test".into(),
                 progressive_image_uploads: true,
+                mobile: false,
             },
         )
         .await;

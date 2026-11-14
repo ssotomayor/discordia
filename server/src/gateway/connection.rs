@@ -223,6 +223,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         bot,
                         client_version,
                         progressive_image_uploads,
+                        mobile,
                     } => {
                         if phase.is_identified() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -268,6 +269,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         }
                         ctx.state
                             .set_progressive_image_uploads(conn_id, progressive_image_uploads);
+                        ctx.state.set_mobile(conn_id, mobile && !bot);
                         let remembered = if bot {
                             ctx.state.remember_user(&new_user).await.map(|()| Vec::new())
                         } else {
@@ -705,7 +707,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         if send(&mut ws_tx, &ServerMessage::GuildJoined {
                             guild,
                             channels,
-                            members: vec![member],
+                            members: vec![ctx.state.stamp_xp(member)],
                             roles,
                             emojis: Vec::new(),
                             sounds: Vec::new(),
@@ -3004,6 +3006,19 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
     // A key may hold several sockets, and only the last one going says
     // the person went away (#188).
     if ctx.state.has_sessions(&u.pubkey) {
+        let members: Vec<_> = ctx
+            .state
+            .members
+            .iter()
+            .filter_map(|guild| guild.get(&u.pubkey).map(|m| m.value().clone()))
+            .collect();
+        for member in members {
+            let targets = ctx.state.guild_member_pubkeys(member.guild_id);
+            ctx.state.deliver(
+                targets,
+                ServerMessage::MemberUpdate(ctx.state.stamp_xp(member)),
+            );
+        }
         tracing::info!(user = ?u.username, "a session closed; others remain");
         return;
     }
@@ -4158,17 +4173,18 @@ where
     targets.retain(|p| p != &joiner.pubkey);
     state.deliver(
         targets,
-        ServerMessage::MemberJoin(Member {
+        ServerMessage::MemberJoin(state.stamp_xp(Member {
             user: joiner.clone(),
             guild_id,
             online: true,
+            mobile: false,
             bot: false,
             roles: Vec::new(),
             xp: state.xp_of(guild_id, &joiner.pubkey),
             look: Default::default(),
             agent: None,
             reads: None,
-        }),
+        })),
     );
     let emojis = state.emojis_of(guild_id);
     let sounds = state.sounds_of(guild_id);

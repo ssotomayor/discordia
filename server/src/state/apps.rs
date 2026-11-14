@@ -275,6 +275,7 @@ impl AppState {
                 // A bot connected before it was installed gets no new Ready to
                 // mark it online, so it would read as offline until it reconnects.
                 online: self.has_sessions(&install.bot_pubkey),
+                mobile: false,
                 bot: true,
                 roles: Vec::new(),
                 xp: 0,
