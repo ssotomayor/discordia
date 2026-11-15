@@ -130,7 +130,11 @@ return (async function () {
     function messageAction(source, parent = menu, emoji = false) {
       const button = document.createElement('button');
       button.type = 'button'; button.setAttribute('role', 'menuitem');
-      button.textContent = emoji ? source.dataset.contextEmoji : source.title;
+      if (emoji && source.dataset.contextImage) {
+        const picture = document.createElement('img');
+        picture.src = source.dataset.contextImage; picture.alt = source.dataset.contextEmoji;
+        button.append(picture);
+      } else button.textContent = emoji ? source.dataset.contextEmoji : source.title;
       button.title = emoji ? labels.react + ' ' + source.dataset.contextEmoji : source.title;
       if (source.dataset.contextAction === 'delete') button.className = 'dxf-text-menu-danger';
       button.addEventListener('click', () => {
