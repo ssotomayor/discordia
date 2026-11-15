@@ -78,4 +78,8 @@ impl IpcMessage {
     pub(crate) fn params(self) -> serde_json::Value {
         self.params
     }
+
+    pub(crate) fn params_ref(&self) -> &serde_json::Value {
+        &self.params
+    }
 }

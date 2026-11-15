@@ -55,7 +55,7 @@ impl WindowEventHandlers {
         for (_, handler) in self.handlers.borrow_mut().iter_mut() {
             // Avoid interacting with the runtime while something else is using it
             #[cfg(target_os = "android")]
-            let _lock = crate::android_sync_lock::android_runtime_lock();
+            let _lock = crate::android_sync_lock::android_runtime_lock("window_event");
 
             // if this event does not apply to the window this listener cares about, continue
             if let Event::WindowEvent { window_id, .. } = event {

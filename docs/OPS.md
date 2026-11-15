@@ -246,6 +246,9 @@ Release builds log to `<config dir>/logs/discordia.log` (macOS
 `~/Library/Application Support/discordia`, Windows `%APPDATA%\discordia`);
 `grep 'voice route:'` there, on the host and on a caller, shows why a call
 landed where it did. Credentials never appear in those lines.
+Android also writes every line to logcat under the tag `Discordia`, since a
+release APK's private storage cannot be read: `adb logcat -s Discordia`, or a
+bug report taken from Developer options while the app is frozen.
 
 The workspace shows separate Server and Voice indicators on hosts and guests.
 Server follows the selected QUIC path, including relay-to-direct changes.

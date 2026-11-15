@@ -199,10 +199,13 @@ impl Sink {
 
 impl std::io::Write for Sink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        #[cfg(target_os = "android")]
+        logcat::write(buf);
         match self {
-            Self::File(f) => f.lock().unwrap_or_else(|e| e.into_inner()).write(buf),
-            Self::Stdout => std::io::stdout().write(buf),
+            Self::File(f) => f.lock().unwrap_or_else(|e| e.into_inner()).write_all(buf),
+            Self::Stdout => std::io::stdout().write_all(buf),
         }
+        .map(|()| buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -210,6 +213,71 @@ impl std::io::Write for Sink {
             Self::File(f) => f.lock().unwrap_or_else(|e| e.into_inner()).flush(),
             Self::Stdout => std::io::stdout().flush(),
         }
+    }
+}
+
+// The log file is in private storage a release APK cannot hand out, so it also goes to logcat.
+#[cfg(any(target_os = "android", test))]
+mod logcat {
+    #[cfg(target_os = "android")]
+    #[link(name = "log")]
+    unsafe extern "C" {
+        fn __android_log_write(
+            priority: std::ffi::c_int,
+            tag: *const std::ffi::c_char,
+            text: *const std::ffi::c_char,
+        ) -> std::ffi::c_int;
+    }
+
+    // liblog cuts an entry near 4 KB, which would cut a panic backtrace short.
+    #[cfg(target_os = "android")]
+    const ENTRY_BYTES: usize = 4000;
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn write(line: &[u8]) {
+        let priority = priority(line);
+        let text = String::from_utf8_lossy(line);
+        for chunk in chunks(text.trim_end(), ENTRY_BYTES) {
+            let Ok(text) = std::ffi::CString::new(chunk.replace('\0', "")) else {
+                continue;
+            };
+            unsafe { __android_log_write(priority, c"Discordia".as_ptr(), text.as_ptr()) };
+        }
+    }
+
+    pub(super) fn priority(line: &[u8]) -> std::ffi::c_int {
+        let head = &line[..line.len().min(48)];
+        let has = |level: &[u8]| head.windows(level.len()).any(|w| w == level);
+        if has(b"ERROR") {
+            6
+        } else if has(b" WARN") {
+            5
+        } else if has(b" INFO") {
+            4
+        } else {
+            3
+        }
+    }
+
+    pub(super) fn chunks(text: &str, max: usize) -> impl Iterator<Item = &str> {
+        let mut rest = text;
+        std::iter::from_fn(move || {
+            if rest.is_empty() {
+                return None;
+            }
+            let mut end = rest.len().min(max);
+            if end < rest.len() {
+                while !rest.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if let Some(newline) = rest[..end].rfind('\n').filter(|&at| at > 0) {
+                    end = newline + 1;
+                }
+            }
+            let (head, tail) = rest.split_at(end);
+            rest = tail;
+            Some(head.trim_end_matches('\n'))
+        })
     }
 }
 
@@ -434,6 +502,21 @@ mod logging_tests {
             printed.contains("Webview first edit batch acknowledged"),
             "{printed}"
         );
+    }
+
+    #[test]
+    fn logcat_entries_keep_their_level_and_split_long_lines_whole() {
+        use super::logcat::{chunks, priority};
+        assert_eq!(priority(b"2026-11-15T10:00:00.000000Z  WARN stall"), 5);
+        assert_eq!(priority(b"2026-11-15T10:00:00.000000Z ERROR boom"), 6);
+        assert_eq!(priority(b"2026-11-15T10:00:00.000000Z  INFO hi"), 4);
+        assert_eq!(priority(b"2026-11-15T10:00:00.000000Z DEBUG x"), 3);
+
+        let text = "first line\nsecond line\nthird é line";
+        let parts: Vec<_> = chunks(text, 16).collect();
+        assert_eq!(parts, ["first line", "second line", "third é line"]);
+        assert!(chunks("ééééé", 3).all(|part| part == "é"));
+        assert_eq!(chunks("", 10).count(), 0);
     }
 
     #[test]
