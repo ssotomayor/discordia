@@ -34,10 +34,7 @@ object DioxusNotifier {
     private const val SHOWN_LIMIT = 20
     private const val DEDUP_CAP = 64
     private const val SEEN = "seen"
-    private val FALLBACK = mapOf(
-        "dm" to "Private messages", "mention" to "Mentions", "ping" to "Notifications are working",
-        "reply" to "Reply", "read" to "Mark as read",
-    )
+    private val FALLBACK = mapOf("dm" to "Private messages", "mention" to "Mentions", "ping" to "Notifications are working", "reply" to "Reply", "read" to "Mark as read")
     private val ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
     @Volatile var resumed = false

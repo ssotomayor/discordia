@@ -86,6 +86,7 @@ fun main() {
     check(label(cold, "dm") == "Private messages") { "A cold process names channels in English" }
     check(label(cold, "mention") == "Mentions")
     check(label(cold, "ping") == "Notifications are working")
+    check(label(cold, "reply") == "Reply" && label(cold, "read") == "Mark as read") { "Notification buttons are named before Rust runs" }
     cold.values["mention"] = "Menciones"
     cold.values["dm"] = " "
     check(label(cold, "mention") == "Menciones") { "The last names Rust gave must be used" }
