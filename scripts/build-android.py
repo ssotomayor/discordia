@@ -25,7 +25,7 @@ REQUIRED_WEBRTC_CLASSES = (
     "livekit/org/webrtc/SurfaceViewRenderer.class",
 )
 # Every one of these must reach the final DEX, wherever it came from.
-REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class", "com/discordia/app/DioxusScreenPreview.class", "com/discordia/app/DioxusNotifier.class", "com/discordia/app/DioxusPushService.class")
+REQUIRED_CLASSES = REQUIRED_WEBRTC_CLASSES + ("com/discordia/app/DioxusForegroundService.class", "com/discordia/app/DioxusPlaybackCapture.class", "com/discordia/app/DioxusDmNotifications.class", "com/discordia/app/DioxusScreenPreview.class", "com/discordia/app/DioxusNotifier.class", "com/discordia/app/DioxusPushService.class", "com/discordia/app/DioxusDmActions.class")
 REQUIRED_SYMBOLS = {
     "Java_com_discordia_app_DioxusForegroundService_onCallAction",
     "Java_livekit_org_webrtc_SoftwareVideoEncoderFactory_nativeCreateFactory",
@@ -44,6 +44,8 @@ REQUIRED_SYMBOLS = {
     "Java_dev_dioxus_main_MainActivity_onMentionNotificationOpened",
     "Java_com_discordia_app_DioxusPushService_handlePush",
     "Java_com_discordia_app_DioxusNotifier_onPushPlatform",
+    "Java_com_discordia_app_DioxusDmActions_handleAction",
+    "Java_com_discordia_app_DioxusDmActions_onLiveAction",
 }
 BRANDING = ("discordia_logo", "discordia_splash", "discordia_launcher_foreground")
 # Firebase reads these by resource name; the google-services plugin would write them,
@@ -297,6 +299,7 @@ def package_sources(project):
     shutil.copy2(ROOT / "client/android/DioxusDriveAuth.kt", sources / "DioxusDriveAuth.kt")
     shutil.copy2(ROOT / "client/android/DioxusNotifier.kt", sources / "DioxusNotifier.kt")
     shutil.copy2(ROOT / "client/android/DioxusPushService.kt", sources / "DioxusPushService.kt")
+    shutil.copy2(ROOT / "client/android/DioxusDmActions.kt", sources / "DioxusDmActions.kt")
     # R8 cannot see method lookups from Rust/JNI or WebRTC's native library.
     shutil.copy2(ROOT / "client/android/discordia.pro", project / "app/discordia.pro")
 

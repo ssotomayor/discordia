@@ -5,10 +5,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -32,10 +34,15 @@ object DioxusNotifier {
     private const val SHOWN_LIMIT = 20
     private const val DEDUP_CAP = 64
     private const val SEEN = "seen"
-    private val FALLBACK = mapOf("dm" to "Private messages", "mention" to "Mentions", "ping" to "Notifications are working")
+    private val FALLBACK = mapOf(
+        "dm" to "Private messages", "mention" to "Mentions", "ping" to "Notifications are working",
+        "reply" to "Reply", "read" to "Mark as read",
+    )
     private val ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
     @Volatile var resumed = false
+    // The account whose Rust UI is running; its buttons go to that, not to a headless send.
+    @Volatile var liveAccount: String? = null
 
     external fun onPushPlatform(token: String, packageName: String, enabled: Boolean)
 
@@ -134,6 +141,50 @@ object DioxusNotifier {
         return PendingIntent.getActivity(context, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
+    private fun dmAction(context: Context, action: String, owner: String, peer: String, label: String, mutable: Boolean): PendingIntent {
+        val intent = Intent(context, DioxusDmActions::class.java).setAction(action)
+            .setData(Uri.Builder().scheme("discordia").authority("dm").appendPath(owner).appendPath(peer).build())
+        // A reply's text is written into the intent, so only that one may be mutable.
+        val flags = if (mutable && Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getBroadcast(context, label.hashCode(), intent, flags or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    private fun dmActions(context: Context, owner: String, peer: String): List<Notification.Action> {
+        val names = labels(context)
+        val replyLabel = label(names, "reply")
+        val input = RemoteInput.Builder(DioxusDmActions.REPLY_TEXT).setLabel(replyLabel).build()
+        val reply = Notification.Action.Builder(
+            Icon.createWithResource(context, android.R.drawable.ic_menu_send), replyLabel,
+            dmAction(context, DioxusDmActions.REPLY, owner, peer, "reply", true),
+        ).addRemoteInput(input)
+        val read = Notification.Action.Builder(
+            Icon.createWithResource(context, android.R.drawable.ic_menu_view), label(names, "read"),
+            dmAction(context, DioxusDmActions.READ, owner, peer, "read", false),
+        )
+        if (Build.VERSION.SDK_INT >= 28) {
+            reply.setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
+            read.setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
+        }
+        return listOf(reply.build(), read.build())
+    }
+
+    fun dismissDm(context: Context, owner: String, peer: String) {
+        manager(context).cancel(dmTag(owner, peer), 0)
+    }
+
+    // A reply that could not go leaves the notification as it was, minus the field's spinner.
+    fun settleDm(context: Context, owner: String, peer: String) {
+        val tag = dmTag(owner, peer)
+        val manager = manager(context)
+        val shown = manager.activeNotifications.firstOrNull { it.tag == tag }?.notification ?: return
+        val again = Notification.Builder.recoverBuilder(context, shown).setOnlyAlertOnce(true).build()
+        try {
+            manager.notify(tag, 0, again)
+        } catch (error: SecurityException) {
+            android.util.Log.w("Discordia", "Notification permission changed", error)
+        }
+    }
+
     private fun publish(context: Context, tag: String, prefix: String, notification: Notification) {
         val manager = manager(context)
         try {
@@ -198,6 +249,7 @@ object DioxusNotifier {
             .setPublicVersion(publicVersion)
             .setContentIntent(pending)
             .setAutoCancel(true)
+            .setActions(*dmActions(context, owner, peer).toTypedArray())
             .setExtras(Bundle().apply {
                 putLong(READ_TIME, at)
                 putLongArray(LINE_TIMES, lines.map { it.first }.toLongArray())

@@ -67,6 +67,46 @@ pub extern "system" fn Java_com_discordia_app_DioxusPushService_handlePush<'loca
     }
 }
 
+/// A notification's Reply (`reply` set) or Mark as read with no account
+/// running. Under `handlePush`'s rules: env and directory are arguments.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_discordia_app_DioxusDmActions_handleAction<'local>(
+    mut env: JNIEnv<'local>,
+    _receiver: JObject<'local>,
+    _context: JObject<'local>,
+    config_dir: JString<'local>,
+    account: JString<'local>,
+    peer: JString<'local>,
+    reply: JString<'local>,
+) -> jboolean {
+    let done = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+        let dir = PathBuf::from(read(&mut env, &config_dir).ok_or("no directory")?);
+        let account = read(&mut env, &account).ok_or("no account")?;
+        let peer = read(&mut env, &peer).ok_or("no peer")?;
+        let reply = read(&mut env, &reply);
+        if !dir.is_absolute() || crate::identity::active_in(&dir).as_deref() != Some(&account) {
+            return Err("not this device's account".into());
+        }
+        let now = unix_now();
+        match reply {
+            None => super::actions::mark_read(&dir, &peer, now),
+            Some(text) => super::actions::reply(&dir, &account, &peer, &text, now, || {
+                crate::android::headless_vault_passphrase(&mut env, &dir)
+                    .map(|mut secret| std::mem::take(&mut *secret))
+            }),
+        }
+    }));
+    clear_exception(&mut env);
+    match done {
+        Ok(Ok(())) => 1,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "notification action not done");
+            0
+        }
+        Err(_) => 0,
+    }
+}
+
 /// Only updates `device::platform()`; the mounted account's loop acts on it.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_discordia_app_DioxusNotifier_onPushPlatform<'local>(

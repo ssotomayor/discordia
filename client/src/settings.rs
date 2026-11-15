@@ -659,19 +659,23 @@ pub(crate) fn parse(content: &str) -> Option<ClientSettings> {
 }
 
 pub fn save(settings: &ClientSettings) {
-    let path = settings_path();
+    if let Err(e) = write_to(&settings_path(), settings) {
+        tracing::warn!(error = %e, "could not save settings");
+    }
+}
+
+/// For a process with no Activity, which has `dir` but no `config_dir` (trap 40).
+pub fn save_in(dir: &std::path::Path, settings: &ClientSettings) -> Result<(), String> {
+    write_to(&dir.join("settings.json"), settings)
+}
+
+fn write_to(path: &std::path::Path, settings: &ClientSettings) -> Result<(), String> {
     let stored = Stored {
         version: FILE_VERSION,
         settings: settings.clone(),
     };
-    match serde_json::to_string_pretty(&stored) {
-        Ok(content) => {
-            if let Err(e) = crate::identity::write_private(&path, &content) {
-                tracing::warn!(path = %path.display(), error = %e, "could not save settings");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "could not encode settings"),
-    }
+    let content = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
+    crate::identity::write_private(path, &content)
 }
 
 #[cfg(test)]

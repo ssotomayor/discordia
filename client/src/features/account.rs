@@ -18,7 +18,7 @@ pub(super) fn use_account_state(settings: Signal<ClientSettings>) -> Signal<AppS
 }
 
 /// The push relay watches the same relays the Nostr service dials, or misses DMs.
-pub(super) fn dm_relays(saved: &ClientSettings) -> Vec<String> {
+pub(crate) fn dm_relays(saved: &ClientSettings) -> Vec<String> {
     if saved.dm_relays.is_empty() {
         crate::nostr::relay::DEFAULT_RELAYS
             .iter()

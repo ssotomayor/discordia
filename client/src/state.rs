@@ -396,6 +396,9 @@ pub struct AppState {
     /// Android's resume state; on desktop, whether any of our windows has focus.
     pub app_foreground: bool,
     pub dm_notification_open: Option<Id>,
+    /// The DM a notification tap opened. A session's first Ready keeps it
+    /// selected instead of the server's default channel (`net::apply_ready`).
+    pub dm_opened_by_tap: Option<Id>,
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
     pub catalog_revision: u64,
@@ -651,6 +654,7 @@ impl AppState {
             dm_pane_open: false,
             app_foreground: !cfg!(target_os = "android"),
             dm_notification_open: None,
+            dm_opened_by_tap: None,
             catalog: Vec::new(),
             catalog_total: 0,
             catalog_revision: 0,
@@ -1074,6 +1078,7 @@ impl AppState {
             dm_pane_open: _,
             app_foreground: _,
             dm_notification_open: _,
+            dm_opened_by_tap: _,
             mention_tap: _,
             error_toast: _,
             agents_open: _,
@@ -3205,7 +3210,7 @@ mod tests {
                 dm_pending, dm_images, dm_call_history, dm_call, contacts, mutes,
                 dm_choices, nostr_relays_up, nostr_names, relay_app_manifests,
                 relay_blocklists, global_xp, dm_pane_open, app_foreground,
-                dm_notification_open, mention_tap, error_toast, agents_open,
+                dm_notification_open, dm_opened_by_tap, mention_tap, error_toast, agents_open,
                 composer_focus_request, screen_capture_available,
                 camera_capture_available, available_cameras, available_input_devices,
                 available_output_devices, active_input_device, active_output_device,
