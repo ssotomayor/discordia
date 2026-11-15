@@ -122,15 +122,16 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
     let retry_nostr = nostr.clone();
     rsx! {
         div {
-            class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex items-center justify-between",
+            class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex flex-wrap items-center justify-center gap-y-1 text-center overflow-hidden",
             // Every state holds the picture's box: leaving a DM unloads its pictures,
-            // so each one passes through these on every visit.
-            style: "{super::image_attachment::frame(details_width.zip(details_height))} min-width: min(240px, 100%); min-height: 48px;",
+            // so each one passes through these on every visit. A min-width widens a tall
+            // box and aspect-ratio then makes it taller too, so max-height holds it.
+            style: "{super::image_attachment::frame(details_width.zip(details_height))} min-width: min(120px, 100%); min-height: 48px; max-height: 300px; align-content: center; column-gap: 0.75rem;",
             span { class: if matches!(status, Status::Loading { .. }) { "dxf-late" } else { "" }, {crate::i18n::message(label)} }
             if matches!(status, Status::Failed(_) | Status::UploadFailed(_) | Status::Evicted) {
                 button {
                     r#type: "button",
-                    class: "ml-3 text-[var(--accent)] hover:underline whitespace-nowrap",
+                    class: "text-[var(--accent)] hover:underline whitespace-nowrap",
                     onclick: move |_| {
                         if upload {
                             retry_nostr.send(NostrCmd::Retry { message_id });
@@ -144,7 +145,7 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
             if upload {
                 button {
                     r#type: "button",
-                    class: "ml-3 text-[var(--text-muted)] hover:underline whitespace-nowrap",
+                    class: "text-[var(--text-muted)] hover:underline whitespace-nowrap",
                     onclick: move |_| nostr.send(NostrCmd::CancelImage { message_id }),
                     {crate::i18n::text("Cancel", &[])}
                 }

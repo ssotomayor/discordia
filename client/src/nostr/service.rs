@@ -39,7 +39,6 @@ pub enum NostrCmd {
         server: String,
         data_url: String,
         file_name: Option<String>,
-        preview_data_url: Option<String>,
         text: String,
         reply_to: Option<String>,
         view_once: bool,
@@ -391,25 +390,31 @@ pub fn spawn_nostr(
                     }
                 }
                 cmd = rx.recv() => match cmd {
-                    Some(NostrCmd::Image { peer, server, data_url, file_name, preview_data_url, text, reply_to, view_once, queued, permit }) => {
+                    Some(NostrCmd::Image { peer, server, data_url, file_name, text, reply_to, view_once, queued, permit }) => {
                         let _permit = permit;
                         if images.jobs.len() >= super::dm_image::MAX_JOBS || !outbox.fits(2, 0) || state.peek().mutes.contains(&peer) {
                             let _ = queued.send(Err("Image queue is full or this contact is blocked. Your draft was kept.".into()));
                             continue;
                         }
-                        let prepared = tokio::task::spawn_blocking(move || super::dm_image::prepare(
-                            &secret,
-                            super::dm_image::PrepareImage {
-                                peer,
-                                server,
-                                data: data_url,
-                                file_name,
-                                preview_data_url,
-                                text,
-                                reply_to,
-                                view_once,
-                            },
-                        )).await;
+                        let prepared = tokio::task::spawn_blocking(move || {
+                            // `prepare` drops a view-once picture's preview, so none is made.
+                            let preview_data_url = (!view_once)
+                                .then(|| crate::chat_image::preview_data_url(&data_url).ok().flatten())
+                                .flatten();
+                            super::dm_image::prepare(
+                                &secret,
+                                super::dm_image::PrepareImage {
+                                    peer,
+                                    server,
+                                    data: data_url,
+                                    file_name,
+                                    preview_data_url,
+                                    text,
+                                    reply_to,
+                                    view_once,
+                                },
+                            )
+                        }).await;
                         match prepared {
                             Ok(Ok(job)) => {
                                 show_image_job(&job, &our_pubkey, &mut state, &mut outbox);
@@ -1735,6 +1740,10 @@ fn insert_message_with_settings(
         });
     }
     s.nostr_event_ids.insert(mid, msg.id.clone());
+    let reply_to = msg
+        .reply_to
+        .as_deref()
+        .and_then(|target| super::replies::quote(&s, cid, &msg.author, created_at, target));
 
     let fresh = s.insert_message(
         cid,
@@ -1760,7 +1769,7 @@ fn insert_message_with_settings(
             content: msg.content.clone(),
             image: None,
             reactions: Vec::new(),
-            reply_to: None,
+            reply_to,
             created_at: chrono::DateTime::from_timestamp(created_at, 0)
                 .unwrap_or_else(chrono::Utc::now),
         },
@@ -1785,6 +1794,7 @@ fn insert_message_with_settings(
             s.dm_emoji.insert(mid, pending.emoji);
         }
     }
+    super::replies::resolve_waiting(&mut s, cid, mid);
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
     crate::dm_notifications::received(&s, msg, our_pubkey, live && source == Source::Relay);
@@ -2155,6 +2165,37 @@ mod tests {
             let s = state.read();
             assert_eq!(s.dm_standing(&peer), crate::state::DmStanding::Inbox);
             assert_eq!(s.dm_unread(conversation_id(&peer)), 1);
+        });
+    }
+
+    #[test]
+    fn a_reply_shows_its_quote_whichever_arrives_first() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let reply = nip17::ChatMessage {
+                reply_to: Some("q".into()),
+                ..chat("r", &peer, &peer, 200)
+            };
+            for order in [["q", "r"], ["r", "q"]] {
+                let mut state = Signal::new(AppState::empty());
+                for id in order {
+                    let msg = if id == "q" {
+                        chat("q", &me, &peer, 100)
+                    } else {
+                        reply.clone()
+                    };
+                    insert_message(&msg, &me, &mut state, Source::Relay, false);
+                }
+                let s = state.read();
+                let held = &s.messages[&conversation_id(&peer)];
+                let quote = held.iter().find(|m| m.id == message_id("r")).unwrap();
+                let quote = quote.reply_to.as_ref().expect("a DM reply keeps its quote");
+                assert_eq!(
+                    (quote.message_id, quote.author_pubkey.as_str()),
+                    (message_id("q"), me.as_str())
+                );
+                assert_eq!(quote.excerpt, "hello");
+            }
         });
     }
 

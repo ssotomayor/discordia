@@ -216,7 +216,6 @@ const PASTE_JS: &str = r#"
 #[derive(Clone)]
 struct PendingImage {
     url: String,
-    preview: Option<String>,
     name: Option<String>,
 }
 
@@ -279,14 +278,10 @@ fn load_attachment(
             .as_ref()
             .and_then(|(p, _)| p.file_name())
             .map(|name| name.to_string_lossy().into_owned());
-        let result = tokio::task::spawn_blocking(move || {
-            let url = match dropped {
-                Some((_, Some(bytes))) => crate::chat_image::from_dropped_bytes(&bytes, max_bytes)?,
-                Some((path, None)) => crate::chat_image::read_file_with_limit(&path, max_bytes)?,
-                None => crate::chat_image::read_clipboard(max_bytes)?,
-            };
-            let preview = crate::chat_image::preview_data_url(&url).ok().flatten();
-            Ok::<_, String>((url, preview))
+        let result = tokio::task::spawn_blocking(move || match dropped {
+            Some((_, Some(bytes))) => crate::chat_image::attach_dropped(&bytes, max_bytes),
+            Some((path, None)) => crate::chat_image::attach_file(&path, max_bytes),
+            None => crate::chat_image::read_clipboard(max_bytes),
         })
         .await;
         loading.set(false);
@@ -294,9 +289,9 @@ fn load_attachment(
             return;
         }
         match result.unwrap_or_else(|e| Err(format!("Couldn't load that image: {e}"))) {
-            Ok((url, preview)) => {
+            Ok(url) => {
                 error.set(None);
-                pending.set(Some(PendingImage { url, preview, name }));
+                pending.set(Some(PendingImage { url, name }));
             }
             Err(message) => error.set(Some(message)),
         }
@@ -333,21 +328,18 @@ fn pick_image(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
         loading.set(true);
-        let result = tokio::task::spawn_blocking(move || {
-            let url = crate::chat_image::read_file_with_limit(&file, max_bytes)?;
-            let preview = crate::chat_image::preview_data_url(&url).ok().flatten();
-            Ok::<_, String>((url, preview))
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || crate::chat_image::attach_file(&file, max_bytes))
+                .await;
         loading.set(false);
         if *generation.peek() != request {
             return;
         }
         match result.unwrap_or_else(|error| Err(error.to_string())) {
-            Ok((url, preview)) => {
+            Ok(url) => {
                 error.set(None);
                 pending_file.set(None);
-                pending.set(Some(PendingImage { url, preview, name }));
+                pending.set(Some(PendingImage { url, name }));
             }
             Err(message) => error.set(Some(message)),
         }
@@ -857,9 +849,16 @@ fn composer_locked(s: &crate::state::AppState, channel_id: Id) -> bool {
         .unwrap_or(false)
 }
 
+fn shown_quote(message: &Message) -> Option<&crate::protocol::ReplyRef> {
+    message
+        .reply_to
+        .as_ref()
+        .filter(|q| !crate::nostr::replies::waiting(q))
+}
+
 /// A reply always heads its own group: the connector to the quote starts at its avatar.
 fn groups_with(prev: &Message, cur: &Message) -> bool {
-    cur.reply_to.is_none()
+    shown_quote(cur).is_none()
         && prev.author.pubkey == cur.author.pubkey
         && (cur.created_at - prev.created_at).num_seconds().abs() < GROUP_WINDOW_SECS
 }
@@ -1046,7 +1045,7 @@ pub(super) fn MessageRow(
             flat
         }
     };
-    let quoted = message.reply_to.clone();
+    let quoted = shown_quote(&message).cloned();
 
     let guild_id = state
         .read()
@@ -1836,6 +1835,7 @@ mod author_name_tests {
 
     #[test]
     fn a_dm_quick_reaction_uses_nostr_without_a_gateway_connection() {
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         use dioxus::core::{AttributeValue, Mutation};
         use std::any::Any;
         use tokio::sync::mpsc::UnboundedReceiver;
@@ -3224,10 +3224,6 @@ fn Composer(
             .as_ref()
             .and_then(|image| image.name.clone());
         let image = pending_image.peek().as_ref().map(|image| image.url.clone());
-        let image_preview = pending_image
-            .peek()
-            .as_ref()
-            .and_then(|image| image.preview.clone());
         let file = pending_file();
         if content.is_empty() && image.is_none() && file.is_none() {
             return false;
@@ -3272,7 +3268,6 @@ fn Composer(
                     server,
                     data_url,
                     file_name: image_name,
-                    preview_data_url: image_preview,
                     text: content,
                     reply_to,
                     view_once: *view_once.peek(),
@@ -3413,29 +3408,74 @@ fn Composer(
                 });
                 return false;
             }
-            if state.read().server_progressive_image_uploads
-                && let (Some(image), Some(preview)) = (image.clone(), image_preview.clone())
-            {
-                let upload_id = crate::protocol::Id::new_v4();
-                gateway_submit.send(ClientMessage::BeginImageUpload {
-                    upload_id,
-                    channel_id,
-                    content,
-                    preview,
-                    image_name,
-                    reply_to,
+            // The preview is made here rather than on attach, holding the draft
+            // meanwhile, so a later message cannot overtake the picture.
+            if let Some(image) = image {
+                let request = Id::new_v4();
+                file_request.set(Some(request));
+                attach_err.set(None);
+                let current_generation = *generation.peek();
+                let sent_text = content.clone();
+                let gateway = gateway_submit.clone();
+                let mut finish_image = finish.clone();
+                spawn(async move {
+                    let source = image.clone();
+                    let preview = tokio::task::spawn_blocking(move || {
+                        crate::chat_image::preview_data_url(&source).ok().flatten()
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if *file_request.peek() != Some(request) {
+                        return;
+                    }
+                    file_request.set(None);
+                    if *generation.peek() != current_generation {
+                        return;
+                    }
+                    if state.peek().status != crate::state::ConnectionStatus::Ready {
+                        state.write().error_toast =
+                            Some("The server is reconnecting. Your draft has been kept.".into());
+                        return;
+                    }
+                    match preview {
+                        Some(preview) if state.peek().server_progressive_image_uploads => {
+                            let upload_id = crate::protocol::Id::new_v4();
+                            gateway.send(ClientMessage::BeginImageUpload {
+                                upload_id,
+                                channel_id,
+                                content,
+                                preview,
+                                image_name,
+                                reply_to,
+                            });
+                            gateway.send(ClientMessage::CompleteImageUpload { upload_id, image });
+                        }
+                        image_preview => gateway.send(ClientMessage::SendMessage {
+                            image_name,
+                            channel_id,
+                            content,
+                            image: Some(image),
+                            image_preview,
+                            reply_to,
+                        }),
+                    }
+                    if *draft.peek() == sent_text {
+                        finish_image();
+                    } else {
+                        pending_image.set(None);
+                    }
                 });
-                gateway_submit.send(ClientMessage::CompleteImageUpload { upload_id, image });
-            } else {
-                gateway_submit.send(ClientMessage::SendMessage {
-                    image_name,
-                    channel_id,
-                    content,
-                    image,
-                    image_preview,
-                    reply_to,
-                });
+                return false;
             }
+            gateway_submit.send(ClientMessage::SendMessage {
+                image_name,
+                channel_id,
+                content,
+                image: None,
+                image_preview: None,
+                reply_to,
+            });
         }
         finish()
     };
@@ -3671,6 +3711,11 @@ fn Composer(
                 div { class: "mb-2 flex items-center text-[11px] text-[var(--text-dim)]", role: "status",
                     span { class: "dx-spinner" }
                     {crate::i18n::text("Reading the picture…", &[])}
+                }
+            } else if file_request().is_some() && pending_image().is_some() {
+                div { class: "mb-2 flex items-center text-[11px] text-[var(--text-dim)]", role: "status",
+                    span { class: "dx-spinner" }
+                    {crate::i18n::text("Preparing the picture…", &[])}
                 }
             }
             if let Some(img) = pending_image() {

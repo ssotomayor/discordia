@@ -43,6 +43,27 @@ fn size_error(limit: usize) -> String {
 const MAX_INPUT_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
+    read_file_with(path, max_bytes, from_bytes_with_limit)
+}
+
+/// For the composer: what it reads is decoded in full only when sent, so
+/// attaching a picture costs a file read, not the work of an upload.
+pub fn attach_file(path: &Path, max_bytes: usize) -> Result<String, String> {
+    read_file_with(path, max_bytes, from_header)
+}
+
+pub fn attach_dropped(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    let max_bytes = max_bytes.min(MAX_DM_BYTES);
+    if bytes.len() <= max_bytes {
+        from_header(bytes, max_bytes)
+    } else {
+        compress_image_bytes(bytes, max_bytes)
+    }
+}
+
+type Accept = fn(&[u8], usize) -> Result<String, String>;
+
+fn read_file_with(path: &Path, max_bytes: usize, accept: Accept) -> Result<String, String> {
     let max_bytes = max_bytes.min(MAX_DM_BYTES);
     let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;
     let metadata = file.metadata().map_err(|_| "Couldn't read that file.")?;
@@ -57,7 +78,7 @@ pub fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, Str
         file.take((max_bytes + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| "Couldn't read that file.")?;
-        return from_bytes_with_limit(&bytes, max_bytes);
+        return accept(&bytes, max_bytes);
     }
     compress_image_file(path, max_bytes)
 }
@@ -74,15 +95,6 @@ pub fn read_dropped(path: &Path) -> Option<std::sync::Arc<Vec<u8>>> {
         .read_to_end(&mut bytes)
         .ok()?;
     (bytes.len() as u64 <= MAX_INPUT_FILE_BYTES).then(|| std::sync::Arc::new(bytes))
-}
-
-pub fn from_dropped_bytes(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
-    let max_bytes = max_bytes.min(MAX_DM_BYTES);
-    if bytes.len() <= max_bytes {
-        from_bytes_with_limit(bytes, max_bytes)
-    } else {
-        compress_image_bytes(bytes, max_bytes)
-    }
 }
 
 fn compress_image_file(path: &Path, max_bytes: usize) -> Result<String, String> {
@@ -183,6 +195,21 @@ fn from_bytes(bytes: &[u8]) -> Result<String, String> {
 }
 
 pub(crate) fn from_bytes_with_limit(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    let (format, decoder) = open_checked(bytes, max_bytes)?;
+    image::DynamicImage::from_decoder(decoder).map_err(|_| "Couldn't decode that image.")?;
+    Ok(data_url(format.to_mime_type(), bytes))
+}
+
+fn from_header(bytes: &[u8], max_bytes: usize) -> Result<String, String> {
+    let (format, _) = open_checked(bytes, max_bytes)?;
+    Ok(data_url(format.to_mime_type(), bytes))
+}
+
+/// Reads the header alone: format, size and pixel count, before any pixel is decoded.
+fn open_checked(
+    bytes: &[u8],
+    max_bytes: usize,
+) -> Result<(image::ImageFormat, impl ImageDecoder + '_), String> {
     if bytes.len() > max_bytes.min(MAX_DM_BYTES) {
         return Err(size_error(max_bytes));
     }
@@ -198,8 +225,7 @@ pub(crate) fn from_bytes_with_limit(bytes: &[u8], max_bytes: usize) -> Result<St
         .map_err(|_| "Couldn't open that image.")?;
     let (width, height) = decoder.dimensions();
     check_dimensions(u64::from(width), u64::from(height))?;
-    image::DynamicImage::from_decoder(decoder).map_err(|_| "Couldn't decode that image.")?;
-    Ok(data_url(format.to_mime_type(), bytes))
+    Ok((format, decoder))
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -409,11 +435,34 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert!(read_file_with_limit(&path, MAX_BYTES).is_err());
         assert!(
-            from_dropped_bytes(&bytes, MAX_BYTES)
+            attach_dropped(&bytes, MAX_BYTES)
                 .unwrap()
                 .starts_with("data:image/png")
         );
         assert!(read_dropped(&path).is_none());
+    }
+
+    #[test]
+    fn attaching_checks_the_header_and_leaves_the_pixels_to_sending() {
+        let url = rgba_png_with_limit(64, 64, &[90; 64 * 64 * 4], MAX_BYTES).unwrap();
+        let mut png = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        let cut = png.len() - 20;
+        png.truncate(cut);
+        assert!(attach_dropped(&png, MAX_BYTES).is_ok());
+        assert!(
+            from_bytes_with_limit(&png, MAX_BYTES).is_err(),
+            "sending still decodes it whole"
+        );
+
+        let mut huge = png.clone();
+        huge[16..24].copy_from_slice(&[0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20]);
+        assert!(
+            attach_dropped(&huge, MAX_BYTES).is_err(),
+            "20000x20000 is refused from the header"
+        );
+        assert!(attach_dropped(b"not a picture", MAX_BYTES).is_err());
     }
 
     #[test]

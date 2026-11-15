@@ -12,6 +12,7 @@
   "View-once picture — accept this conversation to open it.": ["Imagen de un solo uso: acepta esta conversación para abrirla.", "Imagem de visualização única — aceite esta conversa para abrir.", "仅看一次的图片 — 接受此对话后才能打开。", "一度だけ表示の画像 — 開くにはこの会話を承認してください。"],
   "Opening…": ["Abriendo…", "Abrindo…", "正在打开…", "開いています…"],
   "Reading the picture…": ["Leyendo la imagen…", "Lendo a imagem…", "正在读取图片…", "画像を読み込んでいます…"],
+  "Preparing the picture…": ["Preparando la imagen…", "Preparando a imagem…", "正在准备图片…", "画像を準備しています…"],
   "Still reading the last picture.": ["Aún se está leyendo la imagen anterior.", "Ainda lendo a imagem anterior.", "仍在读取上一张图片。", "前の画像をまだ読み込んでいます。"],
   "Text formatting": ["Formato de texto", "Formatação de texto", "文本格式", "テキストの書式"],
   "Bold": ["Negrita", "Negrito", "粗体", "太字"],
