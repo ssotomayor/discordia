@@ -10,5 +10,6 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+        <receiver android:name="com.discordia.app.DioxusDmActions" android:exported="false" />
     </application>
 </manifest>

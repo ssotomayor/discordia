@@ -25,6 +25,7 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         if (account != value) cancelAll()
         if (account != value) viewedPeer = null
         account = value.takeIf { validKey(it) }
+        DioxusNotifier.liveAccount = account
         DioxusNotifier.saveLabels(activity, labels)
         DioxusNotifier.ensureChannels(activity)
         if (account != null) askUnprompted()
@@ -45,6 +46,7 @@ class DioxusDmNotifications(private val activity: MainActivity) {
         if (account != value) return
         cancelAll()
         account = null
+        DioxusNotifier.liveAccount = null
     }
 
     fun state(): String {

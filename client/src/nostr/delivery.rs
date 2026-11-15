@@ -247,7 +247,37 @@ struct Stored {
 }
 
 fn path(pubkey: &str) -> std::path::PathBuf {
-    crate::identity::config_dir().join(format!("dm-outbox-{pubkey}.json"))
+    path_in(&crate::identity::config_dir(), pubkey)
+}
+
+fn path_in(dir: &std::path::Path, pubkey: &str) -> std::path::PathBuf {
+    dir.join(format!("dm-outbox-{pubkey}.json"))
+}
+
+/// Adds one message to the outbox the account's service sends at its next
+/// start, from a process that has `dir` but no `config_dir` (trap 40).
+pub fn queue_in(
+    dir: &std::path::Path,
+    pubkey: &str,
+    peer: &str,
+    theirs: &Event,
+    ours: &Event,
+) -> Result<(), String> {
+    let path = path_in(dir, pubkey);
+    let mut stored: Vec<Stored> = load_from(path.clone())
+        .into_iter()
+        .map(|(peer, theirs, ours)| Stored { peer, theirs, ours })
+        .collect();
+    if stored.len() >= 128 {
+        return Err("too many messages await delivery".into());
+    }
+    stored.push(Stored {
+        peer: peer.to_string(),
+        theirs: theirs.clone(),
+        ours: ours.clone(),
+    });
+    let raw = serde_json::to_string(&stored).map_err(|error| error.to_string())?;
+    crate::identity::write_private(&path, &raw)
 }
 
 pub async fn load(pubkey: &str) -> Vec<(String, Event, Event)> {

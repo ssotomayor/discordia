@@ -1070,6 +1070,20 @@ pub(super) fn MessageRow(
             });
         }
     });
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let react_picked = use_callback(move |emoji: String| {
+        note_emoji_used(settings, &emoji);
+        show_react.set(false);
+        react.call(emoji);
+    });
+    let quick = {
+        let s = state.read();
+        let customs = guild_id.map(|g| s.emojis_of(g)).unwrap_or_default();
+        quick_reactions(&settings.read().recent_emoji, customs, |e| {
+            crate::image_assets::cached_uri(&s.emoji_images, &e.image).unwrap_or_default()
+        })
+    };
+    let react_popover = use_hook(|| format!("react-picker-{}", uuid::Uuid::new_v4()));
 
     let rank = guild_id.and_then(|gid| rank_of(&state.read(), gid, &message.author.pubkey));
     let name_color = rank
@@ -1478,12 +1492,17 @@ pub(super) fn MessageRow(
                             span { dangerous_inner_html: super::icons::BOOKMARK }
                         }
                     }
-                    button {
-                        class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
-                        title: crate::i18n::text("Add reaction", &[]),
-                        "data-context-action": "react",
-                        onclick: move |_| show_react.set(!show_react()),
-                        "☺"
+                    div { class: "relative",
+                        button {
+                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
+                            title: crate::i18n::text("Add reaction", &[]),
+                            "data-context-action": "react",
+                            onclick: move |_| show_react.set(!show_react()),
+                            "☺"
+                        }
+                        if show_react() {
+                            ReactionPicker { id: react_popover.clone(), channel_id, guild_id, on_pick: react_picked, on_close: move |_| show_react.set(false) }
+                        }
                     }
                     if can_pin {
                         button {
@@ -1505,12 +1524,14 @@ pub(super) fn MessageRow(
                         }
                     }
                     div { hidden: true,
-                            for emoji in QUICK_REACTIONS.iter().take(4).copied() {
-                                button {
-                                    "data-context-emoji": "{emoji}",
-                                    onclick: move |_| react.call(emoji.to_string()),
-                                }
+                        for (emoji, image) in quick.into_iter() {
+                            button {
+                                key: "{emoji}",
+                                "data-context-emoji": "{emoji}",
+                                "data-context-image": "{image}",
+                                onclick: move |_| react_picked.call(emoji.clone()),
                             }
+                        }
                     }
                     if confirm_delete() {
                         div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
@@ -1538,93 +1559,58 @@ pub(super) fn MessageRow(
                             }
                         }
                     }
-                    if show_react() {
-                        div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
-                            div { class: "flex gap-1",
-                                for emoji in QUICK_REACTIONS.iter().copied() {
-                                    {
-                                        rsx! {
-                                            button {
-                                                class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                                onclick: move |_| {
-                                                    react.call(emoji.to_string());
-                                                    show_react.set(false);
-                                                },
-                                                "{emoji}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(gid) = guild_id {
-                                GuildReactionPicker {
-                                    guild_id: gid,
-                                    on_pick: move |emoji: String| {
-                                        gateway.send(ClientMessage::React { channel_id, message_id, emoji });
-                                        show_react.set(false);
-                                    },
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
     }
 }
 
-/// This guild's emoji under the quick row. The server accepts `:code:` only
-/// for an emoji the guild has, so the list is the guild's, not a search.
+/// The full picker for a reaction, in the browser's top layer: the chat
+/// scroller would clip it above the first visible line (trap 22).
 #[component]
-fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
+fn ReactionPicker(
+    id: String,
+    channel_id: Id,
+    guild_id: Option<Id>,
+    on_pick: EventHandler<String>,
+    on_close: EventHandler<()>,
+) -> Element {
     let state = use_app_state();
-    let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
-    let emojis: Vec<(String, String, String)> = {
-        let s = state.read();
-        s.emojis_of(guild_id)
-            .iter()
-            .map(|e| {
-                let url =
-                    crate::image_assets::cached_uri(&s.emoji_images, &e.image).unwrap_or_default();
-                (e.shortcode.clone(), e.image.clone(), url)
-            })
-            .collect()
+    // A DM reaction is a unicode glyph only (`reactions::valid_emoji`); a
+    // guild's accepts its own emoji too.
+    let (emojis, urls) = match guild_id {
+        Some(_) => guild_emoji_uris_of(&state.read(), channel_id),
+        None => Default::default(),
     };
-    if emojis.is_empty() {
-        return rsx! {};
-    }
-    if let Some(target) = emoji_menu() {
-        return rsx! {
-            div { class: "mt-1 pt-1 border-t border-[var(--border)]",
-                EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
-            }
-        };
-    }
+    let focus = if cfg!(target_os = "android") {
+        ""
+    } else {
+        "?.querySelector('input')?.focus({ preventScroll: true })"
+    };
     rsx! {
-        div { class: "mt-1 pt-1 border-t border-[var(--border)] max-h-32 overflow-y-auto",
-            div { class: "dxf-emoji-grid grid grid-cols-8 gap-0.5 w-max max-w-[15rem]",
-                for (code, image, url) in emojis.into_iter() {
-                    {
-                        let emoji = format!(":{code}:");
-                        let target = EmojiMenuTarget { shortcode: code.clone(), image, guild_id, url: url.clone() };
-                        rsx! {
-                            button {
-                                key: "{code}",
-                                class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                title: crate::i18n::text("{0} — right-click to save or remove", std::slice::from_ref(&(emoji))),
-                                onclick: move |_| on_pick.call(emoji.clone()),
-                                oncontextmenu: move |ev: MouseEvent| {
-                                    ev.prevent_default();
-                                    emoji_menu.set(Some(target.clone()));
-                                },
-                                if url.is_empty() {
-                                    span { class: "text-[8px] text-[var(--text-dim)]", "…" }
-                                } else {
-                                    img { src: "{url}", style: "height:1.2em;width:auto;" }
-                                }
-                            }
+        div {
+            id: "{id}",
+            "popover": "manual",
+            // No display class here: it would beat the hidden state of a closed popover.
+            class: "rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-lg p-2 text-[var(--text)]",
+            style: "position:fixed;inset:auto;margin:0;max-width:calc(100vw - 16px);",
+            onmounted: move |_| {
+                let _ = document::eval(&format!(
+                    "({})({id:?}, false); document.getElementById({id:?}){focus};",
+                    include_str!("../../assets/voice-tooltip.js")
+                ));
+            },
+            div { class: "dxf-emoji-popover",
+                EmojiPicker {
+                    guild_emojis: emojis,
+                    emoji_urls: urls,
+                    is_dm: false,
+                    on_pick: move |pick: ComposerPick| {
+                        if let Some(emoji) = pick_emoji(&pick) {
+                            on_pick.call(emoji);
                         }
-                    }
+                    },
+                    on_escape: move |_| on_close.call(()),
                 }
             }
         }
@@ -1836,6 +1822,7 @@ mod author_name_tests {
     #[test]
     fn a_dm_quick_reaction_uses_nostr_without_a_gateway_connection() {
         dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        crate::identity::test_config_dir();
         use dioxus::core::{AttributeValue, Mutation};
         use std::any::Any;
         use tokio::sync::mpsc::UnboundedReceiver;
@@ -1869,6 +1856,8 @@ mod author_name_tests {
                 });
                 provide_context(nostr);
                 provide_context(gateway);
+                let settings = use_signal(crate::settings::ClientSettings::default);
+                provide_context(settings);
                 rsx! { if show() { MessageRow { message: historical_message(), grouped: false } } }
             },
             export.clone(),
@@ -1944,6 +1933,7 @@ mod author_name_tests {
                     crate::state::GatewayTx(tokio::sync::mpsc::unbounded_channel().0)
                 });
                 use_context_provider(crate::nostr::service::NostrTx::test_channel);
+                use_context_provider(|| Signal::new(crate::settings::ClientSettings::default()));
                 *export.borrow_mut() = Some(state);
                 rsx! { MessageRow { message, grouped: false } }
             },
@@ -2615,16 +2605,61 @@ fn suggestions_now(
     emoji_suggestions(token, &list, &urls)
 }
 
-fn note_recent_emoji(mut settings: Signal<crate::settings::ClientSettings>, pick: &ComposerPick) {
-    let key = match pick {
-        ComposerPick::Unicode(e) => e.to_string(),
-        ComposerPick::Custom { code, .. } => format!(":{code}:"),
-        ComposerPick::Mention { .. } => return,
-    };
+fn note_recent_emoji(settings: Signal<crate::settings::ClientSettings>, pick: &ComposerPick) {
+    if let Some(key) = pick_emoji(pick) {
+        note_emoji_used(settings, &key);
+    }
+}
+
+/// The text a pick sends: the glyph, or `:code:` for a picture.
+fn pick_emoji(pick: &ComposerPick) -> Option<String> {
+    match pick {
+        ComposerPick::Unicode(e) => Some(e.to_string()),
+        ComposerPick::Custom { code, .. } => Some(format!(":{code}:")),
+        ComposerPick::Mention { .. } => None,
+    }
+}
+
+fn note_emoji_used(mut settings: Signal<crate::settings::ClientSettings>, emoji: &str) {
     let mut next = settings.peek().clone();
-    next.note_emoji_used(&key);
+    next.note_emoji_used(emoji);
     settings.set(next.clone());
     crate::settings::save(&next);
+}
+
+/// The four reactions a message's menu offers: the latest this conversation
+/// accepts, topped up from `QUICK_REACTIONS`. Each is the emoji and its picture, if any.
+fn quick_reactions(
+    recent: &[String],
+    customs: &[GuildEmoji],
+    url: impl Fn(&GuildEmoji) -> String,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(4);
+    for e in recent {
+        let picked = match e.strip_prefix(':').and_then(|e| e.strip_suffix(':')) {
+            Some(code) => customs
+                .iter()
+                .find(|g| g.shortcode == code)
+                .map(|g| (e.clone(), url(g))),
+            None => EMOJIS
+                .iter()
+                .any(|(u, _)| u == e)
+                .then(|| (e.clone(), String::new())),
+        };
+        out.extend(picked);
+        if out.len() == 4 {
+            return out;
+        }
+    }
+    for e in QUICK_REACTIONS {
+        if out.len() == 4 {
+            break;
+        }
+        if !out.iter().any(|(o, _)| o == e) {
+            out.push((e.to_string(), String::new()));
+        }
+    }
+    out
 }
 
 /// The recent picks this conversation can still send, with their titles: a
@@ -2674,16 +2709,42 @@ fn ComposerEmojiPicker(
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut open = open;
+    let pick_id = composer_id.clone();
+    let escape_id = composer_id.clone();
+    let (emojis, urls) = guild_emoji_uris_of(&state.read(), channel_id);
+    rsx! {
+        div { "data-dismiss": "{dismiss}", class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+            EmojiPicker {
+                guild_emojis: emojis,
+                emoji_urls: urls,
+                is_dm,
+                on_pick: move |pick: ComposerPick| {
+                    insert_pick(&pick_id, &pick, false, false);
+                    note_recent_emoji(settings, &pick);
+                    open.set(false);
+                },
+                on_escape: move |_| {
+                    open.set(false);
+                    composer_call(&escape_id, "focus", &[]);
+                },
+            }
+        }
+    }
+}
+
+/// Recent, then `guild_emojis` (in a DM, saved ones), then every
+/// unicode emoji, under one search. Shared by the composer and reactions.
+#[component]
+fn EmojiPicker(
+    guild_emojis: Vec<GuildEmoji>,
+    emoji_urls: std::collections::HashMap<String, String>,
+    is_dm: bool,
+    on_pick: EventHandler<ComposerPick>,
+    on_escape: EventHandler<()>,
+) -> Element {
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
     let mut query = use_signal(String::new);
-    let pick_id = composer_id.clone();
-    let pick = use_callback(move |pick: ComposerPick| {
-        insert_pick(&pick_id, &pick, false, false);
-        note_recent_emoji(settings, &pick);
-        open.set(false);
-    });
-
-    let (guild_emojis, emoji_urls) = guild_emoji_uris_of(&state.read(), channel_id);
     let q = query();
     let searching = !q.trim().trim_matches(':').is_empty();
     let recent = if searching {
@@ -2712,10 +2773,9 @@ fn ComposerEmojiPicker(
                 .map(|&(u, _)| ComposerPick::Unicode(u))
         });
     let nothing = first.is_none();
-    let escape_id = composer_id.clone();
 
     rsx! {
-        div { "data-dismiss": "{dismiss}", class: "dxf-emoji-popover dxf-pop-in absolute bottom-full right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+        div { class: "contents",
             if let Some(target) = emoji_menu() {
                 EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
             } else {
@@ -2735,14 +2795,13 @@ fn ComposerEmojiPicker(
                         Key::Enter => {
                             e.prevent_default();
                             if let Some(p) = first.clone() {
-                                pick.call(p);
+                                on_pick.call(p);
                             }
                         }
                         Key::Escape => {
                             e.prevent_default();
                             e.stop_propagation();
-                            open.set(false);
-                            composer_call(&escape_id, "focus", &[]);
+                            on_escape.call(());
                         }
                         _ => {}
                     },
@@ -2760,7 +2819,7 @@ fn ComposerEmojiPicker(
                                     title: "{title}",
                                     onclick: {
                                         let p = p.clone();
-                                        move |_| pick.call(p.clone())
+                                        move |_| on_pick.call(p.clone())
                                     },
                                     match &p {
                                         ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! { img { src: "{url}" } },
@@ -2788,7 +2847,7 @@ fn ComposerEmojiPicker(
                                             r#type: "button",
                                             class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
                                             title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
-                                            onclick: move |_| pick.call(custom.clone()),
+                                            onclick: move |_| on_pick.call(custom.clone()),
                                             oncontextmenu: move |ev: MouseEvent| {
                                                 ev.prevent_default();
                                                 emoji_menu.set(Some(target.clone()));
@@ -2812,7 +2871,7 @@ fn ComposerEmojiPicker(
                                     r#type: "button",
                                     class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
                                     title: ":{name}:",
-                                    onclick: move |_| pick.call(ComposerPick::Unicode(emoji)),
+                                    onclick: move |_| on_pick.call(ComposerPick::Unicode(emoji)),
                                     "{emoji}"
                                 }
                             }
@@ -4018,6 +4077,33 @@ mod composer_tests {
                 ),
                 (ComposerPick::Unicode(unicode), format!(":{name}:")),
             ]
+        );
+    }
+
+    #[test]
+    fn quick_reactions_are_the_latest_usable_then_the_defaults() {
+        let url = |e: &GuildEmoji| format!("blob:{}", e.shortcode);
+        let recent = [
+            "🚀".to_string(),
+            ":lp:".to_string(),
+            ":elsewhere:".to_string(),
+            QUICK_REACTIONS[1].to_string(),
+        ];
+        assert_eq!(
+            quick_reactions(&recent, &[custom("lp")], url),
+            [
+                ("🚀".to_string(), String::new()),
+                (":lp:".to_string(), "blob:lp".to_string()),
+                (QUICK_REACTIONS[1].to_string(), String::new()),
+                (QUICK_REACTIONS[0].to_string(), String::new()),
+            ]
+        );
+        // A DM reacts in unicode only, so its pictures fall to the defaults.
+        let dm = quick_reactions(&recent, &[], url);
+        assert_eq!(dm.len(), 4);
+        assert!(
+            dm.iter()
+                .all(|(e, image)| !e.starts_with(':') && image.is_empty())
         );
     }
 

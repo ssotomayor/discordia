@@ -21,7 +21,7 @@ pub const MAX_AGE_SECS: i64 = 2 * 24 * 60 * 60;
 const MAX_DATA_BYTES: usize = 64 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 /// The app writes 16; a larger cost would hold a phone for minutes per push.
-const MAX_KEY_COST: u8 = 20;
+pub(super) const MAX_KEY_COST: u8 = 20;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MENTION_VERSION: u32 = 1;
 
@@ -81,7 +81,7 @@ pub fn handle_push(
     }
 }
 
-fn settings_in(dir: &Path) -> ClientSettings {
+pub(super) fn settings_in(dir: &Path) -> ClientSettings {
     std::fs::read_to_string(dir.join("settings.json"))
         .ok()
         .and_then(|content| crate::settings::parse(&content))
@@ -163,7 +163,11 @@ fn gift_wrap(
     Some(event)
 }
 
-fn unlock(locked: &str, passphrase: &str, account: &str) -> Option<secp256k1::SecretKey> {
+pub(super) fn unlock(
+    locked: &str,
+    passphrase: &str,
+    account: &str,
+) -> Option<secp256k1::SecretKey> {
     let bytes = crate::keyvault::decrypt(locked, passphrase).ok()?;
     let secret = secp256k1::SecretKey::from_slice(bytes.as_ref()).ok()?;
     // As `Identity::load`: the file's name only locates a key; it must be the one named.

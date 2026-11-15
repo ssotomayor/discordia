@@ -39,5 +39,6 @@
 .dxf-text-menu-separator { height: 1px; margin: 5px 4px; background-color: var(--border, #444); }
 .dxf-text-menu-reactions { display: flex; gap: 5px; margin-bottom: 5px; }
 .dxf-text-menu-reactions button { justify-content: center; padding: 8px; background-color: #ffffff0a; font-size: 20px; }
+.dxf-text-menu-reactions img { width: 1.2em; height: 1.2em; object-fit: contain; }
 .dxf-text-menu .dxf-text-menu-danger { color: var(--danger, #ed4245); }
 .dxf-text-menu .dxf-text-menu-danger:hover, .dxf-text-menu .dxf-text-menu-danger:focus-visible { background-color: var(--danger, #ed4245); color: #fff; }

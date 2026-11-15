@@ -276,7 +276,7 @@
 .dxf-platform-mobile .dxf-text-menu { font-size: 15px; padding: 6px; }
 .dxf-platform-mobile .dxf-text-menu button { min-height: 44px; padding: 10px 12px; }
 .dxf-platform-mobile .dxf-text-menu kbd { display: none; }
-.dxf-platform-mobile .dxf-text-menu-reactions button { min-height: 48px; font-size: 24px; }
+.dxf-platform-mobile .dxf-text-menu-reactions button { min-height: 52px; font-size: 30px; }
 /* Agents, Server/Guild Settings, Integrations and Where your data goes fill the screen like Settings. */
 .dxf-platform-mobile .dxf-sheet-backdrop {
   padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));

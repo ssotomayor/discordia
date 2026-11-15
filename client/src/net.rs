@@ -1527,7 +1527,8 @@ pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage
 }
 
 /// A Ready that `recovering` restores keeps what was selected in the session
-/// it restores; the first one of a session starts from the server's defaults.
+/// it restores; the first one of a session starts from the server's defaults,
+/// unless a notification tap opened the DM in view (`dm_opened_by_tap`).
 fn apply_ready(
     s: &mut AppState,
     ready: ServerMessage,
@@ -1564,8 +1565,10 @@ fn apply_ready(
     s.pending_edits.clear();
     let selected_guild = s.selected_guild;
     let selected_channel = s.selected_channel;
-    let selected_dm =
-        recovering && s.dm_mode && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
+    let tapped = s.dm_opened_by_tap.take();
+    let selected_dm = (recovering || tapped.is_some_and(|id| selected_channel == Some(id)))
+        && s.dm_mode
+        && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
     let local_channel = s.voice.channel_id();
     s.readies = s.readies.wrapping_add(1);
     s.self_user = Some(user);
@@ -1581,7 +1584,7 @@ fn apply_ready(
     s.channels = channels;
     s.members = members;
     s.voice_states = voice_states;
-    if !recovering {
+    if !recovering && !selected_dm {
         s.dm_mode = false;
     }
     s.catalog = catalog;
@@ -3246,6 +3249,18 @@ mod tests {
                 );
                 assert!(commands.try_recv().is_err());
                 drop(s);
+                {
+                    let mut s = state.write();
+                    s.dm_mode = true;
+                    s.selected_channel = Some(channel);
+                    s.dm_opened_by_tap = Some(channel);
+                }
+                apply_ready(&mut state.write(), ready.clone(), false, &tx, &voice_tx);
+                assert!(
+                    state.peek().dm_mode,
+                    "a notification's DM outlasts the first Ready"
+                );
+                assert_eq!(state.peek().selected_channel, Some(channel));
                 apply_ready(&mut state.write(), ready, false, &tx, &voice_tx);
                 assert!(!state.peek().dm_mode, "a first Ready opens the server");
             });

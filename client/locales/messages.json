@@ -1466,6 +1466,7 @@
   "Rendezvous": ["Rendezvous", "Rendezvous", "会合", "ランデブー"],
   "Rendezvous servers": ["Servidores rendezvous", "Servidores rendezvous", "集合点服务器", "ランデブー サーバー"],
   "Reply": ["Responder", "Responder", "回复", "返信"],
+  "Mark as read": ["Marcar como leído", "Marcar como lido", "标记为已读", "既読にする"],
   "Replying to": ["Respondiendo a", "Respondendo a", "回复", "返信する"],
   "Requests": ["Solicitudes", "Solicitações", "请求", "リクエスト"],
   "Reset": ["Restablecer", "Redefinir", "重置", "リセット"],

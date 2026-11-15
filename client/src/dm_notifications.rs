@@ -112,7 +112,47 @@ fn open_inbox(state: &mut AppState, peer: &str) -> bool {
     state.dm_mode = true;
     state.selected_channel = Some(channel);
     state.dm_notification_open = Some(channel);
+    state.dm_opened_by_tap = Some(channel);
     true
+}
+
+/// A notification's Reply or Mark as read, for the account it was posted for.
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug, PartialEq)]
+struct NotificationAction {
+    account: String,
+    peer: String,
+    reply: Option<String>,
+}
+
+/// What one does to the running account: a reply goes out as the composer's
+/// would, and either reads the conversation, as answering it in the app does.
+#[cfg(any(target_os = "android", test))]
+fn apply_action(
+    state: &mut AppState,
+    peer: &str,
+    reply: Option<String>,
+) -> Option<crate::nostr::service::NostrCmd> {
+    let text = reply
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .filter(|text| text.chars().count() <= crate::push::actions::MAX_REPLY_CHARS);
+    let channel = conversation_id(peer);
+    // Listed, never selected: the person is answering from outside the app.
+    if state.dm_of(channel).is_none() && state.dm_standing(peer) == DmStanding::Inbox {
+        state.dms.push(crate::state::DmInfo {
+            channel_id: channel,
+            other_pubkey: peer.into(),
+        });
+    }
+    state.mark_dm_read(channel);
+    text.map(|text| crate::nostr::service::NostrCmd::Send {
+        peer: peer.to_string(),
+        text,
+        reply_to: None,
+        emoji: Vec::new(),
+        replaces: None,
+    })
 }
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -121,6 +161,8 @@ struct NativeState {
     #[cfg(target_os = "android")]
     resumed: bool,
     open: Option<(String, String)>,
+    #[cfg(target_os = "android")]
+    actions: Vec<NotificationAction>,
 }
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -275,6 +317,42 @@ mod native {
         }
     }
 
+    /// A button on a notification while this account runs: the running service
+    /// sends, so the reply joins its outbox like any other.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_discordia_app_DioxusDmActions_onLiveAction(
+        mut env: JNIEnv<'_>,
+        _receiver: JObject<'_>,
+        account: JString<'_>,
+        peer: JString<'_>,
+        reply: JString<'_>,
+    ) {
+        fn read(env: &mut JNIEnv<'_>, value: &JString<'_>) -> Option<String> {
+            if value.is_null() {
+                return None;
+            }
+            env.get_string(value).map(String::from).ok()
+        }
+        let account = read(&mut env, &account);
+        let peer = read(&mut env, &peer);
+        let reply = read(&mut env, &reply);
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        if let (Some(account), Some(peer)) = (account, peer)
+            && crate::protocol::is_canonical_pubkey(&account)
+            && crate::protocol::is_canonical_pubkey(&peer)
+        {
+            events().send_modify(|state| {
+                state.actions.push(NotificationAction {
+                    account,
+                    peer,
+                    reply,
+                })
+            });
+        }
+    }
+
     pub(super) fn dispatch(method: &'static str, value: String) {
         crate::android::notification_command(method, value);
     }
@@ -288,6 +366,8 @@ mod native {
                 "dm": crate::i18n::text("Private messages", &[]),
                 "mention": crate::i18n::text("Mentions", &[]),
                 "ping": crate::i18n::text("Notifications are working", &[]),
+                "reply": crate::i18n::text("Reply", &[]),
+                "read": crate::i18n::text("Mark as read", &[]),
             })
             .to_string();
             crate::platform::wry::prelude::dispatch(move |env, activity, _| {
@@ -319,6 +399,7 @@ mod native {
         });
         let mut pending = use_signal(|| None::<String>);
         let active_account = account.clone();
+        let nostr = use_context::<crate::nostr::service::NostrTx>();
         use_hook(move || {
             crate::service_task::spawn(async move {
                 let mut receiver = events().subscribe();
@@ -326,6 +407,25 @@ mod native {
                     let event = receiver.borrow_and_update().clone();
                     if state.peek().app_foreground != event.resumed {
                         state.write().app_foreground = event.resumed;
+                    }
+                    if event.actions.iter().any(|a| a.account == active_account) {
+                        let mut mine = Vec::new();
+                        events().send_if_modified(|event| {
+                            let (ours, rest): (Vec<NotificationAction>, Vec<NotificationAction>) =
+                                std::mem::take(&mut event.actions)
+                                    .into_iter()
+                                    .partition(|a| a.account == active_account);
+                            event.actions = rest;
+                            mine = ours;
+                            !mine.is_empty()
+                        });
+                        for action in mine {
+                            if let Some(send) =
+                                apply_action(&mut state.write(), &action.peer, action.reply)
+                            {
+                                nostr.send(send);
+                            }
+                        }
                     }
                     if let Some((owner, peer)) = event.open {
                         if owner == active_account {
@@ -540,6 +640,26 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notification_reply_sends_like_the_composer_and_reads_the_conversation() {
+        let peer = "b".repeat(64);
+        let mut state = AppState::empty();
+        state.choose_dm(&peer, Some(crate::state::DmChoice::Accepted));
+        let channel = conversation_id(&peer);
+        state.change_dm_unread(channel, crate::state::UnreadChange::Arrived);
+        let sent = apply_action(&mut state, &peer, Some("  on my way ".into()));
+        assert!(matches!(
+            sent,
+            Some(crate::nostr::service::NostrCmd::Send { peer: to, text, reply_to: None, replaces: None, .. })
+                if to == peer && text == "on my way"
+        ));
+        assert_eq!(state.dm_unread(channel), 0);
+        state.change_dm_unread(channel, crate::state::UnreadChange::Arrived);
+        assert!(apply_action(&mut state, &peer, None).is_none());
+        assert_eq!(state.dm_unread(channel), 0);
+        assert!(apply_action(&mut state, &peer, Some("   ".into())).is_none());
+    }
 
     #[test]
     fn native_read_marks_use_the_senders_clock_even_before_history_replays() {
