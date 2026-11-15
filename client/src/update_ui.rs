@@ -78,6 +78,17 @@ impl State {
             )
     }
 
+    fn download_finished(&mut self, result: Option<Result<PathBuf, String>>) {
+        self.phase = match result {
+            Some(Ok(path)) => Phase::Ready(path),
+            Some(Err(error)) => Phase::Failed(error),
+            None => {
+                self.progress = (0, None);
+                Phase::Offered
+            }
+        };
+    }
+
     fn checked(&mut self, result: Result<crate::version::CheckResult, String>) {
         self.checked = Some(SystemTime::now());
         match result {
@@ -99,7 +110,7 @@ impl State {
 
 enum Command {
     Check,
-    Download(Update),
+    Download(Update, tokio::sync::oneshot::Receiver<()>),
     Install(PathBuf),
 }
 
@@ -108,6 +119,7 @@ pub struct Updates {
     pub state: Signal<State>,
     pub open_request: Signal<u64>,
     commands: Coroutine<Command>,
+    cancellation: Signal<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl Updates {
@@ -133,13 +145,23 @@ impl Updates {
                 .filter(|offer| offer.download.is_some())
         };
         if let Some(offer) = offer {
+            let (cancel, cancelled) = tokio::sync::oneshot::channel();
+            self.cancellation.set(Some(cancel));
             let mut state = self.state.write();
             state.phase = Phase::Downloading;
             state.install_error = None;
             state.progress = (0, None);
             state.dismissed = false;
             drop(state);
-            self.commands.send(Command::Download(offer));
+            self.commands.send(Command::Download(offer, cancelled));
+        }
+    }
+
+    fn cancel_download(mut self) {
+        if self.state.peek().phase == Phase::Downloading
+            && let Some(cancel) = self.cancellation.write().take()
+        {
+            let _ = cancel.send(());
         }
     }
 
@@ -184,9 +206,11 @@ impl Updates {
 pub fn use_updates() -> Updates {
     let mut state = use_hook(|| Signal::new_in_scope(State::default(), ScopeId::ROOT));
     let open_request = use_hook(|| Signal::new_in_scope(0_u64, ScopeId::ROOT));
+    let mut cancellation = use_hook(|| Signal::new_in_scope(None, ScopeId::ROOT));
     use_drop(move || {
         state.manually_drop();
         open_request.manually_drop();
+        cancellation.manually_drop();
     });
     let commands = use_coroutine(move |mut rx: UnboundedReceiver<Command>| async move {
         while let Some(command) = rx.next().await {
@@ -195,28 +219,29 @@ pub fn use_updates() -> Updates {
                     let result = crate::version::check_for_update().await;
                     state.write().checked(result);
                 }
-                Command::Download(offer) => {
+                Command::Download(offer, cancelled) => {
                     let Some(download) = offer.download else {
                         continue;
                     };
                     let mut painted = 0;
-                    let result = super::fetch_verified(
-                        &offer.tag,
-                        &download.asset,
-                        &download.asset_url,
-                        &download.signature_url,
-                        move |got, total| {
-                            if super::should_paint(got, painted, total) {
-                                painted = got;
-                                state.write().progress = (got, total);
-                            }
-                        },
+                    let result = download_or_cancel(
+                        cancelled,
+                        super::fetch_verified(
+                            &offer.tag,
+                            &download.asset,
+                            &download.asset_url,
+                            &download.signature_url,
+                            move |got, total| {
+                                if super::should_paint(got, painted, total) {
+                                    painted = got;
+                                    state.write().progress = (got, total);
+                                }
+                            },
+                        ),
                     )
                     .await;
-                    state.write().phase = match result {
-                        Ok(path) => Phase::Ready(path),
-                        Err(error) => Phase::Failed(error),
-                    };
+                    cancellation.write().take();
+                    state.write().download_finished(result);
                 }
                 Command::Install(path) => {
                     #[cfg(target_os = "android")]
@@ -251,14 +276,28 @@ pub fn use_updates() -> Updates {
             }
         }
     });
+    #[cfg(target_os = "android")]
+    use_hook(move || crate::platform::window().keep_alive_task(commands.task()));
     let updates = Updates {
         state,
         open_request,
         commands,
+        cancellation,
     };
     use_context_provider(|| updates);
     use_effect(move || updates.check());
     updates
+}
+
+async fn download_or_cancel<T>(
+    cancelled: tokio::sync::oneshot::Receiver<()>,
+    operation: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = cancelled => None,
+        result = operation => Some(result),
+    }
 }
 
 #[component]
@@ -408,6 +447,9 @@ pub fn UpdatePanel() -> Element {
                     } else if matches!(state.phase, Phase::Offered | Phase::Failed(_)) && state.offer.as_ref().is_some_and(|offer| offer.download.is_some()) {
                         button { class: "dxf-update-primary", disabled: state.check == Check::Searching, onclick: move |_| updates.download(), {crate::i18n::text("Download update", &[])} }
                     }
+                    if state.phase == Phase::Downloading {
+                        button { class: "dxf-update-secondary", aria_label: crate::i18n::text("Cancel download", &[]), onclick: move |_| updates.cancel_download(), {crate::i18n::text("Cancel download", &[])} }
+                    }
                     if let Some(offer) = state.offer.clone() {
                         button { class: "dxf-update-secondary", onclick: move |_| crate::app::open_external(&offer.url), {crate::i18n::text("View release notes", &[])} }
                     }
@@ -451,6 +493,56 @@ mod tests {
                 signature_url: "https://example.invalid/test.minisig".into(),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_an_active_download_and_skips_a_cancelled_one() {
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        cancel.send(()).unwrap();
+        let result =
+            download_or_cancel(cancelled, async { panic!("cancelled download started") }).await;
+        assert_eq!(result, None::<()>);
+
+        struct Dropped(Rc<std::cell::Cell<bool>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Rc::new(std::cell::Cell::new(false));
+        let guard = Dropped(dropped.clone());
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let (started, active) = tokio::sync::oneshot::channel();
+        let operation = async move {
+            let _guard = guard;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        };
+        let cancellation = async move {
+            active.await.unwrap();
+            cancel.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(download_or_cancel(cancelled, operation), cancellation);
+        assert_eq!(result, None);
+        assert!(dropped.get());
+    }
+
+    #[test]
+    fn cancelling_a_download_resets_progress_and_retains_the_offer_for_retry() {
+        let mut state = State {
+            offer: Some(offer("v1")),
+            phase: Phase::Downloading,
+            progress: (30, Some(46)),
+            ..Default::default()
+        };
+        state.download_finished(None);
+        assert_eq!(state.phase, Phase::Offered);
+        assert_eq!(state.progress, (0, None));
+        assert_eq!(state.offer, Some(offer("v1")));
+        state.download_finished(Some(Err("offline".into())));
+        assert_eq!(state.phase, Phase::Failed("offline".into()));
+        state.download_finished(Some(Ok("verified.apk".into())));
+        assert_eq!(state.phase, Phase::Ready("verified.apk".into()));
     }
 
     #[test]
@@ -531,10 +623,12 @@ mod tests {
                     });
                     let open_request = use_signal(|| 0);
                     let commands = use_coroutine(|_rx: UnboundedReceiver<Command>| async {});
+                    let cancellation = use_signal(|| None);
                     use_context_provider(|| Updates {
                         state,
                         open_request,
                         commands,
+                        cancellation,
                     });
                     rsx! { UpdatePanel {} }
                 },
@@ -573,10 +667,12 @@ mod tests {
                 });
                 let open_request = use_signal(|| 0);
                 let commands = use_coroutine(|_rx: UnboundedReceiver<Command>| async {});
+                let cancellation = use_signal(|| None);
                 *export.borrow_mut() = Some(Updates {
                     state,
                     open_request,
                     commands,
+                    cancellation,
                 });
                 rsx! { div {} }
             },
