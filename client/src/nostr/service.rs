@@ -39,7 +39,6 @@ pub enum NostrCmd {
         server: String,
         data_url: String,
         file_name: Option<String>,
-        preview_data_url: Option<String>,
         text: String,
         reply_to: Option<String>,
         view_once: bool,
@@ -391,25 +390,31 @@ pub fn spawn_nostr(
                     }
                 }
                 cmd = rx.recv() => match cmd {
-                    Some(NostrCmd::Image { peer, server, data_url, file_name, preview_data_url, text, reply_to, view_once, queued, permit }) => {
+                    Some(NostrCmd::Image { peer, server, data_url, file_name, text, reply_to, view_once, queued, permit }) => {
                         let _permit = permit;
                         if images.jobs.len() >= super::dm_image::MAX_JOBS || !outbox.fits(2, 0) || state.peek().mutes.contains(&peer) {
                             let _ = queued.send(Err("Image queue is full or this contact is blocked. Your draft was kept.".into()));
                             continue;
                         }
-                        let prepared = tokio::task::spawn_blocking(move || super::dm_image::prepare(
-                            &secret,
-                            super::dm_image::PrepareImage {
-                                peer,
-                                server,
-                                data: data_url,
-                                file_name,
-                                preview_data_url,
-                                text,
-                                reply_to,
-                                view_once,
-                            },
-                        )).await;
+                        let prepared = tokio::task::spawn_blocking(move || {
+                            // `prepare` drops a view-once picture's preview, so none is made.
+                            let preview_data_url = (!view_once)
+                                .then(|| crate::chat_image::preview_data_url(&data_url).ok().flatten())
+                                .flatten();
+                            super::dm_image::prepare(
+                                &secret,
+                                super::dm_image::PrepareImage {
+                                    peer,
+                                    server,
+                                    data: data_url,
+                                    file_name,
+                                    preview_data_url,
+                                    text,
+                                    reply_to,
+                                    view_once,
+                                },
+                            )
+                        }).await;
                         match prepared {
                             Ok(Ok(job)) => {
                                 show_image_job(&job, &our_pubkey, &mut state, &mut outbox);
