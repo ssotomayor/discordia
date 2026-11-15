@@ -1,6 +1,7 @@
 #[cfg(target_os = "android")]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
@@ -26,19 +27,17 @@ pub(super) async fn fetch_verified(
     if asset != "Discordia-android-arm64.apk" {
         return Err("Unexpected Android update asset.".into());
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(15 * 60))
+    let client = super::download_client(super::DOWNLOAD_IDLE_TIMEOUT)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(super::download_error)?;
     let mut response = client
         .get(signature_url)
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| e.to_string())?;
+        .map_err(super::download_error)?;
     let mut signature = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+    while let Some(chunk) = response.chunk().await.map_err(super::download_error)? {
         if signature.len() + chunk.len() > MAX_SIGNATURE_BYTES {
             return Err("Update signature is too large.".into());
         }
@@ -52,7 +51,7 @@ pub(super) async fn fetch_verified(
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| e.to_string())?;
+        .map_err(super::download_error)?;
     let directory = crate::identity::config_dir().join("updates");
     download_response(response, directory, &key, &signature, &mut progress).await
 }
@@ -98,7 +97,7 @@ async fn download_response(
         .map_err(|e| e.to_string())?;
     let mut got = 0_u64;
     progress(got, total);
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+    while let Some(chunk) = response.chunk().await.map_err(super::download_error)? {
         got = got
             .checked_add(chunk.len() as u64)
             .ok_or("Android update is too large.")?;
@@ -184,6 +183,98 @@ mod tests {
             .send()
             .await
             .unwrap()
+    }
+
+    async fn stalled_response(
+        idle: Duration,
+    ) -> (
+        reqwest::Response,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", DATA.len()).as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&DATA[..4]).await.unwrap();
+            let _ = released.await;
+        });
+        let response = super::super::download_client(idle)
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/update"))
+            .send()
+            .await
+            .unwrap();
+        (response, release, worker)
+    }
+
+    #[tokio::test]
+    async fn a_stalled_partial_download_times_out_cleans_up_and_can_retry() {
+        let directory = Directory::new();
+        let key = minisign_verify::PublicKey::from_base64(KEY).unwrap();
+        let signature = minisign_verify::Signature::decode(SIGNATURE).unwrap();
+        let (stalled, release, worker) = stalled_response(Duration::from_millis(500)).await;
+        let mut last = 0;
+        let error = download_response(stalled, directory.0.clone(), &key, &signature, |got, _| {
+            last = got
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(last, 4, "the connection must stall after real progress");
+        assert!(error.contains("stopped receiving data"), "{error}");
+        assert!(directory.files().is_empty());
+        release.send(()).unwrap();
+        worker.await.unwrap();
+        let file = download_response(
+            response(DATA, DATA.len() as u64).await,
+            directory.0.clone(),
+            &key,
+            &signature,
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(file).unwrap(), DATA);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_partial_download_removes_the_unverified_file() {
+        let directory = Directory::new();
+        let key = minisign_verify::PublicKey::from_base64(KEY).unwrap();
+        let signature = minisign_verify::Signature::decode(SIGNATURE).unwrap();
+        let (response, release, worker) = stalled_response(Duration::from_secs(10)).await;
+        let (progress, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        {
+            let mut download = Box::pin(download_response(
+                response,
+                directory.0.clone(),
+                &key,
+                &signature,
+                move |got, _| {
+                    progress.send(got).unwrap();
+                },
+            ));
+            loop {
+                tokio::select! {
+                    result = &mut download => panic!("download must remain pending: {result:?}"),
+                    got = receiver.recv() => if got == Some(4) { break; },
+                }
+            }
+        }
+        assert!(directory.files().is_empty());
+        release.send(()).unwrap();
+        worker.await.unwrap();
     }
 
     #[tokio::test]

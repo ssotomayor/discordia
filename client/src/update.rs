@@ -5,6 +5,23 @@ use minisign_verify::{PublicKey, Signature};
 const PUBLIC_KEY: &str = include_str!("../../release-signing.pub");
 
 const PORTABLE_MARKER: &str = "PORTABLE";
+const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+
+fn download_client(idle_timeout: Duration) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(idle_timeout)
+        .timeout(Duration::from_secs(15 * 60))
+}
+
+#[cfg(any(target_os = "android", test))]
+fn download_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "The update download stopped receiving data. Please try again.".into()
+    } else {
+        error.to_string()
+    }
+}
 
 fn portable_dir() -> Option<std::path::PathBuf> {
     if !cfg!(target_os = "windows") {
@@ -112,7 +129,9 @@ pub async fn fetch_verified(
     #[cfg(not(target_os = "android"))]
     {
         let mut on_progress = on_progress;
-        let client = reqwest::Client::new();
+        let client = download_client(DOWNLOAD_IDLE_TIMEOUT)
+            .build()
+            .map_err(|error| error.to_string())?;
         let sig = client
             .get(signature_url)
             .send()

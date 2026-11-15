@@ -1,4 +1,6 @@
 {
+  "Cancel download": ["Cancelar descarga", "Cancelar download", "取消下载", "ダウンロードをキャンセル"],
+  "The update download stopped receiving data. Please try again.": ["La descarga de la actualización dejó de recibir datos. Inténtalo de nuevo.", "O download da atualização parou de receber dados. Tente novamente.", "更新下载已停止接收数据。请重试。", "更新のダウンロードでデータを受信できなくなりました。もう一度お試しください。"],
   "On this server, changes apply the next time you connect.": ["En este servidor, los cambios se aplican la próxima vez que te conectes.", "Neste servidor, as alterações são aplicadas na próxima vez que você se conectar.", "在此服务器上，更改会在下次连接时生效。", "このサーバーでは、変更は次回の接続時に適用されます。"],
   "This message is still sending. Try reacting again in a moment.": ["Este mensaje todavía se está enviando. Intenta reaccionar de nuevo en un momento.", "Esta mensagem ainda está sendo enviada. Tente reagir novamente em instantes.", "这条消息仍在发送中。请稍后再试。", "このメッセージはまだ送信中です。少し待ってからもう一度リアクションしてください。"],
   "Show that I am on mobile": ["Mostrar que estoy desde el celular", "Mostrar que estou no celular", "显示我正在使用手机", "モバイル端末の使用を表示"],
