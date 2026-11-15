@@ -119,7 +119,7 @@ fn open_inbox(state: &mut AppState, peer: &str) -> bool {
 /// A notification's Reply or Mark as read, for the account it was posted for.
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug, PartialEq)]
-struct Action {
+struct NotificationAction {
     account: String,
     peer: String,
     reply: Option<String>,
@@ -162,7 +162,7 @@ struct NativeState {
     resumed: bool,
     open: Option<(String, String)>,
     #[cfg(target_os = "android")]
-    actions: Vec<Action>,
+    actions: Vec<NotificationAction>,
 }
 
 #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -344,7 +344,7 @@ mod native {
             && crate::protocol::is_canonical_pubkey(&peer)
         {
             events().send_modify(|state| {
-                state.actions.push(Action {
+                state.actions.push(NotificationAction {
                     account,
                     peer,
                     reply,
@@ -411,7 +411,7 @@ mod native {
                     if event.actions.iter().any(|a| a.account == active_account) {
                         let mut mine = Vec::new();
                         events().send_if_modified(|event| {
-                            let (ours, rest): (Vec<Action>, Vec<Action>) =
+                            let (ours, rest): (Vec<NotificationAction>, Vec<NotificationAction>) =
                                 std::mem::take(&mut event.actions)
                                     .into_iter()
                                     .partition(|a| a.account == active_account);
