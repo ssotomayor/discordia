@@ -341,7 +341,7 @@ impl App {
                         // This is a place where wry says it's threadsafe but it's actually not.
                         // If we're patching the app, we want to make sure it's not going to progress in the interim.
                         #[cfg(target_os = "android")]
-                        let _lock = crate::android_sync_lock::android_runtime_lock();
+                        let _lock = crate::android_sync_lock::android_runtime_lock("hot_patch");
                         dioxus_devtools::apply_changes(&webview.dom, &hr_msg);
                     }
 

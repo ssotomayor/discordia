@@ -81,7 +81,7 @@ impl WebviewEdits {
             Ok(event) => {
                 // we need to wait for the mutex lock to let us munge the main thread..
                 #[cfg(target_os = "android")]
-                let _lock = crate::android_sync_lock::android_runtime_lock();
+                let _lock = crate::android_sync_lock::android_runtime_lock("html_event");
                 self.handle_html_event(event)
             }
             Err(err) => {
@@ -571,7 +571,7 @@ impl WebviewInstance {
             if edits_flushed_poll.is_pending() {
                 #[cfg(target_os = "android")]
                 {
-                    let _lock = crate::android_sync_lock::android_runtime_lock();
+                    let _lock = crate::android_sync_lock::android_runtime_lock("service_tasks");
                     self.desktop_context
                         .service_tasks
                         .poll_pending(&mut self.dom, &self.waker);
@@ -585,7 +585,7 @@ impl WebviewInstance {
             {
                 // lock the hack-ed in lock sync wry has some thread-safety issues with event handlers and async tasks
                 #[cfg(target_os = "android")]
-                let _lock = crate::android_sync_lock::android_runtime_lock();
+                let _lock = crate::android_sync_lock::android_runtime_lock("wait_for_work");
                 let fut = self.dom.wait_for_work();
                 pin_mut!(fut);
 
@@ -597,7 +597,7 @@ impl WebviewInstance {
 
             // lock the hack-ed in lock sync wry has some thread-safety issues with event handlers
             #[cfg(target_os = "android")]
-            let _lock = crate::android_sync_lock::android_runtime_lock();
+            let _lock = crate::android_sync_lock::android_runtime_lock("render");
 
             self.edits
                 .wry_queue

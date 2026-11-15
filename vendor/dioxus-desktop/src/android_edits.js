@@ -31,8 +31,16 @@
       finished = true;
       cancelAnimationFrame(frame);
       clearTimeout(timer);
-      this.flushQueuedBytes();
-      this.markEditsFinished();
+      // Rust renders nothing until this batch is acknowledged, so a throwing edit froze the app.
+      try {
+        this.flushQueuedBytes();
+      } catch (error) {
+        try {
+          this.sendIpcMessage('edit_error', {message: String(error), stack: String(error?.stack ?? '')});
+        } catch (_) {}
+      } finally {
+        this.markEditsFinished();
+      }
     };
     // Android can suspend animation frames behind permission dialogs or other apps.
     // A pending DOM acknowledgement must not suspend gateway heartbeats too.

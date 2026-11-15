@@ -94,6 +94,10 @@ pub fn launch_virtual_dom_blocking(virtual_dom: VirtualDom, mut desktop_config: 
                     IpcMethod::UserEvent => {}
                     IpcMethod::Query => app.handle_query_msg(msg, id),
                     IpcMethod::BrowserOpen => app.handle_browser_open(msg),
+                    IpcMethod::Other("edit_error") => tracing::error!(
+                        params = %msg.params_ref(),
+                        "Webview failed to apply a DOM edit batch; it may now differ from the VirtualDom"
+                    ),
                     IpcMethod::Other(_) => {}
                 },
             },
