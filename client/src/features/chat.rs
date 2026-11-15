@@ -1843,6 +1843,7 @@ mod author_name_tests {
 
     #[test]
     fn a_dm_quick_reaction_uses_nostr_without_a_gateway_connection() {
+        dioxus::html::set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         use dioxus::core::{AttributeValue, Mutation};
         use std::any::Any;
         use tokio::sync::mpsc::UnboundedReceiver;
