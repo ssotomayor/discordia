@@ -436,10 +436,7 @@ window.dxScreen = window.dxScreen || (function () {
         if (entry.startupTimer) clearTimeout(entry.startupTimer);
         screenRecoveries.delete(identity);
         c.setAttribute('data-frame-ready', 'true');
-        if (kind === 'screen' && identity !== selfPreviewIdentity) {
-          const pub = screenPublication(identity);
-          if (pub && !participantIsPoor(entry.track ? entry.track.sid : '')) requestHighQuality(pub);
-        }
+        if (kind === 'screen') requestInitialQuality(identity, track);
       };
       if (typeof el.requestVideoFrameCallback === 'function') el.requestVideoFrameCallback(ready);
       else el.addEventListener('loadeddata', ready, { once: true });
@@ -1122,6 +1119,12 @@ window.dxScreen = window.dxScreen || (function () {
     if (!lk || !lk.VideoQuality) return;
     requestQuality(pub, lk.VideoQuality.HIGH);
   }
+  function requestInitialQuality(identity, track) {
+    if (!track || identity === selfPreviewIdentity || participantIsPoor(track.sid)) return;
+    const policy = qualityPolicy.get(track.sid);
+    if (policy && (policy.probeAt > 0 || policy.probingSince > 0)) return;
+    requestHighQuality(screenPubs.get(track.sid));
+  }
   function participantIsPoor(sid) {
     const lk = LK();
     const participant = screenParticipants.get(sid);
@@ -1722,7 +1725,7 @@ pub fn quality_for_platform(saved: &str) -> &str {
     }
 }
 
-fn selected_capture_settings(
+pub(super) fn selected_capture_settings(
     settings: &crate::settings::ClientSettings,
 ) -> crate::sysvideo::Settings {
     let mut capture = native_settings(quality_for_platform(&settings.screenshare_quality));

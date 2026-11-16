@@ -4,6 +4,7 @@ Source: [LiveKit Rust SDK](https://github.com/livekit/rust-sdks), crates.io rele
 
 | File | Local change |
 |---|---|
+| `src/windows/mf_codec_control.h`, `mf_encoder_factory.cpp`, `tests/realtime_encoder.cpp` | Optional keyframe controls tolerate only recognized unsupported results; real query/write errors propagate. Native regression injects unsupported controls, device reset/removal and allocation/permission/parameter failures. GOP configuration remains a frame count, not a wall-clock guarantee. |
 | `build.rs` | Compile Windows x64 NVENC when `CUDA_PATH` contains driver headers/import library; link CUDA and delayimp. |
 | `src/nvidia/nvidia_encoder_factory.cpp` | Load and probe the Windows NVENC driver DLL. |
 | `src/nvidia/NvCodec/include/Utils/Logger.h` | Use Winsock 2 to match WebRTC's Windows headers. |
