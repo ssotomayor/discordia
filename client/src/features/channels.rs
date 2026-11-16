@@ -1505,6 +1505,11 @@ fn ScreenShareStatsRow(
                 span { "{packets_label}" }
                 if let Some(jitter) = jitter { span { "{jitter}" } }
             }
+            if stats.outbound && stats.low_bitrate {
+                div { class: "text-[var(--text-dim)] mt-0.5",
+                    {crate::i18n::text("Allocated bitrate is below the configured ceiling. Static content may need less data; this alone does not indicate a stream problem.", &[])}
+                }
+            }
             if !stats.outbound && decoder_mode == "Not reported" {
                 div { class: "text-[var(--text-muted)] mt-0.5",
                     {crate::i18n::text("The browser did not identify the active decoder as hardware or software. Missing data does not mean CPU decoding.", &[])}

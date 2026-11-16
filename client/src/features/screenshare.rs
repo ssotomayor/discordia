@@ -42,9 +42,6 @@ pub(crate) fn StreamQualityNotice(
         "sender-output" => {
             "The broadcaster is producing very few video frames while capture continues. The cause is not yet known."
         }
-        "sender-bitrate" => {
-            "The broadcaster has little bitrate allocated for the selected quality. The image may lose detail; the cause is not yet known."
-        }
         "sender-voice" => "The broadcaster's video bitrate was reduced to protect the voice call.",
         "local-network" => "Your upload connection is limiting this stream.",
         "local-device" => "Your device is struggling to capture or encode this stream smoothly.",
@@ -56,9 +53,6 @@ pub(crate) fn StreamQualityNotice(
         }
         "local-output" => {
             "Your stream is producing very few video frames while capture continues. The cause is not yet known."
-        }
-        "local-bitrate" => {
-            "Your stream has little bitrate allocated for the selected quality. The image may lose detail; the cause is not yet known."
         }
         "local-voice" => "Your video bitrate was reduced to protect the voice call.",
         "waiting-video" => {
@@ -89,7 +83,6 @@ fn stream_health_code(reason: &str) -> &'static str {
         "sender-capture" | "local-capture" => "TX-CAPTURE",
         "sender-encoder" | "local-encoder" => "TX-ENCODER",
         "sender-output" | "local-output" => "TX-OUTPUT",
-        "sender-bitrate" | "local-bitrate" => "TX-BITRATE",
         "sender-voice" | "local-voice" => "TX-VOICE",
         "sender-network" | "local-network" => "TX-NETWORK",
         "sender-device" | "local-device" => "TX-DEVICE",
@@ -1051,7 +1044,6 @@ window.dxScreen = window.dxScreen || (function () {
     else if (status && status.captureLimited === true && status.captureSlow === false) reason = 'sender-encoder';
     else if (status && status.outputSlow === true) reason = 'sender-output';
     else if (status && (status.cpu === true || status.captureLimited === true)) reason = 'sender-device';
-    else if (status && status.lowBitrate === true) reason = 'sender-bitrate';
     else if (loss !== null && loss < 0.01 && frames > 0 && decode !== null &&
         (interrupted || dropRate >= 0.05 || (lowFps && frames >= 5 * seconds)) &&
         decode / frames >= 0.8 / Math.max(10, sameLayer && status.primaryFps || sample.framesPerSecond || frames / seconds)) reason = 'receiver-device';
@@ -1098,8 +1090,7 @@ window.dxScreen = window.dxScreen || (function () {
       : status.captureSlow === true ? 'local-capture'
       : status.cpu === true || (status.captureLimited === true && status.captureSlow === false) ? 'local-encoder'
       : status.outputSlow === true ? 'local-output'
-      : status.captureLimited === true ? 'local-device'
-      : status.lowBitrate === true ? 'local-bitrate' : '';
+      : status.captureLimited === true ? 'local-device' : '';
     state.sample = status;
     return healthNotice(state, reason, now);
   }
@@ -3710,7 +3701,6 @@ mod js_escaping_tests {
                 "The broadcaster's video encoding is too slow.",
             ),
             ("sender-output", "TX-OUTPUT", "The cause is not yet known."),
-            ("local-bitrate", "TX-BITRATE", "little bitrate allocated"),
             ("sender-voice", "TX-VOICE", "protect the voice call"),
             (
                 "waiting-video",

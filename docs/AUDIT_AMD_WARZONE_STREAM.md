@@ -133,7 +133,7 @@ across those two track SIDs. Existing debug-per-second stats remain opt-in.
 | `TX-ENCODER` | WebRTC reports CPU limitation or measured encoding pressure while capture continues; does not identify a driver fault |
 | `TX-OUTPUT` | Active allocated output produces 0–5 FPS while capture supplies at least 10 FPS; unknown cause is stated explicitly. Also included in the fatal encoder-output stop |
 | `TX-NETWORK` | Publisher reports bandwidth limitation |
-| `TX-BITRATE` | Assigned bitrate is below 40% of the selected cap while capture continues; does not by itself identify a network fault |
+| Low assigned bitrate (Diagnostics only) | Below 40% of the selected cap while capture continues; neutral information, never a warning by itself. Static content can need little data |
 | `TX-VOICE` | Voice-protection budget was applied successfully and active video allocation matches it; a failed request or mere congestion intent is not enough |
 | `RX-NETWORK` / `RX-PLAYBACK` | Recent receiver loss plus interrupted playback / measured decode or display pressure |
 | `RX-OUTPUT` | At most 5 decoded FPS despite sustained incoming video packets and a fresh sender report of higher FPS at the same resolution; insufficient evidence to name a network/decoder cause |

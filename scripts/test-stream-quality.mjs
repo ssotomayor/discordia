@@ -367,7 +367,7 @@ test('fresh sender reports distinguish connection and device limitations', () =>
     [{ ...full, captureLimited: true, captureSlow: true }, 'sender-capture'],
     [{ ...full, captureLimited: true, captureSlow: false }, 'sender-encoder'],
     [{ ...full, outputSlow: true }, 'sender-output'],
-    [{ ...full, lowBitrate: true }, 'sender-bitrate'],
+    [{ ...full, lowBitrate: true }, ''],
     [{ ...full, lowBitrate: true, voiceLimited: true, bandwidth: true }, 'sender-voice']]) {
     const tick = healthSequence(status);
     let result;
@@ -376,6 +376,27 @@ test('fresh sender reports distinguish connection and device limitations', () =>
     for (let i = 0; i < 4; i++) result = tick({}, null);
     assert.equal(result, '', 'expired metadata cannot keep attributing a sender limitation');
   }
+});
+
+test('low bitrate alone stays informational and does not mask real receiver problems', () => {
+  const tick = healthSequence({ ...full, lowBitrate: true });
+  for (let i = 0; i < 6; i++) assert.equal(tick(), '');
+  let reason;
+  for (let i = 0; i < 6; i++) reason = tick({ freezeCount: i + 1 });
+  assert.equal(reason, 'unstable');
+});
+
+test('a recovered sender clears its warning even while assigned bitrate remains low', async () => {
+  healthReports.clear();
+  for (now = 0; now <= 5000; now += 1000) {
+    await context.senderHealth({ id: 'recovering', bandwidth: true, lowBitrate: true });
+  }
+  assert.equal(await context.senderHealth({ id: 'recovering', bandwidth: true, lowBitrate: true }), 'local-network');
+  let reason;
+  for (now = 6000; now <= 11000; now += 1000) {
+    reason = await context.senderHealth({ id: 'recovering', lowBitrate: true });
+  }
+  assert.equal(reason, '');
 });
 
 test('local sender notices debounce, recover, and reset across sessions', async () => {
@@ -398,7 +419,7 @@ test('native sender notices identify capture, encoding and low output, then clea
     [{ captureSlow: false, captureLimited: true }, 'local-encoder'],
     [{ outputSlow: true }, 'local-output'],
     [{ bandwidth: true, captureSlow: true }, 'local-network'],
-    [{ lowBitrate: true }, 'local-bitrate'],
+    [{ lowBitrate: true }, ''],
     [{ lowBitrate: true, voiceLimited: true, bandwidth: true }, 'local-voice'],
   ]) {
     healthReports.clear();
