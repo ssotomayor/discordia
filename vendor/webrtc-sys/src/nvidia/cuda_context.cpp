@@ -195,13 +195,15 @@ CUcontext CudaContext::GetContext() const {
   // Ensure the context is current
   CUcontext current;
   if (cuCtxGetCurrent(&current) != CUDA_SUCCESS) {
-    throw;
+    RTC_LOG(LS_ERROR) << "Could not query the current CUDA context.";
+    return nullptr;
   }
   if (cu_context_ == current) {
     return cu_context_;
   }
   if (cuCtxSetCurrent(cu_context_) != CUDA_SUCCESS) {
-    throw;
+    RTC_LOG(LS_ERROR) << "Could not activate the NVENC CUDA context.";
+    return nullptr;
   }
   return cu_context_;
 }

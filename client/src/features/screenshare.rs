@@ -26,24 +26,96 @@ pub(crate) fn StreamQualityNotice(
         "receiver-device" => {
             "Your device appears unable to decode or display this stream smoothly."
         }
+        "receiver-output" => {
+            "Video data is arriving, but very few frames can be played. The cause is not yet known."
+        }
         "sender-network" => "The broadcaster reports an upload connection limitation.",
         "sender-device" => {
             "The broadcaster reports a capture or encoding limitation on their device."
         }
+        "sender-capture" => {
+            "The broadcaster's screen capture is too slow. They can lower stream FPS or reduce the game's graphics load."
+        }
+        "sender-encoder" => {
+            "The broadcaster's video encoding is too slow. They can lower stream resolution or FPS."
+        }
+        "sender-output" => {
+            "The broadcaster is producing very few video frames while capture continues. The cause is not yet known."
+        }
+        "sender-bitrate" => {
+            "The broadcaster has little bitrate allocated for the selected quality. The image may lose detail; the cause is not yet known."
+        }
+        "sender-voice" => "The broadcaster's video bitrate was reduced to protect the voice call.",
         "local-network" => "Your upload connection is limiting this stream.",
         "local-device" => "Your device is struggling to capture or encode this stream smoothly.",
+        "local-capture" => {
+            "Screen capture is too slow on your device. Lower stream FPS or reduce the game's graphics load."
+        }
+        "local-encoder" => {
+            "Video encoding is too slow on your device. Lower stream resolution or FPS."
+        }
+        "local-output" => {
+            "Your stream is producing very few video frames while capture continues. The cause is not yet known."
+        }
+        "local-bitrate" => {
+            "Your stream has little bitrate allocated for the selected quality. The image may lose detail; the cause is not yet known."
+        }
+        "local-voice" => "Your video bitrate was reduced to protect the voice call.",
+        "waiting-video" => {
+            "No playable video has arrived yet. Discordia is retrying the connection automatically."
+        }
         "unstable" => {
             "Playback is interrupted. There is not enough information to identify the cause."
         }
         _ => "",
     };
+    let code = stream_health_code(&health_reason);
     rsx! {
         if !message.is_empty() {
             span { class: "block text-[10px] text-[var(--accent)]", role: "status", {crate::i18n::label(message)} }
         }
         if !health.is_empty() {
-            span { class: "block text-[10px] text-[var(--warn)]", role: "status", {crate::i18n::label(health)} }
+            div { class: "text-[var(--warn)]", role: "status", "data-stream-health": code, style: "font-size: 11px; white-space: normal; overflow-wrap: anywhere;",
+                strong { {crate::i18n::text("Stream issue · {0}", &[code.into()])} }
+                span { class: "block", {crate::i18n::label(health)} }
+                span { class: "block text-[var(--text-dim)]", {crate::i18n::label("Include this code and a screenshot when reporting the problem.")} }
+            }
         }
+    }
+}
+
+fn stream_health_code(reason: &str) -> &'static str {
+    match reason {
+        "sender-capture" | "local-capture" => "TX-CAPTURE",
+        "sender-encoder" | "local-encoder" => "TX-ENCODER",
+        "sender-output" | "local-output" => "TX-OUTPUT",
+        "sender-bitrate" | "local-bitrate" => "TX-BITRATE",
+        "sender-voice" | "local-voice" => "TX-VOICE",
+        "sender-network" | "local-network" => "TX-NETWORK",
+        "sender-device" | "local-device" => "TX-DEVICE",
+        "receiver-network" => "RX-NETWORK",
+        "receiver-device" => "RX-PLAYBACK",
+        "receiver-output" => "RX-OUTPUT",
+        "waiting-video" => "RX-STARTUP",
+        "unstable" => "STREAM-UNSTABLE",
+        _ => "",
+    }
+}
+
+pub(super) fn update_health_notice(mut signal: Signal<String>, reason: String) {
+    if *signal.peek() != reason {
+        let code = stream_health_code(&reason);
+        let previous = signal.peek();
+        let previous_code = stream_health_code(&previous);
+        if !code.is_empty() || !previous_code.is_empty() {
+            tracing::info!(
+                diagnostic_code = if code.is_empty() { previous_code } else { code },
+                active = !code.is_empty(),
+                "stream health notice changed"
+            );
+        }
+        drop(previous);
+        signal.set(reason);
     }
 }
 
@@ -153,6 +225,7 @@ window.dxScreen = window.dxScreen || (function () {
     } catch (error) { console.warn('[dxScreen] video recovery failed', error); }
   }
   function awaitFirstFrame(cid, entry, request) {
+    if (entry.waitingSince === undefined) entry.waitingSince = Date.now();
     entry.startupTimer = setTimeout(function () {
       if (attached[cid] !== entry || connectionRequest !== request || entry.firstFrame || !screenWanted(entry.identity)) return;
       recoverScreen(entry.identity, request);
@@ -523,7 +596,7 @@ window.dxScreen = window.dxScreen || (function () {
         const status = JSON.parse(new TextDecoder().decode(bytes));
         if (!participant.trackPublications.has(status.sid)) return;
         if (![status.width, status.height, status.primaryWidth, status.primaryHeight].every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 16384; })) return;
-        if (['cpu', 'captureLimited', 'bandwidth', 'adaptive'].some(field =>
+        if (['cpu', 'captureLimited', 'captureSlow', 'outputSlow', 'lowBitrate', 'voiceLimited', 'bandwidth', 'adaptive'].some(field =>
             status[field] !== undefined && typeof status[field] !== 'boolean')) return;
         if (['captureFps', 'primaryFps'].some(field => status[field] !== undefined &&
             (!Number.isFinite(status[field]) || status[field] < 0 || status[field] > 240))) return;
@@ -905,6 +978,11 @@ window.dxScreen = window.dxScreen || (function () {
     const lowerLayer = received.height < status.height * 0.9 || received.width < status.width * 0.9;
     return lowerLayer && status.adaptive === true && (!senderReduced || belowPrimary) ? 'receiver' : '';
   }
+  function startupHealth(identity) {
+    return Object.values(attached).some(view => view.identity === identity && view.kind === 'screen' &&
+      view.firstFrame === false && Number.isFinite(view.waitingSince) && Date.now() - view.waitingSince >= 12000)
+      ? 'waiting-video' : '';
+  }
   function healthDelta(current, previous, field) {
     const a = current[field], b = previous[field];
     return Number.isFinite(a) && Number.isFinite(b) && a >= b ? a - b : null;
@@ -966,12 +1044,19 @@ window.dxScreen = window.dxScreen || (function () {
     const struggling = interrupted || lowFps || dropRate >= 0.05;
     let reason = '';
     if (loss >= 0.03 && struggling) reason = 'receiver-network';
+    else if (status && status.voiceLimited === true) reason = 'sender-voice';
     else if (status && status.bandwidth === true) reason = 'sender-network';
+    else if (status && status.captureSlow === true) reason = 'sender-capture';
+    else if (status && status.cpu === true) reason = 'sender-encoder';
+    else if (status && status.captureLimited === true && status.captureSlow === false) reason = 'sender-encoder';
+    else if (status && status.outputSlow === true) reason = 'sender-output';
     else if (status && (status.cpu === true || status.captureLimited === true)) reason = 'sender-device';
+    else if (status && status.lowBitrate === true) reason = 'sender-bitrate';
     else if (loss !== null && loss < 0.01 && frames > 0 && decode !== null &&
         (interrupted || dropRate >= 0.05 || (lowFps && frames >= 5 * seconds)) &&
         decode / frames >= 0.8 / Math.max(10, sameLayer && status.primaryFps || sample.framesPerSecond || frames / seconds)) reason = 'receiver-device';
     else if (loss !== null && loss < 0.01 && frames >= 5 * seconds && renderDropRate >= 0.05) reason = 'receiver-device';
+    else if (lowFps && sample.framesPerSecond <= 5 && frames !== null && frames <= 5 * seconds && packets >= 100) reason = 'receiver-output';
     else if (interrupted) reason = 'unstable';
     state.sample = sample;
     return healthNotice(state, reason, now);
@@ -1008,7 +1093,13 @@ window.dxScreen = window.dxScreen || (function () {
     }
     const now = Date.now();
     const state = healthState(key, status, now);
-    const reason = status.bandwidth === true ? 'local-network' : status.cpu === true || status.captureLimited === true ? 'local-device' : '';
+    const reason = status.voiceLimited === true ? 'local-voice'
+      : status.bandwidth === true ? 'local-network'
+      : status.captureSlow === true ? 'local-capture'
+      : status.cpu === true || (status.captureLimited === true && status.captureSlow === false) ? 'local-encoder'
+      : status.outputSlow === true ? 'local-output'
+      : status.captureLimited === true ? 'local-device'
+      : status.lowBitrate === true ? 'local-bitrate' : '';
     state.sample = status;
     return healthNotice(state, reason, now);
   }
@@ -1035,7 +1126,7 @@ window.dxScreen = window.dxScreen || (function () {
   async function previewStats(identity) {
     if (!viewerVisible) return null;
     const track = videoTrackFor(identity, 'screen');
-    if (!track) return null;
+    if (!track) return { healthReason: startupHealth(identity) };
     try {
       const report = await videoStatsReport(track);
       if (videoTrackFor(identity, 'screen') !== track) return null;
@@ -1087,8 +1178,10 @@ window.dxScreen = window.dxScreen || (function () {
           policy.probingSince = Date.now();
         }
       }
+      const waiting = startupHealth(identity);
+      if (waiting && (!result || !result.healthReason)) return Object.assign(result || {}, { healthReason: waiting });
       return result;
-    } catch (e) { return null; }
+    } catch (e) { return { healthReason: startupHealth(identity) }; }
   }
   async function startShare() {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
@@ -2837,7 +2930,7 @@ pub fn ScreenSelfPreview(
         let _ = document::eval("window.dxScreen.setSelfPreview(null,true);");
     });
 
-    let mut health_reason = use_signal(String::new);
+    let health_reason = use_signal(String::new);
     use_future(move || async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -2853,6 +2946,12 @@ pub fn ScreenSelfPreview(
                             "bandwidth": stats.quality_limitation_reason.as_deref() == Some("bandwidth"),
                             "cpu": stats.quality_limitation_reason.as_deref() == Some("cpu"),
                             "captureLimited": stats.device_limited,
+                            "captureSlow": stats.capture_limited,
+                            "lowBitrate": stats.low_bitrate,
+                            "voiceLimited": stats.voice_limited,
+                            "outputSlow": super::screen_stats::screen_output_slow(
+                                stats.encoder_active == Some(true), stats.capture_fps.unwrap_or(0.0),
+                                stats.encoded_fps.unwrap_or(f64::NAN), stats.target_bitrate_kbps.unwrap_or(0) as f64 * 1000.0),
                         }),
                     )
                 } else {
@@ -2863,7 +2962,7 @@ pub fn ScreenSelfPreview(
                 "dioxus.send(await window.dxScreen?.senderHealth({payload}));"
             ));
             if let Ok(reason) = eval.recv::<String>().await {
-                health_reason.set(reason);
+                update_health_notice(health_reason, reason);
             }
         }
     });
@@ -3382,7 +3481,8 @@ fn ScreenWatchTile(
                     "dioxus.send(await window.dxScreen.previewStats({identity}));"
                 ));
                 if let Ok(value) = eval.recv::<Value>().await {
-                    health_reason.set(
+                    update_health_notice(
+                        health_reason,
                         value["healthReason"]
                             .as_str()
                             .unwrap_or_default()
@@ -3588,6 +3688,51 @@ fn ScreenWatchTile(
 
 #[cfg(test)]
 mod js_escaping_tests {
+    #[test]
+    fn health_notice_renders_a_report_code_and_distinguishes_sender_from_viewer() {
+        use dioxus::core::Mutation;
+        use dioxus::prelude::*;
+        for (reason, code, message) in [
+            (
+                "local-capture",
+                "TX-CAPTURE",
+                "Screen capture is too slow on your device.",
+            ),
+            (
+                "sender-encoder",
+                "TX-ENCODER",
+                "The broadcaster's video encoding is too slow.",
+            ),
+            ("sender-output", "TX-OUTPUT", "The cause is not yet known."),
+            ("local-bitrate", "TX-BITRATE", "little bitrate allocated"),
+            ("sender-voice", "TX-VOICE", "protect the voice call"),
+            (
+                "waiting-video",
+                "RX-STARTUP",
+                "retrying the connection automatically.",
+            ),
+        ] {
+            let mut dom = VirtualDom::new_with_props(
+                super::StreamQualityNotice,
+                super::StreamQualityNoticeProps {
+                    reason: String::new(),
+                    health_reason: reason.into(),
+                },
+            );
+            let edits = dom.rebuild_to_vec();
+            let text = edits
+                .edits
+                .iter()
+                .filter_map(|edit| match edit {
+                    Mutation::CreateTextNode { value, .. } => Some(value.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            assert!(text.contains(code), "{text}");
+            assert!(text.contains(message), "{text}");
+            assert!(text.contains("screenshot"), "{text}");
+        }
+    }
     #[test]
     fn screen_consent_survives_media_setup_but_not_a_changed_call() {
         let channel = crate::protocol::Id::new_v4();

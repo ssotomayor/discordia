@@ -696,7 +696,8 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                     json(&pk)
                 ));
                 if let Ok(value) = eval.recv::<serde_json::Value>().await {
-                    health_reason.set(
+                    super::screenshare::update_health_notice(
+                        health_reason,
                         value["healthReason"]
                             .as_str()
                             .unwrap_or_default()

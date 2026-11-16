@@ -56,6 +56,8 @@ mod left_off;
 #[cfg(test)]
 #[path = "../../vendor/livekit/src/rtc_engine/start_bitrate.rs"]
 mod livekit_start_bitrate_tests;
+#[cfg(test)]
+mod livekit_transport_tests;
 mod local_camera;
 mod local_share;
 mod media_cache;

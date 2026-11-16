@@ -7,6 +7,8 @@
 
 #include "NvEncoder/NvEncoderCuda.h"
 #include "api/video/i420_buffer.h"
+#include "context_scope.h"
+#include "rtc_base/logging.h"
 
 namespace webrtc {
 
@@ -37,22 +39,28 @@ inline void CopyI420BufferToDeviceFrame(CUcontext context,
                       NV_ENC_ERR_INVALID_PARAM);
   }
 
-  CUDA_DRVAPI_CALL(cuCtxPushCurrent(context));
-
-  const CUdeviceptr dst_y = reinterpret_cast<CUdeviceptr>(input_frame.inputPtr);
-  const CUdeviceptr dst_u = dst_y + input_frame.chromaOffsets[0];
-  const CUdeviceptr dst_v = dst_y + input_frame.chromaOffsets[1];
-
-  CopyHostPlaneToDevice(dst_y, input_frame.pitch, buffer.DataY(),
-                        buffer.StrideY(), buffer.width(), buffer.height());
-  CopyHostPlaneToDevice(dst_u, input_frame.chromaPitch, buffer.DataU(),
-                        buffer.StrideU(), buffer.ChromaWidth(),
-                        buffer.ChromaHeight());
-  CopyHostPlaneToDevice(dst_v, input_frame.chromaPitch, buffer.DataV(),
-                        buffer.StrideV(), buffer.ChromaWidth(),
-                        buffer.ChromaHeight());
-
-  CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
+  nvidia::WithCurrentContext(
+      [context] { CUDA_DRVAPI_CALL(cuCtxPushCurrent(context)); },
+      [](bool checked) {
+        const CUresult cuda_status = cuCtxPopCurrent(nullptr);
+        if (checked) {
+          CUDA_DRVAPI_CALL(cuda_status);
+        } else if (cuda_status != CUDA_SUCCESS) {
+          RTC_LOG(LS_ERROR) << "CUDA context cleanup after failed I420 upload: "
+                            << static_cast<int>(cuda_status);
+        }
+      },
+      [&] {
+        const CUdeviceptr dst_y = reinterpret_cast<CUdeviceptr>(input_frame.inputPtr);
+        const CUdeviceptr dst_u = dst_y + input_frame.chromaOffsets[0];
+        const CUdeviceptr dst_v = dst_y + input_frame.chromaOffsets[1];
+        CopyHostPlaneToDevice(dst_y, input_frame.pitch, buffer.DataY(),
+                              buffer.StrideY(), buffer.width(), buffer.height());
+        CopyHostPlaneToDevice(dst_u, input_frame.chromaPitch, buffer.DataU(),
+                              buffer.StrideU(), buffer.ChromaWidth(), buffer.ChromaHeight());
+        CopyHostPlaneToDevice(dst_v, input_frame.chromaPitch, buffer.DataV(),
+                              buffer.StrideV(), buffer.ChromaWidth(), buffer.ChromaHeight());
+      });
 }
 
 }  // namespace webrtc

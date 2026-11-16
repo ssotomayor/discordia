@@ -1,5 +1,7 @@
 #include "mf_encoder_factory.h"
 #include "mf_input_buffer.h"
+#include "mf_device.h"
+#include "mf_result.h"
 #include "realtime_encoder.h"
 
 #include <windows.h>
@@ -100,9 +102,6 @@ void LogFailure(const std::string& operation, HRESULT hr) {
   livekit_ffi::log_media_foundation_failure(operation, static_cast<int32_t>(hr));
 }
 
-#define MF_TRY(call) do { HRESULT hr = (call); if (FAILED(hr)) { \
-  LogFailure(#call, hr); return hr; } } while (false)
-
 HRESULT VideoType(const GUID& subtype, const VideoCodec& settings,
                   IMFMediaType** result) {
   ComPtr<IMFMediaType> type;
@@ -194,6 +193,7 @@ struct Session {
       MF_TRY(D3D11CreateDevice(selected.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                               D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                               nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context));
+      MF_TRY(mf::ProtectDeviceContext(device.Get()));
       UINT token = 0;
       MF_TRY(MFCreateDXGIDeviceManager(&token, &manager));
       MF_TRY(manager->ResetDevice(device.Get(), token));
@@ -231,6 +231,12 @@ struct Session {
     MF_TRY(VideoType(MFVideoFormat_NV12, settings, &input));
     MF_TRY(input->SetUINT32(MF_MT_DEFAULT_STRIDE, settings.width));
     MF_TRY(transform->SetInputType(input_id, input.Get(), 0));
+    for (const GUID* id : {&CODECAPI_AVEncH264SPSID, &CODECAPI_AVEncH264PPSID}) {
+      if (codec && codec->IsSupported(id) == S_OK) {
+        HRESULT hr = SetCodecUint(codec.Get(), *id, 0);
+        if (FAILED(hr)) LogFailure("H264 parameter-set identifier (optional)", hr);
+      }
+    }
     // Some hardware MFTs ignore MF_MT_AVG_BITRATE unless ICodecAPI is set as well.
     MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncCommonMeanBitRate, settings.startBitrate * 1000));
     MF_TRY(transform->GetInputStreamInfo(input_id, &input_info));
@@ -343,14 +349,19 @@ struct Session {
       auto type = H264::ParseNaluType(data->data()[nalu.payload_start_offset]);
       if ((type == H264::kIdr || type == H264::kSlice)
           && (nalu.payload_size < 2
-              || !mf::FitsLiveKitH264Prefix(data->data()[nalu.payload_start_offset + 1]))) {
-        LogFailure("H264 slice header incompatible with LiveKit encryption", E_FAIL);
+              || (!mf::FitsLiveKitH264Prefix(data->data()[nalu.payload_start_offset + 1])
+                  && !(type == H264::kIdr && nalu.payload_size >= 3
+                      && mf::RetriableLiveKitH264Prefix(data->data()[nalu.payload_start_offset + 1],
+                                                      data->data()[nalu.payload_start_offset + 2]))))) {
+        LogFailure("H264 slice header incompatible with LiveKit encryption: type="
+            + std::to_string(type) + " prefix="
+            + std::to_string(nalu.payload_size < 2 ? -1 : data->data()[nalu.payload_start_offset + 1]), E_FAIL);
         return E_FAIL;
       }
       if (type == H264::kIdr)
         image._frameType = VideoFrameType::kVideoFrameKey;
     }
-    submitted.erase(metadata);
+    mf::RetireSubmitted(submitted, time);
     watchdog.Produced(mf::OutputWatchdog::Clock::now());
     CodecSpecificInfo info{};
     info.codecType = kVideoCodecH264;

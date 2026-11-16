@@ -10,20 +10,33 @@ pub(super) fn spawn_video_budget(
     state: Signal<AppState>,
     track: LocalVideoTrack,
     limit: u64,
-) -> Task {
-    crate::service_task::spawn(async move {
+) -> (Task, Arc<AtomicBool>) {
+    let applied = Arc::new(AtomicBool::new(false));
+    let shared = applied.clone();
+    let task = crate::service_task::spawn(async move {
         let mut limited = false;
         loop {
             let constrained = state.peek().voice_uplink_congested;
             if constrained || limited {
                 match track.set_network_bitrate_limit(constrained.then_some(limit)) {
-                    Ok(()) => limited = constrained,
+                    Ok(()) => {
+                        if limited != constrained {
+                            tracing::info!(
+                                constrained,
+                                limit_bps = constrained.then_some(limit),
+                                "video bitrate budget changed for voice protection"
+                            );
+                        }
+                        limited = constrained;
+                        shared.store(limited, Ordering::Release);
+                    }
                     Err(error) => tracing::debug!(%error, "video bandwidth adjustment unavailable"),
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-    })
+    });
+    (task, applied)
 }
 
 #[derive(Clone, Copy)]

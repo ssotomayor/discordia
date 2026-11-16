@@ -15,6 +15,9 @@
  */
 
 #include "livekit/frame_cryptor.h"
+#ifdef WEBRTC_WIN
+#include "h264_pps_retry.h"
+#endif
 
 #include <memory>
 
@@ -131,6 +134,10 @@ FrameCryptor::FrameCryptor(
       participant_id_(participant_id),
       key_provider_(key_provider),
       sender_(sender) {
+#ifdef WEBRTC_WIN
+  // Force selection of the local cryptor object instead of the artifact's old implementation.
+  webrtc::UseH264PpsRetry();
+#endif
   auto mediaType =
       sender->track()->kind() == "audio"
           ? webrtc::FrameCryptorTransformer::MediaType::kAudioFrame

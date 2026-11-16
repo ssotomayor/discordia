@@ -1,12 +1,105 @@
 #include "../src/windows/realtime_encoder.h"
+#include "../src/h264_pps_retry.h"
+#include "../src/nvidia/context_scope.h"
 
 #include <cassert>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
+
+void TestContextCleanup() {
+  for (int failure = -1; failure < 5; ++failure) {
+    int pushes = 0, pops = 0, copies = 0;
+    bool checked = false;
+    try {
+      webrtc::nvidia::WithCurrentContext(
+          [&] { if (failure == 0) throw std::runtime_error("push"); ++pushes; },
+          [&](bool normal) { ++pops; checked = normal; if (failure == 4) throw std::runtime_error("pop"); },
+          [&] { for (int plane = 1; plane <= 3; ++plane) { if (failure == plane) throw std::runtime_error("copy"); ++copies; } });
+      assert(failure == -1);
+    } catch (const std::runtime_error&) {
+      assert(failure != -1);
+    }
+    assert(pushes == (failure == 0 ? 0 : 1));
+    assert(pops == pushes);
+    assert(checked == (failure == -1 || failure == 4));
+    if (failure == -1) assert(copies == 3);
+  }
+}
 
 #ifdef _WIN32
 #include "../src/windows/mf_input_buffer.h"
+#include "../src/windows/mf_device.h"
+#include "../src/windows/mf_result.h"
 #include <wrl/client.h>
+#endif
+
+void TestRetiringSkippedInput() {
+  std::map<int64_t, std::shared_ptr<int>> submitted;
+  for (int64_t frame = 0; frame < 3000; frame += 3) {
+    auto skipped = std::make_shared<int>(static_cast<int>(frame));
+    std::weak_ptr<int> retained = skipped;
+    submitted.emplace(frame, std::move(skipped));
+    submitted.emplace(frame + 1, std::make_shared<int>(static_cast<int>(frame + 1)));
+    submitted.emplace(frame + 2, std::make_shared<int>(static_cast<int>(frame + 2)));
+    webrtc::mf::RetireSubmitted(submitted, frame + 1);
+    assert(retained.expired());
+    assert(submitted.size() == 1 && submitted.begin()->first == frame + 2);
+  }
+  webrtc::mf::RetireSubmitted(submitted, 3000);
+  assert(submitted.empty());
+}
+
+void TestEncryptionRetriesUseFreshIvsAndStop() {
+  for (unsigned mismatches : {0u, 2u, 31u, 32u, 100u}) {
+    unsigned attempts = 0, nonce = 0;
+    bool sent = webrtc::h264::EncryptPreservingPps(
+        [&] { assert(nonce == attempts); ++attempts; return true; },
+        [&] { return attempts > mismatches; },
+        [&] { ++nonce; });
+    assert(sent == (mismatches < 32));
+    assert(attempts == (std::min)(mismatches + 1, 32u));
+    assert(nonce == attempts - 1);
+  }
+  unsigned attempts = 0, checked = 0;
+  assert(!webrtc::h264::EncryptPreservingPps(
+      [&] { ++attempts; return false; },
+      [&] { ++checked; return true; },
+      [] { assert(false); }));
+  assert(attempts == 1 && checked == 0);
+}
+
+#ifdef _WIN32
+namespace result_test {
+int failures = 0;
+HRESULT last_failure = S_OK;
+void LogFailure(const char*, HRESULT failure) { ++failures; last_failure = failure; }
+HRESULT ReturnResult(HRESULT hr) {
+  MF_TRY(hr);
+  return S_OK;
+}
+}
+
+void TestMfResultDoesNotShadowTheCall() {
+  for (unsigned i = 0; i < 1000; ++i) assert(result_test::ReturnResult(S_OK) == S_OK);
+  assert(result_test::failures == 0);
+  assert(result_test::ReturnResult(E_ACCESSDENIED) == E_ACCESSDENIED);
+  assert(result_test::failures == 1 && result_test::last_failure == E_ACCESSDENIED);
+}
+
+void TestMultithreadDevice() {
+  using Microsoft::WRL::ComPtr;
+  ComPtr<ID3D11Device> device;
+  assert(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+      nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, nullptr)));
+  assert(webrtc::mf::ProtectDeviceContext(nullptr) == E_POINTER);
+  assert(SUCCEEDED(webrtc::mf::ProtectDeviceContext(device.Get())));
+  ComPtr<ID3D10Multithread> multithread;
+  assert(SUCCEEDED(device.As(&multithread)));
+  assert(multithread->GetMultithreadProtected());
+  assert(SUCCEEDED(webrtc::mf::ProtectDeviceContext(device.Get())));
+  assert(multithread->GetMultithreadProtected());
+}
 #endif
 
 void TestSoftwareFallbackBudget() {
@@ -85,9 +178,14 @@ void TestInputBuffers() {
 #endif
 
 int main() {
+  TestContextCleanup();
+  TestEncryptionRetriesUseFreshIvsAndStop();
+  TestRetiringSkippedInput();
   TestSoftwareFallbackBudget();
   TestInputRetries();
 #ifdef _WIN32
+  TestMfResultDoesNotShadowTheCall();
+  TestMultithreadDevice();
   TestInputBuffers();
 #endif
   using namespace webrtc::mf;
@@ -95,6 +193,10 @@ int main() {
   assert(FitsLiveKitH264Prefix(0xe0));
   assert(!FitsLiveKitH264Prefix(0x88));
   assert(!FitsLiveKitH264Prefix(0));
+  assert(RetriableLiveKitH264Prefix(0x88, 0x80));
+  assert(RetriableLiveKitH264Prefix(0x88, 0xff));
+  assert(!RetriableLiveKitH264Prefix(0x88, 0x40));
+  assert(!RetriableLiveKitH264Prefix(0, 0xff));
   LatestFrames<int> queue;
   queue.Push(0, true);
   for (int i = 1; i < 1000; ++i) queue.Push(i, false);

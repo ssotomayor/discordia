@@ -2485,6 +2485,7 @@ dependencies = [
  "livekit-datatrack",
  "livekit-protocol 0.8.1",
  "local-ip-address",
+ "log",
  "minisign-verify",
  "natpmp",
  "ndk-context",

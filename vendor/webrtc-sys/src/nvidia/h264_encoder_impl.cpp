@@ -209,7 +209,8 @@ int32_t NvidiaH264EncoderImpl::InitEncode(
   nv_initialize_params_.encodeConfig = &nv_encode_config_;
 
   GUID encodeGuid = NV_ENC_CODEC_H264_GUID;
-  GUID presetGuid = NV_ENC_PRESET_P5_GUID;
+  const bool screen_share = codec_.mode == VideoCodecMode::kScreensharing;
+  GUID presetGuid = screen_share ? NV_ENC_PRESET_P3_GUID : NV_ENC_PRESET_P5_GUID;
 
   encoder_->CreateDefaultEncoderParams(&nv_initialize_params_, encodeGuid,
                                        presetGuid,
@@ -228,8 +229,10 @@ int32_t NvidiaH264EncoderImpl::InitEncode(
       NVENC_INFINITE_GOPLENGTH;
   nv_encode_config_.rcParams.version = NV_ENC_RC_PARAMS_VER;
   nv_encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-  nv_encode_config_.rcParams.multiPass = NV_ENC_TWO_PASS_QUARTER_RESOLUTION;
-  nv_encode_config_.rcParams.enableAQ = 1;
+  // Spatial AQ uses CUDA; a saturated game must not starve the screen encoder.
+  nv_encode_config_.rcParams.multiPass = screen_share ? NV_ENC_MULTI_PASS_DISABLED
+                                                    : NV_ENC_TWO_PASS_QUARTER_RESOLUTION;
+  nv_encode_config_.rcParams.enableAQ = screen_share ? 0 : 1;
   nv_encode_config_.rcParams.aqStrength = 8;
   nv_encode_config_.rcParams.enableLookahead = 0;
   nv_encode_config_.rcParams.averageBitRate = configuration_.target_bps;
@@ -252,7 +255,9 @@ int32_t NvidiaH264EncoderImpl::InitEncode(
   RTC_LOG(LS_INFO) << "NVIDIA H264 NVENC initialized: "
                    << codec_.width << "x" << codec_.height
                    << " @ " << codec_.maxFramerate << "fps, target_bps="
-                   << configuration_.target_bps;
+                   << configuration_.target_bps
+                   << (screen_share ? ", preset=P3 single-pass AQ=off"
+                                    : ", preset=P5 quarter-pass AQ=on");
 
   SimulcastRateAllocator init_allocator(env_, codec_);
   VideoBitrateAllocation allocation =
