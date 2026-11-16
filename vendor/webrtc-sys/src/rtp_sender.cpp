@@ -153,7 +153,9 @@ bool RtpSender::set_track(std::shared_ptr<MediaStreamTrack> track) const {
 }
 
 std::shared_ptr<MediaStreamTrack> RtpSender::track() const {
-  return rtc_runtime_->get_or_create_media_stream_track(sender_->track());
+  auto track = sender_->track();
+  return track ? rtc_runtime_->get_or_create_media_stream_track(std::move(track))
+               : nullptr;
 }
 
 uint32_t RtpSender::ssrc() const {

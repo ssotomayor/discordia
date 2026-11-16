@@ -2580,6 +2580,8 @@ impl ScreenVideoRoom {
                     #[cfg(not(target_os = "windows"))]
                     let accepted_frames: Option<u64> = None;
                     let media_route = crate::connection_routes::selected_media_route(&report);
+                    let publisher_network =
+                        crate::connection_routes::publisher_network_stats(&report, outbound);
                     tracing::info!(
                         elapsed_ms = diagnostic_started.elapsed().as_millis() as u64,
                         track_sid = %stats_sid,
@@ -2593,6 +2595,7 @@ impl ScreenVideoRoom {
                         media_family = media_route.as_ref().map(|route| route.family),
                         media_protocol = media_route.as_ref().map(|route| route.protocol.as_str()),
                         media_relayed = media_route.as_ref().map(|route| route.relayed),
+                        ?publisher_network,
                         adapter_dropped = adapter_dropped.load(Ordering::Relaxed),
                         capture_readback_ms,
                         capture_largest_gap_ms = captured.largest_gap_us as f64 / 1000.0,
@@ -2601,6 +2604,10 @@ impl ScreenVideoRoom {
                         key_frames = outbound.outbound.key_frames_encoded,
                         pli_count = outbound.outbound.pli_count,
                         nack_count = outbound.outbound.nack_count,
+                        packet_send_delay_seconds = outbound.outbound.total_packet_send_delay,
+                        packets_sent = outbound.sent.packets_sent,
+                        retransmitted_packets = outbound.outbound.retransmitted_packets_sent,
+                        qp_sum = outbound.outbound.qp_sum,
                         connection = ?status_room.connection_state(),
                         muted = track.is_muted(),
                         ?stats,
@@ -5157,6 +5164,16 @@ mod tests {
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
         let verify_nvenc_rates = std::env::var_os("DISCORDIA_TEST_NVENC_RATES").is_some();
         let verify_congestion = std::env::var_os("DISCORDIA_TEST_NVENC_CONGESTION").is_some();
+        let verify_low_motion = std::env::var_os("DISCORDIA_TEST_NVENC_LOW_MOTION").is_some();
+        let verify_idle_recovery =
+            verify_low_motion || std::env::var_os("DISCORDIA_TEST_NVENC_IDLE_RECOVERY").is_some();
+        assert!(!verify_idle_recovery || (verify_nvenc_rates && !verify_congestion));
+        let recovery_seconds = std::env::var("DISCORDIA_TEST_NVENC_RECOVERY_SECONDS")
+            .ok()
+            .map(|value| value.parse::<u64>().expect("recovery observation seconds"));
+        if let Some(seconds) = recovery_seconds {
+            assert!((verify_congestion || verify_idle_recovery) && (30..=120).contains(&seconds));
+        }
         let verify_contention = std::env::var_os("DISCORDIA_TEST_GPU_CONTENTION").is_some();
         let monotonic_capture = std::env::var_os("DISCORDIA_TEST_MONOTONIC_CAPTURE").is_some();
         let capture_delay = std::env::var("DISCORDIA_TEST_CAPTURE_DELAY_MS")
@@ -5435,8 +5452,13 @@ mod tests {
             let mut last_bytes = None;
             let mut measured_bps = 0.0;
             let mut peak_target_bps = 0.0_f64;
+            let mut resumed_target_bps = 0.0_f64;
             let mut constrained_target_bps = f64::INFINITY;
-            let frame_count = if mf_load.is_some() {
+            let frame_count = if let Some(seconds) = recovery_seconds {
+                u64::from(settings.fps) * seconds
+            } else if verify_idle_recovery {
+                u64::from(settings.fps) * 60
+            } else if mf_load.is_some() {
                 u64::from(settings.fps) * 20
             } else if verify_1440p {
                 u64::from(settings.fps) * 30
@@ -5453,6 +5475,27 @@ mod tests {
             let motion_started = Instant::now();
             for index in 0..frame_count {
                 interval.tick().await;
+                let idle = verify_idle_recovery
+                    && index >= u64::from(settings.fps) * 5
+                    && index < u64::from(settings.fps) * 20;
+                if idle {
+                    last_bytes = None;
+                }
+                if idle && (!verify_low_motion || !index.is_multiple_of(u64::from(settings.fps))) {
+                    if index.is_multiple_of(u64::from(settings.fps)) {
+                        for entry in track.get_stats().await.expect("idle rate stats") {
+                            if let RtcStats::OutboundRtp(ref out) = entry
+                                && out.stream.kind == "video"
+                            {
+                                eprintln!(
+                                    "NVENC idle: frame={} target={:.0} encoded={}",
+                                    index, out.outbound.target_bitrate, out.outbound.frames_encoded
+                                );
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if verify_congestion && index == u64::from(settings.fps) * 5 {
                     track
                         .set_network_bitrate_limit(Some(300_000))
@@ -5465,7 +5508,15 @@ mod tests {
                 }
                 let mut buffer = I420Buffer::new(settings.width, settings.height);
                 let (y, u, v) = buffer.data_mut();
-                if verify_nvenc_rates || mf_load.is_some() {
+                if idle {
+                    y.fill(32);
+                    let x = (index / u64::from(settings.fps) * 32) as usize
+                        % (settings.width as usize - 16);
+                    for row in 0..16 {
+                        let offset = row * settings.width as usize + x;
+                        y[offset..offset + 16].fill(220);
+                    }
+                } else if verify_nvenc_rates || mf_load.is_some() {
                     let mut noise = index as u32 + 1;
                     for pixel in noise_tile.iter_mut() {
                         noise ^= noise << 13;
@@ -5524,6 +5575,18 @@ mod tests {
                         .max_by_key(|o| (o.outbound.rid == "f", o.outbound.frame_height))
                         .expect("outbound rate");
                     peak_target_bps = peak_target_bps.max(outbound.outbound.target_bitrate);
+                    if verify_idle_recovery
+                        && index >= u64::from(settings.fps) * 20
+                        && index < u64::from(settings.fps) * 25
+                    {
+                        resumed_target_bps =
+                            resumed_target_bps.max(outbound.outbound.target_bitrate);
+                        eprintln!(
+                            "NVENC resumed: frame={} target={:.0} bps",
+                            index + 1,
+                            outbound.outbound.target_bitrate
+                        );
+                    }
                     if verify_congestion
                         && index >= u64::from(settings.fps) * 6
                         && index < u64::from(settings.fps) * 10
@@ -5553,6 +5616,14 @@ mod tests {
                             outbound.outbound.target_bitrate,
                             settings.max_bitrate,
                         );
+                        if verify_idle_recovery {
+                            eprintln!(
+                                "NVENC network: {:?}",
+                                crate::connection_routes::publisher_network_stats(
+                                    &report, outbound
+                                )
+                            );
+                        }
                     }
                     last_bytes = Some((outbound.sent.bytes_sent, now));
                 }
@@ -5590,6 +5661,20 @@ mod tests {
                     assert!(
                         constrained_target_bps <= 350_000.0,
                         "test must exercise a reduced allocation"
+                    );
+                }
+                if verify_idle_recovery {
+                    assert!(
+                        resumed_target_bps >= settings.max_bitrate as f64 * 0.9,
+                        "moving content must regain the loopback budget within five seconds after idle: {resumed_target_bps}"
+                    );
+                    assert!(
+                        u64::from(outbound.outbound.frames_encoded)
+                            >= (frame_count - u64::from(settings.fps) * 15) * 85 / 100
+                    );
+                    assert!(
+                        received.load(Ordering::Relaxed)
+                            >= u64::from(outbound.outbound.frames_encoded) * 4 / 5
                     );
                 }
                 if verify_1440p {

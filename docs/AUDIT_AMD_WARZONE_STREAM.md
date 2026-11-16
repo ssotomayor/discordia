@@ -194,3 +194,60 @@ It never forces a bitrate minimum. Invalid/stale feedback cannot hold the limit
 forever; failed sender updates retain the last successfully applied policy.
 Deterministic regressions cover isolated/sustained loss, recovery, expiry and caps.
 The initial bandwidth drop preceded protection; its network cause remains unknown.
+
+## Bitrate recovery follow-up (2026-11-16)
+
+| Observation | Result / limit |
+|---|---|
+| Local encrypted NVENC 1440p60, moving synthetic frames, no imposed ceiling, 30 s | Final target 33.96 Mbps, output 34.3 Mbps, 1,791 encoded / 1,780 decoded frames |
+| Same pipeline, 300 kbps ceiling from second 5 to 10, two 30 s runs | Final targets 3.28 and 5.70 Mbps; both failed the existing peak-allocation assertion. Encoder continued at 59–60 FPS and output followed allocation |
+| Same ceiling, 90 s observation | Reached 34 Mbps around second 59 without republishing; final output 33.84 Mbps, 5,148 encoded / 5,045 decoded frames. Existing rate assertions passed |
+| Live outgoing 1440p60 session, same publication from 17:43–17:49 UTC | Target reached 34 Mbps at 17:45:36, then varied down to 4.61 Mbps at 17:49:06. Hardware encoding stayed near 3 ms/frame and 57–60 FPS; voice protection remained unapplied. IPv4/UDP direct media route |
+| Simultaneous incoming McClane stream | Samples around 55–58 FPS, 2.3–4.4 Mbps, decode 0.5–0.7 ms/frame, approximately 39–46 ms video buffer. Loss counters rose from 121 to 139 over 149,298 to 153,388 received packets (about 0.44% across that interval); no reported freezes |
+
+These runs reproduce variable, sometimes slow allocation recovery, not a permanent
+encoder stall. The direct 300 kbps test bypasses the graded voice policy and does
+not identify the cause of a remote sender's incident. The live session recovered
+and fell again without restarting, so stopping/restarting alone cannot distinguish
+encoder state from congestion control or SFU allocation. Sparse samples do not
+establish which network leg caused the allocation changes.
+
+`DISCORDIA_TEST_NVENC_RECOVERY_SECONDS` extends the ignored native decoder probe
+with congestion or idle recovery enabled, bounded to 30–120 seconds. Production
+bitrate policy and `TX-BITRATE` warnings are unchanged. Tests use an isolated local
+SFU, not WAN impairment or Call of Duty. Diagnostic dialogs can temporarily report
+zero displayed FPS while decode counters continue; compare successive samples.
+
+Checkpoints now include `publisher_network`: estimated uplink capacity and RTT
+from this video's selected transport, plus the matching SSRC/local-ID RTCP loss,
+RTT, report timestamp and measurement count. In an SFU room this receiver is the
+SFU, not an end viewer. These values describe publisher-to-SFU feedback, not the
+SFU's downstream allocation. Missing/invalid metrics remain absent; report identity
+and measurement counts allow repeated feedback to be recognized. No addresses,
+tokens or media payloads are included, and no bitrate decision uses these fields.
+Checkpoints also retain cumulative packet-send delay, packet/retransmission counts
+and QP sum; compare deltas with the same track SID instead of treating totals as
+current loss, latency or a codec-independent quality score.
+
+| Idle recovery probe | Measured result / boundary |
+|---|---|
+| `DISCORDIA_TEST_NVENC_IDLE_RECOVERY=1` with NVENC rate/1440p60 probes | Five seconds of moving frames, 15 s with no new frames, then 40 s of motion; no duplicate frames supplied. Duration defaults to 60 s. Requires recovered allocation ≥90% of the local cap, ≥85% encoded active frames and ≥80% decoder delivery |
+| Unmodified transport, idle run | Target 10.42 Mbps before idle, 2.94 Mbps on resumption, 7.10 Mbps at the end; 2,690 encoded / 2,668 decoded. Allocation assertion failed while final output remained 60 FPS |
+| Unmodified transport, continuous-motion control | Reached 33.90 Mbps and 60 FPS within 30 s; 1,789 encoded / 1,776 decoded; rate assertions passed |
+| Experimental periodic ALR probing enabled | Post-idle target peaked at 6.68 Mbps and ended at 6.55 Mbps; 2,690 encoded / 2,660 decoded. Did not fix recovery; experiment removed from production code |
+
+The idle case reproduces slow allocation recovery on an isolated local SFU with
+encrypted H.264, not the exact cause of a user's WAN incident. Matching RTCP
+samples after resumption reported zero loss and approximately 1 ms RTT; this
+does not prove an uncongested path throughout the pause.
+
+The transport ceiling, RTX negotiation and subscriber layer recovery address this:
+1. `set_sender_bitrate_budget` sets `peer_connection.set_bitrate` with the stream ceiling,
+   authorizing libwebrtc's `ProbeController` to probe beyond its default 5 Mbps clamp.
+2. `video_codec_preferences` preserves `video/rtx` alongside H.264, enabling RTX packet
+   repairs and padding probes.
+3. Media Foundation encoder treats `CODECAPI_AVEncVideoForceKeyFrame` as optional and sets a
+   5-second GOP ceiling when supported, avoiding fatal errors on drivers returning `E_NOTIMPL`.
+4. The screen-share viewer immediately requests `HIGH` quality upon receiving its first frame
+   if receiver connection health is not poor.
+

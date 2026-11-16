@@ -221,6 +221,11 @@ struct Session {
         HRESULT hr = SetCodecUint(codec.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
         if (FAILED(hr)) LogFailure("CODECAPI_AVEncMPVDefaultBPictureCount (optional)", hr);
       }
+      if (codec->IsSupported(&CODECAPI_AVEncMPVGOPSize) == S_OK) {
+        ULONG gop = settings.maxFramerate > 0 ? settings.maxFramerate * 5 : 300;
+        HRESULT hr = SetCodecUint(codec.Get(), CODECAPI_AVEncMPVGOPSize, gop);
+        if (FAILED(hr)) LogFailure("CODECAPI_AVEncMPVGOPSize (optional)", hr);
+      }
     }
     ComPtr<IMFMediaType> output;
     MF_TRY(VideoType(MFVideoFormat_H264, settings, &output));
@@ -275,7 +280,10 @@ struct Session {
     LONGLONG time = clock.Next(frame.timestamp_us());
     MF_TRY(sample->SetSampleTime(time));
     MF_TRY(sample->SetSampleDuration(duration));
-    if (keyframe) MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1));
+    if (keyframe && codec && codec->IsSupported(&CODECAPI_AVEncVideoForceKeyFrame) == S_OK) {
+      HRESULT hr = SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
+      if (FAILED(hr)) LogFailure("CODECAPI_AVEncVideoForceKeyFrame (optional)", hr);
+    }
     pending.Prepare(InputMetadata{time, frame}, std::move(sample));
     return S_OK;
   }
