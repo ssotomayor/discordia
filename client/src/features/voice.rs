@@ -47,6 +47,12 @@ mod camera;
 use camera::CameraPublisher;
 
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
 pub(super) const SCREEN_VOICE_BUDGET_BPS: u64 = 300_000;
 #[path = "voice_activity.rs"]
 mod activity;
