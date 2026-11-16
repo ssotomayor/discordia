@@ -31,6 +31,7 @@ void TestContextCleanup() {
 #include "../src/windows/mf_input_buffer.h"
 #include "../src/windows/mf_device.h"
 #include "../src/windows/mf_result.h"
+#include "../src/windows/mf_codec_control.h"
 #include <wrl/client.h>
 #endif
 
@@ -85,6 +86,29 @@ void TestMfResultDoesNotShadowTheCall() {
   assert(result_test::failures == 0);
   assert(result_test::ReturnResult(E_ACCESSDENIED) == E_ACCESSDENIED);
   assert(result_test::failures == 1 && result_test::last_failure == E_ACCESSDENIED);
+}
+
+void TestOptionalCodecControlPreservesDeviceFailures() {
+  using webrtc::mf::OptionalCodecControl;
+  int sets = 0, reports = 0;
+  auto apply = [&](HRESULT support, HRESULT result) {
+    return OptionalCodecControl(
+        [&] { return support; },
+        [&] { ++sets; return result; },
+        [&](HRESULT) { ++reports; });
+  };
+  assert(apply(S_FALSE, E_FAIL) == S_OK);
+  assert(sets == 0 && reports == 0);
+  assert(apply(E_NOTIMPL, S_OK) == S_OK);
+  assert(sets == 0 && reports == 1);
+  assert(apply(S_OK, E_PROP_ID_UNSUPPORTED) == S_OK);
+  assert(sets == 1 && reports == 2);
+  for (HRESULT failure : {DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+                          E_OUTOFMEMORY, E_ACCESSDENIED, E_INVALIDARG}) {
+    assert(apply(failure, S_OK) == failure);
+    assert(apply(S_OK, failure) == failure);
+  }
+  assert(apply(S_OK, S_OK) == S_OK);
 }
 
 void TestMultithreadDevice() {
@@ -185,6 +209,7 @@ int main() {
   TestInputRetries();
 #ifdef _WIN32
   TestMfResultDoesNotShadowTheCall();
+  TestOptionalCodecControlPreservesDeviceFailures();
   TestMultithreadDevice();
   TestInputBuffers();
 #endif

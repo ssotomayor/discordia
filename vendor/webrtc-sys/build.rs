@@ -452,6 +452,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/windows/mf_input_buffer.h");
     println!("cargo:rerun-if-changed=src/windows/mf_device.h");
     println!("cargo:rerun-if-changed=src/windows/mf_result.h");
+    println!("cargo:rerun-if-changed=src/windows/mf_codec_control.h");
     println!("cargo:rerun-if-changed=src/h264_pps_retry.h");
     println!("cargo:rerun-if-changed=src/nvidia/context_scope.h");
     println!("cargo:rerun-if-changed=src/nvidia/i420_buffer_cuda.h");

@@ -214,7 +214,7 @@ establish which network leg caused the allocation changes.
 
 `DISCORDIA_TEST_NVENC_RECOVERY_SECONDS` extends the ignored native decoder probe
 with congestion or idle recovery enabled, bounded to 30–120 seconds. Production
-bitrate policy and `TX-BITRATE` warnings are unchanged. Tests use an isolated local
+voice-protection thresholds and `TX-BITRATE` warnings are unchanged. Tests use an isolated local
 SFU, not WAN impairment or Call of Duty. Diagnostic dialogs can temporarily report
 zero displayed FPS while decode counters continue; compare successive samples.
 
@@ -231,7 +231,7 @@ current loss, latency or a codec-independent quality score.
 
 | Idle recovery probe | Measured result / boundary |
 |---|---|
-| `DISCORDIA_TEST_NVENC_IDLE_RECOVERY=1` with NVENC rate/1440p60 probes | Five seconds of moving frames, 15 s with no new frames, then 40 s of motion; no duplicate frames supplied. Duration defaults to 60 s. Requires recovered allocation ≥90% of the local cap, ≥85% encoded active frames and ≥80% decoder delivery |
+| `DISCORDIA_TEST_NVENC_IDLE_RECOVERY=1` with NVENC rate/1440p60 probes | Five seconds of moving frames, 15 s with no new frames, then 40 s of motion; no duplicate frames supplied. Duration defaults to 60 s. Requires allocation ≥90% of the local cap within 5 s of resumption, ≥85% encoded active frames and ≥80% decoder delivery. `DISCORDIA_TEST_NVENC_LOW_MOTION=1` instead supplies one fresh cursor update/s |
 | Unmodified transport, idle run | Target 10.42 Mbps before idle, 2.94 Mbps on resumption, 7.10 Mbps at the end; 2,690 encoded / 2,668 decoded. Allocation assertion failed while final output remained 60 FPS |
 | Unmodified transport, continuous-motion control | Reached 33.90 Mbps and 60 FPS within 30 s; 1,789 encoded / 1,776 decoded; rate assertions passed |
 | Experimental periodic ALR probing enabled | Post-idle target peaked at 6.68 Mbps and ended at 6.55 Mbps; 2,690 encoded / 2,660 decoded. Did not fix recovery; experiment removed from production code |
@@ -241,13 +241,26 @@ encrypted H.264, not the exact cause of a user's WAN incident. Matching RTCP
 samples after resumption reported zero loss and approximately 1 ms RTT; this
 does not prove an uncongested path throughout the pause.
 
-The transport ceiling, RTX negotiation and subscriber layer recovery address this:
-1. `set_sender_bitrate_budget` sets `peer_connection.set_bitrate` with the stream ceiling,
-   authorizing libwebrtc's `ProbeController` to probe beyond its default 5 Mbps clamp.
-2. `video_codec_preferences` preserves `video/rtx` alongside H.264, enabling RTX packet
-   repairs and padding probes.
-3. Media Foundation encoder treats `CODECAPI_AVEncVideoForceKeyFrame` as optional and sets a
-   5-second GOP ceiling when supported, avoiding fatal errors on drivers returning `E_NOTIMPL`.
-4. The screen-share viewer immediately requests `HIGH` quality upon receiving its first frame
-   if receiver connection health is not poor.
+| Correction / review | Evidence and boundary |
+|---|---|
+| Connection probing budget | Configured track budgets, with 2x packet/probe headroom, replace the default 5 Mbps probe ceiling. No minimum or estimator restart is imposed; RTP caps remain unchanged. Temporary voice caps never overwrite configured budgets |
+| RTX negotiation | Keep RTX with the chosen media codec. Native SDP tests require RTX/apt without enabling another video codec |
+| No fresh frames for 15 s, 1440p60 | Recovered 34 Mbps at the first post-idle sample (about 1 s), 2,691 encoded / 2,683 decoded |
+| One fresh cursor update/s, then fully changing frames | Recovered 34 Mbps within 5 s, final 60 FPS, 2,668 encoded / 2,563 decoded |
+| 300 kbps ceiling, then release | Constrained allocation 250 kbps; recovered 34 Mbps about 2 s after release, 1,516 encoded / 1,510 decoded |
+| Reused late-viewer probe from `test-stream-1440p-recovery` | Uses actual picker budgets. 1440p60: first frame 91 ms, 57.15 decoded FPS; 1440p30: 108 ms, 29.99 decoded FPS. Publisher was not restarted |
+| First-frame High request | Preserved with a guard for receiver backoff/probing, Poor connections, self preview and replaced publications. 26 JS tests passed |
+| Optional MF keyframe control | Only unsupported controls are tolerated. Unexpected support-query/write failures propagate; native tests inject device removal/reset, allocation, permission and parameter failures. An unsupported control is not evidence that every failure is harmless |
+
+Media Foundation requests a GOP size of `configured_fps * 5` frames when supported.
+That is five seconds only at the configured frame rate: [Microsoft defines GOP size
+in pictures](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder).
+It does not guarantee first-frame recovery on a static source without fresh input.
+The real AMD Media Foundation path was checked at 720p30 with encrypted decoder
+delivery; this does not establish the RX 9060 XT/Call of Duty incident's cause.
+
+The bitrate/idle and late-viewer checks use an isolated local SFU and synthetic
+frames. They do not measure game-footage visual quality, WAN impairment or GPU
+saturation for this follow-up. No duplicated source frames or production app
+replacement are introduced by these probes.
 

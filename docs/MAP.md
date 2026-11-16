@@ -12,13 +12,13 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 6151 |
+| `client/src/features/voice.rs` | 6206 |
 | `server/src/state/mod.rs` | 4696 |
 | `client/src/state.rs` | 4781 |
 | `server/src/gateway/connection.rs` | 4611 |
 | `protocol/src/lib.rs` | 4433 |
 | `client/src/features/chat.rs` | 4076 |
-| `client/src/features/screenshare.rs` | 4131 |
+| `client/src/features/screenshare.rs` | 4134 |
 | `server/tests/owner_controls.rs` | 3460 |
 | `client/src/net.rs` | 3473 |
 | `client/src/features/channels.rs` | 2728 |
@@ -271,7 +271,9 @@ repeated here.
 | Native GPU-frame investigation | `docs/VIDEO_PIPELINE.md` | macOS CVPixelBuffer handoff; Windows readback/I420/upload boundaries and what a texture path needs |
 | Native screen-share quality | `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `upload_budget` sets caps by resolution/FPS. `sysvideo::codec_capabilities` caches native codecs per backend off the UI thread; the picker disables unsupported ones; Automatic prefers H.264, then VP8; publication revalidates. Encoder Automatic/GPU/CPU is independent; GPU forbids software fallback. `Settings::priority`. Ignored `native_screen_codecs_reach_a_real_decoder` (`DISCORDIA_TEST_REQUIRE_NVENC=1` for hardware) and `compare_screen_conversion_cost` |
 | Screen-share startup bitrate | `vendor/livekit/PATCHES.md`, `client/src/features/voice.rs` | Startup hints are independent of the cap; simulcast adds the fallback budget. The patched SDK applies the hint to SDP without a minimum. `DISCORDIA_TEST_LEGACY_START=1` compares the original startup in the real-SFU test |
-| Screen-share codec negotiation | `vendor/livekit/src/rtc_engine/{peer_transport,rtc_session}.rs`, `client/src/livekit_transport_tests.rs` | Initial offers and renegotiation wait for sender creation, backend selection and codec preferences under one async gate. The client imports production transport tests; forced overlap must yield H.264-only SDP. Real-SFU probes support `DISCORDIA_TEST_CAPTURE_DELAY_MS=5000`, `DISCORDIA_TEST_MONOTONIC_CAPTURE=1` and `DISCORDIA_TEST_NVENC_CONGESTION=1`. `DISCORDIA_TEST_NVENC_IDLE_RECOVERY=1` (with NVENC rate flags) instead inserts 15 s without new frames; its allocation assertion currently reproduces an unresolved failure. Either recovery mode accepts `DISCORDIA_TEST_NVENC_RECOVERY_SECONDS=90` (30–120 seconds) |
+| Screen-share codec negotiation | `vendor/livekit/src/rtc_engine/{peer_transport,rtc_session}.rs`, `client/src/livekit_transport_tests.rs` | Offers wait for sender/backend/codec setup under one gate; SDP regressions require H.264 plus RTX/apt without VP8 fallback. Configured sender budgets set a connection ceiling with 2x packet/probe headroom; temporary voice caps do not become permanent limits. Real-SFU NVENC rate probes support idle/low-motion recovery (within 5 s), congestion, monotonic timestamps and capture delay. `DISCORDIA_TEST_LATE_VIEWER=1` joins after 5 s; 1440p30/60 use picker settings and assert first-frame delay/full-resolution decoded FPS |
+| First-frame quality recovery | `client/src/features/screenshare.rs` (`requestInitialQuality`), `scripts/test-stream-quality.mjs` | Initial High request uses the matching publication; self previews, Poor connections and active quality backoff/probes cannot bypass the receiver policy |
+| Optional MF codec controls | `vendor/webrtc-sys/src/windows/mf_codec_control.h`, `mf_encoder_factory.cpp`, `tests/realtime_encoder.cpp` | Unsupported keyframe controls remain nonfatal; unexpected query/write errors propagate, including device reset/removal, invalid parameters and allocation failure. GOP size is a frame count, not a wall-clock startup guarantee. Native tests inject both supported/unsupported controls and device failures |
 | Windows installed-app icon | `client/nsis/hooks.nsh`, `client/nsis/display-icon.nsh`, `client/Dioxus.toml` | NSIS writes DisplayIcon to the same SHCTX uninstall key as Dioxus, pointing at the installed executable |
 | Windows NVENC build | `vendor/webrtc-sys/PATCHES.md`, `.github/actions/setup-windows-nvenc/action.yml`, `client/build.rs` | Cargo patches webrtc-sys locally; CUDA_PATH headers/import library enable NVENC, CUDA is delay-loaded. Drivers stay optional in Automatic/CPU |
 | Client dependency features | `docs/DEPENDENCIES.md`, `vendor/dioxus-desktop/PATCHES.md` | Feature trims and patch maintenance; developer tools are opt-in with `--features devtools` |

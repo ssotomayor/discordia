@@ -23,6 +23,7 @@ const context = vm.createContext({
   qualityPolicy: policy,
   healthReports,
   viewerVisible: true,
+  selfPreviewIdentity: 'self',
   attached: {},
   LK: () => ({ VideoQuality: { LOW: 0, MEDIUM: 1, HIGH: 2 },
     ConnectionQuality: { Poor: 'poor', Excellent: 'excellent' } }),
@@ -37,6 +38,29 @@ const context = vm.createContext({
 vm.runInContext(bridge.slice(start, end), context);
 const full = { width: 2560, height: 1440, primaryWidth: 2560, primaryHeight: 1440,
   captureFps: 60, primaryFps: 60, adaptive: true, bandwidth: false };
+
+test('first-frame quality recovery respects receiver backoff and the matching publication', () => {
+  policy.clear();
+  participants.clear();
+  screenPubs.clear();
+  const calls = [];
+  screenPubs.set('screen', { setVideoQuality: quality => calls.push(quality) });
+  context.requestInitialQuality('viewer', screenTrack);
+  assert.deepEqual(calls, [2]);
+  calls.length = 0;
+  for (const hold of [{ probeAt: now + 30000 }, { probingSince: now }]) {
+    policy.set('screen', hold);
+    context.requestInitialQuality('viewer', screenTrack);
+  }
+  policy.clear();
+  participants.set('screen', { connectionQuality: 'poor' });
+  context.requestInitialQuality('viewer', screenTrack);
+  participants.clear();
+  context.requestInitialQuality('self', screenTrack);
+  context.requestInitialQuality('viewer', { sid: 'replaced' });
+  assert.deepEqual(calls, []);
+  screenPubs.clear();
+});
 
 test('lower layer indicates receiver connection adaptation', () => {
   assert.equal(context.screenQualityReason(full, incoming), 'receiver');

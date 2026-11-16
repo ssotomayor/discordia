@@ -2,6 +2,7 @@
 #include "mf_input_buffer.h"
 #include "mf_device.h"
 #include "mf_result.h"
+#include "mf_codec_control.h"
 #include "realtime_encoder.h"
 
 #include <windows.h>
@@ -280,9 +281,12 @@ struct Session {
     LONGLONG time = clock.Next(frame.timestamp_us());
     MF_TRY(sample->SetSampleTime(time));
     MF_TRY(sample->SetSampleDuration(duration));
-    if (keyframe && codec && codec->IsSupported(&CODECAPI_AVEncVideoForceKeyFrame) == S_OK) {
-      HRESULT hr = SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
-      if (FAILED(hr)) LogFailure("CODECAPI_AVEncVideoForceKeyFrame (optional)", hr);
+    if (keyframe && codec) {
+      HRESULT hr = mf::OptionalCodecControl(
+          [&] { return codec->IsSupported(&CODECAPI_AVEncVideoForceKeyFrame); },
+          [&] { return SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1); },
+          [&](HRESULT error) { LogFailure("CODECAPI_AVEncVideoForceKeyFrame", error); });
+      if (FAILED(hr)) return hr;
     }
     pending.Prepare(InputMetadata{time, frame}, std::move(sample));
     return S_OK;

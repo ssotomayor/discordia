@@ -5184,6 +5184,14 @@ mod tests {
         let verify_1440p =
             verify_1440p60 || std::env::var_os("DISCORDIA_TEST_NVENC_1440P").is_some();
         let primary_height = if verify_1440p { 1440 } else { 1080 };
+        let verify_late_viewer = std::env::var_os("DISCORDIA_TEST_LATE_VIEWER").is_some();
+        assert!(
+            !verify_late_viewer
+                || (verify_nvenc_rates
+                    && verify_1440p
+                    && !verify_idle_recovery
+                    && !verify_congestion)
+        );
         let legacy_start = std::env::var_os("DISCORDIA_TEST_LEGACY_START").is_some();
         assert!(!verify_1440p || verify_nvenc_rates);
         let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
@@ -5307,8 +5315,10 @@ mod tests {
                 Room::connect(&url, &token("publisher"), encrypted_options())
                     .await
                     .expect("publisher");
+            let mut listener_options = encrypted_options();
+            listener_options.auto_subscribe = !verify_late_viewer;
             let (listener, mut listener_events) =
-                Room::connect(&url, &token("listener"), encrypted_options())
+                Room::connect(&url, &token("listener"), listener_options)
                     .await
                     .expect("listener");
             let events =
@@ -5354,6 +5364,10 @@ mod tests {
             }
             let received = Arc::new(AtomicU64::new(0));
             let decoded = received.clone();
+            let full_frames = Arc::new(AtomicU64::new(0));
+            let full_decoded = full_frames.clone();
+            let first_frame = Arc::new(Mutex::new(None::<Instant>));
+            let first_decoded = first_frame.clone();
             let remote_video = Arc::new(Mutex::new(None));
             let reader_video = remote_video.clone();
             let reader = tokio::spawn(async move {
@@ -5367,6 +5381,10 @@ mod tests {
                         let mut stream = NativeVideoStream::new(video.rtc_track());
                         while let Some(frame) = stream.next().await {
                             assert!(frame.buffer.width() > 0 && frame.buffer.height() > 0);
+                            if frame.buffer.width() == 2560 && frame.buffer.height() == 1440 {
+                                first_decoded.lock().get_or_insert_with(Instant::now);
+                                full_decoded.fetch_add(1, Ordering::Relaxed);
+                            }
                             if !verify_simulcast || frame.buffer.height() == primary_height {
                                 decoded.fetch_add(1, Ordering::Relaxed);
                             }
@@ -5393,14 +5411,15 @@ mod tests {
                 settings.fps = 30;
                 settings.max_bitrate = 8_000_000;
                 if verify_1440p {
-                    settings.width = 2560;
-                    settings.height = 1440;
-                    settings.max_bitrate = 12_000_000;
-                    if verify_1440p60 {
-                        settings = crate::features::screenshare::native_settings("ultra");
-                        settings.codec = codec;
-                        settings.encoder = encoder;
-                    }
+                    settings = crate::features::screenshare::selected_capture_settings(
+                        &crate::settings::ClientSettings {
+                            screenshare_quality: "ultra".into(),
+                            screenshare_fps: Some(if verify_1440p60 { 60 } else { 30 }),
+                            screenshare_codec: codec,
+                            screenshare_encoder: encoder,
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             if modern_codec.is_some() {
@@ -5473,8 +5492,23 @@ mod tests {
             let mut admitted = 0_u64;
             let mut output_progress = crate::sysvideo::fallback::OutputProgress::default();
             let motion_started = Instant::now();
+            let mut subscribed_at = None;
             for index in 0..frame_count {
                 interval.tick().await;
+                if verify_late_viewer && index == u64::from(settings.fps) * 5 {
+                    assert_eq!(received.load(Ordering::Relaxed), 0);
+                    subscribed_at = Some(Instant::now());
+                    let mut subscriptions = 0;
+                    for participant in listener.remote_participants().into_values() {
+                        for publication in participant.track_publications().into_values() {
+                            if publication.source() == TrackSource::Screenshare {
+                                publication.set_subscribed(true);
+                                subscriptions += 1;
+                            }
+                        }
+                    }
+                    assert_eq!(subscriptions, 1, "join the existing publication");
+                }
                 let idle = verify_idle_recovery
                     && index >= u64::from(settings.fps) * 5
                     && index < u64::from(settings.fps) * 20;
@@ -5599,7 +5633,7 @@ mod tests {
                             "NVENC startup legacy={legacy_start} target={:.0} bps",
                             outbound.outbound.target_bitrate
                         );
-                        if verify_1440p && !legacy_start {
+                        if verify_1440p && !legacy_start && !verify_late_viewer {
                             assert!(
                                 outbound.outbound.target_bitrate > 1_500_000.0,
                                 "startup hint must reach WebRTC allocation"
@@ -5764,13 +5798,34 @@ mod tests {
             if verify_nvenc_rates {
                 let elapsed = motion_started.elapsed().as_secs_f64();
                 eprintln!(
-                    "Motion totals: {frame_count} supplied; {} encoded; {:.3} seconds; {:.2} encoded FPS average; {:.2} decoded FPS average; {} bps cap",
+                    "Motion totals: {frame_count} timer ticks; {admitted} admitted; {} encoded; {:.3} seconds; {:.2} encoded FPS average; {:.2} decoded FPS average; {} bps cap",
                     outbound.outbound.frames_encoded,
                     elapsed,
                     f64::from(outbound.outbound.frames_encoded) / elapsed,
                     received.load(Ordering::Relaxed) as f64 / elapsed,
                     settings.max_bitrate,
                 );
+                if verify_1440p && !verify_idle_recovery && !verify_congestion && !verify_contention
+                {
+                    let first = first_frame.lock().expect("a full video frame must arrive");
+                    let decoded_fps =
+                        full_frames.load(Ordering::Relaxed) as f64 / first.elapsed().as_secs_f64();
+                    assert!(
+                        decoded_fps >= f64::from(settings.fps) * 0.85,
+                        "1440p decoding must sustain the selected frame rate: {decoded_fps:.2}"
+                    );
+                    if let Some(subscribed) = subscribed_at {
+                        let delay = first.duration_since(subscribed);
+                        eprintln!(
+                            "Late viewer: first decoded 1440p frame after {} ms; {decoded_fps:.2} decoded FPS",
+                            delay.as_millis()
+                        );
+                        assert!(
+                            delay < Duration::from_secs(8),
+                            "a late viewer must not require restarting the publisher"
+                        );
+                    }
+                }
             }
             assert!(
                 received.load(Ordering::Relaxed) > 0,
