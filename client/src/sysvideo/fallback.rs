@@ -29,6 +29,7 @@ pub(crate) fn active_output(report: &[livekit::webrtc::stats::RtcStats]) -> Opti
 #[derive(Default)]
 pub(crate) struct OutputProgress {
     last: Option<(u32, u64)>,
+    accepted: Option<u64>,
     waiting_since: Option<std::time::Instant>,
     sampled_at: Option<std::time::Instant>,
 }
@@ -38,9 +39,15 @@ impl OutputProgress {
     pub(crate) fn stalled(
         &mut self,
         now: std::time::Instant,
-        expecting_output: bool,
+        sending: bool,
+        accepted: u64,
         output: Option<(u32, u64)>,
     ) -> bool {
+        let has_input = self
+            .accepted
+            .replace(accepted)
+            .is_some_and(|last| accepted > last);
+        let expecting_output = sending && has_input && output.is_some();
         let gap = self.sampled_at.is_some_and(|previous| {
             now.saturating_duration_since(previous) > std::time::Duration::from_secs(7)
         });
@@ -169,6 +176,7 @@ mod tests {
             assert!(!progress.stalled(
                 now + std::time::Duration::from_secs(seconds),
                 output.is_some(),
+                seconds * 30,
                 output,
             ));
         }
@@ -192,20 +200,27 @@ mod tests {
             assert!(!progress.stalled(
                 now + std::time::Duration::from_secs(u64::from(seconds)),
                 true,
+                u64::from(seconds) * 30,
                 output,
             ));
         }
     }
 
     #[test]
-    fn blocked_initialization_or_output_cannot_wait_forever_while_capturing() {
+    fn stalled_active_output_still_stops_after_five_seconds_of_accepted_frames() {
         use std::time::{Duration, Instant};
-        for output in [None, Some((1, 0))] {
-            let mut progress = OutputProgress::default();
-            let now = Instant::now();
-            assert!(!progress.stalled(now, true, output));
-            assert!(!progress.stalled(now + Duration::from_secs(4), true, output));
-            assert!(progress.stalled(now + Duration::from_secs(5), true, output));
+        let mut progress = OutputProgress::default();
+        let now = Instant::now();
+        for seconds in 0..=6 {
+            assert_eq!(
+                progress.stalled(
+                    now + Duration::from_secs(seconds),
+                    true,
+                    seconds * 60,
+                    Some((1, 0))
+                ),
+                seconds == 6,
+            );
         }
     }
 
@@ -215,14 +230,19 @@ mod tests {
         let mut progress = OutputProgress::default();
         let now = Instant::now();
         for second in 0..10 {
-            assert!(!progress.stalled(now + Duration::from_secs(second), true, Some((1, second))));
+            assert!(!progress.stalled(
+                now + Duration::from_secs(second),
+                true,
+                second * 60,
+                Some((1, second))
+            ));
         }
-        assert!(!progress.stalled(now + Duration::from_secs(20), false, Some((1, 9))));
-        assert!(!progress.stalled(now + Duration::from_secs(30), true, Some((1, 9))));
-        assert!(!progress.stalled(now + Duration::from_secs(34), true, Some((2, 0))));
-        assert!(!progress.stalled(now + Duration::from_secs(38), true, Some((2, 4))));
-        assert!(!progress.stalled(now + Duration::from_secs(42), true, Some((2, 0))));
-        assert!(progress.stalled(now + Duration::from_secs(47), true, Some((2, 0))));
+        assert!(!progress.stalled(now + Duration::from_secs(20), false, 600, Some((1, 9))));
+        assert!(!progress.stalled(now + Duration::from_secs(30), true, 1200, Some((1, 9))));
+        assert!(!progress.stalled(now + Duration::from_secs(34), true, 1440, Some((2, 0))));
+        assert!(!progress.stalled(now + Duration::from_secs(38), true, 1680, Some((2, 4))));
+        assert!(!progress.stalled(now + Duration::from_secs(42), true, 1920, Some((2, 0))));
+        assert!(progress.stalled(now + Duration::from_secs(47), true, 2220, Some((2, 0))));
     }
 
     #[test]
@@ -230,10 +250,84 @@ mod tests {
         use std::time::{Duration, Instant};
         let mut progress = OutputProgress::default();
         let now = Instant::now();
-        assert!(!progress.stalled(now, true, Some((1, 0))));
-        assert!(!progress.stalled(now + Duration::from_secs(30), true, Some((1, 0))));
-        assert!(!progress.stalled(now + Duration::from_secs(34), true, Some((1, 0))));
-        assert!(progress.stalled(now + Duration::from_secs(35), true, Some((1, 0))));
+        assert!(!progress.stalled(now, true, 0, Some((1, 0))));
+        assert!(!progress.stalled(now + Duration::from_secs(30), true, 60, Some((1, 0))));
+        assert!(!progress.stalled(now + Duration::from_secs(34), true, 120, Some((1, 0))));
+        assert!(progress.stalled(now + Duration::from_secs(35), true, 180, Some((1, 0))));
+    }
+
+    #[test]
+    fn rejected_input_disconnection_and_missing_output_do_not_prove_an_encoder_stall() {
+        use std::time::{Duration, Instant};
+        for mode in 0..3 {
+            let now = Instant::now();
+            let mut progress = OutputProgress::default();
+            for second in 0..20 {
+                assert!(!progress.stalled(
+                    now + Duration::from_secs(second),
+                    mode != 1,
+                    if mode == 0 { 100 } else { second * 30 },
+                    (mode != 2).then_some((1, 10)),
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_native_source_without_video_sinks_does_not_establish_encoder_demand() {
+        use livekit::webrtc::{
+            video_frame::{I420Buffer, VideoFrame, VideoRotation},
+            video_source::{VideoResolution, native::NativeVideoSource},
+        };
+        use std::time::{Duration, Instant};
+
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: 16,
+                height: 16,
+            },
+            true,
+        );
+        let mut accepted = 0;
+        let mut progress = OutputProgress::default();
+        let now = Instant::now();
+        for second in 0..20 {
+            let admitted = source.capture_frame(&VideoFrame {
+                rotation: VideoRotation::VideoRotation0,
+                timestamp_us: second * 1_000_000,
+                frame_metadata: None,
+                buffer: I420Buffer::new(16, 16),
+            });
+            accepted += u64::from(admitted);
+            assert!(!admitted, "a source without sinks must reject the frame");
+            assert!(!progress.stalled(
+                now + Duration::from_secs(second as u64),
+                true,
+                accepted,
+                Some((1, 10))
+            ));
+        }
+    }
+
+    #[test]
+    fn resuming_accepted_input_gets_a_new_deadline() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut progress = OutputProgress::default();
+        for second in 0..20 {
+            assert!(!progress.stalled(now + Duration::from_secs(second), true, 100, Some((1, 10))));
+        }
+        for second in 20..=25 {
+            assert_eq!(
+                progress.stalled(
+                    now + Duration::from_secs(second),
+                    true,
+                    100 + second,
+                    Some((1, 10))
+                ),
+                second == 25
+            );
+        }
     }
 
     fn settings(encoder: Encoder, width: u32, height: u32, fps: u32) -> Settings {

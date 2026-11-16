@@ -2162,6 +2162,10 @@ impl ScreenVideoRoom {
 
         let adapter_dropped = Arc::new(AtomicU64::new(0));
         let sink_adapter_dropped = adapter_dropped.clone();
+        #[cfg(target_os = "windows")]
+        let encoder_input = Arc::new(AtomicU64::new(0));
+        #[cfg(target_os = "windows")]
+        let sink_encoder_input = encoder_input.clone();
         let sink: crate::sysvideo::FrameSink = Box::new(move |frame: crate::sysvideo::Frame| {
             #[cfg(any(target_os = "android", target_os = "windows"))]
             let timestamp_us = frame.timestamp_us;
@@ -2180,13 +2184,18 @@ impl ScreenVideoRoom {
                 unsafe { NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer()) };
             #[cfg(any(target_os = "android", target_os = "windows"))]
             let buffer = frame.buffer;
-            if !source.capture_frame(&VideoFrame {
+            let accepted = source.capture_frame(&VideoFrame {
                 rotation,
                 timestamp_us,
                 frame_metadata: None,
                 buffer,
-            }) {
+            });
+            if !accepted {
                 sink_adapter_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            #[cfg(target_os = "windows")]
+            if accepted {
+                sink_encoder_input.fetch_add(1, Ordering::Relaxed);
             }
         });
         #[cfg(target_os = "android")]
@@ -2299,11 +2308,13 @@ impl ScreenVideoRoom {
                 #[cfg(target_os = "windows")]
                 if output_progress.stalled(
                     Instant::now(),
-                    capture_fps > 0.0 && active_output.is_some(),
+                    status_room.connection_state() == ConnectionState::Connected
+                        && !track.is_muted(),
+                    encoder_input.load(Ordering::Relaxed),
                     active_output,
                 ) {
                     tracing::warn!(
-                        "screen capture has frames but encoding made no progress; stopping the share"
+                        "WebRTC accepted screen frames but encoding made no progress; stopping the share"
                     );
                     if encoder_fatal.send(crate::i18n::text(
                         "The screen-sharing encoder stopped producing frames. Sharing was stopped.",
