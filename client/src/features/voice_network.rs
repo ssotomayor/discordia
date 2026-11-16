@@ -5,33 +5,65 @@ use std::time::Duration;
 const FEEDBACK_TTL: Duration = Duration::from_secs(7);
 const WINDOW: Duration = Duration::from_secs(5);
 
+#[path = "voice_video_protection.rs"]
+mod video_protection;
+
 #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 pub(super) fn spawn_video_budget(
     state: Signal<AppState>,
     track: LocalVideoTrack,
-    limit: u64,
-) -> (Task, Arc<AtomicBool>) {
-    let applied = Arc::new(AtomicBool::new(false));
+    floor: u64,
+    ceiling: u64,
+) -> (Task, Arc<AtomicU64>) {
+    let applied = Arc::new(AtomicU64::new(0));
     let shared = applied.clone();
     let task = crate::service_task::spawn(async move {
-        let mut limited = false;
+        let mut budget = video_protection::VideoBudget::new(floor, ceiling);
         loop {
             let constrained = state.peek().voice_uplink_congested;
-            if constrained || limited {
-                match track.set_network_bitrate_limit(constrained.then_some(limit)) {
+            let allocation = if budget.needs_allocation(Instant::now(), constrained) {
+                match tokio::time::timeout(Duration::from_secs(1), track.get_stats()).await {
+                    Ok(Ok(stats)) => {
+                        let total = stats
+                            .iter()
+                            .filter_map(|s| match s {
+                                RtcStats::OutboundRtp(s)
+                                    if s.stream.kind == "video"
+                                        && s.outbound.active
+                                        && s.outbound.target_bitrate.is_finite()
+                                        && s.outbound.target_bitrate > 0.0 =>
+                                {
+                                    Some(s.outbound.target_bitrate)
+                                }
+                                _ => None,
+                            })
+                            .sum::<f64>();
+                        (total > 0.0).then_some(total as u64)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let constrained = state.peek().voice_uplink_congested;
+            let mut next = budget.clone();
+            next.step(Instant::now(), constrained, allocation);
+            if next.limit != budget.limit {
+                match track.set_network_bitrate_limit(next.limit) {
                     Ok(()) => {
-                        if limited != constrained {
-                            tracing::info!(
-                                constrained,
-                                limit_bps = constrained.then_some(limit),
-                                "video bitrate budget changed for voice protection"
-                            );
-                        }
-                        limited = constrained;
-                        shared.store(limited, Ordering::Release);
+                        tracing::info!(
+                            constrained,
+                            limit_bps = next.limit,
+                            allocation_bps = allocation,
+                            "video bitrate budget changed for voice protection"
+                        );
+                        shared.store(next.limit.unwrap_or(0), Ordering::Release);
+                        budget = next;
                     }
                     Err(error) => tracing::debug!(%error, "video bandwidth adjustment unavailable"),
                 }
+            } else {
+                budget = next;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -215,7 +247,7 @@ pub(super) fn spawn_stats_task(
         let mut applied_ssrc = None;
         let mut prev_out = None;
         let mut audio_log_at = Instant::now();
-        let mut latest_uplink_problem = None;
+        let mut protection = video_protection::UplinkProtection::default();
         // Counters are cumulative as libwebrtc reports them; the reader takes the deltas.
         let mut send_csv = crate::voice_record::Csv::new(
             "net-send",
@@ -266,7 +298,7 @@ pub(super) fn spawn_stats_task(
             if !connected {
                 applied = None;
                 applied_ssrc = None;
-                latest_uplink_problem = None;
+                protection = video_protection::UplinkProtection::default();
                 uplink = UplinkFeedback::default();
                 windows.clear();
                 if state.peek().voice_uplink_congested {
@@ -280,6 +312,10 @@ pub(super) fn spawn_stats_task(
             let Ok(Ok(stats)) =
                 tokio::time::timeout(Duration::from_secs(1), audio.get_stats()).await
             else {
+                let constrained = protection.sample(Instant::now(), None);
+                if state.peek().voice_uplink_congested != constrained {
+                    state.write().voice_uplink_congested = constrained;
+                }
                 continue;
             };
             let now = Instant::now();
@@ -315,6 +351,7 @@ pub(super) fn spawn_stats_task(
             if ssrc != applied_ssrc {
                 applied = None;
                 applied_ssrc = ssrc;
+                protection = video_protection::UplinkProtection::default();
                 if let Some(out) = out {
                     tracing::info!(
                         codec = %codec_line(&stats, &out.stream.codec_id),
@@ -368,12 +405,13 @@ pub(super) fn spawn_stats_task(
                     "voice loss: sending"
                 );
             }
-            if upstream_loss.is_some_and(|v| v >= 5.0) {
-                latest_uplink_problem = Some(now);
-            }
-            let uplink_congested = latest_uplink_problem
-                .is_some_and(|at| now.duration_since(at) < Duration::from_secs(20));
+            let uplink_congested = protection.sample(now, upstream_loss);
             if state.peek().voice_uplink_congested != uplink_congested {
+                tracing::info!(
+                    constrained = uplink_congested,
+                    loss_pct = upstream_loss,
+                    "voice uplink protection changed"
+                );
                 state.write().voice_uplink_congested = uplink_congested;
             }
             let display = controls.stats_polling.load(Ordering::Relaxed) || connected;

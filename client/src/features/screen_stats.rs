@@ -142,12 +142,12 @@ pub(super) fn screen_low_bitrate(
     target_os = "windows",
     test
 ))]
-pub(super) fn voice_video_limited(applied: bool, active: bool, target: f64) -> bool {
-    applied
+pub(super) fn voice_video_limited(applied_limit: u64, active: bool, target: f64) -> bool {
+    applied_limit > 0
         && active
         && target.is_finite()
         && target > 0.0
-        && target <= super::voice::SCREEN_VOICE_BUDGET_BPS as f64 * 1.1
+        && target <= applied_limit as f64 * 1.1
 }
 
 #[derive(Default)]
@@ -332,10 +332,11 @@ mod tests {
             30_000_000.0,
             34_000_000
         ));
-        assert!(super::voice_video_limited(true, true, 300_000.0));
-        assert!(!super::voice_video_limited(false, true, 300_000.0));
-        assert!(!super::voice_video_limited(true, false, 300_000.0));
-        assert!(!super::voice_video_limited(true, true, 5_000_000.0));
+        assert!(super::voice_video_limited(300_000, true, 300_000.0));
+        assert!(!super::voice_video_limited(0, true, 300_000.0));
+        assert!(!super::voice_video_limited(300_000, false, 300_000.0));
+        assert!(!super::voice_video_limited(300_000, true, 5_000_000.0));
+        assert!(super::voice_video_limited(15_000_000, true, 14_000_000.0));
     }
     #[test]
     fn slow_output_requires_active_encoding_and_capture_continuing() {

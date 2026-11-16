@@ -47,12 +47,7 @@ mod camera;
 use camera::CameraPublisher;
 
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
-#[cfg(any(
-    target_os = "android",
-    target_os = "macos",
-    target_os = "windows",
-    test
-))]
+#[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
 pub(super) const SCREEN_VOICE_BUDGET_BPS: u64 = 300_000;
 #[path = "voice_activity.rs"]
 mod activity;
@@ -2245,8 +2240,12 @@ impl ScreenVideoRoom {
         let capture_metrics = capture.metrics();
         let stats_sid = publication.sid();
         let status_room = room.clone();
-        let (network_task, network_limited) =
-            network::spawn_video_budget(state, track.clone(), SCREEN_VOICE_BUDGET_BPS);
+        let (network_task, network_limited) = network::spawn_video_budget(
+            state,
+            track.clone(),
+            SCREEN_VOICE_BUDGET_BPS,
+            settings.max_bitrate,
+        );
         let stats_task = crate::service_task::spawn(async move {
             #[cfg(target_os = "windows")]
             let mut output_progress = crate::sysvideo::fallback::OutputProgress::default();
@@ -2588,6 +2587,7 @@ impl ScreenVideoRoom {
                         requested_height = settings.height,
                         requested_fps = settings.fps,
                         max_bitrate_bps = settings.max_bitrate,
+                        voice_protection_limit_bps = network_limited.load(Ordering::Acquire),
                         captured_frames = captured.frames,
                         accepted_frames,
                         media_family = media_route.as_ref().map(|route| route.family),
