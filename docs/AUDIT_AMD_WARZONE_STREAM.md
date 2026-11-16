@@ -180,3 +180,17 @@ The probe allocates a 4 MiB UAV, bounds each GPU submission wait, accepts a stop
 file and limits runtime to 60 s. Wrappers track their own PIDs, restore environment
 variables and clean up their isolated SFUs, including after test failures. They
 do not open production accounts or send messages to members.
+
+## Live voice-protection incident
+
+Local 1440p60 telemetry showed a 34 Mbps video allocation followed by a 7% voice
+loss report. The old policy immediately capped video at 300 kbps for 20 s, even
+after the next fresh report fell below 2%. Recovery to about 19 Mbps took roughly
+90 s after releasing that ceiling. GPU samples were 61–70%, encoder 5–6%.
+
+`voice_video_protection.rs` debounces moderate loss, retains immediate protection
+for severe loss, and reduces/reopens ceilings in steps from the current allocation.
+It never forces a bitrate minimum. Invalid/stale feedback cannot hold the limit
+forever; failed sender updates retain the last successfully applied policy.
+Deterministic regressions cover isolated/sustained loss, recovery, expiry and caps.
+The initial bandwidth drop preceded protection; its network cause remains unknown.

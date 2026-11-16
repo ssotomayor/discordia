@@ -87,7 +87,8 @@ impl CameraPublisher {
             }
         });
         let key = Some(capture.device.id.clone());
-        let (network_task, _) = network::spawn_video_budget(state, track, 160_000);
+        let (network_task, _) =
+            network::spawn_video_budget(state, track, 160_000, u64::from(quality.bitrate()));
         Ok(Self {
             room,
             sid: publication.sid(),
