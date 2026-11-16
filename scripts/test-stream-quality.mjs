@@ -336,6 +336,14 @@ test('simulcast at 720p/30 does not count as a 1440p/60 playback failure', () =>
     framesPerSecond: 30, totalDecodeTime: i * 1.5 }), '');
 });
 
+test('one FPS with incoming video data warns without inventing a decoder or network cause', () => {
+  const tick = healthSequence(full);
+  let result;
+  for (let i = 1; i <= 6; i++) result = tick({ framesDecoded: i,
+    framesPerSecond: 1, totalDecodeTime: i * 0.001 });
+  assert.equal(result, 'receiver-output');
+});
+
 test('display drops with healthy decoding and low loss identify the receiving device', () => {
   const tick = healthSequence();
   let result;
@@ -355,7 +363,12 @@ test('repeated freezes without attribution get a generic warning; static content
 
 test('fresh sender reports distinguish connection and device limitations', () => {
   for (const [status, expected] of [[{ ...full, bandwidth: true }, 'sender-network'],
-    [{ ...full, cpu: true }, 'sender-device'], [{ ...full, captureLimited: true }, 'sender-device']]) {
+    [{ ...full, cpu: true }, 'sender-encoder'], [{ ...full, captureLimited: true }, 'sender-device'],
+    [{ ...full, captureLimited: true, captureSlow: true }, 'sender-capture'],
+    [{ ...full, captureLimited: true, captureSlow: false }, 'sender-encoder'],
+    [{ ...full, outputSlow: true }, 'sender-output'],
+    [{ ...full, lowBitrate: true }, 'sender-bitrate'],
+    [{ ...full, lowBitrate: true, voiceLimited: true, bandwidth: true }, 'sender-voice']]) {
     const tick = healthSequence(status);
     let result;
     for (let i = 0; i < 5; i++) result = tick();
@@ -373,10 +386,56 @@ test('local sender notices debounce, recover, and reset across sessions', async 
   now = 4000;
   assert.equal(await context.senderHealth(limited), '', 'a polling gap restarts observation');
   for (now = 5000; now <= 8000; now += 1000) await context.senderHealth(limited);
-  assert.equal(await context.senderHealth(limited), 'local-device');
+  assert.equal(await context.senderHealth(limited), 'local-encoder');
   assert.equal(await context.senderHealth({ id: 'share-2', bandwidth: true }), '');
   assert.equal(await context.senderHealth({ active: false }), '');
   assert.equal(healthReports.size, 0);
+});
+
+test('native sender notices identify capture, encoding and low output, then clear on recovery', async () => {
+  for (const [flags, expected] of [
+    [{ captureSlow: true, captureLimited: true }, 'local-capture'],
+    [{ captureSlow: false, captureLimited: true }, 'local-encoder'],
+    [{ outputSlow: true }, 'local-output'],
+    [{ bandwidth: true, captureSlow: true }, 'local-network'],
+    [{ lowBitrate: true }, 'local-bitrate'],
+    [{ lowBitrate: true, voiceLimited: true, bandwidth: true }, 'local-voice'],
+  ]) {
+    healthReports.clear();
+    let result;
+    for (let second = 0; second <= 5; second++) {
+      now = second * 1000;
+      result = await context.senderHealth({ id: 'native', ...flags });
+    }
+    assert.equal(result, expected);
+    for (let second = 6; second <= 10; second++) {
+      now = second * 1000;
+      result = await context.senderHealth({ id: 'native' });
+    }
+    assert.equal(result, '');
+  }
+});
+
+test('startup warning waits for playable video and clears when the first frame arrives', async () => {
+  const previousViews = context.attached;
+  const previousTrack = context.videoTrackFor;
+  try {
+    const view = { identity: 'pending', kind: 'screen', firstFrame: false, waitingSince: 0 };
+    context.attached = { pending: view };
+    context.videoTrackFor = () => null;
+    now = 11999;
+    assert.equal((await context.previewStats('pending')).healthReason, '');
+    now = 12000;
+    assert.equal((await context.previewStats('pending')).healthReason, 'waiting-video');
+    assert.equal((await context.previewStats('another')).healthReason, '');
+    view.firstFrame = true;
+    assert.equal((await context.previewStats('pending')).healthReason, '');
+    delete context.attached.pending;
+    assert.equal((await context.previewStats('pending')).healthReason, '');
+  } finally {
+    context.attached = previousViews;
+    context.videoTrackFor = previousTrack;
+  }
 });
 
 test('track replacement, counter reset and a hidden interval cannot inherit a playback warning', () => {

@@ -2,6 +2,36 @@ use serde_json::Value;
 
 use crate::state::ScreenShareStats;
 
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
+pub(super) fn diagnostic_due(
+    elapsed: std::time::Duration,
+    previous: Option<std::time::Duration>,
+) -> bool {
+    let interval = if elapsed.as_secs() <= 20 { 5 } else { 30 };
+    previous.is_none_or(|last| elapsed.saturating_sub(last).as_secs() >= interval)
+}
+
+#[cfg(test)]
+#[test]
+fn diagnostic_checkpoints_cover_startup_without_logging_every_frame() {
+    use std::time::Duration;
+    let mut last = None;
+    let mut checkpoints = Vec::new();
+    for second in 1..=100 {
+        let elapsed = Duration::from_secs(second);
+        if diagnostic_due(elapsed, last) {
+            checkpoints.push(second);
+            last = Some(elapsed);
+        }
+    }
+    assert_eq!(checkpoints, [1, 6, 11, 16, 46, 76]);
+}
+
 pub(super) fn decoder_mode(implementation: Option<&str>) -> &'static str {
     let name = implementation
         .unwrap_or_default()
@@ -50,10 +80,68 @@ pub(super) fn screen_device_limited(
         return false;
     }
     let budget = 800.0 / target_fps;
-    (capture_fps < target_fps * 0.75 && processing_ms.is_some_and(|ms| ms >= budget))
+    screen_capture_limited(target_fps, capture_fps, processing_ms)
         || (capture_fps > 10.0
             && encoded_fps < capture_fps * 0.75
             && encode_ms.is_some_and(|ms| ms >= budget))
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
+pub(super) fn screen_capture_limited(
+    target_fps: f64,
+    capture_fps: f64,
+    processing_ms: Option<f64>,
+) -> bool {
+    target_fps.is_finite()
+        && target_fps > 0.0
+        && capture_fps < target_fps * 0.75
+        && processing_ms.is_some_and(|ms| ms >= 800.0 / target_fps)
+}
+
+pub(super) fn screen_output_slow(
+    active: bool,
+    capture_fps: f64,
+    encoded_fps: f64,
+    target_bitrate: f64,
+) -> bool {
+    active
+        && capture_fps >= 10.0
+        && (0.0..=5.0).contains(&encoded_fps)
+        && target_bitrate.is_finite()
+        && target_bitrate > 0.0
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
+pub(super) fn screen_low_bitrate(
+    active: bool,
+    capture_fps: f64,
+    target: f64,
+    configured: u64,
+) -> bool {
+    active
+        && capture_fps.is_finite()
+        && capture_fps >= 10.0
+        && target.is_finite()
+        && target > 0.0
+        && target < configured as f64 * 0.4
+}
+
+pub(super) fn voice_video_limited(applied: bool, active: bool, target: f64) -> bool {
+    applied
+        && active
+        && target.is_finite()
+        && target > 0.0
+        && target <= super::voice::SCREEN_VOICE_BUDGET_BPS as f64 * 1.1
 }
 
 #[derive(Default)]
@@ -185,6 +273,7 @@ impl WebViewStats {
             encoded_width: u32_field("encodedWidth"),
             encoded_height: u32_field("encodedHeight"),
             encoded_fps: number(msg, "encodedFps").or(estimated_fps),
+            encoder_active: msg.get("encoderActive").and_then(Value::as_bool),
             bitrate_kbps,
             target_bitrate_kbps: number(msg, "targetBitrate").and_then(|v| rounded_u32(v / 1000.0)),
             codec: text_field("codec"),
@@ -192,6 +281,9 @@ impl WebViewStats {
             power_efficient: msg.get("powerEfficient").and_then(Value::as_bool),
             quality_limitation_reason: text_field("qualityLimitationReason"),
             device_limited: false,
+            capture_limited: false,
+            low_bitrate: false,
+            voice_limited: false,
             frames: u64_field("frames"),
             packets: u64_field("packets"),
             packets_lost: msg.get("packetsLost").and_then(Value::as_i64),
@@ -206,6 +298,56 @@ impl WebViewStats {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bitrate_notices_require_active_capture_and_keep_voice_policy_separate() {
+        assert!(super::screen_low_bitrate(
+            true,
+            60.0,
+            5_000_000.0,
+            34_000_000
+        ));
+        assert!(!super::screen_low_bitrate(
+            false,
+            60.0,
+            5_000_000.0,
+            34_000_000
+        ));
+        assert!(!super::screen_low_bitrate(
+            true,
+            1.0,
+            5_000_000.0,
+            34_000_000
+        ));
+        assert!(!super::screen_low_bitrate(true, 60.0, 0.0, 34_000_000));
+        assert!(!super::screen_low_bitrate(true, 60.0, f64::NAN, 34_000_000));
+        assert!(!super::screen_low_bitrate(
+            true,
+            60.0,
+            30_000_000.0,
+            34_000_000
+        ));
+        assert!(super::voice_video_limited(true, true, 300_000.0));
+        assert!(!super::voice_video_limited(false, true, 300_000.0));
+        assert!(!super::voice_video_limited(true, false, 300_000.0));
+        assert!(!super::voice_video_limited(true, true, 5_000_000.0));
+    }
+    #[test]
+    fn slow_output_requires_active_encoding_and_capture_continuing() {
+        assert!(super::screen_output_slow(true, 60.0, 1.0, 4_000_000.0));
+        assert!(!super::screen_output_slow(false, 60.0, 1.0, 4_000_000.0));
+        assert!(!super::screen_output_slow(true, 1.0, 1.0, 4_000_000.0));
+        assert!(!super::screen_output_slow(true, 60.0, 1.0, 0.0));
+        assert!(!super::screen_output_slow(
+            true,
+            60.0,
+            f64::NAN,
+            4_000_000.0
+        ));
+        assert!(!super::screen_output_slow(true, 60.0, 60.0, 4_000_000.0));
+        assert!(super::screen_capture_limited(60.0, 5.0, Some(50.0)));
+        assert!(!super::screen_capture_limited(60.0, 5.0, Some(1.0)));
+        assert!(!super::screen_capture_limited(60.0, 5.0, None));
+    }
     #[test]
     fn reception_distinguishes_decode_display_loss_and_freezes_using_recent_deltas() {
         let mut stats = super::WebViewStats::default();

@@ -554,6 +554,12 @@ mod tests {
     #[ignore = "needs an interactive Windows desktop and a visible window"]
     async fn selected_windows_and_monitors_feed_livekit_and_stop() {
         let sources = sources().expect("enumerate sources");
+        let load = std::env::var_os("DISCORDIA_TEST_CAPTURE_1440P60").is_some();
+        let (max_width, max_height, fps) = if load {
+            (2560, 1440, 60)
+        } else {
+            (640, 360, 15)
+        };
         for window in [false, true] {
             let target = sources
                 .iter()
@@ -562,8 +568,8 @@ mod tests {
                 .target;
             let source = NativeVideoSource::new(
                 VideoResolution {
-                    width: 640,
-                    height: 360,
+                    width: max_width,
+                    height: max_height,
                 },
                 true,
             );
@@ -573,9 +579,9 @@ mod tests {
             let capture = WinVideoCapture::start(
                 target,
                 Settings {
-                    width: 640,
-                    height: 360,
-                    fps: 15,
+                    width: max_width,
+                    height: max_height,
+                    fps,
                     max_bitrate: 1_000_000,
                     adaptive_quality: false,
                     priority: super::super::Priority::Balanced,
@@ -583,7 +589,9 @@ mod tests {
                     encoder: super::super::Encoder::Auto,
                 },
                 Box::new(move |frame| {
-                    assert!(frame.buffer.width() <= 640 && frame.buffer.height() <= 360);
+                    assert!(
+                        frame.buffer.width() <= max_width && frame.buffer.height() <= max_height
+                    );
                     assert!(frame.timestamp_us > 0);
                     source.capture_frame(&VideoFrame {
                         rotation: VideoRotation::VideoRotation0,
@@ -604,6 +612,16 @@ mod tests {
                 "no video reached LiveKit"
             );
             let metrics = capture.metrics.clone();
+            let sample = metrics.snapshot();
+            eprintln!(
+                "Capture under load: window={window} {}x{} target_fps={fps} frames={} readback_ms={:?} conversion_ms={:?} largest_gap_ms={}",
+                sample.width,
+                sample.height,
+                sample.frames,
+                sample.readback_ms_since(Default::default()),
+                sample.conversion_ms_since(Default::default()),
+                sample.largest_gap_us as f64 / 1000.0
+            );
             drop(capture);
             tokio::time::sleep(Duration::from_millis(500)).await;
             let stopped = count.load(Ordering::Relaxed);

@@ -31,6 +31,26 @@ const fixture = (popout = false, mobile = false, expanded = false) => `<style>${
     await page.clock.fastForward(2600);
     assert.equal(await visible(), 'false');
     assert.equal(await page.locator('#tile').evaluate(node => getComputedStyle(node, '::after').opacity), '0', 'the contrast frame hides with the controls');
+    await page.locator('.dxf-stream-footer > div:first-child').evaluate(node => {
+      const notice = document.createElement('div');
+      notice.dataset.streamHealth = 'TX-ENCODER';
+      notice.style.cssText = 'font-size:11px;white-space:normal;overflow-wrap:anywhere';
+      notice.innerHTML = '<strong>Problema de transmisión · TX-ENCODER</strong><span style="display:block">La codificación de video de quien transmite es demasiado lenta. Puede bajar la resolución o los FPS de la transmisión.</span><span style="display:block">Incluí este código y una captura al reportar el problema.</span>';
+      node.appendChild(notice);
+    });
+    for (const width of [320, 640, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      assert.equal(await page.locator('.dxf-stream-footer').evaluate(node => getComputedStyle(node).opacity), '1', 'a sustained problem stays visible while controls are idle');
+      const fits = await page.locator('.dxf-stream-footer').evaluate(node => {
+        const tile = node.closest('[data-stream-controls]').getBoundingClientRect();
+        const rect = node.getBoundingClientRect();
+        return node.scrollWidth <= node.clientWidth + 1 && rect.top >= tile.top + 57 && rect.right <= tile.right + 1;
+      });
+      assert.equal(fits, true, `health notice fits at ${width}`);
+      if (width === 320) await page.screenshot({ path: 'target/stream-health-notice-320.png' });
+    }
+    await page.locator('[data-stream-health]').evaluate(node => node.remove());
+    assert.equal(await page.locator('.dxf-stream-footer').evaluate(node => getComputedStyle(node).opacity), '0', 'recovery restores normal control auto-hide');
     await pointer('pointermove'); assert.equal(await visible(), 'true');
     assert.equal(await page.locator('#tile').evaluate(node => getComputedStyle(node, '::after').opacity), '1');
     assert.match(await page.locator('.dxf-stream-toolbar').evaluate(node => getComputedStyle(node).backgroundImage), /gradient/);

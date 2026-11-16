@@ -2156,6 +2156,8 @@ impl SessionInner {
         options: TrackPublishOptions,
         encodings: Vec<RtpEncodingParameters>,
     ) -> EngineResult<RtpTransceiver> {
+        // Another publisher negotiation must not observe a sender before its codec/backend is set.
+        let _configuration = self.publisher_pc.begin_sender_configuration().await;
         // If video track, derive "ultimate" bitrate from encodings and stash it for offer munging.
         // Must be done before encodings is moved into RtpTransceiverInit.
         if track.kind() == TrackKind::Video {

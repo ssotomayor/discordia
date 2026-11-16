@@ -47,6 +47,7 @@ mod camera;
 use camera::CameraPublisher;
 
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
+pub(super) const SCREEN_VOICE_BUDGET_BPS: u64 = 300_000;
 #[path = "voice_activity.rs"]
 mod activity;
 #[path = "voice_calibration.rs"]
@@ -1920,16 +1921,24 @@ struct NativeVideoRoom {
     camera_starting: bool,
 }
 
+fn screen_room_options(ice_servers: &[IceServer]) -> RoomOptions {
+    let mut options = RoomOptions::default();
+    options.auto_subscribe = false;
+    options.encryption = crate::e2ee::room_options();
+    options.rtc_config = rtc_config(ice_servers);
+    options.join_retries = 0;
+    options.connect_timeout = std::time::Duration::from_secs(4);
+    options.signal_connect_timeout = Some(std::time::Duration::from_secs(4));
+    options
+}
+
 impl NativeVideoRoom {
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     async fn connect(key: (String, String), ice_servers: &[IceServer]) -> Result<Self, String> {
-        let mut options = RoomOptions::default();
-        options.auto_subscribe = false;
-        options.encryption = crate::e2ee::room_options();
-        options.rtc_config = rtc_config(ice_servers);
+        let options = screen_room_options(ice_servers);
         let (room, mut events) = Room::connect(&key.0, &key.1, options).await.map_err(|e| {
             format!(
-                "livekit connect: {}",
+                "[TX-CONNECTION] livekit connect: {}",
                 crate::media_tokens::error_detail(&e.to_string())
             )
         })?;
@@ -2230,7 +2239,8 @@ impl ScreenVideoRoom {
         let capture_metrics = capture.metrics();
         let stats_sid = publication.sid();
         let status_room = room.clone();
-        let network_task = network::spawn_video_budget(state, track.clone(), 300_000);
+        let (network_task, network_limited) =
+            network::spawn_video_budget(state, track.clone(), SCREEN_VOICE_BUDGET_BPS);
         let stats_task = crate::service_task::spawn(async move {
             #[cfg(target_os = "windows")]
             let mut output_progress = crate::sysvideo::fallback::OutputProgress::default();
@@ -2243,6 +2253,8 @@ impl ScreenVideoRoom {
             let mut capture_previous = capture_metrics.snapshot();
             let mut encode_previous = None;
             let mut sampled = Instant::now();
+            let diagnostic_started = sampled;
+            let mut diagnostic_last = None;
             let mut status_sent = Instant::now() - std::time::Duration::from_secs(3);
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -2277,11 +2289,20 @@ impl ScreenVideoRoom {
                         continue;
                     }
                     Err(_) => {
-                        tracing::warn!("screen encoder statistics timed out; stopping the share");
-                        if encoder_fatal.send(crate::i18n::text(
+                        tracing::warn!(
+                            diagnostic_code = "TX-STATS",
+                            track_sid = %stats_sid,
+                            elapsed_ms = diagnostic_started.elapsed().as_millis() as u64,
+                            captured_frames = captured.frames,
+                            accepted_frames = encoder_input.load(Ordering::Relaxed),
+                            adapter_dropped = adapter_dropped.load(Ordering::Relaxed),
+                            connection = ?status_room.connection_state(),
+                            "screen encoder statistics timed out; stopping the share"
+                        );
+                        if encoder_fatal.send(format!("[TX-STATS] {}", crate::i18n::text(
                             "Screen-sharing statistics stopped responding. Sharing was stopped.",
                             &[],
-                        )).is_err() {
+                        ))).is_err() {
                             eprintln!("[screen] encoder timeout after session teardown");
                         }
                         break;
@@ -2314,17 +2335,46 @@ impl ScreenVideoRoom {
                     active_output,
                 ) {
                     tracing::warn!(
+                        diagnostic_code = "TX-OUTPUT",
+                        track_sid = %stats_sid,
+                        elapsed_ms = diagnostic_started.elapsed().as_millis() as u64,
+                        captured_frames = captured.frames,
+                        accepted_frames = encoder_input.load(Ordering::Relaxed),
+                        adapter_dropped = adapter_dropped.load(Ordering::Relaxed),
+                        ?active_output,
+                        connection = ?status_room.connection_state(),
+                        muted = track.is_muted(),
+                        implementation = outbound.map(|o| o.outbound.encoder_implementation.as_str()),
+                        target_bitrate = outbound.map(|o| o.outbound.target_bitrate),
+                        key_frames = outbound.map(|o| o.outbound.key_frames_encoded),
+                        pli_count = outbound.map(|o| o.outbound.pli_count),
                         "WebRTC accepted screen frames but encoding made no progress; stopping the share"
                     );
-                    if encoder_fatal.send(crate::i18n::text(
+                    if encoder_fatal.send(format!("[TX-OUTPUT] {}", crate::i18n::text(
                         "The screen-sharing encoder stopped producing frames. Sharing was stopped.",
                         &[],
-                    )).is_err() {
+                    ))).is_err() {
                         eprintln!("[screen] encoder stall after session teardown");
                     }
                     break;
                 }
                 let Some(outbound) = outbound else {
+                    if super::screen_stats::diagnostic_due(
+                        now.duration_since(diagnostic_started),
+                        diagnostic_last,
+                    ) {
+                        diagnostic_last = Some(now.duration_since(diagnostic_started));
+                        tracing::info!(
+                            track_sid = %stats_sid,
+                            elapsed_ms = diagnostic_started.elapsed().as_millis() as u64,
+                            captured_frames = captured.frames,
+                            capture_fps,
+                            adapter_dropped = adapter_dropped.load(Ordering::Relaxed),
+                            connection = ?status_room.connection_state(),
+                            muted = track.is_muted(),
+                            "screen share diagnostic: no outbound video statistics yet"
+                        );
+                    }
                     continue;
                 };
                 if crate::sysvideo::fallback::stop_software_encoding(
@@ -2333,6 +2383,7 @@ impl ScreenVideoRoom {
                     &outbound.outbound.encoder_implementation,
                 ) {
                     tracing::warn!(
+                        diagnostic_code = "TX-ENCODER",
                         implementation = %outbound.outbound.encoder_implementation,
                         width = publish_settings.width,
                         height = publish_settings.height,
@@ -2350,7 +2401,10 @@ impl ScreenVideoRoom {
                             &[],
                         )
                     };
-                    if encoder_fatal.send(message).is_err() {
+                    if encoder_fatal
+                        .send(format!("[TX-ENCODER] {message}"))
+                        .is_err()
+                    {
                         eprintln!("[screen] encoder failure after session teardown");
                     }
                     break;
@@ -2432,6 +2486,10 @@ impl ScreenVideoRoom {
                         "primaryHeight": outbound.outbound.frame_height,
                         "primaryFps": outbound.outbound.frames_per_second,
                         "captureFps": capture_fps,
+                        "lowBitrate": super::screen_stats::screen_low_bitrate(
+                            outbound.outbound.active, capture_fps, outbound.outbound.target_bitrate, effective_settings.max_bitrate),
+                        "voiceLimited": super::screen_stats::voice_video_limited(
+                            network_limited.load(Ordering::Acquire), outbound.outbound.active, outbound.outbound.target_bitrate),
                         "adaptive": publish_settings.adaptive_quality,
                         "bandwidth": outbound.outbound.quality_limitation_reason
                             == livekit::webrtc::stats::QualityLimitationReason::Bandwidth,
@@ -2440,6 +2498,11 @@ impl ScreenVideoRoom {
                         "captureLimited": super::screen_stats::screen_device_limited(
                             effective_settings.fps as f64, capture_fps, outbound.outbound.frames_per_second,
                             capture_processing_ms, encode_ms),
+                        "captureSlow": super::screen_stats::screen_capture_limited(
+                            effective_settings.fps as f64, capture_fps, capture_processing_ms),
+                        "outputSlow": super::screen_stats::screen_output_slow(
+                            outbound.outbound.active, capture_fps, outbound.outbound.frames_per_second,
+                            outbound.outbound.target_bitrate),
                     })
                     .to_string()
                     .into_bytes();
@@ -2486,6 +2549,77 @@ impl ScreenVideoRoom {
                     capture_processing_ms,
                     encode_ms,
                 );
+                stats.capture_limited = super::screen_stats::screen_capture_limited(
+                    effective_settings.fps as f64,
+                    capture_fps,
+                    capture_processing_ms,
+                );
+                stats.low_bitrate = super::screen_stats::screen_low_bitrate(
+                    outbound.outbound.active,
+                    capture_fps,
+                    outbound.outbound.target_bitrate,
+                    effective_settings.max_bitrate,
+                );
+                stats.voice_limited = super::screen_stats::voice_video_limited(
+                    network_limited.load(Ordering::Acquire),
+                    outbound.outbound.active,
+                    outbound.outbound.target_bitrate,
+                );
+                if super::screen_stats::diagnostic_due(
+                    now.duration_since(diagnostic_started),
+                    diagnostic_last,
+                ) {
+                    diagnostic_last = Some(now.duration_since(diagnostic_started));
+                    #[cfg(target_os = "windows")]
+                    let accepted_frames = Some(encoder_input.load(Ordering::Relaxed));
+                    #[cfg(not(target_os = "windows"))]
+                    let accepted_frames: Option<u64> = None;
+                    let media_route = crate::connection_routes::selected_media_route(&report);
+                    tracing::info!(
+                        elapsed_ms = diagnostic_started.elapsed().as_millis() as u64,
+                        track_sid = %stats_sid,
+                        requested_width = settings.width,
+                        requested_height = settings.height,
+                        requested_fps = settings.fps,
+                        max_bitrate_bps = settings.max_bitrate,
+                        captured_frames = captured.frames,
+                        accepted_frames,
+                        media_family = media_route.as_ref().map(|route| route.family),
+                        media_protocol = media_route.as_ref().map(|route| route.protocol.as_str()),
+                        media_relayed = media_route.as_ref().map(|route| route.relayed),
+                        adapter_dropped = adapter_dropped.load(Ordering::Relaxed),
+                        capture_readback_ms,
+                        capture_largest_gap_ms = captured.largest_gap_us as f64 / 1000.0,
+                        frames_encoded = outbound.outbound.frames_encoded,
+                        target_bitrate_bps = outbound.outbound.target_bitrate,
+                        key_frames = outbound.outbound.key_frames_encoded,
+                        pli_count = outbound.outbound.pli_count,
+                        nack_count = outbound.outbound.nack_count,
+                        connection = ?status_room.connection_state(),
+                        muted = track.is_muted(),
+                        ?stats,
+                        "screen share diagnostic checkpoint"
+                    );
+                    for entry in &report {
+                        if let RtcStats::OutboundRtp(layer) = entry
+                            && layer.stream.kind == "video"
+                        {
+                            tracing::info!(
+                                track_sid = %stats_sid,
+                                rid = %layer.outbound.rid,
+                                ssrc = layer.stream.ssrc,
+                                active = layer.outbound.active,
+                                width = layer.outbound.frame_width,
+                                height = layer.outbound.frame_height,
+                                frames_encoded = layer.outbound.frames_encoded,
+                                fps = layer.outbound.frames_per_second,
+                                target_bitrate_bps = layer.outbound.target_bitrate,
+                                bytes_sent = layer.sent.bytes_sent,
+                                "screen share diagnostic layer"
+                            );
+                        }
+                    }
+                }
                 tracing::debug!(
                     max_bitrate_bps = settings.max_bitrate,
                     capture_callbacks_fps,
@@ -2575,6 +2709,7 @@ fn native_screen_stats(
         encoded_width: (o.outbound.frame_width > 0).then_some(o.outbound.frame_width),
         encoded_height: (o.outbound.frame_height > 0).then_some(o.outbound.frame_height),
         encoded_fps: Some(o.outbound.frames_per_second),
+        encoder_active: Some(o.outbound.active),
         bitrate_kbps,
         target_bitrate_kbps: (o.outbound.target_bitrate > 0.0)
             .then_some((o.outbound.target_bitrate / 1000.0).round() as u32),
@@ -2591,6 +2726,9 @@ fn native_screen_stats(
             .into(),
         ),
         device_limited: false,
+        capture_limited: false,
+        low_bitrate: false,
+        voice_limited: false,
         frames: Some(o.outbound.frames_encoded as u64),
         packets: Some(o.sent.packets_sent),
         packets_lost: None,
@@ -2646,10 +2784,7 @@ impl ScreenAudioRoom {
     ) -> Result<Self, String> {
         #[cfg(target_os = "android")]
         crate::android::ensure_media_ready().await?;
-        let mut options = RoomOptions::default();
-        options.auto_subscribe = false;
-        options.encryption = crate::e2ee::room_options();
-        options.rtc_config = rtc_config(ice_servers);
+        let options = screen_room_options(ice_servers);
         let (room, mut events) = Room::connect(url, token, options).await.map_err(|e| {
             format!(
                 "livekit connect: {}",
@@ -4548,6 +4683,44 @@ impl Drop for RemotePlaybackGuard {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
+    #[tokio::test]
+    async fn native_video_signaling_failure_is_bounded_and_redacts_its_token() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let token = livekit_api::access_token::AccessToken::with_api_key(
+            "test-key",
+            "local-test-secret-at-least-32-characters",
+        )
+        .with_identity("native-video-timeout")
+        .with_grants(livekit_api::access_token::VideoGrants {
+            room_join: true,
+            room: "native-video-timeout".into(),
+            ..Default::default()
+        })
+        .to_jwt()
+        .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            NativeVideoRoom::connect((url, token.clone()), &[]),
+        )
+        .await;
+        server.abort();
+        let error = result
+            .expect("native video cannot block for the SDK's retry budget")
+            .err()
+            .expect("stalled signaling must fail");
+        assert!(
+            error.contains("initial signaling budget exhausted"),
+            "{error}"
+        );
+        assert!(!error.contains(&token));
+    }
+
     fn sharing_in_a_call() -> (AppState, Id, crate::sysvideo::Target) {
         let mut state = AppState::empty();
         let channel = Id::new_v4();
@@ -4977,12 +5150,31 @@ mod tests {
         let verify_simulcast = std::env::var_os("DISCORDIA_TEST_SIMULCAST").is_some();
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
         let verify_nvenc_rates = std::env::var_os("DISCORDIA_TEST_NVENC_RATES").is_some();
+        let verify_congestion = std::env::var_os("DISCORDIA_TEST_NVENC_CONGESTION").is_some();
+        let verify_contention = std::env::var_os("DISCORDIA_TEST_GPU_CONTENTION").is_some();
+        let monotonic_capture = std::env::var_os("DISCORDIA_TEST_MONOTONIC_CAPTURE").is_some();
+        let capture_delay = std::env::var("DISCORDIA_TEST_CAPTURE_DELAY_MS")
+            .ok()
+            .map(|value| value.parse::<u64>().expect("capture delay"));
+        assert!(!verify_congestion || verify_nvenc_rates);
         let verify_1440p60 = std::env::var_os("DISCORDIA_TEST_NVENC_1440P60").is_some();
         let verify_1440p =
             verify_1440p60 || std::env::var_os("DISCORDIA_TEST_NVENC_1440P").is_some();
+        let primary_height = if verify_1440p { 1440 } else { 1080 };
         let legacy_start = std::env::var_os("DISCORDIA_TEST_LEGACY_START").is_some();
         assert!(!verify_1440p || verify_nvenc_rates);
         let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
+        let mf_load = std::env::var("DISCORDIA_TEST_MF_LOAD").ok().map(|value| {
+            assert!(require_mf);
+            match value.as_str() {
+                "720p30" => (1280, 720, 30),
+                "1080p30" => (1920, 1080, 30),
+                "1080p60" => (1920, 1080, 60),
+                "1440p30" => (2560, 1440, 30),
+                "1440p60" => (2560, 1440, 60),
+                _ => panic!("unsupported Media Foundation test load"),
+            }
+        });
         let verify_mf_fallback = std::env::var_os("DISCORDIA_TEST_MF_FALLBACK").is_some();
         assert!(!require_mf || !verify_mf_fallback);
         let modern_codec = std::env::var("DISCORDIA_TEST_MODERN_CODEC").ok();
@@ -5004,19 +5196,45 @@ mod tests {
             assert!(available_backends.contains(&VideoEncoderBackend::Nvenc));
         }
 
-        let data_dir =
-            std::env::temp_dir().join(format!("discordia-video-test-{}", uuid::Uuid::new_v4()));
-        let credentials = Credentials::generate();
-        let _sfu = spawn_livekit(
-            discordia_server::livekit_bundle::Advertise::Mapped(
-                "127.0.0.1".parse().expect("loopback"),
-            ),
-            &credentials,
-            &data_dir,
-        )
-        .await
-        .expect("start SFU");
-        let url = format!("ws://127.0.0.1:{}", ports().ws);
+        let data_dir = std::env::var_os("DISCORDIA_TEST_SFU_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("discordia-video-test-{}", uuid::Uuid::new_v4()))
+            });
+        let audit_url = std::env::var("DISCORDIA_TEST_SFU_URL").ok();
+        if let Some(raw) = &audit_url {
+            let parsed = url::Url::parse(raw).expect("audit SFU URL");
+            assert_eq!(parsed.scheme(), "ws");
+            assert!(
+                matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+                    || matches!(parsed.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback())
+            );
+        }
+        let credentials = if audit_url.is_some() {
+            Credentials {
+                key: "discordia-audit".into(),
+                secret: std::env::var("DISCORDIA_TEST_SFU_SECRET")
+                    .expect("isolated audit SFU secret"),
+            }
+        } else {
+            Credentials::generate()
+        };
+        let _sfu = if audit_url.is_none() {
+            Some(
+                spawn_livekit(
+                    discordia_server::livekit_bundle::Advertise::Mapped(
+                        "127.0.0.1".parse().expect("loopback"),
+                    ),
+                    &credentials,
+                    &data_dir,
+                )
+                .await
+                .expect("start SFU"),
+            )
+        } else {
+            None
+        };
+        let url = audit_url.unwrap_or_else(|| format!("ws://127.0.0.1:{}", ports().ws));
         let encrypted_options = || {
             if std::env::var_os("DISCORDIA_TEST_MODERN_NO_E2EE").is_some() {
                 return RoomOptions::default();
@@ -5026,6 +5244,11 @@ mod tests {
                 vec![7; crate::mediakey::KEY_LEN],
             );
             let mut options = RoomOptions::default();
+            options.join_retries = 0;
+            if std::env::var_os("DISCORDIA_TEST_REQUIRE_RELAY").is_some() {
+                options.rtc_config.ice_transport_type =
+                    livekit::webrtc::peer_connection_factory::IceTransportsType::Relay;
+            }
             options.encryption = Some(livekit::e2ee::E2eeOptions {
                 encryption_type: livekit::e2ee::EncryptionType::Gcm,
                 key_provider: provider,
@@ -5037,7 +5260,7 @@ mod tests {
             (crate::sysvideo::Codec::Vp8, crate::sysvideo::Encoder::Auto),
             (crate::sysvideo::Codec::H264, crate::sysvideo::Encoder::Cpu),
         ] {
-            if (verify_nvenc_rates || verify_mf_fallback || modern_codec.is_some())
+            if (require_mf || verify_nvenc_rates || verify_mf_fallback || modern_codec.is_some())
                 && (codec != crate::sysvideo::Codec::H264
                     || encoder != crate::sysvideo::Encoder::Auto)
             {
@@ -5096,7 +5319,7 @@ mod tests {
                                         publication
                                             .set_video_quality(livekit::track::VideoQuality::High);
                                     }
-                                } else if frame.buffer.height() == 1080
+                                } else if frame.buffer.height() == primary_height
                                     && low.load(Ordering::Relaxed) >= 45
                                 {
                                     recovered.fetch_add(1, Ordering::Relaxed);
@@ -5108,6 +5331,8 @@ mod tests {
             }
             let received = Arc::new(AtomicU64::new(0));
             let decoded = received.clone();
+            let remote_video = Arc::new(Mutex::new(None));
+            let reader_video = remote_video.clone();
             let reader = tokio::spawn(async move {
                 while let Some(event) = listener_events.recv().await {
                     if let RoomEvent::TrackSubscribed {
@@ -5115,10 +5340,11 @@ mod tests {
                         ..
                     } = event
                     {
+                        *reader_video.lock() = Some(video.clone());
                         let mut stream = NativeVideoStream::new(video.rtc_track());
                         while let Some(frame) = stream.next().await {
                             assert!(frame.buffer.width() > 0 && frame.buffer.height() > 0);
-                            if !verify_simulcast || frame.buffer.height() == 1080 {
+                            if !verify_simulcast || frame.buffer.height() == primary_height {
                                 decoded.fetch_add(1, Ordering::Relaxed);
                             }
                         }
@@ -5128,7 +5354,11 @@ mod tests {
             let mut settings = crate::features::screenshare::native_settings("smooth");
             settings.codec = codec;
             settings.encoder = encoder;
-            settings.adaptive_quality = verify_simulcast;
+            if let Some((width, height, fps)) = mf_load {
+                settings.width = width;
+                settings.height = height;
+                settings.fps = fps;
+            }
             if verify_mf_fallback {
                 settings.width = 1280;
                 settings.height = 720;
@@ -5156,6 +5386,7 @@ mod tests {
                 settings.fps = 30;
                 settings.max_bitrate = 1_000_000;
             }
+            settings.adaptive_quality = verify_simulcast;
             let source = NativeVideoSource::new(
                 VideoResolution {
                     width: settings.width,
@@ -5189,28 +5420,46 @@ mod tests {
                 .publish_track(LocalTrack::Video(track.clone()), publish_options)
                 .await
                 .expect("publish video");
+            if let Some(delay) = capture_delay {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
             let mut interval =
                 tokio::time::interval(Duration::from_secs_f64(1.0 / settings.fps as f64));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_bytes = None;
             let mut measured_bps = 0.0;
             let mut peak_target_bps = 0.0_f64;
-            let frame_count = if verify_simulcast {
-                360
+            let mut constrained_target_bps = f64::INFINITY;
+            let frame_count = if mf_load.is_some() {
+                u64::from(settings.fps) * 20
             } else if verify_1440p {
                 u64::from(settings.fps) * 30
+            } else if verify_simulcast {
+                360
             } else if verify_nvenc_rates {
                 450
             } else {
                 300
             };
             let mut noise_tile = vec![0; 65_536];
+            let mut admitted = 0_u64;
+            let mut output_progress = crate::sysvideo::fallback::OutputProgress::default();
             let motion_started = Instant::now();
             for index in 0..frame_count {
                 interval.tick().await;
+                if verify_congestion && index == u64::from(settings.fps) * 5 {
+                    track
+                        .set_network_bitrate_limit(Some(300_000))
+                        .expect("limit NVENC bandwidth");
+                }
+                if verify_congestion && index == u64::from(settings.fps) * 10 {
+                    track
+                        .set_network_bitrate_limit(None)
+                        .expect("restore NVENC bandwidth");
+                }
                 let mut buffer = I420Buffer::new(settings.width, settings.height);
                 let (y, u, v) = buffer.data_mut();
-                if verify_nvenc_rates {
+                if verify_nvenc_rates || mf_load.is_some() {
                     let mut noise = index as u32 + 1;
                     for pixel in noise_tile.iter_mut() {
                         noise ^= noise << 13;
@@ -5226,22 +5475,56 @@ mod tests {
                 }
                 u.fill(128);
                 v.fill(128);
-                source.capture_frame(&VideoFrame {
+                let accepted = source.capture_frame(&VideoFrame {
                     rotation: VideoRotation::VideoRotation0,
-                    timestamp_us: 0,
+                    timestamp_us: if monotonic_capture {
+                        10_000_000_000 + motion_started.elapsed().as_micros() as i64
+                    } else {
+                        0
+                    },
                     frame_metadata: None,
                     buffer,
                 });
+                admitted += u64::from(accepted);
+                if mf_load.is_some() && index % u64::from(settings.fps) == 0 {
+                    let report = track.get_stats().await.expect("MF progress stats");
+                    assert!(!output_progress.stalled(
+                        Instant::now(),
+                        true,
+                        admitted,
+                        crate::sysvideo::fallback::active_output(&report),
+                    ));
+                    for entry in &report {
+                        if let RtcStats::OutboundRtp(o) = entry {
+                            eprintln!(
+                                "MF progress: supplied={} accepted={admitted} encoded={} decoded={} pli={} nack={}",
+                                index + 1,
+                                o.outbound.frames_encoded,
+                                received.load(Ordering::Relaxed),
+                                o.outbound.pli_count,
+                                o.outbound.nack_count
+                            );
+                        }
+                    }
+                }
                 if verify_nvenc_rates && index % 60 == 59 {
                     let report = track.get_stats().await.expect("rate stats");
                     let outbound = report
                         .iter()
-                        .find_map(|entry| match entry {
+                        .filter_map(|entry| match entry {
                             RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
                             _ => None,
                         })
+                        .max_by_key(|o| (o.outbound.rid == "f", o.outbound.frame_height))
                         .expect("outbound rate");
                     peak_target_bps = peak_target_bps.max(outbound.outbound.target_bitrate);
+                    if verify_congestion
+                        && index >= u64::from(settings.fps) * 6
+                        && index < u64::from(settings.fps) * 10
+                    {
+                        constrained_target_bps =
+                            constrained_target_bps.min(outbound.outbound.target_bitrate);
+                    }
                     if index == 59 {
                         eprintln!(
                             "NVENC startup legacy={legacy_start} target={:.0} bps",
@@ -5268,13 +5551,17 @@ mod tests {
                     last_bytes = Some((outbound.sent.bytes_sent, now));
                 }
             }
+            if mf_load.is_some() {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
             let report = track.get_stats().await.expect("video stats");
             let outbound = report
                 .iter()
-                .find_map(|entry| match entry {
+                .filter_map(|entry| match entry {
                     RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
                     _ => None,
                 })
+                .max_by_key(|o| (o.outbound.rid == "f", o.outbound.frame_height))
                 .expect("outbound video");
             let stats = native_screen_stats(outbound, &report, 60.0, None);
             if verify_mf_fallback {
@@ -5284,6 +5571,21 @@ mod tests {
                 assert!(outbound.outbound.key_frames_encoded <= 8);
             }
             if verify_nvenc_rates {
+                eprintln!(
+                    "NVENC final: {stats:?}; encoded={} PLI={} keyframes={}; principal={} fallback={} recovered={}",
+                    outbound.outbound.frames_encoded,
+                    outbound.outbound.pli_count,
+                    outbound.outbound.key_frames_encoded,
+                    received.load(Ordering::Relaxed),
+                    low_frames.load(Ordering::Relaxed),
+                    recovered_frames.load(Ordering::Relaxed)
+                );
+                if verify_congestion {
+                    assert!(
+                        constrained_target_bps <= 350_000.0,
+                        "test must exercise a reduced allocation"
+                    );
+                }
                 if verify_1440p {
                     assert_eq!(stats.encoded_width, Some(2560));
                     assert_eq!(stats.encoded_height, Some(1440));
@@ -5292,7 +5594,8 @@ mod tests {
                             .encoded_fps
                             .is_some_and(|fps| fps >= f64::from(settings.fps) * 0.85)
                     );
-                    if !legacy_start {
+                    // Simulcast may reduce the primary allocation while subscriber layers change.
+                    if !legacy_start && !verify_simulcast && !verify_contention {
                         assert!(
                             peak_target_bps >= settings.max_bitrate as f64 * 0.9,
                             "loopback must reach the 1440p budget: {}",
@@ -5301,9 +5604,11 @@ mod tests {
                     }
                 }
                 assert!(
-                    outbound.outbound.key_frames_encoded <= 8,
-                    "bitrate changes must not continuously force keyframes: {}",
-                    outbound.outbound.key_frames_encoded
+                    u64::from(outbound.outbound.key_frames_encoded)
+                        <= 8 + u64::from(outbound.outbound.pli_count),
+                    "bitrate changes must not force unsolicited keyframes: {} keyframes, {} PLI",
+                    outbound.outbound.key_frames_encoded,
+                    outbound.outbound.pli_count
                 );
                 assert!(
                     outbound.outbound.target_bitrate > 2_000_000.0,
@@ -5333,7 +5638,11 @@ mod tests {
             {
                 assert_eq!(
                     stats.codec_implementation.as_deref(),
-                    Some("NVIDIA H264 Encoder")
+                    Some(if verify_simulcast {
+                        "SimulcastEncoderAdapter (NVIDIA H264 Encoder, NVIDIA H264 Encoder)"
+                    } else {
+                        "NVIDIA H264 Encoder"
+                    })
                 );
                 assert_eq!(stats.power_efficient, Some(true));
             }
@@ -5377,6 +5686,66 @@ mod tests {
                 "no video reached the decoder"
             );
             assert!(outbound.outbound.frames_encoded > 0);
+            if verify_contention {
+                assert!(
+                    u64::from(outbound.outbound.frames_encoded) >= frame_count * 85 / 100,
+                    "GPU contention must not stall frame output"
+                );
+                assert!(
+                    received.load(Ordering::Relaxed)
+                        >= u64::from(outbound.outbound.frames_encoded) * 4 / 5,
+                    "most encoded frames must still reach the decoder under load"
+                );
+            }
+            if let Ok(family) = std::env::var("DISCORDIA_TEST_EXPECT_MEDIA_FAMILY") {
+                for (name, room) in [("publisher", &publisher), ("listener", &listener)] {
+                    let session = room.get_stats().await.expect("media transport statistics");
+                    let (send, receive) = crate::connection_routes::selected_media_routes(
+                        &session.publisher_stats,
+                        &session.subscriber_stats,
+                    );
+                    let route = if name == "publisher" { send } else { receive }
+                        .expect("selected media route");
+                    let endpoint: std::net::SocketAddr =
+                        route.endpoint.parse().expect("IP media endpoint");
+                    assert_eq!(endpoint.is_ipv6(), family == "ipv6", "{name}: {route:?}");
+                    if let Ok(protocol) = std::env::var("DISCORDIA_TEST_EXPECT_MEDIA_PROTOCOL") {
+                        assert!(
+                            route.protocol.eq_ignore_ascii_case(&protocol),
+                            "{name}: {route:?}"
+                        );
+                    }
+                    if std::env::var_os("DISCORDIA_TEST_REQUIRE_RELAY").is_some() {
+                        assert!(route.relayed, "{name}: {route:?}");
+                    }
+                    eprintln!(
+                        "Media route {name}: family={family} protocol={} relay={}",
+                        route.protocol, route.relayed
+                    );
+                }
+            }
+            if mf_load.is_some() {
+                assert!(outbound.outbound.frames_encoded >= 100);
+                let receiver = remote_video.lock().clone().expect("remote MF track");
+                for entry in receiver.get_stats().await.expect("MF receive stats") {
+                    if let RtcStats::InboundRtp(o) = entry {
+                        eprintln!(
+                            "MF receiver: decoded={} dropped={} keyframes={} freeze={} lost={} jitter={}",
+                            o.inbound.frames_decoded,
+                            o.inbound.frames_dropped,
+                            o.inbound.key_frames_decoded,
+                            o.inbound.freeze_count,
+                            o.received.packets_lost,
+                            o.received.jitter
+                        );
+                    }
+                }
+                assert!(
+                    received.load(Ordering::Relaxed)
+                        >= u64::from(outbound.outbound.frames_encoded) * 4 / 5,
+                    "most encoded MF frames must reach the decoder"
+                );
+            }
             assert_eq!(
                 stats.codec.as_deref(),
                 Some(match modern_codec.as_deref() {

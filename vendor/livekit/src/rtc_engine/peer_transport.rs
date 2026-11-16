@@ -15,8 +15,8 @@
 use std::{
     fmt::{Debug, Formatter},
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -68,7 +68,11 @@ fn log_description(target: proto::SignalTarget, side: &str, description: &Sessio
         description.sdp_type(),
         audio_lines.join(" | ")
     );
-    log::debug!("{:?} {side} {:?} sdp:\n{sdp}", target, description.sdp_type());
+    log::debug!(
+        "{:?} {side} {:?} sdp:\n{sdp}",
+        target,
+        description.sdp_type()
+    );
 }
 
 struct TransportInner {
@@ -92,6 +96,7 @@ struct TransportInner {
 }
 
 pub struct PeerTransport {
+    sender_configuration: AsyncMutex<()>,
     signal_target: proto::SignalTarget,
     peer_connection: PeerConnection,
     on_offer_handler: Mutex<Option<OnOfferCreated>>,
@@ -119,6 +124,7 @@ impl PeerTransport {
         single_pc_mode: bool,
     ) -> Self {
         Self {
+            sender_configuration: AsyncMutex::new(()),
             signal_target,
             peer_connection,
             on_offer_handler: Mutex::new(None),
@@ -170,6 +176,10 @@ impl PeerTransport {
 
     pub fn peer_connection(&self) -> PeerConnection {
         self.peer_connection.clone()
+    }
+
+    pub async fn begin_sender_configuration(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.sender_configuration.lock().await
     }
 
     pub fn signal_target(&self) -> proto::SignalTarget {
@@ -286,6 +296,7 @@ impl PeerTransport {
     /// skipping the hint for the life of the connection. `create_and_send_offer` owns the hint
     /// and latches only once `set_local_description` has succeeded.
     pub async fn create_initial_offer(&self) -> EngineResult<Option<SessionDescription>> {
+        let _configuration = self.begin_sender_configuration().await;
         let inner = self.inner.lock().await;
         if !inner.single_pc_mode {
             return Ok(None);
@@ -648,6 +659,7 @@ impl PeerTransport {
     }
 
     pub async fn create_and_send_offer(&self, options: OfferOptions) -> EngineResult<()> {
+        let _configuration = self.begin_sender_configuration().await;
         let mut inner = self.inner.lock().await;
         if options.ice_restart {
             inner.restarting_ice = true;
@@ -780,6 +792,62 @@ mod tests {
     use std::time::Duration;
 
     use super::PeerTransport;
+
+    #[tokio::test]
+    async fn offers_wait_for_sender_codec_configuration() {
+        use libwebrtc::prelude::*;
+        use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
+        use livekit_protocol as proto;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let factory = PeerConnectionFactory::default();
+        let pc = factory
+            .create_peer_connection(RtcConfiguration::default())
+            .unwrap();
+        let transport = PeerTransport::new(pc.clone(), proto::SignalTarget::Publisher, false);
+        let offers = Arc::new(Mutex::new(Vec::new()));
+        let output = offers.clone();
+        transport.on_offer(Some(Box::new(move |offer| {
+            output.lock().unwrap().push(offer)
+        })));
+        let codecs = factory
+            .get_rtp_sender_capabilities(MediaType::Video)
+            .codecs
+            .into_iter()
+            .filter(|codec| codec.mime_type.eq_ignore_ascii_case("video/H264"))
+            .collect::<Vec<_>>();
+        assert!(!codecs.is_empty());
+        let configuration = transport.begin_sender_configuration().await;
+        let transceiver = pc
+            .add_transceiver_for_media(
+                MediaType::Video,
+                RtpTransceiverInit {
+                    direction: RtpTransceiverDirection::SendOnly,
+                    stream_ids: Vec::new(),
+                    send_encodings: Vec::new(),
+                },
+            )
+            .unwrap();
+        let offer = transport.create_and_send_offer(OfferOptions::default());
+        tokio::pin!(offer);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut offer)
+                .await
+                .is_err()
+        );
+        assert!(offers.lock().unwrap().is_empty());
+        transceiver.set_codec_preferences(codecs).unwrap();
+        drop(configuration);
+        tokio::time::timeout(Duration::from_secs(5), offer)
+            .await
+            .unwrap()
+            .unwrap();
+        let sdp = offers.lock().unwrap()[0].to_string();
+        assert!(sdp.contains("H264/90000"));
+        assert!(!sdp.contains("VP8/90000"));
+        pc.close();
+    }
 
     /// Reproduces the publisher-transport self-deadlock.
     ///

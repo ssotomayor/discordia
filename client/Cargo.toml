@@ -151,6 +151,7 @@ coreaudio-sys = "0.2"
 ignored = ["libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "livekit-data-stream", "livekit-protocol", "livekit-datatrack"]
 
 [dev-dependencies]
+log = "0.4"
 rubato-legacy = { package = "rubato", version = "=0.16.2" }
 axum = { workspace = true }
 # A caller in a gateway call, which a `/sfu` tunnel needs.

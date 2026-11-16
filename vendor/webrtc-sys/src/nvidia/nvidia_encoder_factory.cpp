@@ -319,25 +319,27 @@ std::unique_ptr<VideoEncoder> NvidiaVideoEncoderFactory::Create(
         }
         cu_context_ = ctx;
       }
+      const CUcontext context = cu_context_->GetContext();
+      if (!context) return nullptr;
 
       if (format.name == "H264") {
         RTC_LOG(LS_INFO) << "Using NVIDIA HW encoder (NVENC) for H264";
         return std::make_unique<NvidiaH264EncoderImpl>(
-            env, cu_context_->GetContext(), CU_MEMORYTYPE_DEVICE,
+            env, context, CU_MEMORYTYPE_DEVICE,
             NV_ENC_BUFFER_FORMAT_IYUV, format);
       }
 
       if (format.name == "H265" || format.name == "HEVC") {
         RTC_LOG(LS_INFO) << "Using NVIDIA HW encoder (NVENC) for H265/HEVC";
         return std::make_unique<NvidiaH265EncoderImpl>(
-            env, cu_context_->GetContext(), CU_MEMORYTYPE_DEVICE,
+            env, context, CU_MEMORYTYPE_DEVICE,
             NV_ENC_BUFFER_FORMAT_IYUV, format);
       }
 
       if (format.name == "AV1") {
         RTC_LOG(LS_INFO) << "Using NVIDIA HW encoder (NVENC) for AV1";
         return std::make_unique<NvidiaAV1EncoderImpl>(
-            env, cu_context_->GetContext(), CU_MEMORYTYPE_DEVICE,
+            env, context, CU_MEMORYTYPE_DEVICE,
             NV_ENC_BUFFER_FORMAT_IYUV, format);
       }
     }

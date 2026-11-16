@@ -140,10 +140,11 @@ fn main() {
     }
 
     // Link webrtc library
-    println!("cargo:rustc-link-lib=static=webrtc");
     match target_os.as_str() {
         "windows" => {
             builder.file("src/windows/mf_encoder_factory.cpp");
+            builder.file("src/frame_crypto_transformer.cpp");
+            builder.include(webrtc_include.join("third_party/boringssl/src/include/"));
             println!("cargo:rustc-link-lib=dylib=mfplat");
             println!("cargo:rustc-link-lib=dylib=mfuuid");
             println!("cargo:rustc-link-lib=dylib=oleaut32");
@@ -434,6 +435,7 @@ fn main() {
     // TODO(theomonnom) Only add this define when building tests
     builder.define("LIVEKIT_TEST", None);
     builder.warnings(false).compile("webrtcsys-cxx");
+    println!("cargo:rustc-link-lib=static=webrtc");
 
     for entry in glob::glob("./src/**/*.cpp").unwrap() {
         println!("cargo:rerun-if-changed={}", entry.unwrap().display());
@@ -448,6 +450,11 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=src/windows/realtime_encoder.h");
     println!("cargo:rerun-if-changed=src/windows/mf_input_buffer.h");
+    println!("cargo:rerun-if-changed=src/windows/mf_device.h");
+    println!("cargo:rerun-if-changed=src/windows/mf_result.h");
+    println!("cargo:rerun-if-changed=src/h264_pps_retry.h");
+    println!("cargo:rerun-if-changed=src/nvidia/context_scope.h");
+    println!("cargo:rerun-if-changed=src/nvidia/i420_buffer_cuda.h");
 
     if target_os.as_str() == "android" {
         copy_libwebrtc_jar(&PathBuf::from(Path::new(&webrtc_dir)));

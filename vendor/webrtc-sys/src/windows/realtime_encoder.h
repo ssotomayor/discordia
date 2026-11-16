@@ -4,10 +4,17 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <optional>
 #include <utility>
 
 namespace webrtc::mf {
+template <typename Frame>
+void RetireSubmitted(std::map<int64_t, Frame>& submitted, int64_t output_time) {
+  // Baseline H.264 has no B-frames: older inputs cannot arrive after this output.
+  submitted.erase(submitted.begin(), submitted.upper_bound(output_time));
+}
+
 inline bool SoftwareFallbackWithinBudget(uint32_t width, uint32_t height, uint32_t fps) {
   constexpr uint64_t budget = 1280 * 720 * 30;
   return width && height && fps && width <= budget / height / fps;
@@ -56,6 +63,11 @@ inline bool FitsLiveKitH264Prefix(uint8_t header) {
     bit += zeros;
   }
   return true;
+}
+
+inline bool RetriableLiveKitH264Prefix(uint8_t header, uint8_t next) {
+  // AMD's all-I slice type ends at bit 8; PPS 0 uses one encrypted bit, guarded by the cryptor.
+  return header == 0x88 && (next & 0x80);
 }
 
 template <typename Frame>
