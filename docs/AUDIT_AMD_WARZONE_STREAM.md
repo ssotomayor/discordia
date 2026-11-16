@@ -34,7 +34,7 @@ deduced from the processor model alone.
 |---|---|
 | MF software fallback initialization | Reject screen-share fallback above 1280×720×30 pixels/second per encoder before initializing OpenH264. Camera encoding and explicit CPU selection bypass this restriction |
 | Windows publisher statistics | Stop Automatic sharing when hardware was advertised for the selected codec but known software appears above that budget. Unknown implementation names are not classified as hardware |
-| Encoder output progress | Stop after five seconds of fresh captured frames without encoded-counter progress on active layers with assigned bitrate. Paused layers, absent/unknown outbound stats and idle sources do not authorize a stop. Progress is summed across active layers; stream changes, counter resets and long sampling gaps restart the deadline |
+| Encoder output progress | Stop after five seconds of fresh frames accepted by WebRTC without encoded-counter progress on active layers with assigned bitrate, while connected and unmuted. Adapter-rejected frames, paused layers, absent/unknown outbound stats and idle sources do not authorize a stop. Progress is summed across active layers; stream changes, counter resets and long sampling gaps restart the deadline |
 | Statistics request | Stop sharing if a Windows video stats request does not complete within five seconds |
 | Cleanup | Use the existing share-failure path: clear the share target, release capture and unpublish the screen track; do not issue LeaveVoice |
 | Messages / logs | Translate the stop reason and record the actual software implementation and requested dimensions/FPS; do not assert GPU overload without evidence |
