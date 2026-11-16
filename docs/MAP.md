@@ -18,7 +18,7 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | `server/src/gateway/connection.rs` | 4611 |
 | `protocol/src/lib.rs` | 4433 |
 | `client/src/features/chat.rs` | 4076 |
-| `client/src/features/screenshare.rs` | 4121 |
+| `client/src/features/screenshare.rs` | 4127 |
 | `server/tests/owner_controls.rs` | 3460 |
 | `client/src/net.rs` | 3473 |
 | `client/src/features/channels.rs` | 2728 |

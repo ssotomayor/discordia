@@ -1126,7 +1126,10 @@ window.dxScreen = window.dxScreen || (function () {
   async function previewStats(identity) {
     if (!viewerVisible) return null;
     const track = videoTrackFor(identity, 'screen');
-    if (!track) return { healthReason: startupHealth(identity) };
+    if (!track) {
+      const waiting = startupHealth(identity);
+      return waiting ? { healthReason: waiting } : null;
+    }
     try {
       const report = await videoStatsReport(track);
       if (videoTrackFor(identity, 'screen') !== track) return null;
@@ -1181,7 +1184,10 @@ window.dxScreen = window.dxScreen || (function () {
       const waiting = startupHealth(identity);
       if (waiting && (!result || !result.healthReason)) return Object.assign(result || {}, { healthReason: waiting });
       return result;
-    } catch (e) { return { healthReason: startupHealth(identity) }; }
+    } catch (e) {
+      const waiting = startupHealth(identity);
+      return waiting ? { healthReason: waiting } : null;
+    }
   }
   async function startShare() {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
