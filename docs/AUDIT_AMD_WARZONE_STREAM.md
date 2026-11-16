@@ -203,7 +203,7 @@ The initial bandwidth drop preceded protection; its network cause remains unknow
 | Same pipeline, 300 kbps ceiling from second 5 to 10, two 30 s runs | Final targets 3.28 and 5.70 Mbps; both failed the existing peak-allocation assertion. Encoder continued at 59–60 FPS and output followed allocation |
 | Same ceiling, 90 s observation | Reached 34 Mbps around second 59 without republishing; final output 33.84 Mbps, 5,148 encoded / 5,045 decoded frames. Existing rate assertions passed |
 | Live outgoing 1440p60 session, same publication from 17:43–17:49 UTC | Target reached 34 Mbps at 17:45:36, then varied down to 4.61 Mbps at 17:49:06. Hardware encoding stayed near 3 ms/frame and 57–60 FPS; voice protection remained unapplied. IPv4/UDP direct media route |
-| Simultaneous incoming McClane stream | Samples around 55–58 FPS, 2.3–4.4 Mbps, decode 0.5–0.7 ms/frame, approximately 39–46 ms video buffer. Loss counters rose from 121 to 139 over 149,298 to 153,388 received packets (about 0.44% across that interval); no reported freezes |
+| Simultaneous incoming stream | Samples around 55–58 FPS, 2.3–4.4 Mbps, decode 0.5–0.7 ms/frame, approximately 39–46 ms video buffer. Loss counters rose from 121 to 139 over 149,298 to 153,388 received packets (about 0.44% across that interval); no reported freezes |
 
 These runs reproduce variable, sometimes slow allocation recovery, not a permanent
 encoder stall. The direct 300 kbps test bypasses the graded voice policy and does
@@ -263,4 +263,3 @@ The bitrate/idle and late-viewer checks use an isolated local SFU and synthetic
 frames. They do not measure game-footage visual quality, WAN impairment or GPU
 saturation for this follow-up. No duplicated source frames or production app
 replacement are introduced by these probes.
-
