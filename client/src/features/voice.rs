@@ -1027,10 +1027,18 @@ impl ActiveVoice {
         {
             let mut state = state;
             crate::service_task::spawn(async move {
+                let mut key_retry_at = Instant::now();
                 while let Some(signal) = room_rx.recv().await {
                     let event = match signal {
                         RoomSignal::Reconnecting => VoiceEvent::RoomReconnecting(channel_id),
                         RoomSignal::Reconnected => VoiceEvent::RoomReconnected(channel_id),
+                        RoomSignal::KeyMismatch => {
+                            if Instant::now() >= key_retry_at {
+                                state.write().resync_media_key(channel_id);
+                                key_retry_at = Instant::now() + std::time::Duration::from_secs(5);
+                            }
+                            continue;
+                        }
                         // The SFU seats one connection per identity. A room of ours dialled since
                         // replaced this one itself; otherwise another device joined as us.
                         RoomSignal::Lost(livekit::DisconnectReason::DuplicateIdentity) => {
@@ -1055,8 +1063,12 @@ impl ActiveVoice {
                             error: format!("livekit room disconnected: {reason:?}"),
                         },
                     };
+                    let reconnected = matches!(event, VoiceEvent::RoomReconnected(_));
                     if voice_event(state, event) {
                         eprintln!("[voice] room says {:?}", state.peek().voice.call());
+                        if reconnected {
+                            state.write().resync_media_key(channel_id);
+                        }
                         if state.peek().voice.phase() != VoicePhase::Connected {
                             let mut s = state.write();
                             s.voice_send_route = None;
@@ -1215,6 +1227,13 @@ impl ActiveVoice {
                                     let who = participant.identity().0;
                                     eprintln!("[voice] cannot decrypt media from {who}: {bad:?}");
                                     let _ = quality_tx.send(QualityMsg::Undecryptable);
+                                    if matches!(
+                                        bad,
+                                        EncryptionState::DecryptionFailed
+                                            | EncryptionState::MissingKey
+                                    ) {
+                                        let _ = room_tx.send(RoomSignal::KeyMismatch);
+                                    }
                                 }
                             }
                         }
@@ -2767,6 +2786,7 @@ struct ScreenAudioRoom {
 }
 
 enum RoomSignal {
+    KeyMismatch,
     Reconnecting,
     Reconnected,
     Lost(livekit::DisconnectReason),

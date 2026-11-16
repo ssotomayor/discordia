@@ -231,6 +231,19 @@ impl crate::state::AppState {
             .channel()
             .is_some_and(|channel| Some(channel) != self.key_channel())
     }
+
+    pub(crate) fn resync_media_key(&mut self, channel: Id) {
+        if self.key_channel() != Some(channel) || !self.shares_keys_for(channel) {
+            return;
+        }
+        // A queued offer can be lost with the gateway; an unchanged roster cannot prove delivery.
+        let mut guard = SENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(sent) = guard.as_mut() {
+            forget_channel(sent, channel);
+        }
+        self.voice_turnover = self.voice_turnover.wrapping_add(1);
+        tracing::info!(%channel, "resynchronizing the call's media key after reconnect");
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +296,10 @@ fn forget_other_channels(sent: &mut Ledger, channel: Id) -> usize {
     let before = sent.len();
     sent.retain(|(ch, _), _| *ch == channel);
     before - sent.len()
+}
+
+fn forget_channel(sent: &mut Ledger, channel: Id) {
+    sent.retain(|(ch, _), _| *ch != channel);
 }
 
 /// A member who left may come back before the roster is looked at again.
@@ -340,19 +357,19 @@ pub fn MediaKeyBridge() -> Element {
         Some((
             channel,
             present,
-            s.shares_keys_for(channel),
+            s.shares_keys_for(channel) && s.status == crate::state::ConnectionStatus::Ready,
             s.voice_turnover,
         ))
     });
 
     let send = gateway.clone();
     use_effect(move || {
-        let Some((channel, present, in_call, _turnover)) = roster() else {
+        let Some((channel, present, can_send, _turnover)) = roster() else {
             forget_everyone();
             return;
         };
-        // What was sent before this client held the call was relayed to no one.
-        if !in_call {
+        // An offline offer is discarded on reconnect; another device's offer is not relayed.
+        if !can_send {
             forget_everyone();
             return;
         }
@@ -420,18 +437,15 @@ pub fn MediaKeyBridge() -> Element {
                 spawn(async move {
                     if !alone {
                         tokio::time::sleep(KEY_WAIT).await;
-                        let now = state.peek();
-                        if now.media_key.held_for(channel).is_some()
-                            || !now.shares_keys_for(channel)
-                        {
-                            return;
-                        }
-                        drop(now);
-                        tracing::info!(
-                            %channel,
-                            "no key arrived while waiting — making one rather than waiting longer"
-                        );
                     }
+                    let now = state.peek();
+                    if now.media_key.held_for(channel).is_some()
+                        || !now.shares_keys_for(channel)
+                        || now.status != crate::state::ConnectionStatus::Ready
+                    {
+                        return;
+                    }
+                    drop(now);
                     let key = generate();
                     tracing::info!(
                         %channel,
@@ -517,6 +531,51 @@ pub fn rekey_after_removal(
 #[cfg(test)]
 mod orchestration_tests {
     use super::designated;
+
+    #[test]
+    fn media_reconnect_resyncs_only_the_call_held_by_this_device() {
+        use crate::protocol::{Id, User, VoiceState};
+        use crate::state::{AppState, CallState, VoiceEvent};
+        let channel = Id::new_v4();
+        let other = Id::new_v4();
+        let held = (2, [7; super::KEY_LEN]);
+        let mut state = AppState::empty();
+        state.self_user = Some(User {
+            pubkey: "me".into(),
+            username: "me".into(),
+        });
+        state.voice_states.push(VoiceState {
+            user_pubkey: "me".into(),
+            guild_id: Id::new_v4(),
+            channel_id: Some(channel),
+            muted: false,
+            deafened: false,
+            speaking: false,
+            camera_on: false,
+            screen_sharing: false,
+            screen_watching: vec![],
+            camera_watching: vec![],
+        });
+        state.media_key = super::CallKey::force(channel, held);
+        super::note_sent(channel, "peer", held);
+        super::note_sent(other, "peer", held);
+        state.resync_media_key(channel);
+        assert_eq!(state.voice_turnover, 0, "another device owns the call");
+        assert!(!super::owes(channel, "peer", held));
+        state.voice.force(CallState::Connected(channel));
+        state.voice.on(VoiceEvent::RoomReconnecting(channel));
+        assert!(state.voice.on(VoiceEvent::RoomReconnected(channel)));
+        state.resync_media_key(channel);
+        assert_eq!(state.voice_turnover, 1);
+        assert!(super::owes(channel, "peer", held));
+        assert!(!super::owes(other, "peer", held));
+        assert_eq!(state.media_key.held_for(channel), Some(held));
+        state.resync_media_key(other);
+        assert_eq!(
+            state.voice_turnover, 1,
+            "a stale room must not affect the new call"
+        );
+    }
 
     #[test]
     fn the_designated_sender_is_the_same_from_every_side() {
@@ -820,6 +879,37 @@ mod convergence {
             }
             call.settle();
             assert!(call.agreed(), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_rekey_lost_during_disconnect_recovers_without_anyone_leaving() {
+        for n in [2, 3] {
+            for recovering in 0..n {
+                let mut call = Call::new(n, 17);
+                for member in 0..n {
+                    call.join(member);
+                }
+                call.settle();
+                assert!(call.agreed());
+                let next = (2, call.fresh_key());
+                call.members[0].held = Some(next);
+                call.send_round();
+                call.wire.clear();
+                call.settle();
+                assert!(
+                    !call.agreed(),
+                    "the ledger suppresses the lost offer forever"
+                );
+
+                super::forget_channel(&mut call.members[recovering].sent, call.channel);
+                call.settle();
+                assert!(
+                    call.agreed(),
+                    "member {recovering} could not repair a {n}-person call"
+                );
+                assert!(call.members.iter().all(|m| m.held == Some(next)));
+            }
         }
     }
 
