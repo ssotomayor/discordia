@@ -1679,6 +1679,9 @@ fn apply_ready(
         }
     }
     s.status = ConnectionStatus::Ready;
+    if recovering && let Some(channel) = local_channel.filter(|c| server_channel == Some(*c)) {
+        s.resync_media_key(channel);
+    }
 
     let asked = s.open_guild_on_ready.take();
     let chosen = selected_guild
@@ -3268,6 +3271,76 @@ mod tests {
         }
         let mut dom = VirtualDom::new(harness);
         dom.rebuild_checked();
+    }
+
+    #[test]
+    fn ready_after_reconnect_reoffers_keys_without_rejoining_the_call() {
+        let channel = Id::new_v4();
+        let guild = Id::new_v4();
+        let user = crate::protocol::User {
+            pubkey: "ab".repeat(32),
+            username: "Alice".into(),
+        };
+        let peer = "cd".repeat(32);
+        let in_call = |pubkey: String| crate::protocol::VoiceState {
+            user_pubkey: pubkey,
+            guild_id: guild,
+            channel_id: Some(channel),
+            muted: false,
+            deafened: false,
+            speaking: false,
+            camera_on: false,
+            screen_sharing: false,
+            screen_watching: vec![],
+            camera_watching: vec![],
+        };
+        let roster = vec![in_call(user.pubkey.clone()), in_call(peer.clone())];
+        let ready = ServerMessage::Ready {
+            chat_tools: false,
+            image_previews: false,
+            progressive_image_uploads: false,
+            media_token_refresh: false,
+            mobile_presence_updates: false,
+            user: user.clone(),
+            guilds: vec![],
+            channels: vec![],
+            members: vec![],
+            voice_states: roster.clone(),
+            catalog: vec![],
+            profiles: vec![],
+            roles: vec![],
+            emojis: vec![],
+            sounds: vec![],
+            activities: vec![],
+            bot_commands: vec![],
+            operator: false,
+            default_guild: None,
+            server: Default::default(),
+            latest_messages: Default::default(),
+        };
+        let held = (4, [7; crate::mediakey::KEY_LEN]);
+        let mut state = AppState::empty();
+        state.self_user = Some(user);
+        state.voice_states = roster.clone();
+        state
+            .voice
+            .force(crate::voice_session::CallState::Connected(channel));
+        state.media_key = crate::mediakey::CallKey::force(channel, held);
+        state.status = ConnectionStatus::Reconnecting;
+        crate::mediakey::note_sent(channel, &peer, held);
+        assert!(!crate::mediakey::owes(channel, &peer, held));
+        let (tx, mut commands) = unbounded_channel();
+        let (voice_tx, mut native) = unbounded_channel();
+
+        apply_ready(&mut state, ready, true, &tx, &voice_tx);
+
+        assert!(crate::mediakey::owes(channel, &peer, held));
+        assert_eq!(state.voice_turnover, 1);
+        assert_eq!(state.media_key.held_for(channel), Some(held));
+        assert_eq!(state.voice_states, roster);
+        assert_eq!(state.voice.connected_channel(), Some(channel));
+        assert!(commands.try_recv().is_err());
+        assert!(native.try_recv().is_err());
     }
 
     #[test]
