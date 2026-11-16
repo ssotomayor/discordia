@@ -2132,12 +2132,16 @@ impl SessionInner {
     }
 
     fn remove_track(&self, sender: RtpSender) -> EngineResult<()> {
-        if let Some(track) = sender.track() {
+        let track_id = sender.track().map(|track| track.id());
+        if let Some(track_id) = &track_id {
             let mut pending_tracks = self.pending_tracks.lock();
-            pending_tracks.remove(&track.id());
+            pending_tracks.remove(track_id);
         }
 
         self.publisher_pc.peer_connection().remove_track(sender)?;
+        if let Some(track_id) = track_id {
+            self.publisher_pc.remove_sender_bitrate_budget(&track_id)?;
+        }
 
         Ok(())
     }
@@ -2158,6 +2162,9 @@ impl SessionInner {
     ) -> EngineResult<RtpTransceiver> {
         // Another publisher negotiation must not observe a sender before its codec/backend is set.
         let _configuration = self.publisher_pc.begin_sender_configuration().await;
+        let configured_budget = encodings.iter().try_fold(0_u64, |total, encoding| {
+            encoding.max_bitrate.map(|bitrate| total.saturating_add(bitrate))
+        }).filter(|value| *value > 0);
         // If video track, derive "ultimate" bitrate from encodings and stash it for offer munging.
         // Must be done before encodings is moved into RtpTransceiverInit.
         if track.kind() == TrackKind::Video {
@@ -2216,32 +2223,15 @@ impl SessionInner {
                     TrackKind::Audio => MediaType::Audio,
                 });
 
-            let mut matched = Vec::new();
-            let mut partial_matched = Vec::new();
-            let mut unmatched = Vec::new();
-
-            for codec in capabilities.codecs {
-                let mime_type = codec.mime_type.to_lowercase();
-                if mime_type == format!("video/{}", options.video_codec.as_str()) {
-                    if let Some(sdp_fmtp_line) = codec.sdp_fmtp_line.as_ref() {
-                        // for h264 codecs that have sdpFmtpLine available, use only if the
-                        // profile-level-id is 42e01f for cross-browser compatibility
-                        if sdp_fmtp_line.contains("profile-level-id=42e01f") {
-                            matched.push(codec);
-                            continue;
-                        }
-                    }
-                    partial_matched.push(codec);
-                } else {
-                    unmatched.push(codec);
-                }
-            }
-
-            matched.append(&mut partial_matched);
-
-            transceiver.set_codec_preferences(matched)?;
+            transceiver.set_codec_preferences(super::peer_transport::video_codec_preferences(
+                capabilities.codecs,
+                options.video_codec.as_str(),
+            ))?;
         }
 
+        self.publisher_pc.set_sender_bitrate_budget(
+            track.rtc_track().id(), track.kind() == TrackKind::Video, configured_budget,
+        )?;
         Ok(transceiver)
     }
 

@@ -75,6 +75,41 @@ fn log_description(target: proto::SignalTarget, side: &str, description: &Sessio
     );
 }
 
+pub(super) fn video_codec_preferences(
+    codecs: Vec<libwebrtc::rtp_parameters::RtpCodecCapability>,
+    selected: &str,
+) -> Vec<libwebrtc::rtp_parameters::RtpCodecCapability> {
+    let mime = format!("video/{selected}");
+    let mut preferred = Vec::new();
+    let mut other_profiles = Vec::new();
+    let mut repair = Vec::new();
+    for codec in codecs {
+        if codec.mime_type.eq_ignore_ascii_case(&mime) {
+            if codec
+                .sdp_fmtp_line
+                .as_ref()
+                .is_some_and(|fmtp| fmtp.contains("profile-level-id=42e01f"))
+            {
+                preferred.push(codec);
+            } else {
+                other_profiles.push(codec);
+            }
+        } else if codec.mime_type.eq_ignore_ascii_case("video/rtx") {
+            repair.push(codec);
+        }
+    }
+    preferred.append(&mut other_profiles);
+    // RTX is negotiated separately; filtering to the media codec disables packet repair.
+    preferred.append(&mut repair);
+    preferred
+}
+
+#[derive(Clone, Copy)]
+struct SenderBudget {
+    video: bool,
+    max_bitrate: Option<u64>,
+}
+
 struct TransportInner {
     pending_candidates: Vec<IceCandidate>,
     renegotiate: bool,
@@ -97,6 +132,7 @@ struct TransportInner {
 
 pub struct PeerTransport {
     sender_configuration: AsyncMutex<()>,
+    sender_budgets: Mutex<std::collections::HashMap<String, SenderBudget>>,
     signal_target: proto::SignalTarget,
     peer_connection: PeerConnection,
     on_offer_handler: Mutex<Option<OnOfferCreated>>,
@@ -125,6 +161,7 @@ impl PeerTransport {
     ) -> Self {
         Self {
             sender_configuration: AsyncMutex::new(()),
+            sender_budgets: Mutex::new(std::collections::HashMap::new()),
             signal_target,
             peer_connection,
             on_offer_handler: Mutex::new(None),
@@ -337,6 +374,55 @@ impl PeerTransport {
         inner.max_send_bitrate_bps = bps;
         inner.start_send_bitrate_bps = start_bps;
         inner.max_send_bitrate_is_screen_share = is_screen_share;
+    }
+
+    pub fn set_sender_bitrate_budget(
+        &self,
+        sender: String,
+        video: bool,
+        max_bitrate: Option<u64>,
+    ) -> Result<Option<u64>, libwebrtc::RtcError> {
+        self.update_bitrate_budgets(|budgets| {
+            budgets.insert(sender, SenderBudget { video, max_bitrate });
+        })
+    }
+
+    pub fn remove_sender_bitrate_budget(
+        &self,
+        sender: &str,
+    ) -> Result<Option<u64>, libwebrtc::RtcError> {
+        self.update_bitrate_budgets(|budgets| {
+            budgets.remove(sender);
+        })
+    }
+
+    fn update_bitrate_budgets(
+        &self,
+        update: impl FnOnce(&mut std::collections::HashMap<String, SenderBudget>),
+    ) -> Result<Option<u64>, libwebrtc::RtcError> {
+        let mut budgets = self.sender_budgets.lock();
+        let mut next = budgets.clone();
+        update(&mut next);
+        let has_video = next.values().any(|budget| budget.video);
+        // Temporary voice-protection RTP caps must not become permanent connection limits.
+        let ceiling = next
+            .values()
+            .try_fold(0_u64, |total, budget| {
+                budget
+                    .max_bitrate
+                    .map(|bitrate| total.saturating_add(bitrate))
+            })
+            .filter(|value| has_video && *value > 0)
+            .map(|value| value.saturating_mul(2));
+        // RTP caps limit media; the estimator also needs room for packet overhead and probes.
+        // Without an explicit connection ceiling, probes default to at most 5 Mbps.
+        self.peer_connection
+            .set_bitrate(libwebrtc::peer_connection::BitrateSettings {
+                max_bitrate_bps: ceiling,
+                ..Default::default()
+            })?;
+        *budgets = next;
+        Ok(ceiling)
     }
 
     fn startup_hint(inner: &TransportInner) -> Option<u32> {
@@ -794,6 +880,82 @@ mod tests {
     use super::PeerTransport;
 
     #[tokio::test]
+    async fn bitrate_ceiling_tracks_combined_video_budgets_and_removed_senders() {
+        use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
+        use libwebrtc::prelude::*;
+        use libwebrtc::rtp_parameters::RtpEncodingParameters;
+        use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
+        use libwebrtc::video_source::{VideoResolution, native::NativeVideoSource};
+
+        let factory = PeerConnectionFactory::default();
+        let pc = factory
+            .create_peer_connection(RtcConfiguration::default())
+            .unwrap();
+        let transport =
+            PeerTransport::new(pc.clone(), livekit_protocol::SignalTarget::Publisher, false);
+        let add = |name: &str, bitrate| {
+            let source = NativeVideoSource::new(
+                VideoResolution {
+                    width: 16,
+                    height: 16,
+                },
+                true,
+            );
+            let video = factory.create_video_track(name, source);
+            pc.add_transceiver(
+                libwebrtc::media_stream_track::MediaStreamTrack::Video(video),
+                RtpTransceiverInit {
+                    direction: RtpTransceiverDirection::SendOnly,
+                    stream_ids: Vec::new(),
+                    send_encodings: vec![RtpEncodingParameters {
+                        max_bitrate: bitrate,
+                        ..Default::default()
+                    }],
+                },
+            )
+            .unwrap()
+        };
+        let screen = add("screen", Some(34_000_000));
+        assert_eq!(
+            transport
+                .set_sender_bitrate_budget("screen".into(), true, Some(34_000_000))
+                .unwrap(),
+            Some(68_000_000)
+        );
+        let sender = screen.sender();
+        let mut capped = sender.parameters();
+        capped.encodings[0].max_bitrate = Some(300_000);
+        sender.set_parameters(capped).unwrap();
+        let camera = add("camera", Some(2_000_000));
+        assert_eq!(
+            transport
+                .set_sender_bitrate_budget("camera".into(), true, Some(2_000_000))
+                .unwrap(),
+            Some(72_000_000)
+        );
+        pc.remove_track(screen.sender()).unwrap();
+        assert_eq!(
+            transport.remove_sender_bitrate_budget("screen").unwrap(),
+            Some(4_000_000)
+        );
+        let unbounded = add("unbounded", None);
+        assert_eq!(
+            transport
+                .set_sender_bitrate_budget("unbounded".into(), true, None)
+                .unwrap(),
+            None
+        );
+        pc.remove_track(unbounded.sender()).unwrap();
+        transport.remove_sender_bitrate_budget("unbounded").unwrap();
+        pc.remove_track(camera.sender()).unwrap();
+        assert_eq!(
+            transport.remove_sender_bitrate_budget("camera").unwrap(),
+            None
+        );
+        pc.close();
+    }
+
+    #[tokio::test]
     async fn offers_wait_for_sender_codec_configuration() {
         use libwebrtc::prelude::*;
         use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
@@ -811,12 +973,10 @@ mod tests {
         transport.on_offer(Some(Box::new(move |offer| {
             output.lock().unwrap().push(offer)
         })));
-        let codecs = factory
-            .get_rtp_sender_capabilities(MediaType::Video)
-            .codecs
-            .into_iter()
-            .filter(|codec| codec.mime_type.eq_ignore_ascii_case("video/H264"))
-            .collect::<Vec<_>>();
+        let codecs = super::video_codec_preferences(
+            factory.get_rtp_sender_capabilities(MediaType::Video).codecs,
+            "H264",
+        );
         assert!(!codecs.is_empty());
         let configuration = transport.begin_sender_configuration().await;
         let transceiver = pc
@@ -829,6 +989,7 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(transceiver.sender().track().is_none());
         let offer = transport.create_and_send_offer(OfferOptions::default());
         tokio::pin!(offer);
         assert!(
@@ -846,6 +1007,8 @@ mod tests {
         let sdp = offers.lock().unwrap()[0].to_string();
         assert!(sdp.contains("H264/90000"));
         assert!(!sdp.contains("VP8/90000"));
+        assert!(sdp.contains("rtx/90000"));
+        assert!(sdp.contains("apt="));
         pc.close();
     }
 

@@ -436,6 +436,10 @@ window.dxScreen = window.dxScreen || (function () {
         if (entry.startupTimer) clearTimeout(entry.startupTimer);
         screenRecoveries.delete(identity);
         c.setAttribute('data-frame-ready', 'true');
+        if (kind === 'screen' && identity !== selfPreviewIdentity) {
+          const pub = screenPublication(identity);
+          if (pub && !participantIsPoor(entry.track ? entry.track.sid : '')) requestHighQuality(pub);
+        }
       };
       if (typeof el.requestVideoFrameCallback === 'function') el.requestVideoFrameCallback(ready);
       else el.addEventListener('loadeddata', ready, { once: true });
