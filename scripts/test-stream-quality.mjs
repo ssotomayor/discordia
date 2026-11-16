@@ -424,17 +424,36 @@ test('startup warning waits for playable video and clears when the first frame a
     context.attached = { pending: view };
     context.videoTrackFor = () => null;
     now = 11999;
-    assert.equal((await context.previewStats('pending')).healthReason, '');
+    assert.equal(await context.previewStats('pending'), null);
     now = 12000;
     assert.equal((await context.previewStats('pending')).healthReason, 'waiting-video');
-    assert.equal((await context.previewStats('another')).healthReason, '');
+    assert.equal(await context.previewStats('another'), null);
     view.firstFrame = true;
-    assert.equal((await context.previewStats('pending')).healthReason, '');
+    assert.equal(await context.previewStats('pending'), null);
     delete context.attached.pending;
-    assert.equal((await context.previewStats('pending')).healthReason, '');
+    assert.equal(await context.previewStats('pending'), null);
   } finally {
     context.attached = previousViews;
     context.videoTrackFor = previousTrack;
+  }
+});
+
+test('failed stats preserve startup warnings without inventing an empty sample', async () => {
+  const previousViews = context.attached;
+  const previousReport = context.videoStatsReport;
+  try {
+    context.attached = { pending: { identity: 'pending', kind: 'screen', firstFrame: false, waitingSince: 0 } };
+    context.videoStatsReport = async () => { throw new Error('stats unavailable'); };
+    now = 11999;
+    assert.equal(await context.previewStats('pending'), null);
+    now = 12000;
+    assert.equal((await context.previewStats('pending')).healthReason, 'waiting-video');
+    assert.equal(await context.previewStats('another'), null);
+    context.attached.pending.firstFrame = true;
+    assert.equal(await context.previewStats('pending'), null);
+  } finally {
+    context.attached = previousViews;
+    context.videoStatsReport = previousReport;
   }
 });
 
