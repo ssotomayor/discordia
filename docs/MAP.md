@@ -12,7 +12,7 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 6060 |
+| `client/src/features/voice.rs` | 6066 |
 | `server/src/state/mod.rs` | 4696 |
 | `client/src/state.rs` | 4781 |
 | `server/src/gateway/connection.rs` | 4611 |

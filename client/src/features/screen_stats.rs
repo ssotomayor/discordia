@@ -136,6 +136,12 @@ pub(super) fn screen_low_bitrate(
         && target < configured as f64 * 0.4
 }
 
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
 pub(super) fn voice_video_limited(applied: bool, active: bool, target: f64) -> bool {
     applied
         && active
