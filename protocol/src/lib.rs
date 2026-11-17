@@ -1146,6 +1146,7 @@ pub enum EventRepeat {
     Daily,
     Weekly,
     Monthly,
+    Yearly,
 }
 
 pub const EVENT_NAME_CHARS: usize = 100;
@@ -1227,6 +1228,9 @@ impl GuildEvent {
             EventRepeat::Daily => Some(self.starts_at + chrono::Duration::days(i64::from(n))),
             EventRepeat::Weekly => Some(self.starts_at + chrono::Duration::weeks(i64::from(n))),
             EventRepeat::Monthly => self.starts_at.checked_add_months(chrono::Months::new(n)),
+            EventRepeat::Yearly => self
+                .starts_at
+                .checked_add_months(chrono::Months::new(n.checked_mul(12)?)),
         }
     }
 
@@ -1238,6 +1242,7 @@ impl GuildEvent {
             EventRepeat::Daily => ((now - self.ends_at).num_days()).max(0),
             EventRepeat::Weekly => ((now - self.ends_at).num_weeks()).max(0),
             EventRepeat::Monthly => ((now - self.ends_at).num_days() / 31).max(0),
+            EventRepeat::Yearly => ((now - self.ends_at).num_days() / 366).max(0),
         };
         let mut n = u32::try_from(estimate).ok()?;
         loop {
@@ -4029,6 +4034,19 @@ mod identify_wire_tests {
             monthly.occurrence(at("2026-02-15T00:00:00Z")).map(|o| o.0),
             Some(at("2026-02-28T18:00:00Z")),
             "a month without the 31st takes its last day"
+        );
+        let birthday = event(super::EventRepeat::Yearly, "2028-02-29T00:00:00Z", 24);
+        assert_eq!(
+            birthday.occurrence(at("2030-06-01T00:00:00Z")).map(|o| o.0),
+            Some(at("2031-02-28T00:00:00Z")),
+            "a leap-day birthday falls on the 28th in other years"
+        );
+        assert!(birthday.is_live(at("2032-02-29T12:00:00Z")));
+        let yearly = event(super::EventRepeat::Yearly, "2020-11-17T00:00:00Z", 24);
+        assert_eq!(
+            yearly.occurrence(at("2026-11-18T00:00:00Z")).map(|o| o.0),
+            Some(at("2027-11-17T00:00:00Z")),
+            "the day after this year's run, the next is a year on"
         );
     }
 

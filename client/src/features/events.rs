@@ -22,6 +22,7 @@ const REPEATS: &[(EventRepeat, &str)] = &[
     (EventRepeat::Daily, "Every day"),
     (EventRepeat::Weekly, "Every week"),
     (EventRepeat::Monthly, "Every month"),
+    (EventRepeat::Yearly, "Every year"),
 ];
 
 /// Asks once per guild and session: clearing the session empties the map, so a
