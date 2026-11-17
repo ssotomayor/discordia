@@ -12,8 +12,10 @@ async function fixture(initial = 0, reduced = false, deferredSmooth = false) {
   const calls = [];
   let nextTimer = 0;
   let hide;
+  let now = 0;
+  const frames = [];
   const pager = {
-    clientWidth: 400, scrollLeft: 0, dataset: {mobileTab: String(initial)},
+    clientWidth: 400, scrollLeft: 0, dataset: {mobileTab: String(initial)}, style: {},
     scrollTo(options) {
       calls.push(options);
       if (!deferredSmooth || options.behavior !== 'smooth') this.scrollLeft = options.left;
@@ -27,20 +29,24 @@ async function fixture(initial = 0, reduced = false, deferredSmooth = false) {
     disconnect() { this.disconnected = true; }
   }
   const window = {
+    performance: {now: () => now},
     matchMedia() { return {matches: reduced}; },
     addEventListener(name, callback) { if (name === 'pagehide') hide = callback; },
     removeEventListener(name, callback) { if (name === 'pagehide' && hide === callback) hide = null; },
   };
   const pending = vm.runInNewContext(`(async () => {${source}\n})()`, {
     document: {getElementById: id => id === 'pager' ? pager : null}, window,
-    requestAnimationFrame: callback => callback(), MutationObserver: Observer, ResizeObserver: Observer,
+    // Each frame is 16 ms later, so a slide runs to its end within the call that starts it.
+    requestAnimationFrame: callback => { now += 16; frames.push(now); callback(); return frames.length; },
+    cancelAnimationFrame: () => {}, MutationObserver: Observer, ResizeObserver: Observer,
     setTimeout: callback => { timers.set(++nextTimer, callback); return nextTimer; },
     clearTimeout: id => timers.delete(id),
     dioxus: {send: event => sent.push(JSON.parse(JSON.stringify(event)))},
   });
   await Promise.resolve();
   return {
-    pager, calls, sent, observers, window, listeners, timers,
+    pager, calls, sent, observers, window, listeners, timers, frames,
+    advance(ms) { now += ms; },
     fire(name, event = {touches: []}) { listeners.get(name)?.(event); },
     tick() { for (const [id, callback] of [...timers]) { timers.delete(id); callback(); } },
     async close() { hide?.(); await pending; },
@@ -57,10 +63,32 @@ test('partial swipes reveal members without selecting a tab while the finger is 
   assert.deepEqual(f.sent, [{type: 'preview_members'}]);
   assert.equal(f.pager.dataset.mobileTab, '1');
   f.fire('touchend');
-  f.pager.scrollLeft = 800;
-  f.fire('scroll');
-  f.tick();
   assert.deepEqual(f.sent, [{type: 'preview_members'}, {type: 'select', from: 1, index: 2}, {type: 'settled'}]);
+  assert.equal(f.pager.scrollLeft, 800, 'release finishes the turn without the native snap');
+  assert.equal(f.pager.style.scrollSnapType, '', 'snapping comes back once the slide ends');
+  assert.equal(f.pager.style.overflowX, '');
+  await f.close();
+});
+
+test('a quick flick turns the page even when it moved little', async () => {
+  const f = await fixture(0);
+  f.fire('touchstart');
+  f.pager.scrollLeft = 20; f.advance(10); f.fire('scroll');
+  f.pager.scrollLeft = 40; f.advance(10); f.fire('scroll');
+  f.fire('touchend');
+  assert.deepEqual(f.sent, [{type: 'select', from: 0, index: 1}, {type: 'settled'}]);
+  assert.equal(f.pager.scrollLeft, 400);
+  await f.close();
+});
+
+test('a page turn is a short linear slide, not an eased scroll', async () => {
+  const f = await fixture(0);
+  f.pager.dataset.mobileTab = '1';
+  f.observers[0].callback();
+  assert.ok(!f.calls.some(call => call.behavior === 'smooth'));
+  assert.equal(f.pager.scrollLeft, 400);
+  const elapsed = f.frames.at(-1) - f.frames[0];
+  assert.ok(elapsed <= 144, `one page took ${elapsed} ms`);
   await f.close();
 });
 
@@ -70,10 +98,8 @@ test('a cancelled partial swipe releases members without switching tabs', async 
   f.pager.scrollLeft = 450;
   f.fire('scroll');
   f.fire('touchend');
-  f.pager.scrollLeft = 400;
-  f.fire('scroll');
-  f.tick();
   assert.deepEqual(f.sent, [{type: 'preview_members'}, {type: 'settled'}]);
+  assert.equal(f.pager.scrollLeft, 400, 'a short drag slides back');
   await f.close();
 });
 
@@ -103,13 +129,12 @@ test('button and Back changes animate without echoing a second selection', async
   const f = await fixture();
   f.pager.dataset.mobileTab = '2';
   f.observers[0].callback();
-  assert.equal(f.calls.at(-1).left, 800);
-  assert.equal(f.calls.at(-1).behavior, 'smooth');
+  assert.equal(f.pager.scrollLeft, 800);
   f.fire('scroll'); f.fire('scrollend');
   assert.deepEqual(f.sent, [{type: 'settled'}]);
   f.pager.dataset.mobileTab = '0';
   f.observers[0].callback();
-  assert.equal(f.calls.at(-1).left, 0);
+  assert.equal(f.pager.scrollLeft, 0);
   await f.close();
 });
 
