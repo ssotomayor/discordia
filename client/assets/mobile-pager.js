@@ -4,10 +4,9 @@ const pager = document.getElementById(id);
 if (!pager) return;
 const registry = window.__dxfMobilePagers ||= new Map();
 registry.get(id)?.();
-// A page turn is a short linear slide: the native snap and smooth scroll ease far slower.
+// A tab press turns the page in a short linear slide; smooth scrolling eases far slower.
+// Swipes keep the native snap: driving them from script was jerky on a phone.
 const PAGE_MS = 120;
-const TURN_FRACTION = 0.2;
-const FLING_PX_PER_MS = 0.3;
 const clock = () => window.performance?.now?.() ?? Date.now();
 let timer;
 let touching = false;
@@ -16,7 +15,6 @@ let moving = false;
 let requested = null;
 let closed = false;
 let width = pager.clientWidth;
-let gesture = null;
 let slide = null;
 const index = () => Math.max(0, Math.min(2, Number(pager.dataset.mobileTab) || 0));
 const send = value => { if (!closed) dioxus.send(value); };
@@ -82,12 +80,6 @@ const settle = () => {
 const scroll = () => {
   if (slide) return;
   moving = true;
-  if (gesture) {
-    const at = clock();
-    if (at > gesture.at) gesture.velocity = (pager.scrollLeft - gesture.last) / (at - gesture.at);
-    gesture.last = pager.scrollLeft;
-    gesture.at = at;
-  }
   if (index() !== 2 && pager.clientWidth && pager.scrollLeft > pager.clientWidth + 1 && !preview) {
     preview = true;
     send({type: 'preview_members'});
@@ -95,29 +87,11 @@ const scroll = () => {
   clearTimeout(timer);
   if (!touching) timer = setTimeout(settle, 140);
 };
-const start = () => {
-  touching = true;
-  requested = null;
-  clearTimeout(timer);
-  release();
-  gesture = {origin: pager.scrollLeft, last: pager.scrollLeft, at: clock(), velocity: 0};
-};
-// The finger chose a direction; the page finishes the turn itself instead of the slow snap.
+// A finger on the page takes it over from an unfinished slide, snap and all.
+const start = () => { touching = true; requested = null; clearTimeout(timer); release(); };
 const end = event => {
   touching = event.touches.length > 0;
-  if (touching) return;
-  const begun = gesture;
-  gesture = null;
-  const page = pager.clientWidth;
-  const moved = begun ? pager.scrollLeft - begun.origin : 0;
-  if (!begun || !page || Math.abs(moved) < 2) { clearTimeout(timer); timer = setTimeout(settle, 140); return; }
-  const from = Math.max(0, Math.min(2, Math.round(begun.origin / page)));
-  const flung = Math.abs(begun.velocity) > FLING_PX_PER_MS && Math.sign(begun.velocity) === Math.sign(moved);
-  const turn = Math.abs(moved) > page * TURN_FRACTION || flung;
-  const target = Math.max(0, Math.min(2, turn ? from + Math.sign(moved) : from));
-  if (target !== index()) send({type: 'select', from: index(), index: target});
-  requested = target;
-  slideTo(target);
+  if (!touching) { clearTimeout(timer); timer = setTimeout(settle, 140); }
 };
 const sync = () => {
   clearTimeout(timer);
@@ -130,7 +104,6 @@ const resized = new ResizeObserver(() => {
   if (pager.clientWidth && pager.clientWidth !== width) {
     width = pager.clientWidth;
     touching = false;
-    gesture = null;
     requested = null;
     clearTimeout(timer);
     release();

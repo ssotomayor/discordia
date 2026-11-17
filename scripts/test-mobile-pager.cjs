@@ -63,21 +63,11 @@ test('partial swipes reveal members without selecting a tab while the finger is 
   assert.deepEqual(f.sent, [{type: 'preview_members'}]);
   assert.equal(f.pager.dataset.mobileTab, '1');
   f.fire('touchend');
+  f.pager.scrollLeft = 800;
+  f.fire('scroll');
+  f.tick();
   assert.deepEqual(f.sent, [{type: 'preview_members'}, {type: 'select', from: 1, index: 2}, {type: 'settled'}]);
-  assert.equal(f.pager.scrollLeft, 800, 'release finishes the turn without the native snap');
-  assert.equal(f.pager.style.scrollSnapType, '', 'snapping comes back once the slide ends');
-  assert.equal(f.pager.style.overflowX, '');
-  await f.close();
-});
-
-test('a quick flick turns the page even when it moved little', async () => {
-  const f = await fixture(0);
-  f.fire('touchstart');
-  f.pager.scrollLeft = 20; f.advance(10); f.fire('scroll');
-  f.pager.scrollLeft = 40; f.advance(10); f.fire('scroll');
-  f.fire('touchend');
-  assert.deepEqual(f.sent, [{type: 'select', from: 0, index: 1}, {type: 'settled'}]);
-  assert.equal(f.pager.scrollLeft, 400);
+  assert.ok(!f.calls.length || f.calls.every(call => call.behavior === 'auto'), 'a swipe is left to the native snap');
   await f.close();
 });
 
@@ -98,8 +88,10 @@ test('a cancelled partial swipe releases members without switching tabs', async 
   f.pager.scrollLeft = 450;
   f.fire('scroll');
   f.fire('touchend');
+  f.pager.scrollLeft = 400;
+  f.fire('scroll');
+  f.tick();
   assert.deepEqual(f.sent, [{type: 'preview_members'}, {type: 'settled'}]);
-  assert.equal(f.pager.scrollLeft, 400, 'a short drag slides back');
   await f.close();
 });
 
