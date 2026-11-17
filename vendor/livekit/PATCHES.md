@@ -4,6 +4,7 @@ Source: crates.io `livekit` 0.9.5, upstream commit `49b3ebe9ab1c574114b164868ad2
 
 | File | Local change |
 |---|---|
+| `src/rtc_engine/{rtc_events,rtc_session,mod,peer_transport}.rs`, `src/room/mod.rs` | Forward sanitized ICE server scheme/code to room events; omit addresses, credentials and server error text. Media ICE timeouts include bounded local candidate counts/families from each transport. Candidate errors do not themselves trigger recovery. |
 | `Cargo.toml` | Allow existing upstream unused/deprecated items and lifetime-syntax warnings exposed by using a local dependency. |
 | `src/room/options.rs` | Optional `video_start_bitrate` in bps, unset by default; assign the highest RID to the principal layer for one/two/three encodings. |
 | `src/rtc_engine/rtc_session.rs` | Forward the publishing track's startup hint alongside its encoding budget; publish audio RED (offer opus+RED when `red` is on) so E2EE keeps redundancy. |

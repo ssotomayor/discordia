@@ -134,6 +134,11 @@ pub struct SessionStats {
 
 #[derive(Debug)]
 pub enum SessionEvent {
+    IceServerError {
+        publisher: bool,
+        server_type: String,
+        error_code: i32,
+    },
     ParticipantUpdate {
         updates: Vec<proto::ParticipantInfo>,
     },
@@ -1132,8 +1137,10 @@ impl SessionInner {
             };
             if !matches!(
                 transceiver.current_direction(),
-                Some(libwebrtc::rtp_transceiver::RtpTransceiverDirection::RecvOnly
-                    | libwebrtc::rtp_transceiver::RtpTransceiverDirection::SendRecv)
+                Some(
+                    libwebrtc::rtp_transceiver::RtpTransceiverDirection::RecvOnly
+                        | libwebrtc::rtp_transceiver::RtpTransceiverDirection::SendRecv
+                )
             ) {
                 continue;
             }
@@ -1759,6 +1766,17 @@ impl SessionInner {
 
     async fn on_rtc_event(&self, event: RtcEvent) -> EngineResult<()> {
         match event {
+            RtcEvent::IceServerError {
+                publisher,
+                server_type,
+                error_code,
+            } => {
+                let _ = self.emitter.send(SessionEvent::IceServerError {
+                    publisher,
+                    server_type,
+                    error_code,
+                });
+            }
             RtcEvent::IceCandidate {
                 ice_candidate,
                 target,
@@ -2162,9 +2180,14 @@ impl SessionInner {
     ) -> EngineResult<RtpTransceiver> {
         // Another publisher negotiation must not observe a sender before its codec/backend is set.
         let _configuration = self.publisher_pc.begin_sender_configuration().await;
-        let configured_budget = encodings.iter().try_fold(0_u64, |total, encoding| {
-            encoding.max_bitrate.map(|bitrate| total.saturating_add(bitrate))
-        }).filter(|value| *value > 0);
+        let configured_budget = encodings
+            .iter()
+            .try_fold(0_u64, |total, encoding| {
+                encoding
+                    .max_bitrate
+                    .map(|bitrate| total.saturating_add(bitrate))
+            })
+            .filter(|value| *value > 0);
         // If video track, derive "ultimate" bitrate from encodings and stash it for offer munging.
         // Must be done before encodings is moved into RtpTransceiverInit.
         if track.kind() == TrackKind::Video {
@@ -2230,7 +2253,9 @@ impl SessionInner {
         }
 
         self.publisher_pc.set_sender_bitrate_budget(
-            track.rtc_track().id(), track.kind() == TrackKind::Video, configured_budget,
+            track.rtc_track().id(),
+            track.kind() == TrackKind::Video,
+            configured_budget,
         )?;
         Ok(transceiver)
     }
@@ -2674,7 +2699,12 @@ impl SessionInner {
         tokio::select! {
             res = wait_connected => res,
             _ = sleep(ICE_CONNECT_TIMEOUT) => {
-                let err = EngineError::Connection("wait_pc_connection timed out".into());
+                let publisher = self.publisher_pc.ice_diagnostic_summary().await;
+                let subscriber = if let Some(subscriber) = &self.subscriber_pc {
+                    subscriber.ice_diagnostic_summary().await
+                } else { "single transport".into() };
+                log::warn!("ICE media connection timed out; publisher {publisher}; subscriber {subscriber}");
+                let err = EngineError::Connection(format!("ICE media connection timed out; publisher {publisher}; subscriber {subscriber}").into());
                 Err(err)
             }
         }

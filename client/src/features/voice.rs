@@ -600,6 +600,9 @@ async fn service_loop(
                     active.ice_servers = state.peek().ice_servers.clone();
                     let publishing = room.is_some();
                     let guard = crate::media_tokens::CallGuard::new(&state.peek());
+                    active.maintain_video(state, token_gateway.as_ref()).await;
+                    if !guard.current(&state.peek()) { continue; }
+                    if publishing && state.peek().screen_share.native_target() != Some(target) { continue; }
                     if let Err(e) = active.set_screen_video(room, target, settings, state).await {
                         if !guard.current(&state.peek()) { continue; }
                         if renew_media_access(state, token_gateway.as_ref(), crate::protocol::MediaTokenKind::ScreenVideo, &e) { continue; }
@@ -626,6 +629,9 @@ async fn service_loop(
                 let epoch = state.read().voice_session_epoch;
                 let guard = crate::media_tokens::CallGuard::new(&state.peek());
                 if let Some(active) = session.as_mut() { active.ice_servers = state.peek().ice_servers.clone(); }
+                if let Some(active) = session.as_mut() { active.maintain_video(state, Some(&gateway)).await; }
+                if !guard.current(&state.peek()) { continue; }
+                if room.is_some() && !state.peek().camera.wanted() { continue; }
                 if let Some(active) = session.as_mut()
                     && let Err(e) = active
                         .set_camera(room, device, state, settings, gateway.clone())
@@ -691,7 +697,7 @@ async fn service_loop(
                     token_gateway = None;
                 }
                 if let Some(active) = session.as_mut() {
-                    active.maintain(state, &controls).await;
+                    active.maintain(state, &controls, token_gateway.as_ref()).await;
                 }
             }
         }
@@ -1212,6 +1218,13 @@ impl ActiveVoice {
                             eprintln!("[voice] reconnecting");
                             let _ = room_tx.send(RoomSignal::Reconnecting);
                         }
+                        RoomEvent::IceServerError {
+                            publisher,
+                            server_type,
+                            error_code,
+                        } => {
+                            tracing::warn!(diagnostic_code = "ICE-SERVER", publisher, %server_type, error_code, "voice ICE server request failed; other candidates may still connect");
+                        }
                         RoomEvent::Reconnected => {
                             eprintln!("[voice] reconnected");
                             let _ = room_tx.send(RoomSignal::Reconnected);
@@ -1498,23 +1511,28 @@ impl ActiveVoice {
     }
 
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
-    async fn video_room(&mut self, key: (String, String)) -> Result<&mut NativeVideoRoom, String> {
+    async fn video_room(
+        &mut self,
+        key: (String, String),
+        epoch: u64,
+    ) -> Result<&mut NativeVideoRoom, String> {
         if let Some(room) = self.screen_video.as_mut()
             && crate::media_tokens::same_room(&room.key, &key)
-            && room.room.connection_state() == ConnectionState::Connected
+            && room.room.connection_state() != ConnectionState::Disconnected
         {
             room.key = key.clone();
         }
-        if self
-            .screen_video
-            .as_ref()
-            .is_some_and(|room| room.key != key)
-            && let Some(room) = self.screen_video.take()
+        if self.screen_video.as_ref().is_some_and(|room| {
+            room.key != key
+                || room.epoch != epoch
+                || room.room.connection_state() == ConnectionState::Disconnected
+        }) && let Some(room) = self.screen_video.take()
         {
             room.shutdown().await;
         }
         if self.screen_video.is_none() {
-            self.screen_video = Some(NativeVideoRoom::connect(key, &self.ice_servers).await?);
+            self.screen_video =
+                Some(NativeVideoRoom::connect(key, &self.ice_servers, epoch).await?);
         }
         self.screen_video
             .as_mut()
@@ -1560,7 +1578,8 @@ impl ActiveVoice {
             if !guard.current(&state.peek()) {
                 return Err("call changed while waiting for encryption".into());
             }
-            let room = self.video_room(key).await?;
+            let epoch = state.peek().voice_session_epoch;
+            let room = self.video_room(key, epoch).await?;
             if !guard.current(&state.peek()) {
                 return Err("call changed while joining video".into());
             }
@@ -1623,7 +1642,8 @@ impl ActiveVoice {
         if !guard.current(&state.peek()) {
             return Err("call changed while waiting for camera encryption".into());
         }
-        let room = self.video_room(key).await?;
+        let epoch = state.peek().voice_session_epoch;
+        let room = self.video_room(key, epoch).await?;
         if !guard.current(&state.peek()) {
             return Err("call changed while joining the camera".into());
         }
@@ -1755,10 +1775,74 @@ impl ActiveVoice {
         }
     }
 
-    /// Keeps the call alive across a device that came and went: refresh the
-    /// list, reopen what is missing, and back off so a device that is still
-    /// gone is not spun on.
-    async fn maintain(&mut self, mut state: Signal<AppState>, controls: &AudioControls) {
+    async fn maintain_video(
+        &mut self,
+        state: Signal<AppState>,
+        gateway: Option<&crate::state::GatewayTx>,
+    ) {
+        #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
+        let mut state = state;
+        #[cfg(not(any(target_os = "android", target_os = "macos", target_os = "windows")))]
+        let _ = state;
+        #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
+        if self
+            .screen_video
+            .as_ref()
+            .is_some_and(|video| video.room.connection_state() == ConnectionState::Disconnected)
+            && let Some(video) = self.screen_video.take()
+        {
+            let reason = video
+                .disconnect_reason
+                .lock()
+                .clone()
+                .unwrap_or_else(|| "connection closed".into());
+            if state.peek().voice_session_epoch == video.epoch {
+                let mut s = state.write();
+                if let Some(screen) = &video.screen {
+                    fail_screen_share(
+                        &mut s,
+                        screen.key.0,
+                        video.epoch,
+                        format!(
+                            "[TX-CONNECTION] {}",
+                            crate::i18n::text(
+                                "The video connection closed. Start sharing again to reconnect.",
+                                &[]
+                            )
+                        ),
+                    );
+                }
+                #[cfg(any(target_os = "android", target_os = "windows"))]
+                if video.camera.is_some() || video.camera_starting {
+                    let followup = s.camera.on(crate::local_camera::CameraEvent::Failed);
+                    if let Some(message) = followup.server()
+                        && let Some(gateway) = gateway
+                    {
+                        gateway.send(message);
+                    }
+                    s.error_toast = Some(format!(
+                        "[TX-CONNECTION] {}",
+                        crate::i18n::text(
+                            "The video connection closed. Start your camera again to reconnect.",
+                            &[]
+                        )
+                    ));
+                }
+            }
+            tracing::warn!(diagnostic_code = "TX-CONNECTION", %reason, "native publisher connection ended");
+            video.shutdown().await;
+        }
+        #[cfg(not(any(target_os = "android", target_os = "windows")))]
+        let _ = gateway;
+    }
+
+    async fn maintain(
+        &mut self,
+        mut state: Signal<AppState>,
+        controls: &AudioControls,
+        gateway: Option<&crate::state::GatewayTx>,
+    ) {
+        self.maintain_video(state, gateway).await;
         while let Ok(fault) = self.faults_rx.try_recv() {
             match fault {
                 AudioFault::Input => {
@@ -1931,6 +2015,11 @@ impl ActiveVoice {
 struct NativeVideoRoom {
     room: Arc<Room>,
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
+    epoch: u64,
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
+    disconnect_reason: Arc<Mutex<Option<String>>>,
+    event_task: tokio::task::JoinHandle<()>,
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
     key: (String, String),
     screen: Option<ScreenVideoRoom>,
     #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -1954,9 +2043,13 @@ fn screen_room_options(ice_servers: &[IceServer]) -> RoomOptions {
 
 impl NativeVideoRoom {
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "windows"))]
-    async fn connect(key: (String, String), ice_servers: &[IceServer]) -> Result<Self, String> {
+    async fn connect(
+        key: (String, String),
+        ice_servers: &[IceServer],
+        epoch: u64,
+    ) -> Result<Self, String> {
         let options = screen_room_options(ice_servers);
-        let (room, mut events) = Room::connect(&key.0, &key.1, options).await.map_err(|e| {
+        let (room, events) = Room::connect(&key.0, &key.1, options).await.map_err(|e| {
             format!(
                 "[TX-CONNECTION] livekit connect: {}",
                 crate::media_tokens::error_detail(&e.to_string())
@@ -1964,9 +2057,14 @@ impl NativeVideoRoom {
         })?;
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
-        tokio::spawn(async move { while events.recv().await.is_some() {} });
+        let disconnect_reason = Arc::new(Mutex::new(None));
+        let reason = disconnect_reason.clone();
+        let event_task = tokio::spawn(super::media_supervision::observe_publisher(events, reason));
         Ok(Self {
             room,
+            epoch,
+            disconnect_reason,
+            event_task,
             key,
             screen: None,
             #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -1983,6 +2081,8 @@ impl NativeVideoRoom {
         self.screen.is_none()
     }
     async fn shutdown(self) {
+        self.event_task.abort();
+        let _ = self.event_task.await;
         if let Some(screen) = self.screen {
             screen.shutdown().await;
         }
@@ -2280,6 +2380,7 @@ impl ScreenVideoRoom {
             let diagnostic_started = sampled;
             let mut diagnostic_last = None;
             let mut status_sent = Instant::now() - std::time::Duration::from_secs(3);
+            let mut stats_health = super::media_supervision::StatsHealth::new(sampled);
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let now = Instant::now();
@@ -2300,19 +2401,33 @@ impl ScreenVideoRoom {
                 let capture_copy_ms = captured.copy_ms_since(capture_previous);
                 capture_previous = captured;
                 sampled = now;
-                #[cfg(target_os = "windows")]
                 let report = match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     track.get_stats(),
                 )
                 .await
                 {
-                    Ok(Ok(report)) => report,
+                    Ok(Ok(report)) => {
+                        stats_health.reset(Instant::now());
+                        report
+                    }
                     Ok(Err(error)) => {
                         tracing::debug!(%error, "screen encoder statistics unavailable");
+                        if status_room.connection_state() != ConnectionState::Connected {
+                            stats_health.reset(Instant::now());
+                        } else if stats_health.expired(Instant::now()) {
+                            let _ = encoder_fatal.send(format!("[TX-STATS] {}", crate::i18n::text(
+                                "Screen-sharing statistics remained unavailable. Sharing was stopped.", &[],
+                            )));
+                            break;
+                        }
                         continue;
                     }
                     Err(_) => {
+                        if status_room.connection_state() != ConnectionState::Connected {
+                            stats_health.reset(Instant::now());
+                            continue;
+                        }
                         tracing::warn!(
                             diagnostic_code = "TX-STATS",
                             track_sid = %stats_sid,
@@ -2331,10 +2446,6 @@ impl ScreenVideoRoom {
                         }
                         break;
                     }
-                };
-                #[cfg(not(target_os = "windows"))]
-                let Ok(report) = track.get_stats().await else {
-                    continue;
                 };
                 let outbound = report
                     .iter()
@@ -2498,13 +2609,23 @@ impl ScreenVideoRoom {
                 #[cfg(not(target_os = "android"))]
                 let effective_settings = settings;
                 if now.duration_since(status_sent).as_secs() >= 3 {
+                    let sender_network =
+                        crate::connection_routes::publisher_network_stats(&report, outbound);
                     let (width, height) = crate::sysvideo::fit_resolution(
                         captured.width,
                         captured.height,
                         effective_settings,
                     );
                     let payload = serde_json::json!({
+                        "version": 2,
                         "sid": stats_sid.to_string(),
+                        "bitrateBps": rates.map(|(_, kbps)| u64::from(kbps) * 1000),
+                        "targetBitrateBps": outbound.outbound.target_bitrate,
+                        "configuredBitrateBps": effective_settings.max_bitrate,
+                        "encodeMs": encode_ms,
+                        "captureProcessingMs": capture_processing_ms,
+                        "uplinkEstimateBps": sender_network.estimated_uplink_bps,
+                        "transportRttMs": sender_network.transport_rtt_ms,
                         "width": width, "height": height,
                         "primaryWidth": outbound.outbound.frame_width,
                         "primaryHeight": outbound.outbound.frame_height,
@@ -2530,16 +2651,19 @@ impl ScreenVideoRoom {
                     })
                     .to_string()
                     .into_bytes();
-                    if let Err(error) = status_room
-                        .local_participant()
-                        .publish_data(livekit::DataPacket {
-                            payload,
-                            topic: Some("discordia.screen-quality.v1".into()),
-                            ..Default::default()
-                        })
-                        .await
-                    {
-                        tracing::debug!(%error, "screen quality status unavailable");
+                    let status = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        status_room
+                            .local_participant()
+                            .publish_data(livekit::DataPacket {
+                                payload,
+                                topic: Some("discordia.screen-quality.v1".into()),
+                                ..Default::default()
+                            }),
+                    )
+                    .await;
+                    if !matches!(status, Ok(Ok(()))) {
+                        tracing::debug!(?status, "screen quality status unavailable");
                     }
                     status_sent = now;
                 }
@@ -4739,7 +4863,7 @@ mod tests {
         .unwrap();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(6),
-            NativeVideoRoom::connect((url, token.clone()), &[]),
+            NativeVideoRoom::connect((url, token.clone()), &[], 0),
         )
         .await;
         server.abort();

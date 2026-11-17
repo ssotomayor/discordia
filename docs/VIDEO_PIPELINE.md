@@ -2,7 +2,7 @@
 
 | Platform | Capture → SDK | Encoder evidence | Result |
 |---|---|---|---|
-| Windows | `sysvideo/windows.rs::Handler::deliver` maps BGRA through `CapturedFrame::buffer`, converts/scales to I420 and publishes it | `nvidia/h264_encoder_impl.cpp::Encode` calls `ToI420`; `i420_buffer_cuda.h::CopyI420BufferToDeviceFrame` uploads host planes | GPU encoding still includes CPU readback/conversion and a GPU upload |
+| Windows | `windows_gpu.rs::Processor` can scale/convert BGRA textures to NV12 on D3D11, then read output-sized NV12 and separate I420 planes. Selection compares CPU/GPU costs on fresh frames; explicit CPU mode, slower/unsupported/failed GPU processing retain `windows.rs::BgraConverter` | `nvidia/h264_encoder_impl.cpp::Encode` calls `ToI420`; `i420_buffer_cuda.h::CopyI420BufferToDeviceFrame` uploads host planes | GPU preprocessing reduces readback and CPU conversion where it wins; still includes CPU planes and encoder upload |
 | macOS | `sysvideo/macos.rs::Tap::handle_frame` retains a CVPixelBuffer; `voice.rs::ScreenVideoRoom` hands it to `NativeBuffer::from_cv_pixel_buffer` | `objc_video_frame_buffer.mm::new_native_buffer_from_platform_image_buffer` wraps the retained image | The client already passes a native image; SDK adaptation/software fallback may still convert it |
 | Linux | Native screen capture is not implemented | Browser publication | No native capture path to optimize here |
 
@@ -18,4 +18,6 @@
 | Fallback/preview | CPU/Auto/GPU modes and thumbnails use the current SDK path | Keep an explicit CPU conversion fallback and map only when a consumer needs CPU pixels |
 | Publication | WebRTC owns transport and E2EE | Keep native frames inside the same publication path; no parallel packet transport |
 
-Investigation result: macOS already has native-buffer handoff. Windows cannot remove the copies by switching a Rust option: both the SDK buffer bridge and the encoder input need changes. No new Windows zero-copy path is enabled by this branch, and no end-to-end zero-copy guarantee is inferred from an encoder's hardware label.
+Windows preprocessing uses limited-range BT.601 to match libyuv, owns its output/staging surfaces and releases each input view after submission. Six fresh frames compare costs (two warmups, four samples, alternating order); only one prepared frame is published each time. GPU must be at least 10% faster and stay below 75% of the frame interval. Eight consecutive over-budget GPU frames, or any processing failure, restore CPU for that capture. Hardware regressions: `gpu_preprocessing_preserves_color_range_and_resizes_without_retaining_input` and `gpu_preprocessing_benchmark_1440p` (`--ignored --nocapture`).
+
+macOS already has native-buffer handoff. End-to-end Windows texture handoff still requires the SDK buffer bridge and encoder input changes above; GPU preprocessing is not zero-copy encoding.

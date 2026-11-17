@@ -215,6 +215,37 @@ impl PeerTransport {
         self.peer_connection.clone()
     }
 
+    pub async fn ice_diagnostic_summary(&self) -> String {
+        use libwebrtc::stats::{IceCandidateType, RtcStats};
+        let Ok(Ok(stats)) =
+            tokio::time::timeout(Duration::from_millis(250), self.peer_connection.get_stats())
+                .await
+        else {
+            return "ICE candidate statistics unavailable".into();
+        };
+        let (mut host, mut reflexive, mut relay, mut v4, mut v6) = (0, 0, 0, 0, 0);
+        for stat in stats {
+            if let RtcStats::LocalCandidate(c) = stat {
+                match c.local_candidate.candidate_type {
+                    Some(IceCandidateType::Host) => host += 1,
+                    Some(IceCandidateType::Srflx | IceCandidateType::Prflx) => reflexive += 1,
+                    Some(IceCandidateType::Relay) => relay += 1,
+                    None => {}
+                }
+                if let Ok(address) = c.local_candidate.address.parse::<std::net::IpAddr>() {
+                    if address.to_canonical().is_ipv4() {
+                        v4 += 1;
+                    } else {
+                        v6 += 1;
+                    }
+                }
+            }
+        }
+        format!(
+            "ICE candidates: host={host}, reflexive={reflexive}, relay={relay}, IPv4={v4}, IPv6={v6}"
+        )
+    }
+
     pub async fn begin_sender_configuration(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.sender_configuration.lock().await
     }
