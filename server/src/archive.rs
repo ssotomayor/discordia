@@ -33,6 +33,8 @@ pub struct GuildArchive {
     /// As stored, keyed by message: `messages` shows polls to nobody, so not who voted.
     #[serde(default)]
     pub polls: Vec<(Id, crate::poll::StoredPoll)>,
+    #[serde(default)]
+    pub events: Vec<crate::protocol::GuildEvent>,
 }
 
 impl Store {
@@ -138,6 +140,7 @@ impl Store {
             messages,
             audit,
             polls,
+            events: self.guild_events(guild_id).await?,
         }))
     }
 
@@ -259,6 +262,37 @@ impl Store {
                 self.insert_message_with_poll(&msg, polls.get(&m.id).copied())
                     .await?;
             }
+        }
+
+        for event in &archive.events {
+            let draft = crate::protocol::EventDraft {
+                name: event.name.clone(),
+                description: event.description.clone(),
+                starts_at: event.starts_at,
+                ends_at: event.ends_at,
+                channel_id: event.channel_id.and_then(|c| channel_map.get(&c).copied()),
+                repeat: event.repeat,
+                cover: event
+                    .cover
+                    .clone()
+                    .filter(|c| crate::media::is_image_address(c)),
+            };
+            let Ok(draft) = draft.validated() else {
+                continue;
+            };
+            self.upsert_guild_event(&crate::protocol::GuildEvent {
+                id: Uuid::new_v4(),
+                guild_id: new_guild_id,
+                name: draft.name,
+                description: draft.description,
+                starts_at: draft.starts_at,
+                ends_at: draft.ends_at,
+                channel_id: draft.channel_id,
+                repeat: draft.repeat,
+                cover: draft.cover,
+                created_by: event.created_by.clone(),
+            })
+            .await?;
         }
 
         for e in &archive.audit {

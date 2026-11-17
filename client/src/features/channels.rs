@@ -227,11 +227,16 @@ pub fn ChannelsColumn() -> Element {
                 }
             }
             div { class: "dxf-channels-heading {HEADER}",
-                h2 { class: "dxf-display text-[16px] font-bold tracking-tight text-[var(--text)] truncate flex-1",
-                    if dm_mode {
-                        {crate::i18n::text("Direct Messages", &[])}
-                    } else {
-                        {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| crate::i18n::text("No guild", &[]))}
+                div { class: "flex-1 min-w-0 flex items-center gap-2",
+                    h2 { class: "dxf-display min-w-0 text-[16px] font-bold tracking-tight text-[var(--text)] truncate",
+                        if dm_mode {
+                            {crate::i18n::text("Direct Messages", &[])}
+                        } else {
+                            {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| crate::i18n::text("No guild", &[]))}
+                        }
+                    }
+                    if !dm_mode && let Some(guild_id) = selected_guild {
+                        super::events::LiveEventBadge { key: "{guild_id}", guild_id }
                     }
                 }
                 if !dm_mode && let Some(gid) = invite_guild {

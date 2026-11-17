@@ -31,6 +31,7 @@ impl AppState {
                 )?;
                 let author = self.attributed_author(channel_id, user.clone());
                 let message = Message {
+                    event_notice: None,
                     poll: Some(poll.view(None)),
                     image_metadata: None,
                     attachment: None,

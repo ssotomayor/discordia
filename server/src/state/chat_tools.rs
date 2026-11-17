@@ -264,6 +264,7 @@ impl AppState {
                     None => None,
                 };
                 let message = Message {
+                    event_notice: None,
                     poll: None,
                     image_metadata: None,
                     id: uuid::Uuid::new_v4(),

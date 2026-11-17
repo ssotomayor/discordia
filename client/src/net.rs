@@ -1539,6 +1539,7 @@ fn apply_ready(
     let ServerMessage::Ready {
         chat_tools,
         polls,
+        events,
         image_previews,
         progressive_image_uploads,
         media_token_refresh,
@@ -1578,6 +1579,7 @@ fn apply_ready(
     s.server_info = server;
     s.server_chat_tools = chat_tools;
     s.server_polls = polls;
+    s.server_events = events;
     s.server_image_previews = image_previews;
     s.server_progressive_image_uploads = progressive_image_uploads;
     s.server_media_token_refresh = media_token_refresh;
@@ -1958,6 +1960,9 @@ fn apply(
             {
                 crate::protocol::apply_reaction(&mut msg.reactions, &emoji, &user_pubkey, added);
             }
+        }
+        ServerMessage::GuildEvents { guild_id, events } => {
+            s.guild_events.insert(guild_id, events);
         }
         ServerMessage::PollUpdate {
             channel_id,
@@ -3221,6 +3226,7 @@ mod tests {
                     s.messages.insert(
                         channel,
                         vec![crate::protocol::Message {
+                            event_notice: None,
                             poll: None,
                             author_bot: false,
                             edited_at: None,
@@ -3245,6 +3251,7 @@ mod tests {
                 let ready = ServerMessage::Ready {
                     chat_tools: false,
                     polls: false,
+                    events: false,
                     image_previews: false,
                     progressive_image_uploads: false,
                     media_token_refresh: false,
@@ -3325,6 +3332,7 @@ mod tests {
         let ready = ServerMessage::Ready {
             chat_tools: false,
             polls: false,
+            events: false,
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: false,
@@ -3389,6 +3397,7 @@ mod tests {
         let ready = ServerMessage::Ready {
             chat_tools: false,
             polls: false,
+            events: false,
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: false,
@@ -3480,6 +3489,7 @@ mod tests {
         s.messages.insert(
             channel,
             vec![crate::protocol::Message {
+                event_notice: None,
                 poll: None,
                 author_bot: false,
                 edited_at: None,

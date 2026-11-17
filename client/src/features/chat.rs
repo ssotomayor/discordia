@@ -629,6 +629,9 @@ pub fn ChatView() -> Element {
                     crate::features::agents::AgentNotice {}
                     crate::features::activities::OpenActivities {}
                     crate::features::activities::ActivityButton {}
+                    if let Some(guild_id) = channel_guild {
+                        super::events::EventsButton { guild_id }
+                    }
                 }
                 if !is_dm && state.read().server_chat_tools {
                     for channel_id in selected_channel.into_iter() {
@@ -1339,7 +1342,7 @@ pub(super) fn MessageRow(
                             }
                         }
                     }
-                } else if has_text && message.poll.is_none() {
+                } else if has_text && message.poll.is_none() && message.event_notice.is_none() {
                     div { class: "{text_row}",
                         div { class: "min-w-0 flex-1 text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed transition-opacity {text_dim}",
                             MessageContent { content: display_content.clone(), channel_id, message_id }
@@ -1364,6 +1367,9 @@ pub(super) fn MessageRow(
                     }
                 } else if let Some(mark) = delivery_mark.clone() {
                     div { class: "mt-0.5 flex justify-end", {mark} }
+                }
+                if let Some(notice) = message.event_notice.as_ref() {
+                    super::events::EventNoticeCard { name: message.content.clone(), channel_id: notice.channel_id }
                 }
                 if let Some(poll) = message.poll.clone() {
                     super::polls::PollCard {
@@ -1902,6 +1908,7 @@ mod author_name_tests {
 
     fn historical_message() -> Message {
         Message {
+            event_notice: None,
             poll: None,
             id: Id::nil(),
             channel_id: Id::nil(),

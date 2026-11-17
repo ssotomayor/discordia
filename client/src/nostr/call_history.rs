@@ -242,6 +242,7 @@ pub fn merge(
         state.insert_message(
             cid,
             crate::protocol::Message {
+                event_notice: None,
                 poll: None,
                 id,
                 channel_id: cid,

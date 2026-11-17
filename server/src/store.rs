@@ -221,6 +221,7 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS server_agents (pubkey TEXT PRIMARY KEY, spec TEXT NOT NULL, secret TEXT NOT NULL, api_key TEXT NOT NULL, version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS app_rules (pubkey TEXT PRIMARY KEY, rule TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS default_guild_offers (guild_id TEXT NOT NULL, pubkey TEXT NOT NULL, PRIMARY KEY (guild_id, pubkey))",
+            "CREATE TABLE IF NOT EXISTS guild_events (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, event TEXT NOT NULL, announced_ms INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS guild_stickers (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL, image TEXT NOT NULL, added_by TEXT NOT NULL, created_ms INTEGER NOT NULL, UNIQUE(guild_id, shortcode))",
             "CREATE TABLE IF NOT EXISTS users (
                 pubkey TEXT PRIMARY KEY, username TEXT NOT NULL)",
@@ -324,6 +325,7 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
             "ALTER TABLE messages ADD COLUMN edited_at_ms INTEGER",
             "ALTER TABLE messages ADD COLUMN poll TEXT",
+            "ALTER TABLE messages ADD COLUMN event_notice TEXT",
             "ALTER TABLE invites ADD COLUMN expires_at_ms INTEGER",
             "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
@@ -685,6 +687,7 @@ impl Store {
             "bot_installs",
             "guild_xp",
             "default_guild_offers",
+            "guild_events",
         ] {
             sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
                 .bind(&gid)
@@ -1029,6 +1032,20 @@ impl Store {
                     .expires_ms
                     .is_none_or(|ms| ms > Utc::now().timestamp_millis())
                 && let Some(name) = attachment.media.strip_prefix("media:")
+            {
+                out.insert(name.to_owned());
+            }
+        }
+        for r in sqlx::query("SELECT event FROM guild_events")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            if let Ok(event) =
+                serde_json::from_str::<crate::protocol::GuildEvent>(&r.get::<String, _>(0))
+                && let Some(name) = event
+                    .cover
+                    .as_deref()
+                    .and_then(|c| c.strip_prefix("media:"))
             {
                 out.insert(name.to_owned());
             }
@@ -1380,8 +1397,8 @@ impl Store {
                                    content, image, reactions, reply_id,
                                    reply_author_pubkey, reply_author_username,
                                    reply_excerpt, created_at, attachment, pinned, image_metadata,
-                                   edited_at_ms, poll)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   edited_at_ms, poll, event_notice)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -1408,9 +1425,69 @@ impl Store {
         )
         .bind(m.edited_at.map(|t| t.timestamp_millis()))
         .bind(poll.map(|p| serde_json::to_string(p).expect("poll serializes")))
+        .bind(
+            m.event_notice
+                .as_ref()
+                .map(|n| serde_json::to_string(n).expect("event notice serializes")),
+        )
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn guild_events(&self, guild_id: Id) -> Result<Vec<crate::protocol::GuildEvent>> {
+        let rows = sqlx::query("SELECT event FROM guild_events WHERE guild_id = ?")
+            .bind(guild_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        let mut events: Vec<crate::protocol::GuildEvent> = rows
+            .into_iter()
+            .filter_map(|r| serde_json::from_str(&r.get::<String, _>(0)).ok())
+            .collect();
+        events.sort_by_key(|e| (e.starts_at, e.id));
+        Ok(events)
+    }
+
+    /// Every event with the start of the last run whose notice went out.
+    pub async fn announceable_events(&self) -> Result<Vec<(crate::protocol::GuildEvent, i64)>> {
+        let rows = sqlx::query("SELECT event, announced_ms FROM guild_events")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| Some((serde_json::from_str(&r.get::<String, _>(0)).ok()?, r.get(1))))
+            .collect())
+    }
+
+    pub async fn upsert_guild_event(&self, event: &crate::protocol::GuildEvent) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_events (id, guild_id, event) VALUES (?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET event = excluded.event",
+        )
+        .bind(event.id.to_string())
+        .bind(event.guild_id.to_string())
+        .bind(serde_json::to_string(event).expect("event serializes"))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_guild_event(&self, guild_id: Id, event_id: Id) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM guild_events WHERE id = ? AND guild_id = ?")
+            .bind(event_id.to_string())
+            .bind(guild_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn set_event_announced(&self, event_id: Id, run_start_ms: i64) -> Result<bool> {
+        let result = sqlx::query("UPDATE guild_events SET announced_ms = ? WHERE id = ?")
+            .bind(run_start_ms)
+            .bind(event_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// The poll and its message's author, for a vote or a close.
@@ -1474,7 +1551,7 @@ impl Store {
         offset: u32,
         viewer: Option<&str>,
     ) -> Result<Vec<Message>> {
-        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata, edited_at_ms, poll FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
+        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata, edited_at_ms, poll, event_notice FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
             .bind(channel_id.to_string()).bind(&query.text)
             .bind(&query.author).bind(&query.author)
             .bind(query.after_ms).bind(query.after_ms)
@@ -1726,7 +1803,7 @@ impl Store {
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
                             reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata,
-                            edited_at_ms, poll
+                            edited_at_ms, poll, event_notice
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1741,7 +1818,7 @@ impl Store {
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
                             reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata,
-                            edited_at_ms, poll
+                            edited_at_ms, poll, event_notice
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1915,6 +1992,9 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow, viewer: Option<&str>) -> Message {
         })
     });
     Message {
+        event_notice: r
+            .get::<Option<String>, _>("event_notice")
+            .and_then(|raw| serde_json::from_str(&raw).ok()),
         poll: r
             .get::<Option<String>, _>("poll")
             .and_then(|raw| serde_json::from_str::<crate::poll::StoredPoll>(&raw).ok())

@@ -87,6 +87,7 @@ pub(crate) mod tests {
 
     pub(crate) fn msg(author: &str, name: &str, content: &str, secs: i64) -> Message {
         Message {
+            event_notice: None,
             poll: None,
             image_metadata: None,
             attachment: None,
