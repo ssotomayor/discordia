@@ -170,6 +170,8 @@ pub struct ClientSettings {
     pub screenshare_codec: crate::sysvideo::Codec,
     #[serde(default)]
     pub screenshare_encoder: crate::sysvideo::Encoder,
+    #[serde(default = "default_enabled")]
+    pub screenshare_gpu_preprocessing: bool,
     #[serde(default = "default_screenshare_audio")]
     pub screenshare_audio: bool,
     #[serde(default = "default_sfx_volume")]
@@ -451,6 +453,7 @@ impl Default for ClientSettings {
             screenshare_adaptive_quality: false,
             screenshare_codec: crate::sysvideo::Codec::default(),
             screenshare_encoder: crate::sysvideo::Encoder::default(),
+            screenshare_gpu_preprocessing: default_enabled(),
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
             soundboard_volume: default_soundboard_volume(),
@@ -959,6 +962,9 @@ mod tests {
         old.as_object_mut().unwrap().remove("screenshare_encoder");
         old.as_object_mut()
             .unwrap()
+            .remove("screenshare_gpu_preprocessing");
+        old.as_object_mut()
+            .unwrap()
             .remove("screenshare_adaptive_quality");
         old["auto_gain_control"] = false.into();
         let loaded = parse(&file(old)).expect("loads");
@@ -970,7 +976,29 @@ mod tests {
         assert!(loaded.user_volumes.is_empty());
         assert_eq!(loaded.screenshare_codec, crate::sysvideo::Codec::Auto);
         assert_eq!(loaded.screenshare_encoder, crate::sysvideo::Encoder::Auto);
+        assert!(loaded.screenshare_gpu_preprocessing);
         assert!(!loaded.screenshare_adaptive_quality);
+    }
+
+    #[test]
+    fn screen_preparation_acceleration_persists_independently_of_the_video_encoder() {
+        assert!(ClientSettings::default().screenshare_gpu_preprocessing);
+        for encoder in [
+            crate::sysvideo::Encoder::Auto,
+            crate::sysvideo::Encoder::Gpu,
+            crate::sysvideo::Encoder::Cpu,
+        ] {
+            for enabled in [true, false] {
+                let settings = ClientSettings {
+                    screenshare_encoder: encoder,
+                    screenshare_gpu_preprocessing: enabled,
+                    ..Default::default()
+                };
+                let loaded = parse(&file(serde_json::to_value(settings).unwrap())).unwrap();
+                assert_eq!(loaded.screenshare_encoder, encoder);
+                assert_eq!(loaded.screenshare_gpu_preprocessing, enabled);
+            }
+        }
     }
 
     #[test]

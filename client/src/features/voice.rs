@@ -5110,6 +5110,7 @@ mod tests {
             priority: crate::sysvideo::Priority::Motion,
             codec: crate::sysvideo::Codec::H264,
             encoder: crate::sysvideo::Encoder::Auto,
+            gpu_preprocessing: true,
         };
         let encodings = livekit::options::compute_video_encodings(
             settings.width,

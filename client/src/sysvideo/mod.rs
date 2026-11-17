@@ -97,6 +97,7 @@ pub struct Settings {
     pub priority: Priority,
     pub codec: Codec,
     pub encoder: Encoder,
+    pub gpu_preprocessing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -367,6 +368,7 @@ mod resolution_tests {
             priority: super::Priority::Motion,
             codec: super::Codec::H264,
             encoder: crate::sysvideo::Encoder::Auto,
+            gpu_preprocessing: true,
         };
         assert_eq!(super::fit_resolution(3440, 1440, settings), (1920, 802));
         assert_eq!(
@@ -505,6 +507,7 @@ fn capture_thumbnail(target: Target) -> Result<String, String> {
         priority: Priority::Detail,
         codec: Codec::H264,
         encoder: crate::sysvideo::Encoder::Auto,
+        gpu_preprocessing: true,
     };
     let (fatal, _failures) = tokio::sync::mpsc::unbounded_channel();
     #[cfg(target_os = "windows")]
@@ -661,6 +664,7 @@ mod tests {
                 priority: super::Priority::Balanced,
                 codec: super::Codec::H264,
                 encoder: crate::sysvideo::Encoder::Auto,
+                gpu_preprocessing: true,
             },
             Box::new(move |frame: super::Frame| {
                 let buffer = unsafe {

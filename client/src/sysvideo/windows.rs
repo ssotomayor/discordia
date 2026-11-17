@@ -69,6 +69,8 @@ struct Handler {
     gpu: Option<gpu::Processor>,
     gpu_disabled: bool,
     gpu_choice: gpu::Choice,
+    cpu_readback: Option<gpu::Readback>,
+    geometry: Option<(u32, u32, u32, u32)>,
 }
 
 #[derive(Default)]
@@ -79,7 +81,7 @@ struct BgraConverter {
 impl BgraConverter {
     fn convert(
         &mut self,
-        pixels: &mut [u8],
+        pixels: &[u8],
         stride: u32,
         width: u32,
         height: u32,
@@ -143,7 +145,7 @@ impl GraphicsCaptureApiHandler for Handler {
     type Error = String;
 
     fn new(ctx: Context<Flags>) -> Result<Self, String> {
-        let gpu_disabled = ctx.flags.settings.encoder == super::Encoder::Cpu;
+        let gpu_disabled = !ctx.flags.settings.gpu_preprocessing;
         Ok(Self {
             pacer: FramePacer::new(ctx.flags.settings.fps),
             converter: BgraConverter::default(),
@@ -151,6 +153,8 @@ impl GraphicsCaptureApiHandler for Handler {
             gpu: None,
             gpu_disabled,
             gpu_choice: gpu::Choice::default(),
+            cpu_readback: None,
+            geometry: None,
             flags: ctx.flags,
         })
     }
@@ -198,41 +202,37 @@ impl GraphicsCaptureApiHandler for Handler {
 impl Handler {
     fn deliver(&mut self, frame: &mut CapturedFrame<'_>) -> Result<(), String> {
         let started = Instant::now();
-        // WebRTC aligns this monotonic capture clock; conversion delays must not retime the image.
+        // WebRTC aligns this capture clock; processing delays must not retime the image.
         let timestamp_us = frame.timestamp().map_err(|e| e.to_string())?.Duration / 10;
-        let width = frame.width();
-        let height = frame.height();
+        let (width, height) = (frame.width(), frame.height());
         if width == 0 || height == 0 {
             return Ok(());
         }
         let (out_width, out_height) = super::fit_resolution(width, height, self.flags.settings);
-        let mut prepared = None;
-        if !self.gpu_disabled {
-            let cpu_probe = if self.gpu_choice.compare_cpu_first() {
-                let began = Instant::now();
-                Some((self.cpu_frame(frame)?, began.elapsed()))
-            } else {
-                None
-            };
-            let gpu_started = Instant::now();
-            let geometry = (width, height, out_width, out_height);
+        let geometry = (width, height, out_width, out_height);
+        if self.geometry != Some(geometry) {
+            self.geometry = Some(geometry);
+            self.gpu = None;
+            self.gpu_choice = gpu::Choice::default();
+        }
+        if self.gpu_choice.begin(started) {
+            self.gpu = None;
+        }
+        let evaluating = self.gpu_choice.selected.is_none();
+        let use_gpu = !self.gpu_disabled && self.gpu_choice.use_gpu();
+        let began = Instant::now();
+        let prepared = if use_gpu {
             let result = (|| {
-                if self.gpu.as_ref().is_none_or(|gpu| gpu.geometry != geometry) {
-                    self.gpu_choice = gpu::Choice::default();
+                if self.gpu.is_none() {
                     self.gpu = Some(gpu::Processor::new(
                         frame.device(),
                         frame.device_context(),
                         geometry,
                         self.flags.settings.fps,
                     )?);
-                    tracing::info!(
-                        ?geometry,
-                        capture_path = "D3D11-NV12",
-                        "evaluating GPU screen preprocessing"
-                    );
                 }
                 self.gpu
-                    .as_ref()
+                    .as_mut()
                     .ok_or_else(|| {
                         windows_capture_api::core::Error::from(
                             windows_capture_api::Win32::Foundation::E_FAIL,
@@ -241,63 +241,46 @@ impl Handler {
                     .convert(frame.as_raw_texture())
             })();
             match result {
-                Ok(gpu_frame) => {
-                    let gpu_cost = gpu_started.elapsed();
-                    if self.gpu_choice.selected.is_none() {
-                        let (cpu_frame, cpu_cost) = match cpu_probe {
-                            Some(probe) => probe,
-                            None => {
-                                let began = Instant::now();
-                                (self.cpu_frame(frame)?, began.elapsed())
-                            }
-                        };
-                        let decision =
-                            self.gpu_choice
-                                .observe(cpu_cost, gpu_cost, self.flags.settings.fps);
-                        if let Some(use_gpu) = decision {
-                            let (cpu, gpu) = self.gpu_choice.costs();
-                            tracing::info!(
-                                use_gpu,
-                                cpu_ms = cpu.as_secs_f64() * 1000.0,
-                                gpu_ms = gpu.as_secs_f64() * 1000.0,
-                                "screen preprocessing cost comparison completed"
-                            );
-                            if !use_gpu {
-                                self.gpu = None;
-                                self.gpu_disabled = true;
-                            }
-                        }
-                        prepared = Some(if decision == Some(true) {
-                            gpu_frame
-                        } else {
-                            cpu_frame
-                        });
-                    } else if self
-                        .gpu_choice
-                        .over_budget(gpu_cost, self.flags.settings.fps)
-                    {
-                        tracing::warn!(
-                            capture_path = "CPU-I420",
-                            "GPU preprocessing exceeded the frame budget; restoring CPU conversion"
-                        );
-                        self.gpu = None;
-                        self.gpu_disabled = true;
-                    } else {
-                        prepared = Some(gpu_frame);
-                    }
-                }
+                Ok(frame) => frame,
                 Err(error) => {
                     tracing::warn!(%error, capture_path = "CPU-I420", "GPU preprocessing unavailable; keeping CPU capture conversion");
-                    self.gpu = None;
                     self.gpu_disabled = true;
-                    prepared = cpu_probe.map(|(frame, _)| frame);
+                    self.gpu_choice.selected = Some(false);
+                    self.gpu = None;
+                    self.cpu_frame(frame)?
                 }
             }
-        }
-        let (buffer, readback, conversion) = match prepared {
-            Some(frame) => frame,
-            None => self.cpu_frame(frame)?,
+        } else {
+            self.cpu_frame(frame)?
         };
+        let cost = began.elapsed();
+        if !self.gpu_disabled {
+            if evaluating {
+                if let Some(use_gpu) = self.gpu_choice.observe(cost, self.flags.settings.fps) {
+                    let costs = self.gpu_choice.costs();
+                    tracing::info!(
+                        use_gpu,
+                        cpu_p75_ms = costs.map(|(cpu, _)| cpu.as_secs_f64() * 1000.0),
+                        gpu_p75_ms = costs.map(|(_, gpu)| gpu.as_secs_f64() * 1000.0),
+                        "screen preprocessing single-path comparison completed"
+                    );
+                    if use_gpu {
+                        self.cpu_readback = None;
+                        self.converter = BgraConverter::default();
+                    } else {
+                        self.gpu = None;
+                    }
+                }
+            } else if use_gpu && self.gpu_choice.over_budget(cost, self.flags.settings.fps) {
+                tracing::warn!(
+                    capture_path = "CPU-I420",
+                    "GPU preprocessing repeatedly exceeded the frame budget; restoring CPU conversion"
+                );
+                self.gpu_choice.selected = Some(false);
+                self.gpu = None;
+            }
+        }
+        let (buffer, readback, conversion) = prepared;
         (self.flags.sink)(Frame {
             buffer,
             timestamp_us,
@@ -311,6 +294,8 @@ impl Handler {
                 conversion,
             );
         }
+        // A slow readback must not look like an idle source and restart GPU probing.
+        self.gpu_choice.finish(Instant::now());
         Ok(())
     }
 
@@ -321,11 +306,27 @@ impl Handler {
         let started = Instant::now();
         let width = frame.width();
         let height = frame.height();
-        let mut mapped = frame.buffer().map_err(|e| e.to_string())?;
+        if self
+            .cpu_readback
+            .as_ref()
+            .is_none_or(|readback| !readback.matches(frame.device(), width, height))
+        {
+            self.cpu_readback = Some(
+                gpu::Readback::new(frame.device(), frame.device_context(), width, height)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        let readback = self
+            .cpu_readback
+            .as_mut()
+            .ok_or("CPU readback was not created")?;
+        let mapped = readback
+            .map(frame.as_raw_texture())
+            .map_err(|e| e.to_string())?;
         let mapped_at = Instant::now();
         let stride = mapped.row_pitch();
         let buffer = self.converter.convert(
-            mapped.as_raw_buffer(),
+            mapped.bgra(width, height).map_err(|e| e.to_string())?,
             stride,
             width,
             height,
@@ -491,6 +492,7 @@ mod tests {
                 priority: super::super::Priority::Balanced,
                 codec: super::super::Codec::H264,
                 encoder: super::super::Encoder::Auto,
+                gpu_preprocessing: true,
             },
             Box::new(move |_| {
                 count.fetch_add(1, Ordering::Relaxed);
@@ -519,6 +521,7 @@ mod tests {
             priority: super::super::Priority::Motion,
             codec: super::super::Codec::H264,
             encoder: super::super::Encoder::Auto,
+            gpu_preprocessing: true,
         };
         for width in [8, 12, 4] {
             let stride = width * 4 + 16;
@@ -532,7 +535,7 @@ mod tests {
                 }
             }
             let buffer = converter
-                .convert(&mut pixels, stride, width, 4, settings)
+                .convert(&pixels, stride, width, 4, settings)
                 .expect("convert padded image");
             let mut rgb = vec![0; (buffer.width() * buffer.height() * 4) as usize];
             buffer.to_argb(
@@ -550,14 +553,14 @@ mod tests {
             }
             assert!(buffer.width() <= 4 && buffer.height() <= 2);
         }
-        assert!(converter.convert(&mut [0; 4], 4, 8, 4, settings).is_err());
+        assert!(converter.convert(&[0; 4], 4, 8, 4, settings).is_err());
     }
 
     #[test]
     #[ignore = "manual screen conversion performance comparison"]
     fn compare_screen_conversion_cost() {
         let (width, height) = (3840, 2160);
-        let mut pixels = [40, 100, 200, 255].repeat((width * height) as usize);
+        let pixels = [40, 100, 200, 255].repeat((width * height) as usize);
         let settings = Settings {
             width: 1920,
             height: 1080,
@@ -567,12 +570,13 @@ mod tests {
             priority: super::super::Priority::Motion,
             codec: super::super::Codec::H264,
             encoder: super::super::Encoder::Auto,
+            gpu_preprocessing: true,
         };
         let mut converter = BgraConverter::default();
         for _ in 0..3 {
             std::hint::black_box(
                 converter
-                    .convert(&mut pixels, width * 4, width, height, settings)
+                    .convert(&pixels, width * 4, width, height, settings)
                     .expect("convert"),
             );
         }
@@ -600,7 +604,7 @@ mod tests {
         for _ in 0..30 {
             std::hint::black_box(
                 converter
-                    .convert(&mut pixels, width * 4, width, height, settings)
+                    .convert(&pixels, width * 4, width, height, settings)
                     .expect("convert"),
             );
         }
@@ -703,6 +707,7 @@ mod tests {
                     priority: super::super::Priority::Balanced,
                     codec: super::super::Codec::H264,
                     encoder: super::super::Encoder::Auto,
+                    gpu_preprocessing: true,
                 },
                 Box::new(move |frame| {
                     assert!(

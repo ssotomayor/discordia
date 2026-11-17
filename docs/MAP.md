@@ -12,13 +12,13 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 6350 |
+| `client/src/features/voice.rs` | 6351 |
 | `server/src/state/mod.rs` | 4696 |
 | `client/src/state.rs` | 4781 |
 | `server/src/gateway/connection.rs` | 4611 |
 | `protocol/src/lib.rs` | 4433 |
 | `client/src/features/chat.rs` | 4076 |
-| `client/src/features/screenshare.rs` | 4221 |
+| `client/src/features/screenshare.rs` | 4244 |
 | `server/tests/owner_controls.rs` | 3460 |
 | `client/src/net.rs` | 3473 |
 | `client/src/features/channels.rs` | 2728 |
@@ -38,7 +38,7 @@ Everything else: `wc -l` answers faster than a list here could stay true.
 |---|---|---|
 | Media supervision and recovery | `features/media_supervision.rs`, `features/voice.rs`, `features/screenshare.rs`, `client/tests/stream_recovery.cjs` | Native publisher terminal disconnects stop owned screen/camera with a connection diagnostic; SDK reconnects retain capture. Repeated statistics failures have a 15 s budget and valid reports/reconnects reset it. Watched receivers detect sustained decode/presentation stalls after startup and resubscribe with cooldown/generation guards; local browser captures prevent whole-room repair |
 | ICE failure evidence | `vendor/livekit/src/rtc_engine/{rtc_events,peer_transport,rtc_session,mod}.rs`, `room/mod.rs` | Sanitized ICE server scheme/code flows to RoomEvent; candidate errors alone do not prove room failure. ICE timeouts include bounded candidate counts and address families, without addresses or credentials |
-| Windows GPU preprocessing | `client/src/sysvideo/{windows,windows_gpu}.rs`, `docs/VIDEO_PIPELINE.md` | D3D11 can scale/convert textures to NV12 before CPU readback. Fresh-frame cost comparison selects it only when faster and within budget; explicit CPU, unsupported/failed/over-budget GPU processing retain BGRA/libyuv. Each capture frame publishes once; SDK input remains I420, not end-to-end texture encoding |
+| Windows GPU preprocessing | `client/src/sysvideo/{windows,windows_gpu}.rs`, `features/settings_dialog.rs`, `settings.rs`, `docs/VIDEO_PIPELINE.md` | Windows Video and screen offers Automatic (default) / Disabled via `screenshare_gpu_preprocessing`, independently of encoder choice, applying to the next share. Reuses read-only CPU staging and probes one path per fresh frame; p75, late-frame fallback and true idle/resize govern selection. Formats, device/size and mapping lifetimes are checked. SDK input remains I420 |
 | Correlated stream evidence | `features/screenshare.rs`, `features/stream_viewer.rs`, `features/voice.rs` | Versioned screen-quality metadata includes measured bitrate, allocation, configured budget and available processing/network measurements. Track owner, bounds and freshness gate reception; warnings show the sender's rates. Browser capture FPS is measured or unknown, never inferred from configured FPS |
 | Encrypted DM images | `client/src/nostr/dm_image.rs`, `features/dm_images.rs`, `nostr/service.rs`, `nostr/nip17.rs` | AES-256-GCM before Blossom upload; NIP-17 kind 15 inside the existing gift wraps, captions as related kind-14 replies. Optional sender-generated previews are separately encrypted and uploaded before the original; old descriptors remain valid. Durable encrypted upload jobs; cancellation markers prevent resurrection. Binary HTTPS pins public DNS addresses and bounds redirects/downloads. Only accepted conversations load images. `dm_image::Image` keeps the bytes inside `Status::Ready`; its methods and `finish_load` are every load transition, and an unmounting view hands back the load it owns. The file-server selector is independent of emoji uploads A view-once picture (`Descriptor::view_once`, the `view-once` tag, the composer's toggle) mounts `ViewOnce`, never `EncryptedImage`: no preview is sent or read, nothing is cached on either side, and `open_once` hands the bytes to the image viewer just before the message is deleted |
 | DM edits and deletions | `client/src/nostr/service.rs`, `nostr/nip17.rs`, `state.rs`, `settings.rs` | Encrypted change rumors stay off the gateway. `apply_dm_change` validates recipients and authors, with bounded pre-original candidates keyed by target and author. Tombstones persist; pending operations recover and retry. Empty emoji tags clear previous mappings One exception to author-only deletion: a view-once picture is deleted by either person, because opening it is `NostrCmd::Delete` from the one it was sent to (`apply_dm_change`, and `ChatMessage::view_once` for a deletion that replays before its picture). It is a courtesy between honest clients: the wrap stays on its relays |
