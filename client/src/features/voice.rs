@@ -2291,9 +2291,7 @@ impl ScreenVideoRoom {
 
         let adapter_dropped = Arc::new(AtomicU64::new(0));
         let sink_adapter_dropped = adapter_dropped.clone();
-        #[cfg(target_os = "windows")]
         let encoder_input = Arc::new(AtomicU64::new(0));
-        #[cfg(target_os = "windows")]
         let sink_encoder_input = encoder_input.clone();
         let sink: crate::sysvideo::FrameSink = Box::new(move |frame: crate::sysvideo::Frame| {
             #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -2322,7 +2320,6 @@ impl ScreenVideoRoom {
             if !accepted {
                 sink_adapter_dropped.fetch_add(1, Ordering::Relaxed);
             }
-            #[cfg(target_os = "windows")]
             if accepted {
                 sink_encoder_input.fetch_add(1, Ordering::Relaxed);
             }
@@ -2718,10 +2715,7 @@ impl ScreenVideoRoom {
                     diagnostic_last,
                 ) {
                     diagnostic_last = Some(now.duration_since(diagnostic_started));
-                    #[cfg(target_os = "windows")]
                     let accepted_frames = Some(encoder_input.load(Ordering::Relaxed));
-                    #[cfg(not(target_os = "windows"))]
-                    let accepted_frames: Option<u64> = None;
                     let media_route = crate::connection_routes::selected_media_route(&report);
                     let publisher_network =
                         crate::connection_routes::publisher_network_stats(&report, outbound);
