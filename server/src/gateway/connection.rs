@@ -227,6 +227,19 @@ pub(crate) async fn handle_connection_with_route<S>(
                             Err(message) => { let response = match file_request { Some(request_id) => ServerMessage::FileUploadResult { request_id, error: Some(message) }, None => ServerMessage::Error { message } }; let _ = send(&mut ws_tx, &response).await; }
                         }
                     }
+                    command @ (ClientMessage::CreatePoll { .. } | ClientMessage::VotePoll { .. } | ClientMessage::ClosePoll { .. }) => {
+                        let Some(u) = phase.user() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        if let Err(message) = ctx.state.handle_poll(u, command).await {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                        }
+                    }
                     ClientMessage::Identify {
                         username,
                         pubkey,
@@ -394,7 +407,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let mut history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms).await;
+                        let mut history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms, &u.pubkey).await;
                         // History is the same text the live stream blanks for a
                         // bot without the content intent (`filter_for_bot`).
                         if phase.is_bot() && !bot_has_intent(&ctx.state, channel_id, &u.pubkey, Intent::MessageContent) {
@@ -4114,6 +4127,7 @@ pub(crate) fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::
 /// intent: a reply quotes its parent and a file's name is text too.
 fn withhold_content(m: &mut crate::protocol::Message) {
     m.content.clear();
+    m.poll = None;
     m.image = None;
     m.image_metadata = None;
     m.attachment = None;
@@ -4189,6 +4203,14 @@ fn filter_for_bot(
                 },
                 edited_at: *edited_at,
             })
+        }
+        ServerMessage::PollUpdate { channel_id, .. } => {
+            let gid = state.channel_guild(*channel_id)?;
+            let install = state.bot_install(gid, bot_pubkey)?;
+            (install.has_intent(Intent::GuildMessages)
+                && install.has_intent(Intent::MessageContent)
+                && install.access.reads(*channel_id))
+            .then(|| msg.clone())
         }
         ServerMessage::MessageDelete { channel_id, .. } => {
             let gid = state.channel_guild(*channel_id)?;

@@ -30,6 +30,7 @@ async fn fresh_state() -> AppState {
 
 fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
     Message {
+        poll: None,
         author_bot: false,
         edited_at: None,
         image_metadata: None,
@@ -139,7 +140,11 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
         .iter()
         .find(|c| c.name == channels[0].name)
         .expect("matching channel by name");
-    let history = state.store.history(new_first.id, 100, None).await.unwrap();
+    let history = state
+        .store
+        .history(new_first.id, 100, None, None)
+        .await
+        .unwrap();
     assert_eq!(history.len(), 2, "both messages imported");
     assert!(
         history.iter().all(|m| m.author.pubkey == owner.pubkey),
@@ -284,6 +289,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
     };
     let archive = GuildArchive {
         stickers: Vec::new(),
+        polls: Vec::new(),
         file_policy: Default::default(),
         version: ARCHIVE_VERSION,
         guild: Guild {
@@ -491,7 +497,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
 
     let history = state
         .store
-        .history(channel.id, 50, None)
+        .history(channel.id, 50, None, None)
         .await
         .expect("history");
     assert_eq!(history.len(), 1, "the blank message is gone");
@@ -552,4 +558,74 @@ async fn rows_written_before_the_filters_are_cleaned_at_load() {
             .as_ref()
             .is_some_and(|d| !d.contains('\u{2029}'))
     );
+}
+
+#[tokio::test]
+async fn a_poll_keeps_its_votes_through_export_and_import() {
+    use discordia_server::poll::{NewPoll, StoredPoll};
+    let state = fresh_state().await;
+    let owner = User {
+        pubkey: "11".repeat(32),
+        username: "Owner".into(),
+    };
+    let (guild, ..) = state.create_guild("Polls", None, &owner).await.unwrap();
+    let channel = state
+        .store
+        .load_all()
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|c| c.guild_id == guild.id && c.kind == discordia_server::protocol::ChannelKind::Text)
+        .unwrap();
+    let mut poll = StoredPoll::new(
+        NewPoll {
+            options: vec!["a".into(), "b".into()],
+            anonymous: true,
+            multiple: false,
+            changeable: false,
+            duration_secs: None,
+        },
+        0,
+    )
+    .unwrap();
+    let voter = "22".repeat(32);
+    poll.vote(&voter, &[1], 1).unwrap();
+    let mut message = msg(channel.id, &owner, "Which?");
+    message.poll = Some(poll.view(None));
+    state
+        .store
+        .insert_message_with_poll(&message, Some(&poll))
+        .await
+        .unwrap();
+
+    let archive = state.store.export_guild(guild.id).await.unwrap().unwrap();
+    let shown = serde_json::to_string(&archive.messages).unwrap();
+    assert!(!shown.contains(&voter), "messages show the poll to nobody");
+    let new_id = state.store.import_guild(&archive).await.unwrap();
+
+    let copy = state
+        .store
+        .load_all()
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|c| c.guild_id == new_id && c.name == channel.name)
+        .unwrap();
+    let imported = state
+        .store
+        .history(copy.id, 10, None, Some(&voter))
+        .await
+        .unwrap();
+    let shown = imported[0].poll.as_ref().expect("the poll came along");
+    assert_eq!(shown.counts, vec![0, 1]);
+    assert_eq!(shown.mine, vec![1], "the vote is still the voter's");
+    let (_, stored) = state
+        .store
+        .poll(copy.id, imported[0].id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored, poll);
 }

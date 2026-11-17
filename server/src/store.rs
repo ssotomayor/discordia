@@ -323,6 +323,7 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
             "ALTER TABLE messages ADD COLUMN edited_at_ms INTEGER",
+            "ALTER TABLE messages ADD COLUMN poll TEXT",
             "ALTER TABLE invites ADD COLUMN expires_at_ms INTEGER",
             "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
@@ -1365,13 +1366,22 @@ impl Store {
     }
 
     pub async fn insert_message(&self, m: &Message) -> Result<()> {
+        self.insert_message_with_poll(m, None).await
+    }
+
+    /// One statement, so a poll never exists without its message or the reverse.
+    pub async fn insert_message_with_poll(
+        &self,
+        m: &Message,
+        poll: Option<&crate::poll::StoredPoll>,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
                                    content, image, reactions, reply_id,
                                    reply_author_pubkey, reply_author_username,
                                    reply_excerpt, created_at, attachment, pinned, image_metadata,
-                                   edited_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   edited_at_ms, poll)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -1397,9 +1407,64 @@ impl Store {
             }),
         )
         .bind(m.edited_at.map(|t| t.timestamp_millis()))
+        .bind(poll.map(|p| serde_json::to_string(p).expect("poll serializes")))
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// The poll and its message's author, for a vote or a close.
+    pub async fn poll(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+    ) -> Result<Option<(String, crate::poll::StoredPoll)>> {
+        let row = sqlx::query(
+            "SELECT author_pubkey, poll FROM messages
+             WHERE id = ? AND channel_id = ? AND poll IS NOT NULL",
+        )
+        .bind(message_id.to_string())
+        .bind(channel_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|r| {
+            let poll = serde_json::from_str(&r.get::<String, _>(1)).ok()?;
+            Some((r.get(0), poll))
+        }))
+    }
+
+    pub async fn set_poll(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+        poll: &crate::poll::StoredPoll,
+    ) -> Result<bool> {
+        let result = sqlx::query("UPDATE messages SET poll = ? WHERE id = ? AND channel_id = ?")
+            .bind(serde_json::to_string(poll).expect("poll serializes"))
+            .bind(message_id.to_string())
+            .bind(channel_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Every poll in a channel as stored, votes included, for an archive.
+    pub async fn channel_polls(
+        &self,
+        channel_id: Id,
+    ) -> Result<Vec<(Id, crate::poll::StoredPoll)>> {
+        let rows =
+            sqlx::query("SELECT id, poll FROM messages WHERE channel_id = ? AND poll IS NOT NULL")
+                .bind(channel_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let poll = serde_json::from_str(&r.get::<String, _>(1)).ok()?;
+                Some((parse_id(&r.get::<String, _>(0)), poll))
+            })
+            .collect())
     }
 
     pub async fn search_messages(
@@ -1407,15 +1472,19 @@ impl Store {
         channel_id: Id,
         query: &crate::protocol::MessageSearch,
         offset: u32,
+        viewer: Option<&str>,
     ) -> Result<Vec<Message>> {
-        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata, edited_at_ms FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
+        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata, edited_at_ms, poll FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
             .bind(channel_id.to_string()).bind(&query.text)
             .bind(&query.author).bind(&query.author)
             .bind(query.after_ms).bind(query.after_ms)
             .bind(query.before_ms).bind(query.before_ms)
             .bind(query.has_attachment).bind(query.pinned_only).bind(i64::from(offset.min(10_000)))
             .fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(row_to_message).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| row_to_message(r, viewer))
+            .collect())
     }
 
     pub async fn set_message_pin(
@@ -1649,6 +1718,7 @@ impl Store {
         channel_id: Id,
         limit: u32,
         before: Option<i64>,
+        viewer: Option<&str>,
     ) -> Result<Vec<Message>> {
         let rows = match before {
             Some(cutoff) => {
@@ -1656,7 +1726,7 @@ impl Store {
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
                             reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata,
-                            edited_at_ms
+                            edited_at_ms, poll
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1671,7 +1741,7 @@ impl Store {
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
                             reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata,
-                            edited_at_ms
+                            edited_at_ms, poll
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1681,7 +1751,10 @@ impl Store {
                 .await?
             }
         };
-        let mut out: Vec<Message> = rows.into_iter().map(row_to_message).collect();
+        let mut out: Vec<Message> = rows
+            .into_iter()
+            .map(|r| row_to_message(r, viewer))
+            .collect();
         out.reverse();
         Ok(out)
     }
@@ -1765,7 +1838,7 @@ impl Store {
     ) -> Result<bool> {
         let res = sqlx::query(
             "UPDATE messages SET content = ?, edited_at_ms = ?
-             WHERE id = ? AND channel_id = ? AND author_pubkey = ?
+             WHERE id = ? AND channel_id = ? AND author_pubkey = ? AND poll IS NULL
                AND (? <> '' OR image IS NOT NULL OR attachment IS NOT NULL)",
         )
         .bind(content)
@@ -1829,7 +1902,8 @@ impl Store {
     }
 }
 
-fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
+/// `viewer` gets their own choices in a poll; nobody gets another's in an anonymous one.
+fn row_to_message(r: sqlx::sqlite::SqliteRow, viewer: Option<&str>) -> Message {
     let ms: i64 = r.get(11);
     let reply_id: Option<String> = r.get(7);
     let reply_to = reply_id.and_then(|id| {
@@ -1841,6 +1915,10 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         })
     });
     Message {
+        poll: r
+            .get::<Option<String>, _>("poll")
+            .and_then(|raw| serde_json::from_str::<crate::poll::StoredPoll>(&raw).ok())
+            .map(|poll| poll.view(viewer)),
         author_bot: false,
         image_metadata: r
             .get::<Option<String>, _>("image_metadata")

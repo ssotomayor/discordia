@@ -1122,6 +1122,98 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub edited_at: Option<DateTime<Utc>>,
+    /// The question is `content`, so search, replies and notifications read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<Poll>,
+}
+
+pub const POLL_QUESTION_CHARS: usize = 300;
+pub const POLL_OPTION_CHARS: usize = 80;
+pub const POLL_MIN_OPTIONS: usize = 2;
+pub const POLL_MAX_OPTIONS: usize = 10;
+pub const POLL_MAX_SECS: u32 = 30 * 24 * 60 * 60;
+
+/// A poll as one person sees it: the server builds one per receiver.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Poll {
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub anonymous: bool,
+    #[serde(default)]
+    pub multiple: bool,
+    /// Whether a voter may change or withdraw a vote once cast.
+    #[serde(default)]
+    pub changeable: bool,
+    #[serde(default)]
+    pub closes_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub closed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub counts: Vec<u32>,
+    /// Who chose each option; always empty for an anonymous poll.
+    #[serde(default)]
+    pub voters: Vec<Vec<String>>,
+    /// The receiver's own choices.
+    #[serde(default)]
+    pub mine: Vec<u8>,
+}
+
+impl Poll {
+    pub fn is_open(&self, now: DateTime<Utc>) -> bool {
+        self.closed_at.is_none() && self.closes_at.is_none_or(|at| now < at)
+    }
+
+    pub fn total(&self) -> u32 {
+        self.counts.iter().sum()
+    }
+}
+
+/// The question and options as stored: trimmed, answers on one line, no two alike.
+pub fn validate_poll(question: &str, options: &[String]) -> Result<(String, Vec<String>), String> {
+    let question = question.trim();
+    if question.is_empty() || question.chars().count() > POLL_QUESTION_CHARS {
+        return Err(format!(
+            "a poll question is 1..={POLL_QUESTION_CHARS} characters"
+        ));
+    }
+    let options: Vec<String> = options
+        .iter()
+        .map(|o| o.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    if !(POLL_MIN_OPTIONS..=POLL_MAX_OPTIONS).contains(&options.len()) {
+        return Err(format!(
+            "a poll has {POLL_MIN_OPTIONS} to {POLL_MAX_OPTIONS} answers"
+        ));
+    }
+    if options
+        .iter()
+        .any(|o| o.is_empty() || o.chars().count() > POLL_OPTION_CHARS)
+    {
+        return Err(format!("each answer is 1..={POLL_OPTION_CHARS} characters"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if !options.iter().all(|o| seen.insert(o.to_lowercase())) {
+        return Err("two answers are the same".into());
+    }
+    Ok((question.to_string(), options))
+}
+
+/// Sorted and deduplicated choices, or why they cannot be cast.
+pub fn normalize_choices(
+    choices: &[u8],
+    options: usize,
+    multiple: bool,
+) -> Result<Vec<u8>, String> {
+    let mut choices = choices.to_vec();
+    choices.sort_unstable();
+    choices.dedup();
+    if choices.iter().any(|&c| usize::from(c) >= options) {
+        return Err("no such answer".into());
+    }
+    if !multiple && choices.len() > 1 {
+        return Err("this poll takes one answer".into());
+    }
+    Ok(choices)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2652,6 +2744,31 @@ pub enum ClientMessage {
         channel_id: Id,
         sticker_id: Id,
     },
+    CreatePoll {
+        channel_id: Id,
+        question: String,
+        options: Vec<String>,
+        #[serde(default)]
+        anonymous: bool,
+        #[serde(default)]
+        multiple: bool,
+        #[serde(default)]
+        changeable: bool,
+        /// From now; none keeps it open until closed by hand.
+        #[serde(default)]
+        duration_secs: Option<u32>,
+    },
+    /// Every choice the voter now holds; empty withdraws the vote.
+    VotePoll {
+        channel_id: Id,
+        message_id: Id,
+        choices: Vec<u8>,
+    },
+    /// Before its end time; the author's or a `ManageMessages` holder's.
+    ClosePoll {
+        channel_id: Id,
+        message_id: Id,
+    },
     /// A relay handle and its 32-byte key (base64) for this key's mention
     /// pushes. Sent again after every Ready, which is what keeps it alive.
     RegisterPush {
@@ -3253,6 +3370,8 @@ pub enum ServerMessage {
         #[serde(default)]
         chat_tools: bool,
         #[serde(default)]
+        polls: bool,
+        #[serde(default)]
         image_previews: bool,
         #[serde(default)]
         progressive_image_uploads: bool,
@@ -3422,6 +3541,18 @@ pub enum ServerMessage {
         emoji: String,
         user_pubkey: String,
         added: bool,
+    },
+    /// `mine` rides only the copy sent to the voter: an anonymous poll tells nobody else.
+    PollUpdate {
+        channel_id: Id,
+        message_id: Id,
+        counts: Vec<u32>,
+        #[serde(default)]
+        voters: Vec<Vec<String>>,
+        #[serde(default)]
+        closed_at: Option<DateTime<Utc>>,
+        #[serde(default)]
+        mine: Option<Vec<u8>>,
     },
     TypingUpdate {
         channel_id: Id,
@@ -3637,6 +3768,7 @@ mod identify_wire_tests {
                 progressive_image_uploads: false,
                 media_token_refresh: false,
                 mobile_presence_updates: false,
+                polls: false,
                 ..
             }
         ));
@@ -3645,6 +3777,7 @@ mod identify_wire_tests {
         frame["d"]["progressive_image_uploads"] = serde_json::json!(true);
         frame["d"]["media_token_refresh"] = serde_json::json!(true);
         frame["d"]["mobile_presence_updates"] = serde_json::json!(true);
+        frame["d"]["polls"] = serde_json::json!(true);
         let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             current,
@@ -3654,9 +3787,65 @@ mod identify_wire_tests {
                 progressive_image_uploads: true,
                 media_token_refresh: true,
                 mobile_presence_updates: true,
+                polls: true,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_poll_is_trimmed_bounded_and_has_no_two_answers_alike() {
+        let answers = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            super::validate_poll("  Lunch?  ", &answers(&[" Pizza\n night ", "Tacos"])),
+            Ok(("Lunch?".to_string(), answers(&["Pizza night", "Tacos"])))
+        );
+        assert!(super::validate_poll("", &answers(&["a", "b"])).is_err());
+        assert!(super::validate_poll("q", &answers(&["only"])).is_err());
+        assert!(super::validate_poll("q", &answers(&["a", " "])).is_err());
+        assert!(super::validate_poll("q", &answers(&["Yes", "yes"])).is_err());
+        let eleven: Vec<String> = (0..11).map(|i| i.to_string()).collect();
+        assert!(super::validate_poll("q", &eleven).is_err());
+        let long = "x".repeat(super::POLL_OPTION_CHARS + 1);
+        assert!(super::validate_poll("q", &[long, "b".into()]).is_err());
+        let question = "é".repeat(super::POLL_QUESTION_CHARS);
+        assert!(super::validate_poll(&question, &answers(&["a", "b"])).is_ok());
+    }
+
+    #[test]
+    fn choices_are_sorted_unique_in_range_and_single_unless_multiple() {
+        assert_eq!(
+            super::normalize_choices(&[2, 0, 2], 3, true),
+            Ok(vec![0, 2])
+        );
+        assert_eq!(super::normalize_choices(&[], 3, false), Ok(vec![]));
+        assert!(super::normalize_choices(&[3], 3, true).is_err());
+        assert!(super::normalize_choices(&[0, 1], 3, false).is_err());
+        assert_eq!(super::normalize_choices(&[1, 1], 3, false), Ok(vec![1]));
+    }
+
+    #[test]
+    fn a_message_without_a_poll_reads_and_writes_as_before() {
+        let json = serde_json::json!({
+            "id": uuid::Uuid::nil(), "channel_id": uuid::Uuid::nil(),
+            "author": { "pubkey": "a", "username": "A" },
+            "content": "hi", "created_at": "2026-11-17T00:00:00Z"
+        });
+        let message: super::Message = serde_json::from_value(json).unwrap();
+        assert_eq!(message.poll, None);
+        assert!(!serde_json::to_string(&message).unwrap().contains("poll"));
+        let open = super::Poll {
+            counts: vec![1, 2],
+            ..Default::default()
+        };
+        let now = chrono::Utc::now();
+        assert!(open.is_open(now));
+        assert_eq!(open.total(), 3);
+        let ended = super::Poll {
+            closes_at: Some(now),
+            ..Default::default()
+        };
+        assert!(!ended.is_open(now));
     }
 
     #[test]

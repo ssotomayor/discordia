@@ -67,7 +67,7 @@ async fn ordinary_members_can_upload_and_download_files_without_a_special_role()
     ));
     let message = state
         .store
-        .history(channel_id, 10, None)
+        .history(channel_id, 10, None, None)
         .await
         .unwrap()
         .pop()
@@ -123,7 +123,7 @@ async fn ordinary_members_can_upload_and_download_files_without_a_special_role()
     assert_eq!(
         state
             .store
-            .history(channel_id, 10, None)
+            .history(channel_id, 10, None, None)
             .await
             .unwrap()
             .len(),
@@ -143,7 +143,7 @@ async fn file_expiry_keeps_the_message_but_revokes_download_and_reclaims_disk() 
         .unwrap();
     let mut message = state
         .store
-        .history(channel_id, 10, None)
+        .history(channel_id, 10, None, None)
         .await
         .unwrap()
         .pop()
@@ -180,7 +180,7 @@ async fn file_expiry_keeps_the_message_but_revokes_download_and_reclaims_disk() 
     assert_eq!(
         state
             .store
-            .history(channel_id, 10, None)
+            .history(channel_id, 10, None, None)
             .await
             .unwrap()
             .len(),
@@ -197,7 +197,11 @@ async fn shared_file_is_kept_until_its_last_live_attachment_expires() {
             .await
             .unwrap();
     }
-    let mut messages = state.store.history(channel_id, 10, None).await.unwrap();
+    let mut messages = state
+        .store
+        .history(channel_id, 10, None, None)
+        .await
+        .unwrap();
     let media = messages[0].attachment.as_ref().unwrap().media.clone();
     messages[0].attachment.as_mut().unwrap().expires_ms = Some(0);
     state
@@ -248,7 +252,7 @@ async fn invalid_and_oversized_files_cannot_create_messages_or_blobs() {
     assert!(
         state
             .store
-            .history(channel_id, 10, None)
+            .history(channel_id, 10, None, None)
             .await
             .unwrap()
             .is_empty()
@@ -304,7 +308,7 @@ async fn search_filters_pins_and_attachments_persist_and_do_not_cross_channels()
         .unwrap();
     let message = state
         .store
-        .history(channel_id, 10, None)
+        .history(channel_id, 10, None, None)
         .await
         .unwrap()
         .pop()
@@ -330,7 +334,7 @@ async fn search_filters_pins_and_attachments_persist_and_do_not_cross_channels()
     };
     let found = state
         .store
-        .search_messages(channel_id, &query, 0)
+        .search_messages(channel_id, &query, 0, None)
         .await
         .unwrap();
     assert_eq!(found.len(), 1);
@@ -338,7 +342,7 @@ async fn search_filters_pins_and_attachments_persist_and_do_not_cross_channels()
     assert!(
         state
             .store
-            .search_messages(channel_id, &query, 100)
+            .search_messages(channel_id, &query, 100, None)
             .await
             .unwrap()
             .is_empty()
@@ -346,7 +350,7 @@ async fn search_filters_pins_and_attachments_persist_and_do_not_cross_channels()
     assert!(
         state
             .store
-            .search_messages(Id::new_v4(), &query, 0)
+            .search_messages(Id::new_v4(), &query, 0, None)
             .await
             .unwrap()
             .is_empty()
@@ -481,7 +485,11 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
         .unwrap();
     assert!(state.store.stickers(guild_id).await.unwrap().is_empty());
     assert!(
-        state.store.history(channel_id, 10, None).await.unwrap()[0]
+        state
+            .store
+            .history(channel_id, 10, None, None)
+            .await
+            .unwrap()[0]
             .image
             .is_some()
     );

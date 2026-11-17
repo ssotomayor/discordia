@@ -7,7 +7,7 @@ use crate::protocol::{
 
 /// People read, post and search any channel they can see; only an app is held
 /// to the matching permission, and an app's comes from its install, never roles.
-enum Needs {
+pub(super) enum Needs {
     Everyone(Permission),
     AppsOnly(Permission),
 }
@@ -41,7 +41,12 @@ impl AppState {
             })
         })
     }
-    fn chat_channel(&self, channel_id: Id, user: &User, needs: Needs) -> Result<Id, String> {
+    pub(super) fn chat_channel(
+        &self,
+        channel_id: Id,
+        user: &User,
+        needs: Needs,
+    ) -> Result<Id, String> {
         let channel = self
             .channels
             .get(&channel_id)
@@ -63,7 +68,7 @@ impl AppState {
         Ok(gid)
     }
 
-    fn chat_send_allowed(&self, channel_id: Id, user: &User) -> Result<Id, String> {
+    pub(super) fn chat_send_allowed(&self, channel_id: Id, user: &User) -> Result<Id, String> {
         let gid = self.chat_channel(channel_id, user, Needs::AppsOnly(Permission::SendMessages))?;
         let perms = self.effective_permissions(gid, &user.pubkey);
         let exempt = perms.contains(&Permission::ManageMessages)
@@ -148,7 +153,7 @@ impl AppState {
                 query.text = query.text.trim().to_owned();
                 let mut messages = self
                     .store
-                    .search_messages(channel_id, &query, offset)
+                    .search_messages(channel_id, &query, offset, Some(&user.pubkey))
                     .await
                     .map_err(|e| e.to_string())?;
                 self.mark_bot_authors(channel_id, &mut messages);
@@ -179,6 +184,7 @@ impl AppState {
                                 ..Default::default()
                             },
                             0,
+                            None,
                         )
                         .await
                         .map_err(|e| e.to_string())?;
@@ -258,6 +264,7 @@ impl AppState {
                     None => None,
                 };
                 let message = Message {
+                    poll: None,
                     image_metadata: None,
                     id: uuid::Uuid::new_v4(),
                     channel_id,

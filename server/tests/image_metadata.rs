@@ -46,13 +46,13 @@ async fn image_name_and_dimensions_survive_history_search_and_reopening_the_stor
     assert_eq!(metadata.name.as_deref(), Some("photo.png"));
     assert_eq!((metadata.width, metadata.height), (Some(1), Some(1)));
     assert_eq!(
-        state.store.history(channel, 10, None).await.unwrap()[0].image_metadata,
+        state.store.history(channel, 10, None, None).await.unwrap()[0].image_metadata,
         sent.image_metadata
     );
     assert_eq!(
         state
             .store
-            .search_messages(channel, &MessageSearch::default(), 0)
+            .search_messages(channel, &MessageSearch::default(), 0, None)
             .await
             .unwrap()[0]
             .image_metadata,
@@ -61,7 +61,7 @@ async fn image_name_and_dimensions_survive_history_search_and_reopening_the_stor
     drop(state);
     let reopened = Store::open_in(&dir).await.unwrap();
     assert_eq!(
-        reopened.history(channel, 10, None).await.unwrap()[0].image_metadata,
+        reopened.history(channel, 10, None, None).await.unwrap()[0].image_metadata,
         sent.image_metadata
     );
     let mut legacy = serde_json::to_value(&sent).unwrap();
@@ -132,7 +132,7 @@ async fn sender_preview_is_stored_beside_the_unchanged_original_and_persisted() 
     assert!(
         state
             .store
-            .history(channel, 10, None)
+            .history(channel, 10, None, None)
             .await
             .unwrap()
             .is_empty()
@@ -159,7 +159,7 @@ async fn sender_preview_is_stored_beside_the_unchanged_original_and_persisted() 
             .unwrap()
             .starts_with("data:image/png;base64,")
     );
-    let history = state.store.history(channel, 10, None).await.unwrap();
+    let history = state.store.history(channel, 10, None, None).await.unwrap();
     assert_eq!(history[0].image_metadata, sent.image_metadata);
     let references = state.store.referenced_media().await.unwrap();
     assert!(references.contains(sent.image.as_deref().unwrap().trim_start_matches("media:")));

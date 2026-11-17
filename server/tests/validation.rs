@@ -180,6 +180,7 @@ async fn a_history_page_is_clamped_however_much_is_asked_for() {
         for i in 0..250 {
             store
                 .insert_message(&Message {
+                    poll: None,
                     author_bot: false,
                     edited_at: None,
                     image_metadata: None,

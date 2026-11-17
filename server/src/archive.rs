@@ -30,6 +30,9 @@ pub struct GuildArchive {
     pub bot_installs: Vec<BotInstall>,
     pub messages: Vec<(Id, Vec<Message>)>,
     pub audit: Vec<AuditEntry>,
+    /// As stored, keyed by message: `messages` shows polls to nobody, so not who voted.
+    #[serde(default)]
+    pub polls: Vec<(Id, crate::poll::StoredPoll)>,
 }
 
 impl Store {
@@ -109,10 +112,12 @@ impl Store {
             .collect();
 
         let mut messages = Vec::new();
+        let mut polls = Vec::new();
         for ch in &channels {
-            let mut msgs = self.history(ch.id, u32::MAX, None).await?;
+            let mut msgs = self.history(ch.id, u32::MAX, None, None).await?;
             msgs.reverse();
             messages.push((ch.id, msgs));
+            polls.extend(self.channel_polls(ch.id).await?);
         }
 
         let audit = self.audit_log(guild_id, u32::MAX).await?;
@@ -132,6 +137,7 @@ impl Store {
             bot_installs,
             messages,
             audit,
+            polls,
         }))
     }
 
@@ -240,6 +246,8 @@ impl Store {
             self.upsert_bot_install(&install).await?;
         }
 
+        let polls: std::collections::HashMap<Id, &crate::poll::StoredPoll> =
+            archive.polls.iter().map(|(id, poll)| (*id, poll)).collect();
         for (old_channel, msgs) in &archive.messages {
             let Some(new_channel) = channel_map.get(old_channel).copied() else {
                 continue;
@@ -248,7 +256,8 @@ impl Store {
                 let mut msg = m.clone();
                 msg.id = Uuid::new_v4();
                 msg.channel_id = new_channel;
-                self.insert_message(&msg).await?;
+                self.insert_message_with_poll(&msg, polls.get(&m.id).copied())
+                    .await?;
             }
         }
 
