@@ -227,6 +227,22 @@ pub(crate) async fn handle_connection_with_route<S>(
                             Err(message) => { let response = match file_request { Some(request_id) => ServerMessage::FileUploadResult { request_id, error: Some(message) }, None => ServerMessage::Error { message } }; let _ = send(&mut ws_tx, &response).await; }
                         }
                     }
+                    command @ (ClientMessage::FetchGuildEvents { .. } | ClientMessage::SaveGuildEvent { .. } | ClientMessage::DeleteGuildEvent { .. }) => {
+                        let Some(u) = phase.user() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        let reading = matches!(command, ClientMessage::FetchGuildEvents { .. });
+                        if !(if reading { reads.allow() } else { limiter.allow() }) {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.handle_event_command(u, command).await {
+                            Ok(Some(response)) => { if send(&mut ws_tx, &response).await.is_err() { break; } }
+                            Ok(None) => {}
+                            Err(message) => { let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await; }
+                        }
+                    }
                     command @ (ClientMessage::CreatePoll { .. } | ClientMessage::VotePoll { .. } | ClientMessage::ClosePoll { .. }) => {
                         let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
@@ -3740,6 +3756,8 @@ fn apply_sight_change(
     changed_channel: Option<Id>,
 ) {
     let state = &ctx.state;
+    let events_state = state.clone();
+    tokio::spawn(async move { events_state.share_events(guild_id).await });
     let nobody = std::collections::HashSet::new();
     for (cid, now) in channel_sight(state, guild_id) {
         let Some(channel) = state.channel(cid) else {

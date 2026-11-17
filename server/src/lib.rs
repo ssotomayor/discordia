@@ -192,6 +192,15 @@ async fn build_context(
         }
     });
 
+    let events_state = ctx.state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            events_state.announce_events().await;
+        }
+    });
+
     let sweep_state = ctx.state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));

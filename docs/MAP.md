@@ -13,18 +13,18 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 6345 |
-| `server/src/state/mod.rs` | 4715 |
-| `client/src/state.rs` | 4789 |
-| `server/src/gateway/connection.rs` | 4633 |
-| `protocol/src/lib.rs` | 4622 |
-| `client/src/features/chat.rs` | 4231 |
+| `server/src/state/mod.rs` | 4720 |
+| `client/src/state.rs` | 4803 |
+| `server/src/gateway/connection.rs` | 4651 |
+| `protocol/src/lib.rs` | 4858 |
+| `client/src/features/chat.rs` | 4238 |
 | `client/src/features/screenshare.rs` | 4244 |
 | `server/tests/owner_controls.rs` | 3460 |
-| `client/src/net.rs` | 3591 |
-| `client/src/features/channels.rs` | 2728 |
+| `client/src/net.rs` | 3601 |
+| `client/src/features/channels.rs` | 2739 |
 | `client/src/nostr/service.rs` | 2770 |
 | `client/src/features/activities.rs` | 2064 |
-| `server/src/store.rs` | 2074 |
+| `server/src/store.rs` | 2154 |
 | `client/src/identity.rs` | 1437 |
 | `client/src/features/guild_settings.rs` | 1160 |
 | `client/src/features/discord_import.rs` | 1159 |
@@ -87,6 +87,7 @@ Everything else: `wc -l` answers faster than a list here could stay true.
 | Chat files, stickers, pins and search | `client/src/features/chat.rs`, `client/src/features/chat_tools.rs`, `server/src/state/chat_tools.rs` | `Composer`'s **+** offers Image or File; a file goes as `SendFile`, the draft kept until `FileUploadResult`. `FileAttachment` is the card (`.dxf-file-*` styles in `app.rs`). `ChatTools` is the header's search, pins and file-limit popovers. `StickerPicker` sits beside the emoji button. Download opens only the destination folder. A result's time (`MessageRow::on_jump`) sets `AppState::message_jump`; `ChatView` fetches pages back until the message is loaded, and `JUMP_JS` centres and flashes it |
 | File expiration and host storage | `server/src/store.rs`, `server/src/media.rs`, `server/tests/chat_tools.rs` | Members upload without a special role; read-only, slowmode, visibility, membership and file policy still gate it. Metadata outlives expiry. `live_file_channels` gates downloads; `sweep_files` reclaims unreferenced `.bin` blobs under `durable_writes`. Windows marks files as Internet downloads; no malware scanner |
 | Polls | `protocol::{Poll, validate_poll, normalize_choices}`, `server/src/poll.rs`, `server/src/state/polls.rs`, `client/src/features/polls.rs`, `server/tests/polls.rs` | A poll is a message: the question is `content` and `messages.poll` holds the `StoredPoll` with every vote, so whatever deletes the message deletes the poll. Only `StoredPoll::view` leaves the server, built per viewer (`row_to_message(r, viewer)`): an anonymous poll carries counts, never voters, and `mine` is the viewer's own. `PollUpdate` goes to members without `mine` and to the voter with it. Votes and closes run under `durable_writes`; an edit refuses a poll; an archive carries `polls` keyed by message so an import keeps the votes. `Ready.polls` gates the composer's **+** → Poll; `PollDialog` mounts at the workspace root through `PollTarget` (trap 22), and `PollCard` shows a vote before the server confirms it (`choose`) |
+| Events | `protocol::{GuildEvent, EventDraft, EventNotice}`, `server/src/state/events.rs`, `client/src/features/events.rs`, `server/tests/events.rs` | `guild_events` holds each event as JSON with `announced_ms`; covers are sentinels counted in `referenced_media`. `ManageEvents` saves and deletes; anyone fetches (`FetchGuildEvents`). Every list goes out per member through `share_events`, which leaves out an event whose host channel that member cannot see (trap 30) and runs again from `apply_sight_change`. `GuildEvent::occurrence` is the one rule for a run (repeats included) on both sides. `announce_events` (30 s loop in `lib.rs`) posts one `event_notice` message per run in the host text channel, else the first text channel, never for a hidden host; `announced_ms` is written first, so a failure loses a notice rather than repeating it. `Ready.events` gates the client: `EventsButton` in the chat header, `EventsDialog` at the workspace root (`EventsTarget`, trap 22), `LiveEventBadge` beside the community name |
 | Chat tools with older hosts | `protocol::ServerMessage::Ready`, `client/src/net.rs`, `features/chat.rs` | `Ready.chat_tools` defaults to false; tools and file/pin actions mount only when supported |
 | What a `ServerMessage` does to the client | `client/src/net.rs` | `fn apply` — one arm per variant, exhaustive; Ready goes through `apply_ready` |
 | Image attachment metadata | `protocol::ImageMetadata`, `server/src/media.rs`, `server/src/store.rs`, `client/src/features/chat.rs`, `image-policy` (`shown_size`) | Optional sanitized basename and dimensions as shown (EXIF orientation applied) through storage, history and search; DM descriptors use the same. `image_attachment::frame` reserves the box from them before a picture loads — fitted into 400×300, a fixed 240px height without them. Sizes stored before `shown_size` are pre-orientation: a rotated photo is letterboxed |

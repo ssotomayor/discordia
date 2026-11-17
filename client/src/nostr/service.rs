@@ -1748,6 +1748,7 @@ fn insert_message_with_settings(
     let fresh = s.insert_message(
         cid,
         Message {
+            event_notice: None,
             poll: None,
             author_bot: false,
             edited_at: None,
@@ -2780,6 +2781,7 @@ mod tests {
         s.messages.insert(
             cid,
             vec![Message {
+                event_notice: None,
                 poll: None,
                 id: mid,
                 channel_id: cid,

@@ -59,6 +59,7 @@ fn channel(guild_id: Id) -> Channel {
 
 fn message(channel_id: Id, at_ms: i64, body: &str) -> Message {
     Message {
+        event_notice: None,
         poll: None,
         author_bot: false,
         edited_at: None,

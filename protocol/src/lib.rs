@@ -1125,6 +1125,134 @@ pub struct Message {
     /// The question is `content`, so search, replies and notifications read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<Poll>,
+    /// Posted by the server as an event starts; `content` is the event's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_notice: Option<EventNotice>,
+}
+
+/// Enough to draw the notice after the event itself is edited or gone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventNotice {
+    pub event_id: Id,
+    #[serde(default)]
+    pub channel_id: Option<Id>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EventRepeat {
+    #[default]
+    Never,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+pub const EVENT_NAME_CHARS: usize = 100;
+pub const EVENT_DESCRIPTION_CHARS: usize = 1000;
+pub const GUILD_MAX_EVENTS: usize = 50;
+const EVENT_MAX_HOURS: i64 = 7 * 24;
+
+/// What a person edits; the server adds the id, guild and creator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventDraft {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    /// A text or voice channel of the guild.
+    #[serde(default)]
+    pub channel_id: Option<Id>,
+    #[serde(default)]
+    pub repeat: EventRepeat,
+    /// A `data:image/` upload, or the `media:` address it already has.
+    #[serde(default)]
+    pub cover: Option<String>,
+}
+
+impl EventDraft {
+    /// Trimmed, or why it cannot be saved. Each run must end before the next begins.
+    pub fn validated(mut self) -> Result<Self, String> {
+        self.name = self.name.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.description = self.description.trim().to_string();
+        if self.name.is_empty() || self.name.chars().count() > EVENT_NAME_CHARS {
+            return Err(format!(
+                "an event name is 1..={EVENT_NAME_CHARS} characters"
+            ));
+        }
+        if self.description.chars().count() > EVENT_DESCRIPTION_CHARS {
+            return Err(format!(
+                "an event description is at most {EVENT_DESCRIPTION_CHARS} characters"
+            ));
+        }
+        let length = self.ends_at - self.starts_at;
+        let cap = match self.repeat {
+            EventRepeat::Daily => chrono::Duration::hours(24),
+            _ => chrono::Duration::hours(EVENT_MAX_HOURS),
+        };
+        if length <= chrono::Duration::zero() || length > cap {
+            return Err(format!(
+                "an event ends after it starts and lasts at most {} hours",
+                cap.num_hours()
+            ));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuildEvent {
+    pub id: Id,
+    pub guild_id: Id,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The first run; a repeating event moves on from it.
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    #[serde(default)]
+    pub channel_id: Option<Id>,
+    #[serde(default)]
+    pub repeat: EventRepeat,
+    #[serde(default)]
+    pub cover: Option<String>,
+    pub created_by: String,
+}
+
+impl GuildEvent {
+    fn run_start(&self, n: u32) -> Option<DateTime<Utc>> {
+        match self.repeat {
+            EventRepeat::Never => (n == 0).then_some(self.starts_at),
+            EventRepeat::Daily => Some(self.starts_at + chrono::Duration::days(i64::from(n))),
+            EventRepeat::Weekly => Some(self.starts_at + chrono::Duration::weeks(i64::from(n))),
+            EventRepeat::Monthly => self.starts_at.checked_add_months(chrono::Months::new(n)),
+        }
+    }
+
+    /// The run happening at `now`, else the next one; none once a one-off is over.
+    pub fn occurrence(&self, now: DateTime<Utc>) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+        let length = self.ends_at - self.starts_at;
+        let estimate = match self.repeat {
+            EventRepeat::Never => 0,
+            EventRepeat::Daily => ((now - self.ends_at).num_days()).max(0),
+            EventRepeat::Weekly => ((now - self.ends_at).num_weeks()).max(0),
+            EventRepeat::Monthly => ((now - self.ends_at).num_days() / 31).max(0),
+        };
+        let mut n = u32::try_from(estimate).ok()?;
+        loop {
+            let start = self.run_start(n)?;
+            if now < start + length {
+                return Some((start, start + length));
+            }
+            n = n.checked_add(1)?;
+        }
+    }
+
+    pub fn is_live(&self, now: DateTime<Utc>) -> bool {
+        self.occurrence(now)
+            .is_some_and(|(start, end)| start <= now && now < end)
+    }
 }
 
 pub const POLL_QUESTION_CHARS: usize = 300;
@@ -1324,6 +1452,7 @@ pub enum Permission {
     MoveMembers,
     /// Set or add to a member's guild XP by hand (`AdjustXp`).
     ManageXp,
+    ManageEvents,
 }
 
 impl Permission {
@@ -1342,6 +1471,7 @@ impl Permission {
         Permission::DisconnectMembers,
         Permission::MoveMembers,
         Permission::ManageXp,
+        Permission::ManageEvents,
     ];
 
     /// A bot with `ManageRoles` may still hand out only roles whose every
@@ -1388,6 +1518,7 @@ impl Permission {
             Permission::DisconnectMembers => "Drop someone from a voice channel.",
             Permission::MoveMembers => "Move someone to another voice channel.",
             Permission::ManageXp => "Set or add to a member's level by hand.",
+            Permission::ManageEvents => "Schedule, edit and cancel the community's events.",
         }
     }
 
@@ -1407,6 +1538,7 @@ impl Permission {
             Permission::DisconnectMembers => "Disconnect from voice",
             Permission::MoveMembers => "Move voice members",
             Permission::ManageXp => "Manage experience",
+            Permission::ManageEvents => "Manage events",
         }
     }
 }
@@ -2769,6 +2901,20 @@ pub enum ClientMessage {
         channel_id: Id,
         message_id: Id,
     },
+    FetchGuildEvents {
+        guild_id: Id,
+    },
+    /// A new event without `event_id`; `ManageEvents` either way.
+    SaveGuildEvent {
+        guild_id: Id,
+        #[serde(default)]
+        event_id: Option<Id>,
+        draft: EventDraft,
+    },
+    DeleteGuildEvent {
+        guild_id: Id,
+        event_id: Id,
+    },
     /// A relay handle and its 32-byte key (base64) for this key's mention
     /// pushes. Sent again after every Ready, which is what keeps it alive.
     RegisterPush {
@@ -3372,6 +3518,8 @@ pub enum ServerMessage {
         #[serde(default)]
         polls: bool,
         #[serde(default)]
+        events: bool,
+        #[serde(default)]
         image_previews: bool,
         #[serde(default)]
         progressive_image_uploads: bool,
@@ -3541,6 +3689,12 @@ pub enum ServerMessage {
         emoji: String,
         user_pubkey: String,
         added: bool,
+    },
+    /// The whole list as this receiver may see it: an event hosted in a
+    /// channel they cannot see is left out (trap 30).
+    GuildEvents {
+        guild_id: Id,
+        events: Vec<GuildEvent>,
     },
     /// `mine` rides only the copy sent to the voter: an anonymous poll tells nobody else.
     PollUpdate {
@@ -3822,6 +3976,88 @@ mod identify_wire_tests {
         assert!(super::normalize_choices(&[3], 3, true).is_err());
         assert!(super::normalize_choices(&[0, 1], 3, false).is_err());
         assert_eq!(super::normalize_choices(&[1, 1], 3, false), Ok(vec![1]));
+    }
+
+    fn event(repeat: super::EventRepeat, start: &str, hours: i64) -> super::GuildEvent {
+        let starts_at: chrono::DateTime<chrono::Utc> = start.parse().unwrap();
+        super::GuildEvent {
+            id: uuid::Uuid::nil(),
+            guild_id: uuid::Uuid::nil(),
+            name: "Game night".into(),
+            description: String::new(),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(hours),
+            channel_id: None,
+            repeat,
+            cover: None,
+            created_by: "a".into(),
+        }
+    }
+
+    fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_one_off_event_is_upcoming_then_live_then_gone() {
+        let e = event(super::EventRepeat::Never, "2026-11-20T20:00:00Z", 2);
+        assert_eq!(
+            e.occurrence(at("2026-11-19T00:00:00Z")).map(|o| o.0),
+            Some(e.starts_at)
+        );
+        assert!(!e.is_live(at("2026-11-20T19:59:59Z")));
+        assert!(e.is_live(at("2026-11-20T21:59:59Z")));
+        assert!(!e.is_live(at("2026-11-20T22:00:00Z")));
+        assert_eq!(e.occurrence(at("2026-11-20T22:00:00Z")), None);
+    }
+
+    #[test]
+    fn a_repeating_event_moves_to_its_current_or_next_run() {
+        let weekly = event(super::EventRepeat::Weekly, "2026-11-02T20:00:00Z", 2);
+        assert_eq!(
+            weekly.occurrence(at("2026-11-17T12:00:00Z")).map(|o| o.0),
+            Some(at("2026-11-23T20:00:00Z"))
+        );
+        assert!(weekly.is_live(at("2026-11-16T21:00:00Z")));
+        let daily = event(super::EventRepeat::Daily, "2026-11-01T09:00:00Z", 1);
+        assert_eq!(
+            daily.occurrence(at("2026-11-17T09:30:00Z")),
+            Some((at("2026-11-17T09:00:00Z"), at("2026-11-17T10:00:00Z")))
+        );
+        let monthly = event(super::EventRepeat::Monthly, "2026-01-31T18:00:00Z", 3);
+        assert_eq!(
+            monthly.occurrence(at("2026-02-15T00:00:00Z")).map(|o| o.0),
+            Some(at("2026-02-28T18:00:00Z")),
+            "a month without the 31st takes its last day"
+        );
+    }
+
+    #[test]
+    fn a_draft_is_trimmed_and_each_run_ends_before_the_next() {
+        let draft = |repeat, hours| super::EventDraft {
+            name: "  Game   night ".into(),
+            description: " bring snacks ".into(),
+            starts_at: at("2026-11-20T20:00:00Z"),
+            ends_at: at("2026-11-20T20:00:00Z") + chrono::Duration::hours(hours),
+            channel_id: None,
+            repeat,
+            cover: None,
+        };
+        let ok = draft(super::EventRepeat::Never, 3).validated().unwrap();
+        assert_eq!(
+            (ok.name.as_str(), ok.description.as_str()),
+            ("Game night", "bring snacks")
+        );
+        assert!(draft(super::EventRepeat::Never, 0).validated().is_err());
+        assert!(draft(super::EventRepeat::Daily, 25).validated().is_err());
+        assert!(
+            draft(super::EventRepeat::Weekly, 7 * 24 + 1)
+                .validated()
+                .is_err()
+        );
+        let mut blank = draft(super::EventRepeat::Never, 1);
+        blank.name = "   ".into();
+        assert!(blank.validated().is_err());
     }
 
     #[test]

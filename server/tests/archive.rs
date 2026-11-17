@@ -30,6 +30,7 @@ async fn fresh_state() -> AppState {
 
 fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
     Message {
+        event_notice: None,
         poll: None,
         author_bot: false,
         edited_at: None,
@@ -290,6 +291,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
     let archive = GuildArchive {
         stickers: Vec::new(),
         polls: Vec::new(),
+        events: Vec::new(),
         file_policy: Default::default(),
         version: ARCHIVE_VERSION,
         guild: Guild {

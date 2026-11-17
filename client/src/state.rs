@@ -317,6 +317,9 @@ pub struct AppState {
     pub file_upload_result: Option<(Id, Option<String>)>,
     pub server_chat_tools: bool,
     pub server_polls: bool,
+    pub server_events: bool,
+    /// Each guild's events as this person may see them; an empty list once asked.
+    pub guild_events: BTreeMap<Id, Vec<crate::protocol::GuildEvent>>,
     pub server_image_previews: bool,
     pub server_progressive_image_uploads: bool,
     pub server_media_token_refresh: bool,
@@ -612,6 +615,8 @@ impl AppState {
             file_upload_result: None,
             server_chat_tools: false,
             server_polls: false,
+            server_events: false,
+            guild_events: BTreeMap::new(),
             server_image_previews: false,
             server_progressive_image_uploads: false,
             server_media_token_refresh: false,
@@ -944,6 +949,8 @@ impl AppState {
             file_upload_result,
             server_chat_tools,
             server_polls,
+            server_events,
+            guild_events,
             server_image_previews,
             server_progressive_image_uploads,
             server_media_token_refresh,
@@ -1142,6 +1149,8 @@ impl AppState {
         *file_upload_result = None;
         *server_chat_tools = false;
         *server_polls = false;
+        *server_events = false;
+        guild_events.clear();
         *server_image_previews = false;
         *server_progressive_image_uploads = false;
         *server_media_token_refresh = false;
@@ -3032,6 +3041,8 @@ mod tests {
                 file_upload_result = Some((Id::new_v4(), None)) => |v| v.is_none();
                 server_chat_tools = true => |v| !*v;
                 server_polls = true => |v| !*v;
+                server_events = true => |v| !*v;
+                guild_events = BTreeMap::from([(guild, Vec::new())]) => |v| v.is_empty();
                 server_image_previews = true => |v| !*v;
                 server_progressive_image_uploads = true => |v| !*v;
                 server_media_token_refresh = true => |v| !*v;
@@ -3524,6 +3535,7 @@ mod tests {
 
     fn at(id: Id, channel_id: Id, secs: i64) -> Message {
         Message {
+            event_notice: None,
             poll: None,
             author_bot: false,
             edited_at: None,
@@ -4156,6 +4168,7 @@ mod tests {
         let entry = s.messages.entry(cid).or_default();
         for at in ats {
             entry.push(Message {
+                event_notice: None,
                 poll: None,
                 author_bot: false,
                 edited_at: None,
@@ -4754,6 +4767,7 @@ mod tests {
         });
 
         let dummy_msg = |cid| Message {
+            event_notice: None,
             poll: None,
             id: Id::new_v4(),
             channel_id: cid,

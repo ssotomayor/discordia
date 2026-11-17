@@ -17,6 +17,7 @@ mod apps;
 mod blocklists;
 mod chat_tools;
 mod commands;
+mod events;
 mod instances;
 mod polls;
 mod voice_session;
@@ -1661,6 +1662,7 @@ impl AppState {
         Ok(ServerMessage::Ready {
             chat_tools: true,
             polls: true,
+            events: true,
             image_previews: true,
             progressive_image_uploads: true,
             media_token_refresh: true,
@@ -3659,6 +3661,7 @@ impl AppState {
         metadata.preview = Some(preview_address.clone());
         metadata.upload_pending = true;
         let message = Message {
+            event_notice: None,
             poll: None,
             image_metadata: Some(metadata),
             attachment: None,
@@ -4024,6 +4027,7 @@ impl AppState {
             reply_to,
         } = input;
         let message = Message {
+            event_notice: None,
             poll: None,
             image_metadata,
             attachment: None,
@@ -4430,6 +4434,7 @@ impl AppState {
         ServerMessage::Ready {
             chat_tools: false,
             polls: false,
+            events: false,
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: true,
