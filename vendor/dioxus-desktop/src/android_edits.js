@@ -2,7 +2,10 @@
   const interpreter = window.interpreter;
   interpreter.waitForRequest = function(editsPath, requiredServerKey) {
     const socket = new WebSocket(editsPath);
+    const previous = this.edits;
     this.edits = socket;
+    // The server keeps serving a socket the page still holds open, and this page ignores it.
+    if (previous && previous !== socket) previous.close();
     // Blob.arrayBuffer adds asynchronous file-reading work to every DOM acknowledgement.
     // ArrayBuffer messages can apply immediately even when background tasks are throttled.
     socket.binaryType = 'arraybuffer';
@@ -15,7 +18,16 @@
         this.rafEdits(data);
       }
     };
-    socket.onclose = () => {
+    let opened = false;
+    socket.onopen = () => { opened = true; this.editFailures = 0; };
+    socket.onclose = ({code, reason}) => {
+      if (this.edits !== socket) return;
+      const failures = opened ? 0 : (this.editFailures = (this.editFailures || 0) + 1);
+      if (opened || Number.isInteger(Math.log10(failures))) {
+        try {
+          this.sendIpcMessage('edit_socket_closed', {code, reason, opened, failures});
+        } catch (_) {}
+      }
       setTimeout(() => {
         if (this.edits === socket) this.waitForRequest(editsPath, requiredServerKey);
       }, 100);

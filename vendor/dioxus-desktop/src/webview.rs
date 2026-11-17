@@ -22,6 +22,9 @@ use std::time::Duration;
 use std::{rc::Rc, task::Waker};
 use wry::{DragDropEvent, RequestAsyncResponder, WebContext, WebViewBuilder, WebViewId};
 
+#[cfg(target_os = "android")]
+const EDITS_RECONNECT_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Clone)]
 pub(crate) struct WebviewEdits {
     runtime: Rc<Runtime>,
@@ -541,6 +544,14 @@ impl WebviewInstance {
         }
     }
 
+    fn request_edits_connection(&self) {
+        _ = self.desktop_context.webview.evaluate_script(&format!(
+            "window.interpreter.waitForRequest(\"{edits_path}\", \"{expected_key}\");",
+            edits_path = self.edits.wry_queue.edits_path(),
+            expected_key = self.edits.wry_queue.required_server_key()
+        ));
+    }
+
     pub fn poll_vdom(&mut self) {
         let mut cx = std::task::Context::from_waker(&self.waker);
 
@@ -559,11 +570,7 @@ impl WebviewInstance {
                 .poll_new_edits_location(&mut cx)
                 .is_ready()
             {
-                _ = self.desktop_context.webview.evaluate_script(&format!(
-                    "window.interpreter.waitForRequest(\"{edits_path}\", \"{expected_key}\");",
-                    edits_path = self.edits.wry_queue.edits_path(),
-                    expected_key = self.edits.wry_queue.required_server_key()
-                ));
+                self.request_edits_connection();
             }
 
             // If we're waiting for a render, wait for it to finish before we continue
@@ -571,6 +578,13 @@ impl WebviewInstance {
             if edits_flushed_poll.is_pending() {
                 #[cfg(target_os = "android")]
                 {
+                    // A page that lost its edit socket and stopped retrying froze the app for good.
+                    if self.edits.wry_queue.reconnect_due(EDITS_RECONNECT_AFTER) {
+                        tracing::warn!(
+                            "DOM edits unacknowledged with no edit channel open; asking the webview to reconnect"
+                        );
+                        self.request_edits_connection();
+                    }
                     let _lock = crate::android_sync_lock::android_runtime_lock("service_tasks");
                     self.desktop_context
                         .service_tasks

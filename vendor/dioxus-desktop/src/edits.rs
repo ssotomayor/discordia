@@ -58,6 +58,25 @@ impl WryQueue {
         let serialized_edits = myself.mutation_state.export_memory();
         let receiver = myself.websocket.send_edits(webview_id, serialized_edits);
         myself.edits_in_progress = Some(receiver);
+        myself.edits_sent_at = Some(std::time::Instant::now());
+    }
+
+    /// Whether to ask the webview to reconnect: a batch has waited `after` with no edit
+    /// channel open, and the last request is at least `after` old. Call only while unflushed.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub(crate) fn reconnect_due(&self, after: std::time::Duration) -> bool {
+        let mut myself = self.inner.borrow_mut();
+        let waited = myself
+            .edits_sent_at
+            .is_some_and(|sent| sent.elapsed() >= after);
+        let recently_asked = myself
+            .reconnect_requested_at
+            .is_some_and(|asked| asked.elapsed() < after);
+        if !waited || recently_asked || myself.websocket.is_connected(myself.location.webview_id) {
+            return false;
+        }
+        myself.reconnect_requested_at = Some(std::time::Instant::now());
+        true
     }
 
     /// Wait until all pending edits have been rendered in the webview
@@ -120,6 +139,8 @@ pub(crate) struct WryQueueInner {
     server_location_changed: Arc<Notify>,
     server_location_changed_future: Pin<Box<dyn Future<Output = ()>>>,
     mutation_state: MutationState,
+    edits_sent_at: Option<std::time::Instant>,
+    reconnect_requested_at: Option<std::time::Instant>,
 }
 
 /// The location of a webview websocket connection. This is used to identify the webview and the port it is connected to.
@@ -202,7 +223,13 @@ impl EditWebsocket {
     ) {
         loop {
             // Accept connections until we hit an error
-            while Self::accept_connection(&server, &current_location, &connections).is_ok() {}
+            let error = loop {
+                if let Err(error) =
+                    Self::accept_connection(&server, &current_location, &connections)
+                {
+                    break error;
+                }
+            };
 
             // Switch ports and reconnect on a different port if the server is killed by the OS. This
             // will happen if an IOS device goes to sleep
@@ -211,8 +238,10 @@ impl EditWebsocket {
             // The client may try to reconnect to the old port that is now being used by an attacker who steals the client
             // key and uses it to read the edits from the new port.
             let (location, new_server) = start_server();
-            notify.notify_waiters();
+            tracing::warn!(%error, port = location.port, "Edit socket listener failed; serving edits on a new port");
+            // Waiters read the location as soon as they wake, so it must already be the new one.
             *current_location.lock().unwrap() = location;
+            notify.notify_waiters();
             server = new_server;
         }
     }
@@ -443,7 +472,11 @@ impl EditWebsocket {
                     tracing::error!("Error sending edits applied notification");
                 }
             }
-            tracing::trace!("Webview {} closed the connection", location.webview_id);
+            tracing::info!(
+                webview_id = location.webview_id,
+                in_flight = queued_message.is_some(),
+                "Webview edit channel closed"
+            );
             let mut connections = connections_.write().unwrap();
             let mut connection = WebviewConnectionState::default();
             if let Some(msg) = queued_message {
@@ -506,8 +539,17 @@ impl EditWebsocket {
                 websocket: self.clone(),
                 edits_in_progress: None,
                 mutation_state: MutationState::default(),
+                edits_sent_at: None,
+                reconnect_requested_at: None,
             })),
         }
+    }
+
+    fn is_connected(&self, webview: u32) -> bool {
+        matches!(
+            self.connections.read().unwrap().get(&webview),
+            Some(WebviewConnectionState::Connected { .. })
+        )
     }
 
     fn send_edits(&mut self, webview: u32, edits: Vec<u8>) -> oneshot::Receiver<()> {

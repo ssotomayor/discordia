@@ -98,6 +98,10 @@ pub fn launch_virtual_dom_blocking(virtual_dom: VirtualDom, mut desktop_config: 
                         params = %msg.params_ref(),
                         "Webview failed to apply a DOM edit batch; it may now differ from the VirtualDom"
                     ),
+                    IpcMethod::Other("edit_socket_closed") => tracing::warn!(
+                        params = %msg.params_ref(),
+                        "Webview edit socket closed"
+                    ),
                     IpcMethod::Other(_) => {}
                 },
             },

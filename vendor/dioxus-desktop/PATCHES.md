@@ -17,6 +17,7 @@ Local changes are listed below; bundled JS remains upstream.
 | `src/protocol.rs`, `src/android_edits.js` | Android edit batches use a 100 ms timer fallback when animation frames stop behind permission dialogs/background apps. Flush before acknowledging, exactly once, to keep scoped tasks and gateway heartbeats running. Bundled upstream JS remains unchanged. |
 | `src/android_edits.js`, `src/ipc.rs`, `src/launch.rs` | A batch that throws while applying is still acknowledged, and reported as an `edit_error` IPC message that Rust logs. Unacknowledged, it stopped every later render while taps still reached Rust. |
 | `src/android_sync_lock.rs` and its callers | Each caller names itself; a watchdog thread logs any hold over 5 s (site, thread, waiters) and the release. Taps wait on this lock in a synchronous request, so a stuck holder freezes the page without an ANR. |
+| `src/edits.rs`, `src/webview.rs`, `src/android_edits.js`, `src/launch.rs` | The restarted edit listener stores its new location before waking waiters, and logs why. Android: a page opening an edit socket closes its previous one, which the server would otherwise keep serving while the page ignores it; closes are reported (`edit_socket_closed`); a batch unacknowledged 5 s with no channel open asks the page to reconnect. A page that lost its socket left the app drawing nothing while service tasks ran on. |
 
 On upgrades, replace the upstream files, reapply these changes and compare the
 client's Windows/macOS dependency trees. Preserve the bundled JS and `hash.txt`;
