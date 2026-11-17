@@ -167,6 +167,7 @@ jobs:
       - name: WebView bridge tests
         run: |
           node client/tests/screenshare_bridge.cjs
+          node client/tests/stream_recovery.cjs
           node client/tests/camera_preview_bridge.cjs
           node client/tests/camera_publish_bridge.cjs
           node client/tests/e2ee_worker.cjs

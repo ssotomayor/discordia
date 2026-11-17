@@ -96,6 +96,7 @@ arboard = { version = "3", default-features = false, features = ["image-data"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "2.0.1"
+windows-capture-api = { package = "windows", version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
 windows = { version = "0.61", features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",

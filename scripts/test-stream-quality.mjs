@@ -22,6 +22,9 @@ const context = vm.createContext({
   screenParticipants: participants,
   qualityPolicy: policy,
   healthReports,
+  screenWanted: () => true,
+  screenRecoveries: new Map(),
+  connectionRequest: {},
   viewerVisible: true,
   selfPreviewIdentity: 'self',
   attached: {},
@@ -500,6 +503,7 @@ test('browser sender shares authenticated track status without enabling Diagnost
   const localTrack = { sid: 'local-screen' };
   const localRoom = { localParticipant: { publishData: async (bytes, options) => sent.push({ status: JSON.parse(new TextDecoder().decode(bytes)), options }) } };
   const senderContext = vm.createContext({ healthReports: new Map(), localShareVideoTrack: localTrack,
+    shareBitrateBudget: 12000000,
     room: localRoom, screenCaptureTrack: { getSettings: () => ({ width: 1920, height: 1080, frameRate: 60 }) },
     videoStatsReport: async () => new Map([['out', { type: 'outbound-rtp', kind: 'video',
       frameWidth: 1920, frameHeight: 1080, framesPerSecond: 30, qualityLimitationReason: 'cpu' }]]),
@@ -548,4 +552,77 @@ test('receiver diagnostics forward decoding, rendering and freeze counters from 
   scope.videoStatsReport = async () => { scope.remoteShareVideoTrack = {}; return stats; };
   await scope.pollRemoteScreenStats();
   assert.equal(posted.length, 1, 'a replaced track must not publish stale receiver statistics');
+});
+
+test('ongoing playback recovery needs sustained evidence and ignores static content and missing samples', () => {
+  const initial = { timestamp: 0, framesDecoded: 10, packetsReceived: 1000 };
+  const state = {};
+  let old = initial;
+  for (let second = 1; second <= 13; second++) {
+    const sample = { ...old, timestamp: second * 1000, packetsReceived: old.packetsReceived + 200 };
+    assert.equal(context.playbackStalled(state, sample, old, full, second * 1000), second >= 13);
+    old = sample;
+  }
+  const recovered = { ...old, timestamp: 14000, framesDecoded: 70 };
+  assert.equal(context.playbackStalled(state, recovered, old, full, 14000), false);
+  assert.equal(state.stalledSince, null);
+  for (let second = 15; second <= 35; second++) {
+    const still = { ...recovered, timestamp: second * 1000 };
+    assert.equal(context.playbackStalled(state, still, { ...still, timestamp: still.timestamp - 1000 }, { primaryFps: 0 }, still.timestamp), false);
+  }
+  assert.equal(context.playbackStalled(state, { ...old, timestamp: 40000 }, old, full, 40000), false,
+    'a gap in polling cannot accumulate a stall while hidden');
+  assert.equal(context.playbackStalled({}, { ...old, timestamp: 14000, framesDecoded: 0 }, old, full, 14000), false,
+    'decoder counter resets are not freezes');
+});
+
+test('ongoing playback watches presentation and can detect no packets when a fresh sender is producing frames', () => {
+  for (const mode of ['no-packets', 'no-presentation', 'all-dropped']) {
+    let old = { timestamp: 0, framesDecoded: 10, packetsReceived: 1000, playbackId: 'tile', renderFrames: 10, renderDropped: 0 };
+    const state = {};
+    for (let second = 1; second <= 13; second++) {
+      const sample = { ...old, timestamp: second * 1000, framesDecoded: old.framesDecoded + (mode !== 'no-packets' ? 60 : 0),
+        renderFrames: old.renderFrames + (mode === 'all-dropped' ? 60 : 0), renderDropped: old.renderDropped + (mode === 'all-dropped' ? 60 : 0) };
+      assert.equal(context.playbackStalled(state, sample, old, full, sample.timestamp), second >= 13);
+      old = sample;
+    }
+  }
+});
+
+test('browser diagnostics report measured rates and preserve unknown capture instead of claiming configured FPS', async () => {
+  let time = 1000;
+  const sent = [];
+  const track = { sid: 'publisher' };
+  const outbound = { type: 'outbound-rtp', kind: 'video', id: 'out', timestamp: 1000,
+    frameWidth: 2560, frameHeight: 1440, framesPerSecond: 1, bytesSent: 100000,
+    framesEncoded: 1, totalEncodeTime: 0.005, targetBitrate: 300000,
+    transportId: 'transport', qualityLimitationReason: 'none' };
+  const stats = new Map([['out', outbound], ['transport', { selectedCandidatePairId: 'selected' }],
+    ['selected', { availableOutgoingBitrate: 350000, currentRoundTripTime: 0.05 }]]);
+  const scope = vm.createContext({ healthReports: new Map(), localShareVideoTrack: track,
+    shareBitrateBudget: 34000000, room: { localParticipant: { publishData: async bytes => sent.push(JSON.parse(new TextDecoder().decode(bytes))) } },
+    screenCaptureTrack: { getSettings: () => ({ width: 2560, height: 1440, frameRate: 60 }) },
+    videoStatsReport: async () => stats, statsSampleKey: () => 'publisher/out',
+    Date: { now: () => time }, TextEncoder, console });
+  vm.runInContext(bridge.slice(start, end), scope);
+  await scope.senderHealth(null);
+  assert.equal(sent[0].captureFps, 0, 'configured 60 FPS does not prove actual capture');
+  assert.equal(sent[0].lowBitrate, false);
+  outbound.mediaSourceId = 'source';
+  stats.set('source', { framesPerSecond: 60 });
+  for (let i = 2; i <= 5; i++) {
+    time = i * 1000; outbound.timestamp = time; outbound.bytesSent += 100000;
+    outbound.framesEncoded += 1; outbound.totalEncodeTime += 0.005;
+    await scope.senderHealth(null);
+  }
+  const report = sent.at(-1);
+  assert.equal(report.version, 2);
+  assert.equal(report.bitrateBps, 800000);
+  assert.equal(report.targetBitrateBps, 300000);
+  assert.equal(report.configuredBitrateBps, 34000000);
+  assert.equal(report.uplinkEstimateBps, 350000);
+  assert.equal(report.transportRttMs, 50);
+  assert.equal(report.lowBitrate, true);
+  assert.equal(report.outputSlow, true);
+  assert.ok(Math.abs(report.encodeMs - 5) < 0.001);
 });

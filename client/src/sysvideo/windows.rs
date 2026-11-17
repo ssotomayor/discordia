@@ -16,6 +16,9 @@ use windows_capture::window::Window;
 use super::pacing::FramePacer;
 use super::{Frame, FrameSink, Settings, Source, Target};
 
+#[path = "windows_gpu.rs"]
+mod gpu;
+
 pub fn sources() -> Result<Vec<Source>, String> {
     let mut sources = Vec::new();
     for monitor in Monitor::enumerate().map_err(|e| e.to_string())? {
@@ -63,6 +66,9 @@ struct Handler {
     pacer: FramePacer,
     converter: BgraConverter,
     previous_callback: Option<Instant>,
+    gpu: Option<gpu::Processor>,
+    gpu_disabled: bool,
+    gpu_choice: gpu::Choice,
 }
 
 #[derive(Default)]
@@ -137,10 +143,14 @@ impl GraphicsCaptureApiHandler for Handler {
     type Error = String;
 
     fn new(ctx: Context<Flags>) -> Result<Self, String> {
+        let gpu_disabled = ctx.flags.settings.encoder == super::Encoder::Cpu;
         Ok(Self {
             pacer: FramePacer::new(ctx.flags.settings.fps),
             converter: BgraConverter::default(),
             previous_callback: None,
+            gpu: None,
+            gpu_disabled,
+            gpu_choice: gpu::Choice::default(),
             flags: ctx.flags,
         })
     }
@@ -195,6 +205,122 @@ impl Handler {
         if width == 0 || height == 0 {
             return Ok(());
         }
+        let (out_width, out_height) = super::fit_resolution(width, height, self.flags.settings);
+        let mut prepared = None;
+        if !self.gpu_disabled {
+            let cpu_probe = if self.gpu_choice.compare_cpu_first() {
+                let began = Instant::now();
+                Some((self.cpu_frame(frame)?, began.elapsed()))
+            } else {
+                None
+            };
+            let gpu_started = Instant::now();
+            let geometry = (width, height, out_width, out_height);
+            let result = (|| {
+                if self.gpu.as_ref().is_none_or(|gpu| gpu.geometry != geometry) {
+                    self.gpu_choice = gpu::Choice::default();
+                    self.gpu = Some(gpu::Processor::new(
+                        frame.device(),
+                        frame.device_context(),
+                        geometry,
+                        self.flags.settings.fps,
+                    )?);
+                    tracing::info!(
+                        ?geometry,
+                        capture_path = "D3D11-NV12",
+                        "evaluating GPU screen preprocessing"
+                    );
+                }
+                self.gpu
+                    .as_ref()
+                    .ok_or_else(|| {
+                        windows_capture_api::core::Error::from(
+                            windows_capture_api::Win32::Foundation::E_FAIL,
+                        )
+                    })?
+                    .convert(frame.as_raw_texture())
+            })();
+            match result {
+                Ok(gpu_frame) => {
+                    let gpu_cost = gpu_started.elapsed();
+                    if self.gpu_choice.selected.is_none() {
+                        let (cpu_frame, cpu_cost) = match cpu_probe {
+                            Some(probe) => probe,
+                            None => {
+                                let began = Instant::now();
+                                (self.cpu_frame(frame)?, began.elapsed())
+                            }
+                        };
+                        let decision =
+                            self.gpu_choice
+                                .observe(cpu_cost, gpu_cost, self.flags.settings.fps);
+                        if let Some(use_gpu) = decision {
+                            let (cpu, gpu) = self.gpu_choice.costs();
+                            tracing::info!(
+                                use_gpu,
+                                cpu_ms = cpu.as_secs_f64() * 1000.0,
+                                gpu_ms = gpu.as_secs_f64() * 1000.0,
+                                "screen preprocessing cost comparison completed"
+                            );
+                            if !use_gpu {
+                                self.gpu = None;
+                                self.gpu_disabled = true;
+                            }
+                        }
+                        prepared = Some(if decision == Some(true) {
+                            gpu_frame
+                        } else {
+                            cpu_frame
+                        });
+                    } else if self
+                        .gpu_choice
+                        .over_budget(gpu_cost, self.flags.settings.fps)
+                    {
+                        tracing::warn!(
+                            capture_path = "CPU-I420",
+                            "GPU preprocessing exceeded the frame budget; restoring CPU conversion"
+                        );
+                        self.gpu = None;
+                        self.gpu_disabled = true;
+                    } else {
+                        prepared = Some(gpu_frame);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, capture_path = "CPU-I420", "GPU preprocessing unavailable; keeping CPU capture conversion");
+                    self.gpu = None;
+                    self.gpu_disabled = true;
+                    prepared = cpu_probe.map(|(frame, _)| frame);
+                }
+            }
+        }
+        let (buffer, readback, conversion) = match prepared {
+            Some(frame) => frame,
+            None => self.cpu_frame(frame)?,
+        };
+        (self.flags.sink)(Frame {
+            buffer,
+            timestamp_us,
+        });
+        if self.flags.count_frames {
+            self.flags.metrics.record_windows(
+                out_width,
+                out_height,
+                started.elapsed(),
+                readback,
+                conversion,
+            );
+        }
+        Ok(())
+    }
+
+    fn cpu_frame(
+        &mut self,
+        frame: &mut CapturedFrame<'_>,
+    ) -> Result<(I420Buffer, Duration, Duration), String> {
+        let started = Instant::now();
+        let width = frame.width();
+        let height = frame.height();
         let mut mapped = frame.buffer().map_err(|e| e.to_string())?;
         let mapped_at = Instant::now();
         let stride = mapped.row_pitch();
@@ -208,21 +334,11 @@ impl Handler {
         let converted_at = Instant::now();
         // WebRTC must not retain the mapped staging texture while accepting the converted frame.
         drop(mapped);
-        let (out_width, out_height) = super::fit_resolution(width, height, self.flags.settings);
-        (self.flags.sink)(Frame {
+        Ok((
             buffer,
-            timestamp_us,
-        });
-        if self.flags.count_frames {
-            self.flags.metrics.record_windows(
-                out_width,
-                out_height,
-                started.elapsed(),
-                mapped_at.duration_since(started),
-                converted_at.duration_since(mapped_at),
-            );
-        }
-        Ok(())
+            mapped_at.duration_since(started),
+            converted_at.duration_since(mapped_at),
+        ))
     }
 }
 

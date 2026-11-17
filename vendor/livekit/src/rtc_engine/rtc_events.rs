@@ -30,6 +30,11 @@ pub type RtcEvents = mpsc::UnboundedReceiver<RtcEvent>;
 
 #[derive(Debug)]
 pub enum RtcEvent {
+    IceServerError {
+        publisher: bool,
+        server_type: String,
+        error_code: i32,
+    },
     IceCandidate {
         ice_candidate: IceCandidate,
         target: proto::SignalTarget,
@@ -81,7 +86,10 @@ fn on_ice_candidate(
     emitter: RtcEmitter,
 ) -> rtc::peer_connection::OnIceCandidate {
     Box::new(move |ice_candidate| {
-        let _ = emitter.send(RtcEvent::IceCandidate { ice_candidate, target });
+        let _ = emitter.send(RtcEvent::IceCandidate {
+            ice_candidate,
+            target,
+        });
     })
 }
 
@@ -105,7 +113,10 @@ fn on_data_channel(
             }
             _ => {}
         }
-        let _ = emitter.send(RtcEvent::DataChannel { data_channel, target });
+        let _ = emitter.send(RtcEvent::DataChannel {
+            data_channel,
+            target,
+        });
     })
 }
 
@@ -121,11 +132,21 @@ fn on_track(target: proto::SignalTarget, emitter: RtcEmitter) -> rtc::peer_conne
 }
 
 fn on_ice_candidate_error(
-    _target: proto::SignalTarget,
-    _emitter: RtcEmitter,
+    target: proto::SignalTarget,
+    emitter: RtcEmitter,
 ) -> rtc::peer_connection::OnIceCandidateError {
     Box::new(move |ice_error| {
-        log::debug!("{:?}", ice_error);
+        let server_type = ice_error.url.split(':').next().unwrap_or("unknown");
+        let server_type = match server_type {
+            "stun" | "stuns" | "turn" | "turns" => server_type,
+            _ => "unknown",
+        };
+        log::warn!("ICE-SERVER: target={target:?}, server_type={server_type}, code={} (other candidates may succeed)", ice_error.error_code);
+        let _ = emitter.send(RtcEvent::IceServerError {
+            publisher: target == proto::SignalTarget::Publisher,
+            server_type: server_type.to_owned(),
+            error_code: ice_error.error_code,
+        });
     })
 }
 
@@ -139,18 +160,57 @@ pub fn forward_pc_events(transport: &mut PeerTransport, rtc_emitter: RtcEmitter)
         .peer_connection()
         .on_data_channel(Some(on_data_channel(signal_target, rtc_emitter.clone())));
 
-    transport.peer_connection().on_track(Some(on_track(signal_target, rtc_emitter.clone())));
-
-    transport.peer_connection().on_connection_state_change(Some(on_connection_state_change(
-        signal_target,
-        rtc_emitter.clone(),
-    )));
+    transport
+        .peer_connection()
+        .on_track(Some(on_track(signal_target, rtc_emitter.clone())));
 
     transport
         .peer_connection()
-        .on_ice_candidate_error(Some(on_ice_candidate_error(signal_target, rtc_emitter.clone())));
+        .on_connection_state_change(Some(on_connection_state_change(
+            signal_target,
+            rtc_emitter.clone(),
+        )));
+
+    transport
+        .peer_connection()
+        .on_ice_candidate_error(Some(on_ice_candidate_error(
+            signal_target,
+            rtc_emitter.clone(),
+        )));
 
     transport.on_offer(Some(on_offer(signal_target, rtc_emitter)));
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn ice_server_diagnostics_do_not_forward_credentials_addresses_or_server_text() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut callback = on_ice_candidate_error(proto::SignalTarget::Publisher, tx);
+        callback(rtc::peer_connection::IceCandidateError {
+            address: "192.0.2.10".into(),
+            port: 3478,
+            url: "turn:username:private-password@example.invalid:3478".into(),
+            error_code: 701,
+            error_text: "untrusted driver text with secrets".into(),
+        });
+        let event = rx.try_recv().unwrap();
+        assert!(
+            matches!(&event, RtcEvent::IceServerError { publisher: true, server_type, error_code: 701 } if server_type == "turn")
+        );
+        let diagnostic = format!("{event:?}");
+        for secret in [
+            "192.0.2.10",
+            "username",
+            "private-password",
+            "example.invalid",
+            "untrusted",
+        ] {
+            assert!(!diagnostic.contains(secret));
+        }
+    }
 }
 
 fn on_message(emitter: RtcEmitter, kind: DataPacketKind) -> rtc::data_channel::OnMessage {

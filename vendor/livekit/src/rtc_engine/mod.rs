@@ -129,6 +129,11 @@ pub struct EngineOptions {
 
 #[derive(Debug)]
 pub enum EngineEvent {
+    IceServerError {
+        publisher: bool,
+        server_type: String,
+        error_code: i32,
+    },
     ParticipantUpdate {
         updates: Vec<proto::ParticipantInfo>,
     },
@@ -629,6 +634,17 @@ impl EngineInner {
 
     async fn on_session_event(self: &Arc<Self>, event: SessionEvent) -> EngineResult<()> {
         match event {
+            SessionEvent::IceServerError {
+                publisher,
+                server_type,
+                error_code,
+            } => {
+                let _ = self.engine_tx.send(EngineEvent::IceServerError {
+                    publisher,
+                    server_type,
+                    error_code,
+                });
+            }
             SessionEvent::Close {
                 source,
                 reason,

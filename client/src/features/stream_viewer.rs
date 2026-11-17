@@ -674,6 +674,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
     let detach = container.clone();
     use_drop(move || evaluate(&super::screenshare::detach_js(&detach)));
     let mut received = use_signal(|| "Waiting for stream…".to_owned());
+    let mut sender_details = use_signal(String::new);
     let mut quality_reason = use_signal(String::new);
     let mut health_reason = use_signal(String::new);
     let pk = stream.pubkey.clone();
@@ -696,6 +697,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                     json(&pk)
                 ));
                 if let Ok(value) = eval.recv::<serde_json::Value>().await {
+                    sender_details.set(super::screenshare::sender_evidence(&value));
                     super::screenshare::update_health_notice(
                         health_reason,
                         value["healthReason"]
@@ -785,6 +787,9 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 div { class: "min-w-0",
                     span { class: "text-xs text-[var(--text-muted)]", "{received}" }
                     super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
+                    if !health_reason().is_empty() && !sender_details().is_empty() {
+                        span { class: "block text-[10px] text-[var(--text-dim)]", "{sender_details}" }
+                    }
                     if !props.status.is_empty() { span { class: "block text-xs text-[var(--text-muted)]", {crate::i18n::message(&props.status)} } }
                 }
                 div { class: "flex items-center gap-2",

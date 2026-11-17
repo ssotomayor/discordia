@@ -119,6 +119,30 @@ pub(super) fn update_health_notice(mut signal: Signal<String>, reason: String) {
     }
 }
 
+pub(super) fn sender_evidence(value: &Value) -> String {
+    let value = &value["sender"];
+    let rate = |field: &str| {
+        value[field]
+            .as_f64()
+            .filter(|v| v.is_finite() && (0.0..=1_000_000_000.0).contains(v))
+            .map(|v| format!("{:.0}", v / 1000.0))
+    };
+    let sent = rate("bitrateBps");
+    let allocated = rate("targetBitrateBps");
+    let budget = rate("configuredBitrateBps");
+    if sent.is_none() && allocated.is_none() && budget.is_none() {
+        return String::new();
+    }
+    crate::i18n::text(
+        "Broadcaster: {0} kbit/s sent · {1} allocated · {2} budget",
+        &[
+            sent.unwrap_or_else(|| "—".into()),
+            allocated.unwrap_or_else(|| "—".into()),
+            budget.unwrap_or_else(|| "—".into()),
+        ],
+    )
+}
+
 /// `screen-…` is a misnomer since the camera moved onto this same room and
 /// connection. The name is load-bearing on the wire, so it stays.
 pub const SCREEN_JS: &str = r#"
@@ -172,6 +196,7 @@ window.dxScreen = window.dxScreen || (function () {
   // the joining room itself, and a second publish of that track times out.
   let cameraRoom = null;
   let localCameraStream = null;
+  let shareBitrateBudget = 6000000;
   let lastCameraOpts = {};
   let cameraStarting = false;
   let cameraGen = 0;
@@ -201,6 +226,7 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function recoverScreen(identity, request) {
     if (connectionRequest !== request || !room || !screenWanted(identity)) return;
+    if (room.state && room.state !== 'connected') return;
     const now = Date.now();
     const policy = screenRecoveries.get(identity) || { attempts: 0, at: 0 };
     if (policy.at && now - policy.at < 20000) return;
@@ -220,7 +246,7 @@ window.dxScreen = window.dxScreen || (function () {
       setTimeout(function () {
         if (connectionRequest !== request || !screenWanted(identity) || screenPublication(identity) !== pub) return;
         pub.setSubscribed(true);
-        requestHighQuality(pub);
+        requestInitialQuality(identity, pub.track);
       }, 300);
     } catch (error) { console.warn('[dxScreen] video recovery failed', error); }
   }
@@ -276,6 +302,9 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(true); refreshAudioWatches(); }
   function setMediaPanelVisibility(visible) {
+    if (mediaPanelVisible !== !!visible) {
+      for (const key of healthReports.keys()) if (key !== 'local') healthReports.delete(key);
+    }
     mediaPanelVisible = window.__dxMediaPanelVisible = !!visible;
     refreshViewerSubscriptions(true);
   }
@@ -434,7 +463,6 @@ window.dxScreen = window.dxScreen || (function () {
         if (attached[cid] !== entry) return;
         entry.firstFrame = true;
         if (entry.startupTimer) clearTimeout(entry.startupTimer);
-        screenRecoveries.delete(identity);
         c.setAttribute('data-frame-ready', 'true');
         if (kind === 'screen') requestInitialQuality(identity, track);
       };
@@ -592,7 +620,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (room === thisRoom) qualityReports.delete(pub.trackSid);
     });
     thisRoom.on(lk.RoomEvent.DataReceived, function (bytes, participant, kind, topic) {
-      if (room !== thisRoom || !participant || topic !== 'discordia.screen-quality.v1' || bytes.length > 1024) return;
+      if (room !== thisRoom || !participant || topic !== 'discordia.screen-quality.v1' || bytes.length > 2048) return;
       try {
         const status = JSON.parse(new TextDecoder().decode(bytes));
         if (!participant.trackPublications.has(status.sid)) return;
@@ -601,6 +629,9 @@ window.dxScreen = window.dxScreen || (function () {
             status[field] !== undefined && typeof status[field] !== 'boolean')) return;
         if (['captureFps', 'primaryFps'].some(field => status[field] !== undefined &&
             (!Number.isFinite(status[field]) || status[field] < 0 || status[field] > 240))) return;
+        if (['bitrateBps', 'targetBitrateBps', 'configuredBitrateBps', 'uplinkEstimateBps', 'transportRttMs', 'encodeMs', 'captureProcessingMs'].some(field =>
+            status[field] != null && (!Number.isFinite(status[field]) || status[field] < 0 || status[field] > 1000000000))) return;
+        if (status.version != null && status.version !== 1 && status.version !== 2) return;
         const previous = qualityReports.get(status.sid);
         const fresh = previous && Date.now() - previous.at < 10000;
         qualityReports.set(status.sid, { status: status, at: Date.now(), reason: fresh ? previous.reason : '', since: fresh ? previous.since : Date.now() });
@@ -1019,9 +1050,26 @@ window.dxScreen = window.dxScreen || (function () {
     state.at = now;
     return state.shown;
   }
+  function playbackStalled(state, sample, previous, status, now) {
+    const frames = healthDelta(sample, previous, 'framesDecoded');
+    const packets = healthDelta(sample, previous, 'packetsReceived');
+    const rendered = healthDelta(sample, previous, 'renderFrames');
+    const dropped = healthDelta(sample, previous, 'renderDropped');
+    const presented = rendered !== null && dropped !== null ? rendered - dropped : rendered;
+    const seconds = (sample.timestamp - previous.timestamp) / 1000;
+    const expected = status && status.primaryFps >= 5 && status.outputSlow !== true;
+    const stalled = seconds > 0 && seconds <= 3 &&
+      ((frames === 0 && (packets >= 100 || expected)) ||
+       (frames >= 5 * seconds && presented === 0 && !!sample.playbackId));
+    if (!stalled) { state.stalledSince = null; state.recover = false; return false; }
+    if (state.stalledSince == null) state.stalledSince = now;
+    state.recover = now - state.stalledSince >= 12000;
+    return state.recover;
+  }
   function inboundHealth(key, sample, status, now) {
     const state = healthState(key, sample, now);
     const previous = state.sample;
+    playbackStalled(state, sample, previous, status, now);
     const seconds = (sample.timestamp - previous.timestamp) / 1000;
     if (!(seconds > 0 && seconds <= 3)) {
       state.sample = sample;
@@ -1077,14 +1125,37 @@ window.dxScreen = window.dxScreen || (function () {
             (!outbound || (entry.frameWidth || 0) * (entry.frameHeight || 0) > (outbound.frameWidth || 0) * (outbound.frameHeight || 0))) outbound = entry;
       });
       if (!outbound) return '';
-      status = { id: statsSampleKey(track, outbound), bandwidth: outbound.qualityLimitationReason === 'bandwidth', cpu: outbound.qualityLimitationReason === 'cpu' };
+      const source = outbound.mediaSourceId ? report.get(outbound.mediaSourceId) : null;
+      const captureFps = source && Number.isFinite(source.framesPerSecond) ? source.framesPerSecond : null;
+      const old = healthReports.get(key);
+      const seconds = old && old.sample.outboundTimestamp != null ? (outbound.timestamp - old.sample.outboundTimestamp) / 1000 : 0;
+      const same = old && old.sample.id === statsSampleKey(track, outbound);
+      const bitrateBps = same && seconds > 0 && seconds <= 5 && outbound.bytesSent >= old.sample.bytesSent
+        ? (outbound.bytesSent - old.sample.bytesSent) * 8 / seconds : null;
+      const frames = same && seconds > 0 && seconds <= 5 && outbound.framesEncoded >= old.sample.framesEncoded
+        ? outbound.framesEncoded - old.sample.framesEncoded : null;
+      const encodeMs = frames > 0 && outbound.totalEncodeTime >= old.sample.totalEncodeTime
+        ? (outbound.totalEncodeTime - old.sample.totalEncodeTime) * 1000 / frames : null;
+      const transport = outbound.transportId && report.get(outbound.transportId);
+      const selected = transport && transport.selectedCandidatePairId && report.get(transport.selectedCandidatePairId);
+      status = { version: 2, id: statsSampleKey(track, outbound),
+        outboundTimestamp: outbound.timestamp, bytesSent: outbound.bytesSent,
+        framesEncoded: outbound.framesEncoded, totalEncodeTime: outbound.totalEncodeTime,
+        bitrateBps, targetBitrateBps: Number.isFinite(outbound.targetBitrate) ? outbound.targetBitrate : null,
+        configuredBitrateBps: shareBitrateBudget,
+        uplinkEstimateBps: selected && Number.isFinite(selected.availableOutgoingBitrate) ? selected.availableOutgoingBitrate : null,
+        transportRttMs: selected && Number.isFinite(selected.currentRoundTripTime) ? selected.currentRoundTripTime * 1000 : null,
+        encodeMs, captureProcessingMs: null,
+        bandwidth: outbound.qualityLimitationReason === 'bandwidth', cpu: outbound.qualityLimitationReason === 'cpu',
+        lowBitrate: captureFps >= 10 && outbound.targetBitrate > 0 && outbound.targetBitrate < shareBitrateBudget * 0.4,
+        outputSlow: captureFps >= 10 && Number.isFinite(outbound.framesPerSecond) && outbound.framesPerSecond <= 5 && outbound.targetBitrate > 0 };
       const state = healthReports.get(key);
       if (!state || state.sample.id !== status.id || Date.now() - (state.sent || 0) >= 3000) {
         const capture = screenCaptureTrack ? screenCaptureTrack.getSettings() : {};
-        const payload = { sid: track.sid, width: capture.width || 0, height: capture.height || 0,
+        const payload = Object.assign({}, status, { sid: track.sid, width: capture.width || 0, height: capture.height || 0,
           primaryWidth: outbound.frameWidth || 0, primaryHeight: outbound.frameHeight || 0,
-          primaryFps: outbound.framesPerSecond || 0, captureFps: capture.frameRate || 0,
-          adaptive: false, bandwidth: status.bandwidth, cpu: status.cpu };
+          primaryFps: outbound.framesPerSecond || 0, captureFps: captureFps == null ? 0 : captureFps,
+          adaptive: false });
         try {
           await currentRoom.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(payload)), { topic: 'discordia.screen-quality.v1' });
         } catch (e) { console.warn('[dxScreen] screen health status unavailable', e); }
@@ -1133,13 +1204,16 @@ window.dxScreen = window.dxScreen || (function () {
   async function previewStats(identity) {
     if (!viewerVisible) return null;
     const track = videoTrackFor(identity, 'screen');
+    const watched = identity === selfPreviewIdentity || screenWanted(identity);
+    if (!watched && track) healthReports.delete(track);
+    const request = connectionRequest;
     if (!track) {
       const waiting = startupHealth(identity);
       return waiting ? { healthReason: waiting } : null;
     }
     try {
       const report = await videoStatsReport(track);
-      if (videoTrackFor(identity, 'screen') !== track) return null;
+      if (connectionRequest !== request || videoTrackFor(identity, 'screen') !== track) return null;
       let result = null;
       let inbound = null;
       if (report) report.forEach(function (entry) {
@@ -1149,8 +1223,15 @@ window.dxScreen = window.dxScreen || (function () {
         }
       });
       const sample = qualityReports.get(track.sid);
-      if (result && inbound) result.healthReason = inboundHealth(track, inbound,
+      if (result && sample && Date.now() - sample.at < 10000) result.sender = sample.status;
+      if (result && inbound && watched) result.healthReason = inboundHealth(track, inbound,
         sample && Date.now() - sample.at < 10000 ? sample.status : null, Date.now());
+      const progress = healthReports.get(track);
+      if (progress && progress.recover && identity !== selfPreviewIdentity && screenWanted(identity)) {
+        recoverScreen(identity, request);
+      } else if (progress && progress.stalledSince == null && Date.now() - progress.started >= 30000) {
+        screenRecoveries.delete(identity);
+      }
       if (result && sample && Date.now() - sample.at < 10000) {
         const now = Date.now();
         const reason = screenQualityReason(sample.status, result);
@@ -1316,6 +1397,7 @@ window.dxScreen = window.dxScreen || (function () {
         simulcast: false,
       });
       localShareVideoTrack = publication.track;
+      shareBitrateBudget = quality.bitrate || 6000000;
       screenCaptureTrack = vt;
       pollScreenStats();
       const at = stream.getAudioTracks()[0];
@@ -3477,6 +3559,7 @@ fn ScreenWatchTile(
     let container = format!("screenshare-viewer-{pk}");
     let stats_pk = pk.clone();
     let mut received_label = use_signal(|| "Waiting for stream measurements…".to_owned());
+    let mut sender_details = use_signal(String::new);
     let mut quality_reason = use_signal(String::new);
     let mut health_reason = use_signal(String::new);
     let window = crate::platform::use_window();
@@ -3494,6 +3577,7 @@ fn ScreenWatchTile(
                     "dioxus.send(await window.dxScreen.previewStats({identity}));"
                 ));
                 if let Ok(value) = eval.recv::<Value>().await {
+                    sender_details.set(sender_evidence(&value));
                     update_health_notice(
                         health_reason,
                         value["healthReason"]
@@ -3644,6 +3728,9 @@ fn ScreenWatchTile(
                 div {
                     span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::message(&received_label.read())} }
                     StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
+                    if !health_reason().is_empty() && !sender_details().is_empty() {
+                        span { class: "block text-[10px] text-[var(--text-dim)]", "{sender_details}" }
+                    }
                 }
                 div {
                     class: "flex flex-wrap items-center gap-1.5",

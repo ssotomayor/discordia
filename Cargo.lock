@@ -2526,6 +2526,7 @@ dependencies = [
  "webrtc-sys-build",
  "webview2-com-sys",
  "windows 0.61.3",
+ "windows 0.62.2",
  "windows-capture",
  "windows-core 0.61.2",
  "winresource",

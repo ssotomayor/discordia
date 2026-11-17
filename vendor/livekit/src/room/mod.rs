@@ -108,6 +108,11 @@ pub enum RoomError {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum RoomEvent {
+    IceServerError {
+        publisher: bool,
+        server_type: String,
+        error_code: i32,
+    },
     /// Remote participant joined the room.
     ///
     /// This event is fired immediately after a participant joins before
@@ -1109,6 +1114,17 @@ impl RoomSession {
 
     async fn on_engine_event(self: &Arc<Self>, event: EngineEvent) -> RoomResult<()> {
         match event {
+            EngineEvent::IceServerError {
+                publisher,
+                server_type,
+                error_code,
+            } => {
+                self.dispatcher.dispatch(&RoomEvent::IceServerError {
+                    publisher,
+                    server_type,
+                    error_code,
+                });
+            }
             EngineEvent::ParticipantUpdate { updates } => self.handle_participant_update(updates),
             EngineEvent::ParticipantReconcile { seen_identities } => {
                 self.reconcile_absent_participants(seen_identities.into_iter())

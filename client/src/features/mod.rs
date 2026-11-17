@@ -37,6 +37,13 @@ pub mod integrations;
 mod invite;
 pub mod leveling;
 pub mod markup;
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    test
+))]
+mod media_supervision;
 pub mod members;
 mod mobile_workspace;
 #[cfg(test)]
