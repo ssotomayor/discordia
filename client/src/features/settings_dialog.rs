@@ -380,6 +380,29 @@ pub fn SettingsDialog() -> Element {
                         }
                         }
                         if settings_tab() == SettingsTab::Video {
+                            if cfg!(target_os = "windows") {
+                                div { class: "mt-3 mb-3",
+                                    label { r#for: "screen-capture-acceleration", class: "text-[11px] text-[var(--text-muted)]",
+                                        {crate::i18n::text("Screen capture hardware acceleration", &[])}
+                                    }
+                                    select {
+                                        id: "screen-capture-acceleration",
+                                        class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                        value: if settings.read().screenshare_gpu_preprocessing { "auto" } else { "disabled" },
+                                        onchange: move |e| {
+                                            let mut next = settings.read().clone();
+                                            next.screenshare_gpu_preprocessing = e.value() == "auto";
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                        },
+                                        option { value: "auto", selected: settings.read().screenshare_gpu_preprocessing, {crate::i18n::text("Automatic", &[])} }
+                                        option { value: "disabled", selected: !settings.read().screenshare_gpu_preprocessing, {crate::i18n::text("Off", &[])} }
+                                    }
+                                    p { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                                        {crate::i18n::text("Automatic uses compatible hardware to prepare the shared image when it improves performance. This is independent of the video encoder and applies to new screen shares.", &[])}
+                                    }
+                                }
+                            }
                             label { class: "flex items-center gap-2 cursor-pointer mt-2",
                                 input { r#type: "checkbox", class: "accent-[var(--accent)]",
                                     checked: settings.read().screenshare_adaptive_quality,

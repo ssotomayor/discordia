@@ -333,6 +333,7 @@ mod tests {
     fn settings(encoder: Encoder, width: u32, height: u32, fps: u32) -> Settings {
         Settings {
             encoder,
+            gpu_preprocessing: true,
             width,
             height,
             fps,

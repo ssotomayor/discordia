@@ -1792,6 +1792,7 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
         },
         codec: crate::sysvideo::Codec::default(),
         encoder: crate::sysvideo::Encoder::Auto,
+        gpu_preprocessing: true,
     }
 }
 
@@ -1813,6 +1814,7 @@ pub(super) fn selected_capture_settings(
     let mut capture = native_settings(quality_for_platform(&settings.screenshare_quality));
     capture.codec = settings.screenshare_codec;
     capture.encoder = settings.screenshare_encoder;
+    capture.gpu_preprocessing = settings.screenshare_gpu_preprocessing;
     capture.adaptive_quality = settings.screenshare_adaptive_quality;
     if let Some(fps @ (15 | 30 | 60)) = settings.screenshare_fps {
         capture.fps = fps;
@@ -3907,6 +3909,7 @@ mod js_escaping_tests {
             priority: crate::sysvideo::Priority::Detail,
             codec: Codec::Vp8,
             encoder: Encoder::Cpu,
+            gpu_preprocessing: !original.gpu_preprocessing,
         };
         use base64::Engine as _;
         let jwt = |exp| {
@@ -3954,6 +3957,26 @@ mod js_escaping_tests {
             super::capture_settings_for_session(None, 1, &room, target, selected,),
             selected
         );
+    }
+
+    #[test]
+    fn screen_preparation_mode_does_not_change_encoder_resolution_or_fps() {
+        let original =
+            super::selected_capture_settings(&crate::settings::ClientSettings::default());
+        for enabled in [true, false] {
+            let preferences = crate::settings::ClientSettings {
+                screenshare_encoder: crate::sysvideo::Encoder::Gpu,
+                screenshare_gpu_preprocessing: enabled,
+                ..Default::default()
+            };
+            let capture = super::selected_capture_settings(&preferences);
+            assert_eq!(capture.gpu_preprocessing, enabled);
+            assert_eq!(capture.encoder, crate::sysvideo::Encoder::Gpu);
+            assert_eq!(
+                (capture.width, capture.height, capture.fps),
+                (original.width, original.height, original.fps)
+            );
+        }
     }
 
     #[test]
