@@ -1111,7 +1111,8 @@ pub(super) fn MessageRow(
                 .read()
                 .can(gid, crate::protocol::Permission::ManageMessages)
         });
-    let can_edit = is_author && !state.read().dm_images.contains_key(&message_id);
+    let can_edit =
+        is_author && message.poll.is_none() && !state.read().dm_images.contains_key(&message_id);
     let bookmarks = try_consume_context::<crate::bookmarks::Bookmarks>();
     let bookmark_key = crate::bookmarks::Conversation::of(&state.read(), channel_id);
     let bookmarked = bookmarks
@@ -1338,7 +1339,7 @@ pub(super) fn MessageRow(
                             }
                         }
                     }
-                } else if has_text {
+                } else if has_text && message.poll.is_none() {
                     div { class: "{text_row}",
                         div { class: "min-w-0 flex-1 text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed transition-opacity {text_dim}",
                             MessageContent { content: display_content.clone(), channel_id, message_id }
@@ -1363,6 +1364,15 @@ pub(super) fn MessageRow(
                     }
                 } else if let Some(mark) = delivery_mark.clone() {
                     div { class: "mt-0.5 flex justify-end", {mark} }
+                }
+                if let Some(poll) = message.poll.clone() {
+                    super::polls::PollCard {
+                        channel_id,
+                        message_id,
+                        question: message.content.clone(),
+                        poll,
+                        author: message.author.pubkey.clone(),
+                    }
                 }
                 if pinned { div { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("📌 Pinned", &[])} } }
                 if let Some(attachment) = message.attachment.clone() {
@@ -1892,6 +1902,7 @@ mod author_name_tests {
 
     fn historical_message() -> Message {
         Message {
+            poll: None,
             id: Id::nil(),
             channel_id: Id::nil(),
             author: crate::protocol::User {
@@ -3099,6 +3110,7 @@ fn Composer(
     let mut show_stickers = use_signal(|| false);
     let mut show_gif = use_signal(|| false);
     let mut show_attach = use_signal(|| false);
+    let poll_target = try_use_context::<super::polls::PollTarget>();
     let emoji_dismiss = super::dismiss::use_dismiss(show_emoji);
     let attach_dismiss = super::dismiss::use_dismiss(show_attach);
     let mut pending_file = use_signal::<Option<(String, String)>>(|| None);
@@ -3875,6 +3887,18 @@ fn Composer(
                                         },
                                         span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::PAPERCLIP }
                                         {crate::i18n::text("File", &[])}
+                                    }
+                                }
+                                if let Some(super::polls::PollTarget(mut target)) = poll_target.filter(|_| !is_dm && state.read().server_polls) {
+                                    button {
+                                        r#type: "button",
+                                        class: "w-full flex items-center gap-2 px-2 h-8 rounded text-left text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)]",
+                                        onclick: move |_| {
+                                            show_attach.set(false);
+                                            target.set(Some(channel_id));
+                                        },
+                                        span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::POLL }
+                                        {crate::i18n::text("Poll", &[])}
                                     }
                                 }
                             }

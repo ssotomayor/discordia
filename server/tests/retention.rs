@@ -59,6 +59,7 @@ fn channel(guild_id: Id) -> Channel {
 
 fn message(channel_id: Id, at_ms: i64, body: &str) -> Message {
     Message {
+        poll: None,
         author_bot: false,
         edited_at: None,
         image_metadata: None,
@@ -80,7 +81,7 @@ fn message(channel_id: Id, at_ms: i64, body: &str) -> Message {
 
 async fn contents(store: &Store, channel_id: Id) -> Vec<String> {
     let mut got: Vec<String> = store
-        .history(channel_id, u32::MAX, None)
+        .history(channel_id, u32::MAX, None, None)
         .await
         .expect("history")
         .into_iter()

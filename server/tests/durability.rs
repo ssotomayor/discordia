@@ -92,14 +92,23 @@ async fn failed_message_is_refused_and_retry_survives_restart() {
             .await
             .is_err()
     );
-    assert!(f.state.history(channel, 50, None).await.is_empty());
+    assert!(
+        f.state
+            .history(channel, 50, None, &f.owner.pubkey)
+            .await
+            .is_empty()
+    );
     f.recover().await;
     f.state
         .push_message(channel, f.owner.clone(), "saved".into(), None, None)
         .await
         .unwrap();
     assert_eq!(
-        f.reloaded().await.history(channel, 50, None).await[0].content,
+        f.reloaded()
+            .await
+            .history(channel, 50, None, &f.owner.pubkey)
+            .await[0]
+            .content,
         "saved"
     );
 }

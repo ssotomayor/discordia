@@ -212,6 +212,7 @@ impl<H: Harness> Agent<H> {
                     return bot.respond(&inv, "Ask me something.").await;
                 }
                 let trigger = Message {
+                    poll: None,
                     image_metadata: None,
                     attachment: None,
                     pinned: false,

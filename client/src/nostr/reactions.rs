@@ -148,6 +148,7 @@ mod tests {
 
     fn message(channel: Id, target: Id, author: &str) -> Message {
         Message {
+            poll: None,
             id: target,
             channel_id: channel,
             author: User {

@@ -1538,6 +1538,7 @@ fn apply_ready(
 ) {
     let ServerMessage::Ready {
         chat_tools,
+        polls,
         image_previews,
         progressive_image_uploads,
         media_token_refresh,
@@ -1576,6 +1577,7 @@ fn apply_ready(
     s.default_guild = default_guild;
     s.server_info = server;
     s.server_chat_tools = chat_tools;
+    s.server_polls = polls;
     s.server_image_previews = image_previews;
     s.server_progressive_image_uploads = progressive_image_uploads;
     s.server_media_token_refresh = media_token_refresh;
@@ -1955,6 +1957,29 @@ fn apply(
                 && let Some(msg) = msgs.iter_mut().find(|m| m.id == message_id)
             {
                 crate::protocol::apply_reaction(&mut msg.reactions, &emoji, &user_pubkey, added);
+            }
+        }
+        ServerMessage::PollUpdate {
+            channel_id,
+            message_id,
+            counts,
+            voters,
+            closed_at,
+            mine,
+        } => {
+            if let Some(poll) = s
+                .messages
+                .get_mut(&channel_id)
+                .and_then(|msgs| msgs.iter_mut().find(|m| m.id == message_id))
+                .and_then(|m| m.poll.as_mut())
+            {
+                poll.counts = counts;
+                poll.voters = voters;
+                poll.closed_at = closed_at;
+                // Only the voter's own copy carries it; everyone else keeps theirs.
+                if let Some(mine) = mine {
+                    poll.mine = mine;
+                }
             }
         }
         ServerMessage::TypingUpdate {
@@ -3196,6 +3221,7 @@ mod tests {
                     s.messages.insert(
                         channel,
                         vec![crate::protocol::Message {
+                            poll: None,
                             author_bot: false,
                             edited_at: None,
                             image_metadata: None,
@@ -3218,6 +3244,7 @@ mod tests {
                 let (voice_tx, _voice_rx) = unbounded_channel();
                 let ready = ServerMessage::Ready {
                     chat_tools: false,
+                    polls: false,
                     image_previews: false,
                     progressive_image_uploads: false,
                     media_token_refresh: false,
@@ -3297,6 +3324,7 @@ mod tests {
         let roster = vec![in_call(user.pubkey.clone()), in_call(peer.clone())];
         let ready = ServerMessage::Ready {
             chat_tools: false,
+            polls: false,
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: false,
@@ -3360,6 +3388,7 @@ mod tests {
         };
         let ready = ServerMessage::Ready {
             chat_tools: false,
+            polls: false,
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: false,
@@ -3451,6 +3480,7 @@ mod tests {
         s.messages.insert(
             channel,
             vec![crate::protocol::Message {
+                poll: None,
                 author_bot: false,
                 edited_at: None,
                 image_metadata: None,

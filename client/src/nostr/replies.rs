@@ -100,6 +100,7 @@ mod tests {
         reply_to: Option<ReplyRef>,
     ) -> Message {
         Message {
+            poll: None,
             id: message_id(rumor),
             channel_id: Id::nil(),
             author: User {

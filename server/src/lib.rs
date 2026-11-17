@@ -8,6 +8,7 @@ pub mod http;
 pub mod livekit;
 pub mod livekit_bundle;
 pub mod media;
+pub mod poll;
 pub mod push;
 pub mod quic;
 pub mod rendezvous;

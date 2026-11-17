@@ -18,6 +18,7 @@ mod blocklists;
 mod chat_tools;
 mod commands;
 mod instances;
+mod polls;
 mod voice_session;
 pub use apps::ManifestOutcome;
 pub use voice_session::{VoiceCall, VoiceJoin, VoiceSession};
@@ -1659,6 +1660,7 @@ impl AppState {
 
         Ok(ServerMessage::Ready {
             chat_tools: true,
+            polls: true,
             image_previews: true,
             progressive_image_uploads: true,
             media_token_refresh: true,
@@ -3296,6 +3298,15 @@ impl AppState {
         if author != by_pubkey {
             return Err("only the author can edit a message".into());
         }
+        if self
+            .store
+            .poll(channel_id, message_id)
+            .await
+            .map_err(|e| format!("store error: {e}"))?
+            .is_some()
+        {
+            return Err("a poll can't be edited once posted".into());
+        }
         let now = chrono::Utc::now();
         let edited = self
             .store
@@ -3424,8 +3435,13 @@ impl AppState {
         channel_id: Id,
         limit: u32,
         before_ms: Option<i64>,
+        viewer: &str,
     ) -> Vec<Message> {
-        match self.store.history(channel_id, limit, before_ms).await {
+        match self
+            .store
+            .history(channel_id, limit, before_ms, Some(viewer))
+            .await
+        {
             Ok(mut messages) => {
                 self.mark_bot_authors(channel_id, &mut messages);
                 messages
@@ -3643,6 +3659,7 @@ impl AppState {
         metadata.preview = Some(preview_address.clone());
         metadata.upload_pending = true;
         let message = Message {
+            poll: None,
             image_metadata: Some(metadata),
             attachment: None,
             pinned: false,
@@ -4007,6 +4024,7 @@ impl AppState {
             reply_to,
         } = input;
         let message = Message {
+            poll: None,
             image_metadata,
             attachment: None,
             pinned: false,
@@ -4411,6 +4429,7 @@ impl AppState {
 
         ServerMessage::Ready {
             chat_tools: false,
+            polls: false,
             image_previews: false,
             progressive_image_uploads: false,
             media_token_refresh: true,

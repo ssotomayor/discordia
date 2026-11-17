@@ -583,6 +583,8 @@ pub fn WorkspaceView(
         open: activities_open,
         mobile: is_mobile,
     });
+    let poll_target = use_signal(|| None::<crate::protocol::Id>);
+    use_context_provider(|| super::polls::PollTarget(poll_target));
 
     use_effect(move || {
         let mut eval = document::eval(
@@ -703,6 +705,7 @@ pub fn WorkspaceView(
                 },
             }
             crate::features::activities::ActivityHost { picker: activities_open, mobile: is_mobile() }
+            super::polls::PollDialog {}
             crate::presence::PresenceService {}
             crate::features::leveling::XpLedgerService {}
             crate::features::screenshare::ScreenShareBridge {}
