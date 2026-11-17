@@ -2379,5 +2379,6 @@
   "Starts {0}": ["Empieza el {0}", "Começa em {0}", "{0} 开始", "{0} 開始"],
   "This community's events": ["Eventos de esta comunidad", "Eventos desta comunidade", "此社区的活动", "このコミュニティのイベント"],
   "What's happening? (optional)": ["¿De qué se trata? (opcional)", "Do que se trata? (opcional)", "活动内容（可选）", "内容（任意）"],
-  "Where": ["Dónde", "Onde", "地点", "場所"]
+  "Where": ["Dónde", "Onde", "地点", "場所"],
+  "Every year": ["Todos los años", "Todo ano", "每年", "毎年"]
 }
