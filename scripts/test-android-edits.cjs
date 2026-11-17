@@ -6,11 +6,14 @@ function fixture(headless = false) {
   const frames = new Map(), timers = new Map(), applied = [], pending = [];
   const sockets = [];
   class EditSocket {
-    constructor(url) { this.url = url; sockets.push(this); }
+    constructor(url) { this.url = url; this.closed = false; sockets.push(this); }
+    close() { this.closed = true; }
   }
   let id = 0, acknowledgements = 0;
+  const reports = [];
   const interpreter = {
     headless,
+    sendIpcMessage(method, params) { reports.push({method, ...params}); },
     rafEdits(bytes) { applied.push(bytes); acknowledgements++; },
     enqueueBytes(bytes) { pending.push(bytes); },
     flushQueuedBytes() { applied.push(...pending.splice(0)); },
@@ -25,7 +28,7 @@ function fixture(headless = false) {
     setTimeout(fn, delay) { assert.equal(delay, 100); timers.set(++id, fn); return id; },
     clearTimeout(id) { timers.delete(id); },
   });
-  return { interpreter, frames, timers, applied, pending, sockets, acks: () => acknowledgements };
+  return { interpreter, frames, timers, applied, pending, sockets, reports, acks: () => acknowledgements };
 }
 for (const first of ['frame', 'timer']) {
   const f = fixture();
@@ -67,9 +70,14 @@ assert.equal(transport.acks(), 1001);
 assert.equal(transport.frames.size + transport.timers.size, 0);
 
 firstSocket.onclose();
+assert.deepEqual(transport.reports, [{method: 'edit_socket_closed', code: undefined, reason: undefined, opened: false, failures: 1}]);
 const oldReconnect = [...transport.timers.values()][0];
 transport.timers.clear();
 transport.interpreter.waitForRequest('ws://localhost/second', 'new-key');
+assert.ok(firstSocket.closed, 'a new connection closes the one it supersedes');
+firstSocket.onclose({code: 1000, reason: ''});
+assert.equal(transport.reports.length, 1, 'a superseded socket closing is not reported');
+assert.equal(transport.timers.size, 0, 'a superseded socket closing does not reconnect');
 firstSocket.onmessage({data: batch});
 oldReconnect();
 assert.equal(transport.acks(), 1001, 'a superseded socket cannot apply edits or acknowledge another connection');
@@ -80,8 +88,22 @@ assert.equal(transport.acks(), 1001, 'a new socket starts unauthenticated');
 secondSocket.onmessage({data: 'new-key'});
 secondSocket.onmessage({data: batch});
 assert.equal(transport.acks(), 1002);
-secondSocket.onclose();
+secondSocket.onopen();
+secondSocket.onclose({code: 1006, reason: ''});
+assert.deepEqual(transport.reports.at(-1), {method: 'edit_socket_closed', code: 1006, reason: '', opened: true, failures: 0});
 [...transport.timers.values()][0]();
 assert.equal(transport.sockets.length, 3, 'the current socket reconnects');
 assert.equal(transport.sockets[2].binaryType, 'arraybuffer');
+
+transport.reports.length = 0;
+transport.timers.clear();
+for (let attempt = 0; attempt < 100; attempt++) {
+  transport.sockets.at(-1).onclose({code: 1006, reason: ''});
+  [...transport.timers.values()][0]();
+  transport.timers.clear();
+}
+assert.deepEqual(transport.reports.map(r => r.failures), [1, 10, 100], 'failed reconnects are reported at powers of ten');
+transport.sockets.at(-1).onopen();
+transport.sockets.at(-1).onclose({code: 1006, reason: ''});
+assert.deepEqual(transport.reports.at(-1).failures, 0, 'opening resets the failure count');
 console.log('Android edit sockets apply authenticated ArrayBuffers without Blob conversion; flushes, reconnects and late callbacks preserve order.');
