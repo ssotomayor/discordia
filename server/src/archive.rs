@@ -276,6 +276,7 @@ impl Store {
                     .cover
                     .clone()
                     .filter(|c| crate::media::is_image_address(c)),
+                all_day: event.all_day,
             };
             let Ok(draft) = draft.validated() else {
                 continue;
@@ -291,6 +292,7 @@ impl Store {
                 repeat: draft.repeat,
                 cover: draft.cover,
                 created_by: event.created_by.clone(),
+                all_day: draft.all_day,
             })
             .await?;
         }

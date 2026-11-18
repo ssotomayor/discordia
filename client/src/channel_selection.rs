@@ -81,7 +81,7 @@ pub(crate) fn use_persistence(mut state: Signal<AppState>) {
             let mut next = settings.peek().clone();
             next.last_text_channels = selections;
             settings.set(next.clone());
-            crate::settings::save(&next);
+            crate::settings::save_soon(&next);
         }
     });
 }
