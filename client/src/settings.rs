@@ -664,9 +664,50 @@ pub(crate) fn parse(content: &str) -> Option<ClientSettings> {
     serde_json::from_value(Value::Object(merged)).ok()
 }
 
-pub fn save(settings: &ClientSettings) {
-    if let Err(e) = write_to(&settings_path(), settings) {
+/// The newest settings not yet written, per file. Every write takes from here
+/// under one lock, so a background write can never land after a newer one.
+static PENDING: std::sync::Mutex<
+    Option<std::collections::HashMap<std::path::PathBuf, ClientSettings>>,
+> = std::sync::Mutex::new(None);
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn queue(path: &std::path::Path, settings: &ClientSettings) {
+    PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(path.to_path_buf(), settings.clone());
+}
+
+fn write_pending(path: &std::path::Path) {
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let next = PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .and_then(|pending| pending.remove(path));
+    if let Some(next) = next
+        && let Err(e) = write_to(path, &next)
+    {
         tracing::warn!(error = %e, "could not save settings");
+    }
+}
+
+pub fn save(settings: &ClientSettings) {
+    let path = settings_path();
+    queue(&path, settings);
+    write_pending(&path);
+}
+
+/// For a write a tap must not wait on: the file sync ran on the UI thread.
+pub fn save_soon(settings: &ClientSettings) {
+    let path = settings_path();
+    queue(&path, settings);
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn_blocking(move || write_pending(&path));
+        }
+        Err(_) => write_pending(&path),
     }
 }
 
@@ -687,6 +728,23 @@ fn write_to(path: &std::path::Path, settings: &ClientSettings) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_background_write_never_lands_after_a_newer_one() {
+        let _root = crate::identity::test_config_dir();
+        for round in 0..20u16 {
+            save_soon(&ClientSettings {
+                mic_volume: round,
+                ..Default::default()
+            });
+            save(&ClientSettings {
+                mic_volume: 1000 + round,
+                ..Default::default()
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(load_or_default().mic_volume, 1019);
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

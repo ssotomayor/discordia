@@ -82,6 +82,7 @@ impl AppState {
                     repeat: draft.repeat,
                     cover,
                     created_by: previous.map_or_else(|| user.pubkey.clone(), |p| p.created_by),
+                    all_day: draft.all_day,
                 };
                 durable(self.store.upsert_guild_event(&event).await, "event save")?;
                 drop(_write);

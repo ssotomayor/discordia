@@ -275,8 +275,10 @@ pub fn GuildSettingsDialog(
         }
     };
 
-    let icon_preview = icon().and_then(|i| state.read().media_src(&i).map(str::to_string));
-    let banner_preview = banner().and_then(|b| state.read().media_src(&b).map(str::to_string));
+    // A short `/image-data/` path, not the base64 original: inlined, a 2 MB
+    // banner rode the dialog's first edit and held the whole dialog back.
+    let icon_preview = icon().and_then(|i| crate::image_assets::media_uri(&state.read(), &i));
+    let banner_preview = banner().and_then(|b| crate::image_assets::media_uri(&state.read(), &b));
     // Only the tabs this member may use: Manage roles alone opens this dialog
     // on its Roles tab, and must not be shown forms the server will refuse.
     let mut tabs = Vec::new();
@@ -1050,7 +1052,7 @@ fn EmojiSettings(guild_id: Id) -> Element {
             }
             for e in emojis().iter().cloned() {
                 {
-                    let url = state.read().emoji_images.get(&e.image).cloned().unwrap_or_default();
+                    let url = crate::image_assets::cached_uri(&state.read().emoji_images, &e.image).unwrap_or_default();
                     let gw_del = gateway.clone();
                     let gw_ren = gateway.clone();
                     let id = e.id;

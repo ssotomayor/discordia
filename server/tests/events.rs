@@ -79,6 +79,7 @@ fn draft(name: &str, channel_id: Option<Id>, starts_in_minutes: i64) -> EventDra
         channel_id,
         repeat: EventRepeat::Weekly,
         cover: None,
+        all_day: false,
     }
 }
 

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Timelike, Utc};
 use dioxus::prelude::*;
 
 use crate::protocol::{
@@ -12,8 +12,6 @@ use crate::state::{use_app_state, use_gateway};
 pub struct EventsTarget(pub Signal<Option<Id>>);
 
 const LIVE_NAME_CHARS: usize = 24;
-const INPUT_FORMAT: &str = "%Y-%m-%dT%H:%M";
-const SHOWN_FORMAT: &str = "%Y-%m-%d %H:%M";
 const FIELD: &str = "w-full bg-[var(--panel2)] border border-[var(--edge-strong)] rounded-[10px] px-3 py-2 text-[12.5px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const SECONDARY: &str = "shrink-0 rounded-lg px-3 py-1 text-xs text-[var(--text-muted)] border border-[var(--border)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors";
 
@@ -67,12 +65,53 @@ fn local(at: DateTime<Utc>, format: &str) -> String {
     at.with_timezone(&Local).format(format).to_string()
 }
 
-fn parse_local(raw: &str) -> Option<DateTime<Utc>> {
-    let naive = NaiveDateTime::parse_from_str(raw, INPUT_FORMAT).ok()?;
+fn local_parts(at: DateTime<Utc>) -> (NaiveDate, (u32, u32)) {
+    let at = at.with_timezone(&Local);
+    (at.date_naive(), (at.hour(), at.minute()))
+}
+
+fn local_instant(date: NaiveDate, (hour, minute): (u32, u32)) -> Option<DateTime<Utc>> {
+    let naive = date.and_hms_opt(hour, minute, 0)?;
     Local
         .from_local_datetime(&naive)
         .earliest()
         .map(|at| at.with_timezone(&Utc))
+}
+
+/// An all-day span: local midnight of its first day to that of the day after its last.
+fn day_span(first: NaiveDate, last: NaiveDate) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    Some((
+        local_instant(first, (0, 0))?,
+        local_instant(last.succ_opt()?, (0, 0))?,
+    ))
+}
+
+/// The last day an all-day event covers: its end is the next day's midnight.
+fn last_day(ends_at: DateTime<Utc>) -> NaiveDate {
+    local_parts(ends_at - chrono::Duration::seconds(1)).0
+}
+
+fn shown_when(event: &GuildEvent, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+    let first = local_parts(start).0;
+    if event.all_day {
+        let last = last_day(end);
+        let days = if last > first {
+            format!(
+                "{} – {}",
+                super::date_picker::shown_date(first),
+                super::date_picker::shown_date(last)
+            )
+        } else {
+            super::date_picker::shown_date(first)
+        };
+        crate::i18n::text("All day · {0}", &[days])
+    } else {
+        format!(
+            "{} · {}",
+            super::date_picker::shown_date(first),
+            local(start, "%H:%M")
+        )
+    }
 }
 
 #[component]
@@ -251,8 +290,9 @@ fn EventsPanel(guild_id: Id, on_close: EventHandler<()>) -> Element {
                                 {
                                     let id = event.id;
                                     let when = match run {
+                                        Some((start, _)) if start <= now && event.all_day => crate::i18n::text("Happening now · all day", &[]),
                                         Some((start, end)) if start <= now => crate::i18n::text("Happening now · until {0}", &[local(end, "%H:%M")]),
-                                        Some((start, _)) => crate::i18n::text("Starts {0}", &[local(start, SHOWN_FORMAT)]),
+                                        Some((start, end)) => shown_when(&event, start, end),
                                         None => crate::i18n::text("Ended", &[]),
                                     };
                                     let live = run.is_some_and(|(start, _)| start <= now);
@@ -348,8 +388,17 @@ fn EventForm(guild_id: Id, event: Option<GuildEvent>, on_done: EventHandler<()>)
             .map(|e| e.description.clone())
             .unwrap_or_default()
     });
-    let mut starts = use_signal(|| local(start_default, INPUT_FORMAT));
-    let mut ends = use_signal(|| local(end_default, INPUT_FORMAT));
+    let mut all_day = use_signal(|| event.as_ref().is_some_and(|e| e.all_day));
+    let mut start_date = use_signal(|| local_parts(start_default).0);
+    let mut start_time = use_signal(|| local_parts(start_default).1);
+    let mut end_date = use_signal(|| {
+        if event.as_ref().is_some_and(|e| e.all_day) {
+            last_day(end_default)
+        } else {
+            local_parts(end_default).0
+        }
+    });
+    let mut end_time = use_signal(|| local_parts(end_default).1);
     let mut repeat = use_signal(|| event.as_ref().map_or(EventRepeat::Never, |e| e.repeat));
     let mut host = use_signal(|| event.as_ref().and_then(|e| e.channel_id));
     let mut cover = use_signal(|| event.as_ref().and_then(|e| e.cover.clone()));
@@ -380,8 +429,12 @@ fn EventForm(guild_id: Id, event: Option<GuildEvent>, on_done: EventHandler<()>)
     drop(s);
 
     let save = move |_| {
-        let (Some(starts_at), Some(ends_at)) = (parse_local(&starts()), parse_local(&ends()))
-        else {
+        let span = if all_day() {
+            day_span(start_date(), end_date())
+        } else {
+            local_instant(start_date(), start_time()).zip(local_instant(end_date(), end_time()))
+        };
+        let Some((starts_at, ends_at)) = span else {
             error.set(Some(crate::i18n::text(
                 "Pick a start and an end time.",
                 &[],
@@ -396,6 +449,7 @@ fn EventForm(guild_id: Id, event: Option<GuildEvent>, on_done: EventHandler<()>)
             channel_id: host(),
             repeat: repeat(),
             cover: cover(),
+            all_day: all_day(),
         };
         match draft.validated() {
             Err(message) => error.set(Some(message)),
@@ -453,17 +507,55 @@ fn EventForm(guild_id: Id, event: Option<GuildEvent>, on_done: EventHandler<()>)
                 value: "{description}",
                 oninput: move |e| description.set(e.value()),
             }
-            div { class: "grid grid-cols-2 gap-2",
-                label { class: "flex flex-col gap-1 text-[11px] text-[var(--text-muted)]",
-                    {crate::i18n::text("Starts", &[])}
-                    input { class: FIELD, r#type: "datetime-local", value: "{starts}",
-                        oninput: move |e| { starts.set(e.value()); error.set(None); },
+            label { class: "flex items-center gap-2 cursor-pointer select-none text-xs text-[var(--text)]",
+                input {
+                    r#type: "checkbox",
+                    class: "accent-[var(--accent)]",
+                    checked: all_day(),
+                    onchange: move |e| { all_day.set(e.checked()); error.set(None); },
+                }
+                {crate::i18n::text("All day", &[])}
+            }
+            div { class: "flex flex-col gap-1",
+                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Starts", &[])} }
+                div { class: if all_day() { "grid grid-cols-1" } else { "grid grid-cols-[1fr_6.5rem] gap-2 items-start" },
+                    super::date_picker::DatePicker {
+                        value: start_date(),
+                        label: crate::i18n::text("Starts", &[]),
+                        on_change: move |date: NaiveDate| {
+                            start_date.set(date);
+                            if end_date() < date {
+                                end_date.set(date);
+                            }
+                            error.set(None);
+                        },
+                    }
+                    if !all_day() {
+                        super::date_picker::TimePicker {
+                            hour: start_time().0,
+                            minute: start_time().1,
+                            label: crate::i18n::text("Starts", &[]),
+                            on_change: move |time: (u32, u32)| { start_time.set(time); error.set(None); },
+                        }
                     }
                 }
-                label { class: "flex flex-col gap-1 text-[11px] text-[var(--text-muted)]",
-                    {crate::i18n::text("Ends", &[])}
-                    input { class: FIELD, r#type: "datetime-local", value: "{ends}",
-                        oninput: move |e| { ends.set(e.value()); error.set(None); },
+            }
+            div { class: "flex flex-col gap-1",
+                span { class: "text-[11px] text-[var(--text-muted)]", {crate::i18n::text("Ends", &[])} }
+                div { class: if all_day() { "grid grid-cols-1" } else { "grid grid-cols-[1fr_6.5rem] gap-2 items-start" },
+                    super::date_picker::DatePicker {
+                        value: end_date(),
+                        min: Some(start_date()),
+                        label: crate::i18n::text("Ends", &[]),
+                        on_change: move |date: NaiveDate| { end_date.set(date); error.set(None); },
+                    }
+                    if !all_day() {
+                        super::date_picker::TimePicker {
+                            hour: end_time().0,
+                            minute: end_time().1,
+                            label: crate::i18n::text("Ends", &[]),
+                            on_change: move |time: (u32, u32)| { end_time.set(time); error.set(None); },
+                        }
                     }
                 }
             }
@@ -555,8 +647,24 @@ mod tests {
 
     #[test]
     fn a_picked_local_time_round_trips_through_utc() {
-        let at = parse_local("2026-11-20T20:30").unwrap();
-        assert_eq!(local(at, INPUT_FORMAT), "2026-11-20T20:30");
-        assert!(parse_local("not a time").is_none());
+        let day = NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        let at = local_instant(day, (20, 30)).unwrap();
+        assert_eq!(local_parts(at), (day, (20, 30)));
+        assert!(local_instant(day, (24, 0)).is_none());
+    }
+
+    #[test]
+    fn an_all_day_span_covers_its_days_from_local_midnight() {
+        let first = NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        let (start, end) = day_span(first, first).unwrap();
+        assert_eq!(local_parts(start), (first, (0, 0)));
+        assert_eq!(local_parts(end), (first.succ_opt().unwrap(), (0, 0)));
+        assert_eq!(
+            last_day(end),
+            first,
+            "the end is the next midnight, the last day is the first"
+        );
+        let last = NaiveDate::from_ymd_opt(2026, 11, 22).unwrap();
+        assert_eq!(last_day(day_span(first, last).unwrap().1), last);
     }
 }
