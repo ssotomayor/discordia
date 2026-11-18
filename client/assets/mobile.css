@@ -248,6 +248,17 @@
   height: min(240px, 34dvh) !important; max-height: none; min-height: 160px;
   flex: 0 0 auto; box-shadow: none; border-radius: 8px; z-index: auto !important;
 }
+/* A tap answers at once, in CSS: the switch it starts may take a frame to paint. */
+.dxf-platform-mobile :is(.dxf-dm-home, .dxf-guild-icon):active {
+  filter: brightness(1.35);
+  transform: scale(0.94);
+  transition: none;
+}
+.dxf-platform-mobile .dxf-dm-row:active {
+  filter: brightness(1.3);
+  background-color: var(--accent-soft);
+  transition: none;
+}
 .dxf-mobile-pager {
   display: flex;
   flex: 1;

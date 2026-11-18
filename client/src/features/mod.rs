@@ -12,6 +12,7 @@ pub mod chat;
 mod chat_scroll;
 mod chat_tools;
 pub mod connect;
+mod date_picker;
 pub mod discord_import;
 mod dismiss;
 pub mod dm_call;

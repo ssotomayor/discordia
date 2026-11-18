@@ -1170,6 +1170,9 @@ pub struct EventDraft {
     /// A `data:image/` upload, or the `media:` address it already has.
     #[serde(default)]
     pub cover: Option<String>,
+    /// Whole days from the creator's local midnight; shown as dates, not times.
+    #[serde(default)]
+    pub all_day: bool,
 }
 
 impl EventDraft {
@@ -1188,8 +1191,10 @@ impl EventDraft {
             ));
         }
         let length = self.ends_at - self.starts_at;
+        // A whole day crossing a clock change is 25 hours long.
+        let slack = chrono::Duration::hours(i64::from(self.all_day));
         let cap = match self.repeat {
-            EventRepeat::Daily => chrono::Duration::hours(24),
+            EventRepeat::Daily => chrono::Duration::hours(24) + slack,
             _ => chrono::Duration::hours(EVENT_MAX_HOURS),
         };
         if length <= chrono::Duration::zero() || length > cap {
@@ -1219,6 +1224,8 @@ pub struct GuildEvent {
     #[serde(default)]
     pub cover: Option<String>,
     pub created_by: String,
+    #[serde(default)]
+    pub all_day: bool,
 }
 
 impl GuildEvent {
@@ -3996,6 +4003,7 @@ mod identify_wire_tests {
             repeat,
             cover: None,
             created_by: "a".into(),
+            all_day: false,
         }
     }
 
@@ -4060,6 +4068,7 @@ mod identify_wire_tests {
             channel_id: None,
             repeat,
             cover: None,
+            all_day: false,
         };
         let ok = draft(super::EventRepeat::Never, 3).validated().unwrap();
         assert_eq!(

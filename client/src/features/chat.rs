@@ -382,6 +382,8 @@ fn file_kb(data_url: &str) -> usize {
     (encoded / 4 * 3).div_ceil(1000).max(1)
 }
 
+const DEFER_CHANNEL_SWITCH: bool = cfg!(target_os = "android");
+
 #[component]
 pub fn ChatView() -> Element {
     let mut state = use_app_state();
@@ -390,7 +392,24 @@ pub fn ChatView() -> Element {
     let mut dropped_file = use_signal::<Option<Dropped>>(|| None);
 
     let snapshot = state.read();
-    let selected_channel = snapshot.selected_channel;
+    let actual_channel = snapshot.selected_channel;
+    // Android keeps this page mounted off-screen beside the channel list. Building
+    // the new conversation one update later lets the tap's own change paint first.
+    let mut shown_channel = use_signal(|| actual_channel);
+    let selected_channel = if DEFER_CHANNEL_SWITCH {
+        let shown = shown_channel();
+        if shown != actual_channel {
+            spawn(async move {
+                tokio::task::yield_now().await;
+                if *shown_channel.peek() != actual_channel {
+                    shown_channel.set(actual_channel);
+                }
+            });
+        }
+        shown
+    } else {
+        actual_channel
+    };
     let dm = selected_channel.and_then(|cid| snapshot.dm_of(cid).cloned());
     let channel_meta =
         selected_channel.and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
@@ -442,7 +461,13 @@ pub fn ChatView() -> Element {
     let channel_guild = channel_meta.as_ref().map(|c| c.guild_id);
     let typing_label = typing_label(&typers);
 
-    let selected_memo = use_memo(move || state.read().selected_channel);
+    let selected_memo = use_memo(move || {
+        if DEFER_CHANNEL_SWITCH {
+            shown_channel()
+        } else {
+            state.read().selected_channel
+        }
+    });
     // Read in the render that opens the conversation, before anything marks it.
     let unread_from = use_memo(move || {
         let cid = selected_memo();
@@ -470,7 +495,7 @@ pub fn ChatView() -> Element {
         }
         scroll_ready.set(true);
         while let Ok(sample) = eval.recv::<super::chat_scroll::ScrollSample>().await {
-            if sample.channel != state.peek().selected_channel {
+            if sample.channel != *selected_memo.peek() {
                 continue;
             }
             let next_pages = super::chat_scroll::page_states(&sample.pages, sample.viewport);

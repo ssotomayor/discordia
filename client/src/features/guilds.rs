@@ -26,6 +26,22 @@ enum ConfirmAction {
     Transfer,
 }
 
+const DRAG_THRESHOLD_PX: f64 = 4.0;
+
+/// The dragged guild rides the pointer and lets it through, so the guild beneath
+/// still hears `pointerenter` and becomes the drop target.
+fn drag_style(gid: Id, dragging: Option<Id>, target: Option<Id>, offset: Option<f64>) -> String {
+    match (dragging, offset) {
+        (Some(moving), Some(dy)) if moving == gid => format!(
+            "position:relative;z-index:30;pointer-events:none;transform:translateY({dy:.1}px) scale(1.08);filter:drop-shadow(0 6px 12px rgba(0,0,0,.35));"
+        ),
+        (Some(moving), Some(_)) if target == Some(gid) && moving != gid => {
+            "outline-width:2px;outline-style:solid;outline-color:var(--accent);outline-offset:2px;border-radius:16px;".into()
+        }
+        _ => "outline-style:none;".into(),
+    }
+}
+
 #[component]
 pub fn GuildsSidebar() -> Element {
     let mut state = use_app_state();
@@ -33,6 +49,9 @@ pub fn GuildsSidebar() -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut dragging = use_signal::<Option<Id>>(|| None);
     let mut drop_target = use_signal::<Option<Id>>(|| None);
+    // Where the press began, and how far the guild has followed it since.
+    let mut drag_from = use_signal(|| 0.0f64);
+    let mut drag_offset = use_signal::<Option<f64>>(|| None);
     let order = settings.read().guild_order.clone();
 
     let snapshot = state.read();
@@ -100,7 +119,18 @@ pub fn GuildsSidebar() -> Element {
                 class: "dxf-guilds-list flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2.5",
                 // Pointer drag, not HTML5 DnD: on Windows the wry file-drop
                 // handler that attaches dropped files turns HTML5 DnD off.
+                onpointermove: move |e: PointerEvent| {
+                    if dragging().is_none() {
+                        return;
+                    }
+                    let dy = e.client_coordinates().y - drag_from();
+                    // A press that barely moved is a click, not a drag.
+                    if drag_offset().is_some() || dy.abs() > DRAG_THRESHOLD_PX {
+                        drag_offset.set(Some(dy));
+                    }
+                },
                 onpointerup: move |_| {
+                    drag_offset.set(None);
                     if let (Some(moved), Some(target)) = (dragging(), drop_target()) {
                         let mut next = settings.read().clone();
                         if let Some(order) =
@@ -117,10 +147,12 @@ pub fn GuildsSidebar() -> Element {
                 onpointerleave: move |_| {
                     dragging.set(None);
                     drop_target.set(None);
+                    drag_offset.set(None);
                 },
                 onpointercancel: move |_| {
                     dragging.set(None);
                     drop_target.set(None);
+                    drag_offset.set(None);
                 },
                 DmHomeButton {
                     active: dm_mode,
@@ -172,14 +204,18 @@ pub fn GuildsSidebar() -> Element {
                             div {
                                 key: "{gid}",
                                 title: crate::i18n::text("Drag to reorder guilds", &[]),
-                                style: if drop_target() == Some(gid) { "outline:2px solid var(--accent);border-radius:16px;" } else { "outline:none;" },
+                                style: drag_style(gid, dragging(), drop_target(), drag_offset()),
                                 onpointerdown: move |e: PointerEvent| {
-                                    if e.held_buttons()
-                                        .contains(dioxus::html::input_data::MouseButton::Primary)
+                                    // A touch scrolls the rail or taps; reordering is a mouse or pen gesture.
+                                    if e.pointer_type() != "touch"
+                                        && e.held_buttons()
+                                            .contains(dioxus::html::input_data::MouseButton::Primary)
                                     {
                                         menu.set(None);
                                         dragging.set(Some(gid));
                                         drop_target.set(Some(gid));
+                                        drag_from.set(e.client_coordinates().y);
+                                        drag_offset.set(None);
                                     }
                                 },
                                 onpointerenter: move |_| {
@@ -607,7 +643,8 @@ fn GuildIcon(
             }
             if is_mine {
                 button {
-                    class: "absolute -right-1 -bottom-1 w-4 h-4 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] opacity-70 group-hover:opacity-100 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-all",
+                    class: "absolute -right-0.5 -bottom-0.5 w-3.5 h-3.5 flex items-center justify-center text-[var(--text-muted)] opacity-80 group-hover:opacity-100 hover:text-[var(--accent)] transition-colors",
+                    style: "filter: drop-shadow(0 0 1.5px var(--panel-solid)) drop-shadow(0 0 1px var(--panel-solid));",
                     title: crate::i18n::text("Guild settings", &[]),
                     onclick: move |e: MouseEvent| {
                         e.stop_propagation();
