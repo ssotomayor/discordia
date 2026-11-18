@@ -48,6 +48,7 @@ const POPOVER_W: f64 = 280.0;
 #[component]
 fn SoundboardPopover(guild_id: Id) -> Element {
     let mut state = use_app_state();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let gateway = use_gateway();
     let voice = use_voice_tx();
     let mut last_play = use_signal(|| None::<Instant>);
@@ -61,13 +62,11 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     }
     let sounds = use_memo(move || state.read().sounds_of(guild_id).to_vec());
     let shown = use_memo(move || {
-        let query = filter.read().trim().to_lowercase();
-        sounds
-            .read()
-            .iter()
-            .filter(|sound| sound.name.to_lowercase().contains(&query))
-            .cloned()
-            .collect::<Vec<_>>()
+        sound_groups(
+            &sounds.read(),
+            &settings.read().soundboard_favorites,
+            &filter.read(),
+        )
     });
     let can_manage = state.read().can(guild_id, Permission::ManageGuild);
     let adjusting = state.read().soundboard_adjusting;
@@ -181,37 +180,70 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                             }
                         }
                     }
-                    if !sounds().is_empty() && shown().is_empty() {
+                    if !sounds().is_empty() && shown().iter().all(Vec::is_empty) {
                         div { class: "px-1 py-0.5 text-[11px] text-[var(--text-dim)]",
                             {crate::i18n::text("No sounds match your search.", &[])}
                         }
                     }
-                    div { class: "grid grid-cols-3 gap-1.5",
-                        for sound in shown().iter().cloned() {
-                            {
-                                let ready = blob_of(&state.read(), &sound).is_some();
-                                let cooling = last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN);
-                                let gw = gateway.clone();
-                                let v = voice.clone();
-                                let title = match blocked {
-                                    Some(why) => why.to_string(),
-                                    None if !ready => "Loading…".to_string(),
-                                    None => sound.name.clone(),
-                                };
-                                rsx! {
-                                    button {
-                                        key: "{sound.id}",
-                                        class: "h-9 px-2 rounded-md border border-[var(--border)] text-xs text-[var(--text)] truncate hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors disabled:opacity-40",
-                                        disabled: !ready || blocked.is_some() || cooling,
-                                        title: "{title}",
-                                        onclick: move |_| {
-                                            if last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN) {
-                                                return;
+                    for (section, group) in shown().into_iter().enumerate() {
+                        if !group.is_empty() {
+                            if section == 0 || !shown()[0].is_empty() {
+                                div { class: "px-1 py-1 text-[11px] font-semibold text-[var(--text-muted)]",
+                                    {crate::i18n::text(if section == 0 { "Favorite sounds" } else { "Other sounds" }, &[])}
+                                }
+                            }
+                            div { class: "grid grid-cols-3 gap-1.5",
+                                for sound in group {
+                                    {
+                                        let id = sound.id;
+                                        let favorite = settings.read().soundboard_favorites.contains(&id);
+                                        let favorite_label = format!("{}: {}", crate::i18n::text(if favorite { "Remove sound from favorites" } else { "Add sound to favorites" }, &[]), sound.name);
+                                        let ready = blob_of(&state.read(), &sound).is_some();
+                                        let cooling = last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN);
+                                        let gw = gateway.clone();
+                                        let v = voice.clone();
+                                        let title = match blocked {
+                                            Some(why) => why.to_string(),
+                                            None if !ready => "Loading…".to_string(),
+                                            None => sound.name.clone(),
+                                        };
+                                        rsx! {
+                                            div { key: "{id}", class: "flex min-w-0 rounded-md border border-[var(--border)]",
+                                                button {
+                                                    r#type: "button",
+                                                    class: "h-9 px-1 flex-1 min-w-0 rounded-md text-xs text-[var(--text)] truncate hover:text-[var(--accent)] transition-colors disabled:opacity-40",
+                                                    disabled: !ready || blocked.is_some() || cooling,
+                                                    title: "{title}",
+                                                    aria_label: "{sound.name}",
+                                                    onclick: move |_| {
+                                                        if last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN) {
+                                                            return;
+                                                        }
+                                                        last_play.set(Some(Instant::now()));
+                                                        play(state, gw.clone(), v.clone(), sound.clone());
+                                                    },
+                                                    "{sound.name}"
+                                                }
+                                                button {
+                                                    r#type: "button",
+                                                    class: "w-7 h-9 shrink-0 flex items-center justify-center rounded-md hover:bg-white/[0.06]",
+                                                    style: if favorite { "color:var(--accent)" } else { "color:var(--text-dim)" },
+                                                    aria_pressed: "{favorite}",
+                                                    title: crate::i18n::text(if favorite { "Remove sound from favorites" } else { "Add sound to favorites" }, &[]),
+                                                    aria_label: favorite_label,
+                                                    onclick: move |e| {
+                                                        e.stop_propagation();
+                                                        let mut next = settings.peek().clone();
+                                                        if !next.soundboard_favorites.remove(&id) {
+                                                            next.soundboard_favorites.insert(id);
+                                                        }
+                                                        settings.set(next.clone());
+                                                        crate::settings::save(&next);
+                                                    },
+                                                    if favorite { "★" } else { "☆" }
+                                                }
                                             }
-                                            last_play.set(Some(Instant::now()));
-                                            play(state, gw.clone(), v.clone(), sound.clone());
-                                        },
-                                        "{sound.name}"
+                                        }
                                     }
                                 }
                             }
@@ -221,6 +253,20 @@ fn SoundboardPopover(guild_id: Id) -> Element {
             }
         }
     }
+}
+
+fn sound_groups(
+    sounds: &[GuildSound],
+    favorites: &std::collections::BTreeSet<Id>,
+    query: &str,
+) -> [Vec<GuildSound>; 2] {
+    let query = query.trim().to_lowercase();
+    let (favorites, others) = sounds
+        .iter()
+        .filter(|sound| sound.name.to_lowercase().contains(&query))
+        .cloned()
+        .partition(|sound| favorites.contains(&sound.id));
+    [favorites, others]
 }
 
 fn blob_of(s: &AppState, sound: &GuildSound) -> Option<(String, String)> {
@@ -695,6 +741,50 @@ pub fn SoundSettings(guild_id: Id) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sound(name: &str) -> GuildSound {
+        GuildSound {
+            id: Id::new_v4(),
+            guild_id: Id::new_v4(),
+            name: name.into(),
+            audio: "media:test.wav".into(),
+            added_by: String::new(),
+            created_ms: 0,
+        }
+    }
+
+    #[test]
+    fn favorites_are_separate_and_search_covers_both_groups() {
+        let sounds = vec![sound("Airhorn"), sound("Laugh"), sound("Air raid")];
+        let favorites = [sounds[2].id, Id::new_v4()].into_iter().collect();
+        let [pinned, other] = sound_groups(&sounds, &favorites, "");
+        assert_eq!(pinned, vec![sounds[2].clone()]);
+        assert_eq!(other, sounds[..2]);
+        let [pinned, other] = sound_groups(&sounds, &favorites, " AIR ");
+        assert_eq!(pinned, vec![sounds[2].clone()]);
+        assert_eq!(other, vec![sounds[0].clone()]);
+        assert!(
+            sound_groups(&sounds, &favorites, "missing")
+                .iter()
+                .all(Vec::is_empty)
+        );
+    }
+
+    #[test]
+    fn favorites_follow_the_sound_id_across_renames() {
+        let mut clip = sound("Old name");
+        let favorites = [clip.id].into_iter().collect();
+        clip.name = "New name".into();
+        assert_eq!(
+            sound_groups(&[clip.clone()], &favorites, "New")[0],
+            vec![clip.clone()]
+        );
+        assert_eq!(
+            sound_groups(&[clip.clone()], &Default::default(), "")[1],
+            vec![clip]
+        );
+        assert!(sound_groups(&[], &favorites, "").iter().all(Vec::is_empty));
+    }
 
     #[test]
     fn a_file_is_named_by_its_stem_within_the_limit() {

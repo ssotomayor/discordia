@@ -2380,5 +2380,9 @@
   "This community's events": ["Eventos de esta comunidad", "Eventos desta comunidade", "此社区的活动", "このコミュニティのイベント"],
   "What's happening? (optional)": ["¿De qué se trata? (opcional)", "Do que se trata? (opcional)", "活动内容（可选）", "内容（任意）"],
   "Where": ["Dónde", "Onde", "地点", "場所"],
-  "Every year": ["Todos los años", "Todo ano", "每年", "毎年"]
+  "Every year": ["Todos los años", "Todo ano", "每年", "毎年"],
+  "Favorite sounds": ["Sonidos favoritos", "Sons favoritos", "收藏的音效", "お気に入りのサウンド"],
+  "Other sounds": ["Otros sonidos", "Outros sons", "其他音效", "その他のサウンド"],
+  "Add sound to favorites": ["Agregar sonido a favoritos", "Adicionar som aos favoritos", "收藏音效", "サウンドをお気に入りに追加"],
+  "Remove sound from favorites": ["Quitar sonido de favoritos", "Remover som dos favoritos", "取消收藏音效", "サウンドをお気に入りから削除"]
 }

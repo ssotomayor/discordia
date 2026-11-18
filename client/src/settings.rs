@@ -178,6 +178,8 @@ pub struct ClientSettings {
     pub sfx_volume: u8,
     #[serde(default = "default_soundboard_volume")]
     pub soundboard_volume: u8,
+    #[serde(default)]
+    pub soundboard_favorites: std::collections::BTreeSet<crate::protocol::Id>,
     /// Person pubkey → playback percent, and who is muted for us. A key is the
     /// account, so what we chose for someone still applies next launch.
     #[serde(default)]
@@ -457,6 +459,7 @@ impl Default for ClientSettings {
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
             soundboard_volume: default_soundboard_volume(),
+            soundboard_favorites: Default::default(),
             user_volumes: Vec::new(),
             user_muted: Vec::new(),
             stream_volumes: Vec::new(),
@@ -926,6 +929,25 @@ mod tests {
         };
         let loaded = parse(&file(serde_json::to_value(&settings).unwrap())).unwrap();
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn soundboard_favorites_survive_reload_and_default_empty_for_old_settings() {
+        let id = crate::protocol::Id::new_v4();
+        let settings = ClientSettings {
+            soundboard_favorites: [id].into_iter().collect(),
+            ..Default::default()
+        };
+        let mut saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            parse(&file(saved.clone())).unwrap().soundboard_favorites,
+            settings.soundboard_favorites
+        );
+        saved
+            .as_object_mut()
+            .unwrap()
+            .remove("soundboard_favorites");
+        assert!(parse(&file(saved)).unwrap().soundboard_favorites.is_empty());
     }
 
     #[test]
