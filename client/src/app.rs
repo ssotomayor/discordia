@@ -1374,6 +1374,7 @@ pub(crate) fn AppHead() -> Element {
         document::Style { {include_str!("../assets/image-viewer.css")} }
         document::Style { {include_str!("../assets/voice-drag.css")} }
         document::Style { {include_str!("../assets/voice-invite.css")} }
+        document::Style { {include_str!("../assets/soundboard.css")} }
         crate::text_menu::TextMenu {}
         crate::i18n::LanguageDocument {}
         document::Script { {include_str!("../assets/gif-playback.js")} }

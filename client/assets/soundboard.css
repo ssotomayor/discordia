@@ -1,0 +1,32 @@
+.dxf-sound-tile .dxf-sound-play {
+  padding-right: 2rem;
+}
+
+.dxf-sound-favorite {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background-color: var(--panel-solid);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .dxf-sound-tile .dxf-sound-play {
+    padding-right: 0.25rem;
+  }
+
+  .dxf-sound-favorite {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .dxf-sound-tile:hover .dxf-sound-favorite,
+  .dxf-sound-tile:focus-within .dxf-sound-favorite {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .dxf-sound-tile:hover .dxf-sound-play,
+  .dxf-sound-tile:focus-within .dxf-sound-play {
+    padding-right: 2rem;
+  }
+}
