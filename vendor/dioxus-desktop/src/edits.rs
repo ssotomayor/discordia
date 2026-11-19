@@ -162,6 +162,8 @@ pub(crate) struct ServerLocation {
     server_key: [u8; KEY_SIZE],
 }
 
+const SLOW_BATCH: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Start a new server on an available port on localhost. Return the server location and the TCP listener that is bound to the port.
 pub(crate) fn start_server() -> (ServerLocation, TcpListener) {
     let client_key = create_secure_key();
@@ -419,6 +421,8 @@ impl EditWebsocket {
                         }
                     };
                 let data = msg.edits.clone();
+                let bytes = data.len();
+                let sent_at = std::time::Instant::now();
                 queued_message = Some(msg);
                 // Send the edits to the webview
                 if let Err(e) = websocket.send(tungstenite::Message::Binary(data.into())) {
@@ -458,6 +462,16 @@ impl EditWebsocket {
                 }
 
                 let msg = queued_message.take().expect("Message should be set here");
+                let took = sent_at.elapsed();
+                // Names the slow side of a switch: a big batch is DOM or inlined data, a small one the page's own work.
+                if took >= SLOW_BATCH {
+                    tracing::info!(
+                        webview_id = location.webview_id,
+                        bytes,
+                        ms = took.as_millis() as u64,
+                        "Webview applied a slow DOM edit batch"
+                    );
+                }
 
                 if !first_applied {
                     first_applied = true;

@@ -6,7 +6,9 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../client/assets/gif-playback.js', import.meta.url), 'utf8');
 const gif = 'data:image/gif;base64,R0lGODlh';
 
-function fixture({ hover = false, loaded = true, remote = false, focused = true } = {}) {
+function fixture({ hover = false, loaded = true, remote = false, focused = true, idle = 'now' } = {}) {
+  const idleQueue = [];
+  const canvases = [];
   const listeners = new Map(), pageListeners = new Map(), windowListeners = new Map(), observed = new Set();
   const remoteUrl = typeof remote === 'string' ? remote : 'https://example.com/avatar.gif';
   const attrs = new Map([['src', remote ? remoteUrl : gif]]);
@@ -26,17 +28,26 @@ function fixture({ hover = false, loaded = true, remote = false, focused = true 
     hidden: false, documentElement: {}, querySelectorAll: () => [img],
     hasFocus: () => focused,
     addEventListener: (name, listener) => pageListeners.set(name, listener),
-    createElement: () => ({
+    createElement: () => {
+      const canvas = {
       getContext: () => ({ drawImage() {} }),
       toDataURL() {
         if (remote) throw new Error('tainted');
         posters++;
         return `data:image/png;base64,poster${posters}`;
       },
-    }),
+      };
+      canvases.push(canvas);
+      return canvas;
+    },
   };
   vm.runInNewContext(source, {
-    window: { addEventListener: (name, listener) => windowListeners.set(name, listener) }, document,
+    window: {
+      addEventListener: (name, listener) => windowListeners.set(name, listener),
+      devicePixelRatio: 2,
+      requestIdleCallback: callback => (idle === 'now' ? callback() : idleQueue.push(callback)),
+    },
+    document,
     IntersectionObserver: class {
       constructor(callback) { intersections = callback; }
       observe(target) { observed.add(target); }
@@ -48,7 +59,8 @@ function fixture({ hover = false, loaded = true, remote = false, focused = true 
     },
   });
   return {
-    img, attrs, document, listeners, observed, posters: () => posters,
+    img, attrs, document, listeners, observed, posters: () => posters, canvases,
+    runIdle() { idleQueue.splice(0).forEach(callback => callback()); },
     visible(value) { intersections([{ target: img, isIntersecting: value, intersectionRatio: value ? 1 : 0 }]); },
     mutate() { mutations([{ type: 'attributes', target: img }]); },
     hidden(value) { document.hidden = value; pageListeners.get('visibilitychange')(); },
@@ -243,4 +255,22 @@ test('Giphy WebP embeds pause to still GIF on loss of focus', () => {
   assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/200_s.gif');
   f.focus(true);
   assert.equal(f.attrs.get('src'), 'https://media.giphy.com/media/xyz/200.webp');
+});
+
+test('posters wait for idle time and are drawn at the size shown', () => {
+  const f = fixture({ hover: true, idle: 'queued' });
+  assert.equal(f.posters(), 0, 'nothing is drawn while the page is being updated');
+  assert.equal(f.attrs.get('src'), gif);
+  f.img.clientWidth = 40;
+  f.runIdle();
+  assert.equal(f.posters(), 1);
+  assert.match(f.attrs.get('src'), /^data:image\/png/);
+  assert.deepEqual([f.canvases[0].width, f.canvases[0].height], [0, 0], 'the canvas is released');
+});
+
+test('a poster is never drawn for an image gone before the page was idle', () => {
+  const f = fixture({ hover: true, idle: 'queued' });
+  f.img.isConnected = false;
+  f.runIdle();
+  assert.equal(f.posters(), 0);
 });
