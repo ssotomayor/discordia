@@ -43,7 +43,7 @@ pub fn SoundboardPanel() -> Element {
     }
 }
 
-const POPOVER_W: f64 = 280.0;
+const POPOVER_W: f64 = 360.0;
 
 #[component]
 fn SoundboardPopover(guild_id: Id) -> Element {
@@ -93,7 +93,7 @@ fn SoundboardPopover(guild_id: Id) -> Element {
         .map(|h| format!(" height:{h:.0}px;"))
         .unwrap_or_default();
     let style = format!(
-        "left:clamp(8px, {left:.0}px, calc(100vw - {:.0}px)); width:{POPOVER_W:.0}px; {place}{held}",
+        "left:clamp(8px, {left:.0}px, calc(100vw - {:.0}px)); width:{POPOVER_W:.0}px; max-width:calc(100vw - 16px); {place}{held}",
         POPOVER_W + 8.0
     );
 
@@ -208,10 +208,10 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                                             None => sound.name.clone(),
                                         };
                                         rsx! {
-                                            div { key: "{id}", class: "flex min-w-0 rounded-md border border-[var(--border)]",
+                                            div { key: "{id}", class: "dxf-sound-tile relative min-w-0 rounded-md border border-[var(--border)]",
                                                 button {
                                                     r#type: "button",
-                                                    class: "h-9 px-1 flex-1 min-w-0 rounded-md text-xs text-[var(--text)] truncate hover:text-[var(--accent)] transition-colors disabled:opacity-40",
+                                                    class: "dxf-sound-play h-9 px-1 w-full min-w-0 rounded-md text-xs text-[var(--text)] truncate hover:text-[var(--accent)] transition-colors disabled:opacity-40",
                                                     disabled: !ready || blocked.is_some() || cooling,
                                                     title: "{title}",
                                                     aria_label: "{sound.name}",
@@ -226,7 +226,7 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                                                 }
                                                 button {
                                                     r#type: "button",
-                                                    class: "w-7 h-9 shrink-0 flex items-center justify-center rounded-md hover:bg-white/[0.06]",
+                                                    class: "dxf-sound-favorite w-7 h-9 flex items-center justify-center rounded-md",
                                                     style: if favorite { "color:var(--accent)" } else { "color:var(--text-dim)" },
                                                     aria_pressed: "{favorite}",
                                                     title: crate::i18n::text(if favorite { "Remove sound from favorites" } else { "Add sound to favorites" }, &[]),
