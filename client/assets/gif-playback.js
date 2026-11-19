@@ -13,22 +13,42 @@
     return { source: src, poster: src.replace(/\.(?:gif|webp)(?=[?#]|$)/i, '_s.gif') };
   };
 
-  function update(img, state) {
-    const play = state.visible && focused && !document.hidden &&
-      (!img.hasAttribute('data-gif-hover') || state.hovered);
-    if (!play && !state.poster && !state.posterFailed && img.getAttribute('src') === state.source &&
-        img.complete && img.naturalWidth && img.naturalHeight) {
+  const later = window.requestIdleCallback
+    ? callback => window.requestIdleCallback(callback, { timeout: 500 })
+    : callback => setTimeout(callback, 0);
+
+  // Drawn when the page is idle and at the size shown: a full-size PNG encode per GIF,
+  // inside the observer that sees a channel's rows arrive, held the switch's first paint.
+  function makePoster(img, state) {
+    if (state.poster || state.posterFailed || state.posterPending) return;
+    state.posterPending = true;
+    later(() => {
+      state.posterPending = false;
+      if (!img.isConnected || state.poster || state.posterFailed ||
+          img.getAttribute('src') !== state.source || !img.complete || !img.naturalWidth || !img.naturalHeight) return;
       try {
+        const shown = (img.clientWidth || img.naturalWidth) * (window.devicePixelRatio || 1);
+        const scale = Math.min(1, Math.max(1, shown) / img.naturalWidth);
         const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        canvas.getContext('2d').drawImage(img, 0, 0);
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         state.poster = canvas.toDataURL('image/png');
         canvas.width = canvas.height = 0;
       } catch {
         // Remote images without CORS cannot supply a readable poster frame.
         state.posterFailed = true;
       }
+      update(img, state);
+    });
+  }
+
+  function update(img, state) {
+    const play = state.visible && focused && !document.hidden &&
+      (!img.hasAttribute('data-gif-hover') || state.hovered);
+    if (!play && !state.poster && !state.posterFailed && img.getAttribute('src') === state.source &&
+        img.complete && img.naturalWidth && img.naturalHeight) {
+      makePoster(img, state);
     }
     const src = play ? state.source : state.poster;
     if (src && img.getAttribute('src') !== src) img.setAttribute('src', src);

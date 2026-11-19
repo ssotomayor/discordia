@@ -22,6 +22,8 @@ use std::time::Duration;
 use std::{rc::Rc, task::Waker};
 use wry::{DragDropEvent, RequestAsyncResponder, WebContext, WebViewBuilder, WebViewId};
 
+const SLOW_RENDER: std::time::Duration = std::time::Duration::from_millis(100);
+
 #[cfg(target_os = "android")]
 const EDITS_RECONNECT_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -613,9 +615,14 @@ impl WebviewInstance {
             #[cfg(target_os = "android")]
             let _lock = crate::android_sync_lock::android_runtime_lock("render");
 
+            let rendering = std::time::Instant::now();
             self.edits
                 .wry_queue
                 .with_mutation_state_mut(|f| self.dom.render_immediate(f));
+            let took = rendering.elapsed();
+            if took >= SLOW_RENDER {
+                tracing::info!(ms = took.as_millis() as u64, "VirtualDom render was slow");
+            }
             self.edits.wry_queue.send_edits();
         }
     }
