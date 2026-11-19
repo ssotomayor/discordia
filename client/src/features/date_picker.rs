@@ -19,7 +19,6 @@ const WEEKDAYS: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const MINUTE_STEP: u32 = 5;
 
 const TRIGGER: &str = "w-full flex items-center gap-2 bg-[var(--panel2)] border border-[var(--edge-strong)] rounded-[10px] px-3 py-2 text-[12.5px] text-[var(--text)] text-left hover:border-[var(--accent)] transition-colors";
-const PANEL: &str = "dxf-pop-in mt-1 rounded-xl border border-[var(--border)] bg-[var(--panel-solid)] p-2.5 shadow-lg select-none";
 const NAV: &str = "w-7 h-7 flex items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-white/[0.06] hover:text-[var(--text)] transition-colors";
 
 fn month_name(month: u32) -> String {
@@ -61,6 +60,36 @@ pub(crate) fn month_grid(first: NaiveDate) -> Vec<NaiveDate> {
     (0..42).map(|i| start + Duration::days(i)).collect()
 }
 
+/// Floats under its trigger in the browser's top layer. Inline, it pushed the
+/// dialog open; positioned in the dialog, its scrolling body would clip it.
+#[component]
+fn Floating(id: String, dismiss: String, label: String, children: Element) -> Element {
+    let script = format!(
+        "({})({id:?});",
+        include_str!("../../assets/anchored-popover.js")
+    );
+    rsx! {
+        div {
+            id: "{id}",
+            "popover": "manual",
+            "data-dismiss": "{dismiss}",
+            role: "dialog",
+            aria_label: "{label}",
+            // No display class here: it would beat the hidden state of a closed popover.
+            class: "rounded-xl border border-[var(--border)] bg-[var(--panel-solid)] p-2.5 shadow-lg text-[var(--text)] select-none",
+            style: "position:fixed;inset:auto;margin:0;max-width:calc(100vw - 16px);",
+            onmounted: move |_| {
+                let _ = document::eval(&script);
+            },
+            {children}
+        }
+    }
+}
+
+fn popover_id(kind: &str) -> String {
+    format!("dxf-{kind}-{}", uuid::Uuid::new_v4().simple())
+}
+
 #[component]
 pub fn DatePicker(
     value: NaiveDate,
@@ -70,15 +99,19 @@ pub fn DatePicker(
 ) -> Element {
     let mut open = use_signal(|| false);
     let mut month = use_signal(|| first_of(value));
+    let id = use_hook(|| popover_id("calendar"));
+    let dismiss = super::dismiss::use_dismiss(open);
     let today = chrono::Local::now().date_naive();
     let shown = month();
     rsx! {
-        div { class: "flex flex-col",
+        div { class: "relative",
             button {
                 r#type: "button",
                 class: TRIGGER,
                 aria_label: "{label}",
                 aria_expanded: open(),
+                aria_haspopup: "dialog",
+                "data-dismiss": "{dismiss}",
                 onclick: move |_| {
                     month.set(first_of(value));
                     open.toggle();
@@ -87,50 +120,52 @@ pub fn DatePicker(
                 span { class: "truncate", {shown_date(value)} }
             }
             if open() {
-                div { class: PANEL, role: "dialog", aria_label: "{label}",
-                    div { class: "flex items-center justify-between mb-1.5",
-                        button { r#type: "button", class: NAV, title: crate::i18n::text("Previous month", &[]),
-                            onclick: move |_| month.set(shift_month(shown, -1)), "‹"
-                        }
-                        span { class: "text-xs font-medium text-[var(--text)]", {shown_month(shown)} }
-                        button { r#type: "button", class: NAV, title: crate::i18n::text("Next month", &[]),
-                            onclick: move |_| month.set(shift_month(shown, 1)), "›"
-                        }
-                    }
-                    div { class: "grid grid-cols-7 gap-0.5 mb-0.5",
-                        for day in WEEKDAYS {
-                            span { class: "h-6 flex items-center justify-center text-[10px] uppercase tracking-wider text-[var(--text-dim)]",
-                                {crate::i18n::label(day)}
+                Floating { id: id.clone(), dismiss: dismiss.clone(), label: label.clone(),
+                    div { class: "w-[16.5rem]",
+                        div { class: "flex items-center justify-between mb-1.5",
+                            button { r#type: "button", class: NAV, title: crate::i18n::text("Previous month", &[]),
+                                onclick: move |_| month.set(shift_month(shown, -1)), "‹"
+                            }
+                            span { class: "text-xs font-medium", {shown_month(shown)} }
+                            button { r#type: "button", class: NAV, title: crate::i18n::text("Next month", &[]),
+                                onclick: move |_| month.set(shift_month(shown, 1)), "›"
                             }
                         }
-                    }
-                    div { class: "grid grid-cols-7 gap-0.5", role: "grid",
-                        for date in month_grid(shown) {
-                            {
-                                let selected = date == value;
-                                let outside = date.month() != shown.month();
-                                let disabled = min.is_some_and(|m| date < m);
-                                let class = if selected {
-                                    "h-8 rounded-md text-xs font-semibold bg-[var(--accent)] text-[var(--bg)]"
-                                } else if date == today {
-                                    "h-8 rounded-md text-xs text-[var(--text)] ring-1 ring-inset ring-[var(--accent)] hover:bg-white/[0.06] disabled:opacity-30"
-                                } else if outside {
-                                    "h-8 rounded-md text-xs text-[var(--text-dim)] opacity-50 hover:bg-white/[0.06] disabled:opacity-20"
-                                } else {
-                                    "h-8 rounded-md text-xs text-[var(--text)] hover:bg-white/[0.06] disabled:opacity-30"
-                                };
-                                rsx! {
-                                    button {
-                                        key: "{date}",
-                                        r#type: "button",
-                                        class,
-                                        disabled,
-                                        aria_selected: "{selected}",
-                                        onclick: move |_| {
-                                            on_change.call(date);
-                                            open.set(false);
-                                        },
-                                        "{date.day()}"
+                        div { class: "grid grid-cols-7 gap-0.5 mb-0.5",
+                            for day in WEEKDAYS {
+                                span { class: "h-6 flex items-center justify-center text-[10px] uppercase tracking-wider text-[var(--text-dim)]",
+                                    {crate::i18n::label(day)}
+                                }
+                            }
+                        }
+                        div { class: "grid grid-cols-7 gap-0.5", role: "grid",
+                            for date in month_grid(shown) {
+                                {
+                                    let selected = date == value;
+                                    let outside = date.month() != shown.month();
+                                    let disabled = min.is_some_and(|m| date < m);
+                                    let class = if selected {
+                                        "h-8 rounded-md text-xs font-semibold bg-[var(--accent)] text-[var(--bg)]"
+                                    } else if date == today {
+                                        "h-8 rounded-md text-xs text-[var(--text)] ring-1 ring-inset ring-[var(--accent)] hover:bg-white/[0.06] disabled:opacity-30"
+                                    } else if outside {
+                                        "h-8 rounded-md text-xs text-[var(--text-dim)] opacity-50 hover:bg-white/[0.06] disabled:opacity-20"
+                                    } else {
+                                        "h-8 rounded-md text-xs text-[var(--text)] hover:bg-white/[0.06] disabled:opacity-30"
+                                    };
+                                    rsx! {
+                                        button {
+                                            key: "{date}",
+                                            r#type: "button",
+                                            class,
+                                            disabled,
+                                            aria_selected: "{selected}",
+                                            onclick: move |_| {
+                                                on_change.call(date);
+                                                open.set(false);
+                                            },
+                                            "{date.day()}"
+                                        }
                                     }
                                 }
                             }
@@ -142,6 +177,11 @@ pub fn DatePicker(
     }
 }
 
+const TIME_CELL: &str =
+    "w-full h-8 shrink-0 rounded-md text-xs tabular-nums text-[var(--text)] hover:bg-white/[0.06]";
+const TIME_CELL_ON: &str = "w-full h-8 shrink-0 rounded-md text-xs font-semibold tabular-nums bg-[var(--accent)] text-[var(--bg)]";
+
+/// Two scrolling columns, hours and minutes; the minute closes it, as the time is then whole.
 #[component]
 pub fn TimePicker(
     hour: u32,
@@ -150,44 +190,58 @@ pub fn TimePicker(
     label: String,
 ) -> Element {
     let mut open = use_signal(|| false);
-    let cell = |on: bool| {
-        if on {
-            "h-7 rounded-md text-xs font-semibold tabular-nums bg-[var(--accent)] text-[var(--bg)]"
-        } else {
-            "h-7 rounded-md text-xs tabular-nums text-[var(--text)] hover:bg-white/[0.06]"
-        }
-    };
+    let id = use_hook(|| popover_id("time"));
+    let dismiss = super::dismiss::use_dismiss(open);
     rsx! {
-        div { class: "flex flex-col",
+        div { class: "relative",
             button {
                 r#type: "button",
                 class: TRIGGER,
                 aria_label: "{label}",
                 aria_expanded: open(),
+                aria_haspopup: "dialog",
+                "data-dismiss": "{dismiss}",
                 onclick: move |_| open.toggle(),
                 span { class: "block w-3.5 h-3.5 shrink-0 text-[var(--text-muted)]", dangerous_inner_html: super::icons::CLOCK }
                 span { class: "tabular-nums", "{hour:02}:{minute:02}" }
             }
             if open() {
-                div { class: PANEL, role: "dialog", aria_label: "{label}",
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1", {crate::i18n::text("Hour", &[])} }
-                    div { class: "grid grid-cols-6 gap-0.5 mb-2",
-                        for h in 0..24u32 {
-                            button { key: "h{h}", r#type: "button", class: cell(h == hour),
-                                onclick: move |_| on_change.call((h, minute)),
-                                "{h:02}"
+                Floating { id: id.clone(), dismiss: dismiss.clone(), label: label.clone(),
+                    div { class: "flex gap-1.5",
+                        div { class: "w-14 flex flex-col",
+                            span { class: "h-6 flex items-center justify-center text-[10px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("Hour", &[])} }
+                            div { class: "dxf-time-column h-52 overflow-y-auto flex flex-col gap-0.5 pr-0.5", role: "listbox", aria_label: crate::i18n::text("Hour", &[]),
+                                for h in 0..24u32 {
+                                    button {
+                                        key: "h{h}",
+                                        r#type: "button",
+                                        role: "option",
+                                        class: if h == hour { TIME_CELL_ON } else { TIME_CELL },
+                                        aria_selected: "{h == hour}",
+                                        onclick: move |_| on_change.call((h, minute)),
+                                        "{h:02}"
+                                    }
+                                }
                             }
                         }
-                    }
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] mb-1", {crate::i18n::text("Minute", &[])} }
-                    div { class: "grid grid-cols-6 gap-0.5",
-                        for m in (0..60u32).step_by(MINUTE_STEP as usize) {
-                            button { key: "m{m}", r#type: "button", class: cell(m == minute),
-                                onclick: move |_| {
-                                    on_change.call((hour, m));
-                                    open.set(false);
-                                },
-                                ":{m:02}"
+                        div { class: "w-px bg-[var(--border)] my-1" }
+                        div { class: "w-14 flex flex-col",
+                            span { class: "h-6 flex items-center justify-center text-[10px] uppercase tracking-wider text-[var(--text-dim)]", {crate::i18n::text("Minute", &[])} }
+                            div { class: "dxf-time-column h-52 overflow-y-auto flex flex-col gap-0.5 pr-0.5", role: "listbox", aria_label: crate::i18n::text("Minute", &[]),
+                                for m in (0..60u32).step_by(MINUTE_STEP as usize) {
+                                    button {
+                                        key: "m{m}",
+                                        r#type: "button",
+                                        role: "option",
+                                        class: if m == minute { TIME_CELL_ON } else { TIME_CELL },
+                                        aria_selected: "{m == minute}",
+                                        onclick: move |_| {
+                                            on_change.call((hour, m));
+                                            open.set(false);
+                                        },
+                                        "{m:02}"
+                                    }
+                                }
                             }
                         }
                     }
