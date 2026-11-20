@@ -379,6 +379,16 @@ test('display drops with healthy decoding and low loss identify the receiving de
   assert.equal(tick({ playbackId: undefined, renderFrames: undefined, renderDropped: undefined }), '');
 });
 
+test('low bitrate remains measurable without masking receiver playback failures', () => {
+  const tick = healthSequence({ ...full, lowBitrate: true });
+  let result;
+  for (let i = 1; i <= 6; i++) result = tick({ playbackId: 'visible-video', renderFrames: i * 60, renderDropped: i * 10 });
+  assert.equal(result, 'receiver-device');
+  const healthy = healthSequence({ ...full, lowBitrate: true });
+  for (let i = 1; i <= 6; i++) result = healthy();
+  assert.equal(result, 'sender-bitrate');
+});
+
 test('repeated freezes without attribution get a generic warning; static content does not', () => {
   const tick = healthSequence();
   let result;

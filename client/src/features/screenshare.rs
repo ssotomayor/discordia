@@ -9,7 +9,9 @@ use crate::stream_placement::InlineView;
 pub(crate) fn StreamQualityNotice(
     reason: String,
     #[props(default)] health_reason: String,
+    #[props(default)] diagnostics: bool,
 ) -> Element {
+    let health_reason = visible_health_reason(&health_reason, diagnostics);
     let message = match reason.as_str() {
         "sender" => {
             "Quality limited by the broadcaster’s connection. Quality will recover automatically when possible."
@@ -19,7 +21,7 @@ pub(crate) fn StreamQualityNotice(
         }
         _ => "",
     };
-    let health = match health_reason.as_str() {
+    let health = match health_reason {
         "receiver-network" => {
             "Your reception is losing packets and affecting playback. Your network path may be congested."
         }
@@ -69,7 +71,7 @@ pub(crate) fn StreamQualityNotice(
         }
         _ => "",
     };
-    let code = stream_health_code(&health_reason);
+    let code = stream_health_code(health_reason);
     rsx! {
         if !message.is_empty() {
             span { class: "block text-[10px] text-[var(--accent)]", role: "status", {crate::i18n::label(message)} }
@@ -81,6 +83,14 @@ pub(crate) fn StreamQualityNotice(
                 span { class: "block text-[var(--text-dim)]", {crate::i18n::label("Include this code and a screenshot when reporting the problem.")} }
             }
         }
+    }
+}
+
+pub(super) fn visible_health_reason(reason: &str, diagnostics: bool) -> &str {
+    if !diagnostics && matches!(reason, "sender-bitrate" | "local-bitrate") {
+        ""
+    } else {
+        reason
     }
 }
 
@@ -1100,13 +1110,13 @@ window.dxScreen = window.dxScreen || (function () {
     else if (status && status.captureLimited === true && status.captureSlow === false) reason = 'sender-encoder';
     else if (status && status.outputSlow === true) reason = 'sender-output';
     else if (status && (status.cpu === true || status.captureLimited === true)) reason = 'sender-device';
-    else if (status && status.lowBitrate === true) reason = 'sender-bitrate';
     else if (loss !== null && loss < 0.01 && frames > 0 && decode !== null &&
         (interrupted || dropRate >= 0.05 || (lowFps && frames >= 5 * seconds)) &&
         decode / frames >= 0.8 / Math.max(10, sameLayer && status.primaryFps || sample.framesPerSecond || frames / seconds)) reason = 'receiver-device';
     else if (loss !== null && loss < 0.01 && frames >= 5 * seconds && renderDropRate >= 0.05) reason = 'receiver-device';
     else if (lowFps && sample.framesPerSecond <= 5 && frames !== null && frames <= 5 * seconds && packets >= 100) reason = 'receiver-output';
     else if (interrupted) reason = 'unstable';
+    else if (status && status.lowBitrate === true) reason = 'sender-bitrate';
     state.sample = sample;
     return healthNotice(state, reason, now);
   }
@@ -3191,9 +3201,9 @@ pub fn ScreenSelfPreview(
                         {crate::i18n::text("Preview paused while the app is in the background", &[])}
                     }
                 }
-                if !health_reason().is_empty() {
+                if !visible_health_reason(&health_reason(), state.read().media_diagnostics).is_empty() {
                     div { class: if cfg!(target_os = "android") { "shrink-0 px-2 py-1 bg-black text-[10px]" } else { "absolute left-2 right-2 top-2 px-2 py-1 rounded bg-black/70 pointer-events-none" },
-                        StreamQualityNotice { reason: String::new(), health_reason: health_reason() }
+                        StreamQualityNotice { reason: String::new(), health_reason: health_reason(), diagnostics: state.read().media_diagnostics }
                     }
                 }
                 if native_capture {
@@ -3729,8 +3739,8 @@ fn ScreenWatchTile(
                 class: "dxf-stream-footer px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
                 div {
                     span { class: "text-[10px] text-[var(--text-dim)]", {crate::i18n::message(&received_label.read())} }
-                    StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
-                    if !health_reason().is_empty() && !sender_details().is_empty() {
+                    StreamQualityNotice { reason: quality_reason(), health_reason: health_reason(), diagnostics: state.read().media_diagnostics }
+                    if !visible_health_reason(&health_reason(), state.read().media_diagnostics).is_empty() && !sender_details().is_empty() {
                         span { class: "block text-[10px] text-[var(--text-dim)]", "{sender_details}" }
                     }
                 }
@@ -3807,6 +3817,8 @@ mod js_escaping_tests {
             ),
             ("sender-output", "TX-OUTPUT", "The cause is not yet known."),
             ("local-bitrate", "TX-BITRATE", "little bitrate allocated"),
+            ("sender-bitrate", "TX-BITRATE", "little bitrate allocated"),
+            ("receiver-device", "RX-PLAYBACK", "decode or display"),
             ("sender-voice", "TX-VOICE", "protect the voice call"),
             (
                 "waiting-video",
@@ -3814,25 +3826,32 @@ mod js_escaping_tests {
                 "retrying the connection automatically.",
             ),
         ] {
-            let mut dom = VirtualDom::new_with_props(
-                super::StreamQualityNotice,
-                super::StreamQualityNoticeProps {
-                    reason: String::new(),
-                    health_reason: reason.into(),
-                },
-            );
-            let edits = dom.rebuild_to_vec();
-            let text = edits
-                .edits
-                .iter()
-                .filter_map(|edit| match edit {
-                    Mutation::CreateTextNode { value, .. } => Some(value.as_str()),
-                    _ => None,
-                })
-                .collect::<String>();
-            assert!(text.contains(code), "{text}");
-            assert!(text.contains(message), "{text}");
-            assert!(text.contains("screenshot"), "{text}");
+            for diagnostics in [false, true] {
+                let mut dom = VirtualDom::new_with_props(
+                    super::StreamQualityNotice,
+                    super::StreamQualityNoticeProps {
+                        reason: String::new(),
+                        health_reason: reason.into(),
+                        diagnostics,
+                    },
+                );
+                let edits = dom.rebuild_to_vec();
+                let text = edits
+                    .edits
+                    .iter()
+                    .filter_map(|edit| match edit {
+                        Mutation::CreateTextNode { value, .. } => Some(value.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                if code == "TX-BITRATE" && !diagnostics {
+                    assert!(text.is_empty(), "{text}");
+                    continue;
+                }
+                assert!(text.contains(code), "{text}");
+                assert!(text.contains(message), "{text}");
+                assert!(text.contains("screenshot"), "{text}");
+            }
         }
     }
     #[test]

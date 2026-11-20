@@ -507,6 +507,7 @@ pub struct AppState {
     pub voice_stats: HashMap<String, TrackStats>,
     pub screen_share_stats: Option<ScreenShareStats>,
     pub screen_share_in_stats: Option<ScreenShareStats>,
+    pub media_diagnostics: bool,
     pub user_volumes: HashMap<String, u32>,
     pub user_muted: HashSet<String>,
     pub stream_volumes: HashMap<String, u32>,
@@ -739,6 +740,7 @@ impl AppState {
             voice_stats: HashMap::new(),
             screen_share_stats: None,
             screen_share_in_stats: None,
+            media_diagnostics: false,
             user_volumes: HashMap::new(),
             user_muted: HashSet::new(),
             stream_volumes: HashMap::new(),
@@ -1121,6 +1123,7 @@ impl AppState {
             denoise_fallback: _,
             denoise_retry: _,
             voice_bitrate_kbps: _,
+            media_diagnostics: _,
             user_volumes: _,
             user_muted: _,
             stream_volumes: _,
@@ -3027,6 +3030,7 @@ mod tests {
             serde_json::from_value(value).unwrap()
         }
 
+        s.media_diagnostics = true;
         let before = after_a_server! { s;
             session {
                 status = ConnectionStatus::Ready => |v| *v == ConnectionStatus::Disconnected;
@@ -3239,7 +3243,7 @@ mod tests {
                 mic_level, mic_gate_level, mic_level_pre, noise_cancellation,
                 denoise_atten_lim_db, bypass_system_audio_processing, mic_bypass_error,
                 denoise_fallback, denoise_retry, voice_bitrate_kbps, user_volumes,
-                user_muted, stream_volumes, stream_muted, soundboard_volume,
+                user_muted, stream_volumes, stream_muted, soundboard_volume, media_diagnostics,
                 voice_session_epoch, read_marks_revision, catalog_revision, notify_tick,
                 dm_notify_tick, readies,
             }

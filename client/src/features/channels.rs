@@ -1217,16 +1217,18 @@ fn rate_or_dash(v: Option<u32>, unit: &str) -> String {
 
 #[component]
 pub(crate) fn ConnectionStats() -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let voice = use_voice_tx();
 
     use_hook(|| {
+        state.write().media_diagnostics = true;
         voice.send(VoiceCmd::SetStatsPolling { enabled: true });
         let _ = document::eval(&crate::features::screenshare::screen_stats_js(true));
     });
     {
         let voice = voice.clone();
         use_drop(move || {
+            state.write().media_diagnostics = false;
             voice.send(VoiceCmd::SetStatsPolling { enabled: false });
             let _ = document::eval(&crate::features::screenshare::screen_stats_js(false));
         });
