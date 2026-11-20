@@ -7,6 +7,7 @@ use crate::state::AppState;
 
 #[derive(Clone, PartialEq)]
 struct Stream {
+    diagnostics: bool,
     pubkey: String,
     name: String,
     volume: u32,
@@ -94,6 +95,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
             .screen_viewing
             .detached()
             .map(|pk| Stream {
+                diagnostics: s.media_diagnostics,
                 pubkey: pk.clone(),
                 name: s.display_name(pk),
                 volume: s.stream_volumes.get(pk).copied().unwrap_or(100),
@@ -786,8 +788,8 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
             div { class: "dxf-stream-footer dxf-stream-footer-popout grid items-center gap-2 px-3 py-2 shrink-0",
                 div { class: "min-w-0",
                     span { class: "text-xs text-[var(--text-muted)]", "{received}" }
-                    super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason() }
-                    if !health_reason().is_empty() && !sender_details().is_empty() {
+                    super::screenshare::StreamQualityNotice { reason: quality_reason(), health_reason: health_reason(), diagnostics: stream.diagnostics }
+                    if !super::screenshare::visible_health_reason(&health_reason(), stream.diagnostics).is_empty() && !sender_details().is_empty() {
                         span { class: "block text-[10px] text-[var(--text-dim)]", "{sender_details}" }
                     }
                     if !props.status.is_empty() { span { class: "block text-xs text-[var(--text-muted)]", {crate::i18n::message(&props.status)} } }
