@@ -2,16 +2,6 @@
 # reason is a bug; drop the ignore and fix the dependency instead.
 [advisories]
 ignore = [
-    # rsa, reached through jsonwebtoken <- livekit-api. The Marvin sidechannel
-    # is in RSA private-key operations; LiveKit access tokens are HS256, so no
-    # RSA operation ever runs. There is no fixed release to move to.
-    "RUSTSEC-2023-0071",
-    # webpki-roots 0.26.11, reached through tokio-tungstenite (still `^0.26`
-    # at 0.30) and ureq 2. The crate is a semver shim over webpki-roots 1.x --
-    # `pub use parent::TLS_SERVER_ROOTS` and nothing else -- so the fixed
-    # 1.0.10 the lock pins is the root list it hands out. No 0.26.x release
-    # carries the fix, and no released tokio-tungstenite stops asking for one.
-    "RUSTSEC-2026-0381",
     # libsqlite3-sys 0.30.1, bundled by sqlx-sqlite and rusqlite. The leak needs
     # a database plus `-wal` someone else wrote; the server and rendezvous open
     # only the ones they created in their own data dir (import is JSON). The fix
