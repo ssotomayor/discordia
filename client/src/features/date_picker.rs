@@ -145,7 +145,7 @@ pub fn DatePicker(
                                     let outside = date.month() != shown.month();
                                     let disabled = min.is_some_and(|m| date < m);
                                     let class = if selected {
-                                        "h-8 rounded-md text-xs font-semibold bg-[var(--accent)] text-[var(--bg)]"
+                                        "h-8 rounded-md text-xs font-semibold bg-[var(--accent)] text-[#1a1206]"
                                     } else if date == today {
                                         "h-8 rounded-md text-xs text-[var(--text)] ring-1 ring-inset ring-[var(--accent)] hover:bg-white/[0.06] disabled:opacity-30"
                                     } else if outside {
@@ -179,7 +179,7 @@ pub fn DatePicker(
 
 const TIME_CELL: &str =
     "w-full h-8 shrink-0 rounded-md text-xs tabular-nums text-[var(--text)] hover:bg-white/[0.06]";
-const TIME_CELL_ON: &str = "w-full h-8 shrink-0 rounded-md text-xs font-semibold tabular-nums bg-[var(--accent)] text-[var(--bg)]";
+const TIME_CELL_ON: &str = "w-full h-8 shrink-0 rounded-md text-xs font-semibold tabular-nums bg-[var(--accent)] text-[#1a1206]";
 
 /// Two scrolling columns, hours and minutes; the minute closes it, as the time is then whole.
 #[component]

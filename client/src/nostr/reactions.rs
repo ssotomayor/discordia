@@ -8,33 +8,56 @@ use crate::{protocol::Id, state::AppState};
 
 pub const KIND: u16 = 7;
 const MAX_ENTRIES: usize = 4096;
+// Each picture may be an inline 16 KiB data url from the peer.
+const MAX_PICTURES: usize = 1024;
 type Key = (Id, Id, String, String);
 type Version = ((i64, String), bool);
 
 #[derive(Clone, Default)]
 pub(crate) struct Reactions {
     versions: HashMap<Key, Version>,
+    /// The first picture seen for a `:code:` on a message is the one drawn.
+    pictures: HashMap<(Id, Id, String), String>,
 }
 
-pub fn rumor(from: &str, peer: &str, target: &str, emoji: &str, added: bool, now: i64) -> Rumor {
-    event::rumor(
-        from,
-        now,
-        KIND,
+pub fn rumor(
+    from: &str,
+    peer: &str,
+    target: &str,
+    emoji: &str,
+    picture: Option<&str>,
+    added: bool,
+    now: i64,
+) -> Rumor {
+    let mut tags = vec![
+        vec!["p".into(), peer.into()],
+        vec!["e".into(), target.into()],
         vec![
-            vec!["p".into(), peer.into()],
-            vec!["e".into(), target.into()],
-            vec![
-                "discordia-reaction".into(),
-                if added { "add" } else { "remove" }.into(),
-            ],
+            "discordia-reaction".into(),
+            if added { "add" } else { "remove" }.into(),
         ],
-        emoji.into(),
-    )
+    ];
+    if let (Some(code), Some(url)) = (custom_code(emoji), picture) {
+        tags.push(vec!["emoji".into(), code.into(), url.into()]);
+    }
+    event::rumor(from, now, KIND, tags, emoji.into())
 }
 
 pub fn valid_emoji(emoji: &str) -> bool {
     emoji.len() <= 64 && matches!(crate::emoji::unicode_parts(emoji).as_slice(), [(_, true)])
+}
+
+/// The shortcode of a NIP-25 custom reaction, `:code:`.
+pub fn custom_code(emoji: &str) -> Option<&str> {
+    emoji
+        .strip_prefix(':')?
+        .strip_suffix(':')
+        .filter(|code| crate::protocol::valid_shortcode(code))
+}
+
+pub fn valid_picture(url: &str) -> bool {
+    url.len() <= crate::emoji::DM_INLINE_MAX
+        && (url.starts_with("https://") || url.starts_with("data:image/"))
 }
 
 impl Reactions {
@@ -48,6 +71,22 @@ impl Reactions {
 
     pub fn forget(&mut self, target: Id) {
         self.versions.retain(|(_, id, _, _), _| *id != target);
+        self.pictures.retain(|(_, id, _), _| *id != target);
+    }
+
+    pub fn picture(&self, channel: Id, target: Id, emoji: &str) -> Option<&str> {
+        self.pictures
+            .get(&(channel, target, emoji.to_string()))
+            .map(String::as_str)
+    }
+
+    /// `(code, url)` for every custom reaction on a message, as `EmojiText` takes them.
+    pub fn pictures_of(&self, channel: Id, target: Id) -> Vec<(String, String)> {
+        self.pictures
+            .iter()
+            .filter(|((cid, mid, _), _)| *cid == channel && *mid == target)
+            .filter_map(|((_, _, emoji), url)| Some((custom_code(emoji)?.to_string(), url.clone())))
+            .collect()
     }
 }
 
@@ -61,7 +100,6 @@ pub fn receive(state: &mut AppState, ours: &str, rumor: &Rumor) -> bool {
     if !crate::protocol::is_canonical_pubkey(recipient)
         || !crate::protocol::is_canonical_pubkey(&rumor.pubkey)
         || (rumor.pubkey != ours && recipient != ours)
-        || !valid_emoji(&rumor.content)
     {
         return true;
     }
@@ -84,6 +122,20 @@ pub fn receive(state: &mut AppState, ours: &str, rumor: &Rumor) -> bool {
         Some("remove") => false,
         _ => return true,
     };
+    let picture = custom_code(&rumor.content).and_then(|code| {
+        super::nip17::emoji_tags(rumor)
+            .into_iter()
+            .find(|(c, url)| c == code && valid_picture(url))
+            .map(|(_, url)| url)
+    });
+    // A removal names its emoji only to take it away, so it needs no picture.
+    let valid = match custom_code(&rumor.content) {
+        Some(_) => picture.is_some() || !added,
+        None => valid_emoji(&rumor.content),
+    };
+    if !valid {
+        return true;
+    }
     let channel = conversation_id(peer);
     let target = message_id(target);
     let key = (channel, target, rumor.pubkey.clone(), rumor.content.clone());
@@ -108,9 +160,22 @@ pub fn receive(state: &mut AppState, ours: &str, rumor: &Rumor) -> bool {
             };
             let oldest_key = oldest_key.clone();
             versions.remove(&oldest_key);
+            let (cid, mid, _, emoji) = oldest_key;
+            if !versions.keys().any(|(c, m, _, e)| (c, m, e) == (&cid, &mid, &emoji)) {
+                state.dm_reactions.pictures.remove(&(cid, mid, emoji));
+            }
         }
     }
+    let versions = &mut state.dm_reactions.versions;
     versions.insert(key, (version, added));
+    let pictures = &mut state.dm_reactions.pictures;
+    if let Some(url) = picture
+        && pictures.len() < MAX_PICTURES
+    {
+        pictures
+            .entry((channel, target, rumor.content.clone()))
+            .or_insert(url);
+    }
     if let Some(message) = state
         .messages
         .get_mut(&channel)
@@ -177,7 +242,7 @@ mod tests {
         let peer = event::xonly_hex(&peer_secret);
         let original = super::super::nip17::chat_rumor(&peer, &ours, "hello", None, &[], 1);
         let target = message_id(&original.id);
-        let add = rumor(&ours, &peer, &original.id, "👍", true, 2);
+        let add = rumor(&ours, &peer, &original.id, "👍", None, true, 2);
         let (theirs, mine) = super::super::nip17::wrap_both(&secret, &peer, &add, 2).unwrap();
         assert!(!theirs.content.contains("👍"));
         for (reader, key, other, wrap) in [
@@ -197,7 +262,7 @@ mod tests {
                 state.messages[&channel][0].reactions[0].users,
                 vec![ours.clone()]
             );
-            let remove = rumor(&ours, &peer, &original.id, "👍", false, 3);
+            let remove = rumor(&ours, &peer, &original.id, "👍", None, false, 3);
             for event in [&remove, &add, &remove] {
                 receive(&mut state, reader, event);
             }
@@ -221,9 +286,9 @@ mod tests {
         let target = "12".repeat(32);
         let mut state = AppState::empty();
         for event in [
-            rumor(&peer, &stranger, &target, "👍", true, 1),
-            rumor(&peer, &ours, "bad target", "👍", true, 1),
-            rumor(&peer, &ours, &target, "not an emoji", true, 1),
+            rumor(&peer, &stranger, &target, "👍", None, true, 1),
+            rumor(&peer, &ours, "bad target", "👍", None, true, 1),
+            rumor(&peer, &ours, &target, "not an emoji", None, true, 1),
         ] {
             assert!(receive(&mut state, &ours, &event));
         }
@@ -234,11 +299,45 @@ mod tests {
         receive(
             &mut state,
             &ours,
-            &rumor(&peer, &ours, &target, "👍", true, 1),
+            &rumor(&peer, &ours, &target, "👍", None, true, 1),
         );
         assert!(state.dm_reactions.versions.is_empty());
         assert!(valid_emoji("❤️"));
         assert!(!valid_emoji("👍👍"));
         assert!(!valid_emoji(":custom:"));
+    }
+
+    #[test]
+    fn a_saved_emoji_reaction_carries_its_picture_and_a_removal_needs_none() {
+        let ours = "ab".repeat(32);
+        let peer = "cd".repeat(32);
+        let target = "12".repeat(32);
+        let channel = conversation_id(&peer);
+        let mid = message_id(&target);
+        let mut state = AppState::empty();
+        state
+            .messages
+            .insert(channel, vec![message(channel, mid, &ours)]);
+        let url = "https://blob.example/cat.png";
+        for bare in [
+            rumor(&peer, &ours, &target, ":cat:", None, true, 1),
+            rumor(&peer, &ours, &target, ":cat:", Some("http://blob.example/cat.png"), true, 1),
+            rumor(&peer, &ours, &target, ":not a code:", Some(url), true, 1),
+        ] {
+            receive(&mut state, &ours, &bare);
+        }
+        assert!(state.messages[&channel][0].reactions.is_empty());
+        let add = rumor(&peer, &ours, &target, ":cat:", Some(url), true, 2);
+        assert_eq!(super::super::nip17::emoji_tags(&add), vec![("cat".into(), url.into())]);
+        receive(&mut state, &ours, &add);
+        assert_eq!(state.messages[&channel][0].reactions[0].emoji, ":cat:");
+        assert_eq!(
+            state.dm_reactions.pictures_of(channel, mid),
+            vec![("cat".to_string(), url.to_string())]
+        );
+        receive(&mut state, &ours, &rumor(&peer, &ours, &target, ":cat:", None, false, 3));
+        assert!(state.messages[&channel][0].reactions.is_empty());
+        state.dm_reactions.forget(mid);
+        assert!(state.dm_reactions.pictures_of(channel, mid).is_empty());
     }
 }

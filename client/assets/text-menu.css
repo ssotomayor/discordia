@@ -42,3 +42,7 @@
 .dxf-text-menu-reactions img { width: 1.2em; height: 1.2em; object-fit: contain; }
 .dxf-text-menu .dxf-text-menu-danger { color: var(--danger, #ed4245); }
 .dxf-text-menu .dxf-text-menu-danger:hover, .dxf-text-menu .dxf-text-menu-danger:focus-visible { background-color: var(--danger, #ed4245); color: #fff; }
+/* Inset shadows paint over a mention's inline background, under the text. */
+[data-context-open], .dxf-msg-active {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 100vmax color-mix(in srgb, var(--accent) 14%, transparent) !important;
+}

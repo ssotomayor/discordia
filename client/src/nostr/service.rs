@@ -56,6 +56,8 @@ pub enum NostrCmd {
         channel_id: Id,
         message_id: Id,
         emoji: String,
+        /// The NIP-30 url of a `:code:` reaction.
+        picture: Option<String>,
     },
     /// Edit an existing direct message and publish the update.
     Edit {
@@ -449,8 +451,10 @@ pub fn spawn_nostr(
                         outbox.hold(id, key, Draft { peer, text, reply_to, emoji });
                         show(&mut state, &outbox, id);
                     }
-                    Some(NostrCmd::React { channel_id, message_id: mid, emoji }) => {
-                        if !super::reactions::valid_emoji(&emoji) { continue; }
+                    Some(NostrCmd::React { channel_id, message_id: mid, emoji, picture }) => {
+                        let custom = super::reactions::custom_code(&emoji).is_some();
+                        if !custom && !super::reactions::valid_emoji(&emoji) { continue; }
+                        let picture = picture.filter(|url| custom && super::reactions::valid_picture(url));
                         let target = {
                             let s = state.peek();
                             s.dm_of(channel_id).and_then(|dm| {
@@ -465,11 +469,12 @@ pub fn spawn_nostr(
                             state.write().error_toast = Some(crate::i18n::text("This message is still sending. Try reacting again in a moment.", &[]));
                             continue;
                         };
+                        if custom && added && picture.is_none() { continue; }
                         if !outbox.fits(1, 0) {
                             state.write().error_toast = Some("Too many pending messages to react.".into());
                             continue;
                         }
-                        let rumor = super::reactions::rumor(&our_pubkey, &peer, &target, &emoji, added, ts);
+                        let rumor = super::reactions::rumor(&our_pubkey, &peer, &target, &emoji, picture.as_deref(), added, ts);
                         match nip17::wrap_both(&secret, &peer, &rumor, ts) {
                             Ok((theirs, ours)) => {
                                 let id = message_id(&rumor.id);

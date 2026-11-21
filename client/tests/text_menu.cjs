@@ -14,6 +14,8 @@ function fixture({ nativeMenuDisabled = false } = {}) {
     }
     setAttribute(key, value) { this.attrs[key] = value; }
     getAttribute(key) { return this.attrs[key] || ''; }
+    hasAttribute(key) { return Object.hasOwn(this.attrs, key); }
+    removeAttribute(key) { delete this.attrs[key]; }
     append(...children) { for (const child of children) { child.parent = this; this.childNodes.push(child); } }
     remove() { this.isConnected = false; if (this.parent) this.parent.childNodes = this.parent.childNodes.filter(c => c !== this); }
     contains(node) { return this === node || this.childNodes.some(child => child.contains(node)); }
@@ -81,11 +83,14 @@ test('copy message preserves raw text and reuses only available message actions'
   const action = new f.Element('button'); action.dataset.contextAction = 'reply'; action.title = 'Reply';
   let replies = 0; action.addEventListener('click', () => replies++); row.append(action); f.document.body.append(row);
   assert.equal(f.event('contextmenu', row).defaultPrevented, true);
+  assert.ok(row.hasAttribute('data-context-open'), 'a touch shows which message the menu is for');
   assert.deepEqual(f.labels(), ['Reply', 'Copy message']);
   assert.equal(f.menu().style.left, '572px'); assert.equal(f.menu().style.top, '392px');
   f.choose('Copy message'); assert.equal(f.requests[0].text, '<b>literal</b>\n:wave:');
   await f.reply({ ok: true }); assert.equal(f.menu(), undefined);
+  assert.ok(!row.hasAttribute('data-context-open'));
   f.event('contextmenu', row); f.choose('Reply'); assert.equal(replies, 1);
+  assert.ok(!row.hasAttribute('data-context-open'));
   assert.equal(f.requests.length, 1, 'message actions use the existing permission-gated handler');
 });
 

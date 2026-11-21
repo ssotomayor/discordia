@@ -1083,13 +1083,19 @@ pub(super) fn MessageRow(
         .map(|c| c.guild_id);
     let reaction_gateway = gateway.clone();
     let reaction_nostr = nostr.clone();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let reaction_secret = try_use_context::<crate::identity::Identity>().map(|i| i.secret_key());
     let react = use_callback(move |emoji: String| {
         if state.peek().dm_of(channel_id).is_some() {
-            reaction_nostr.send(crate::nostr::service::NostrCmd::React {
+            react_in_dm(
+                state,
+                settings,
+                reaction_nostr.clone(),
+                reaction_secret,
                 channel_id,
                 message_id,
                 emoji,
-            });
+            );
         } else {
             reaction_gateway.send(ClientMessage::React {
                 channel_id,
@@ -1098,7 +1104,6 @@ pub(super) fn MessageRow(
             });
         }
     });
-    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let react_picked = use_callback(move |emoji: String| {
         note_emoji_used(settings, &emoji);
         show_react.set(false);
@@ -1106,10 +1111,22 @@ pub(super) fn MessageRow(
     });
     let quick = {
         let s = state.read();
-        let customs = guild_id.map(|g| s.emojis_of(g)).unwrap_or_default();
+        let saved;
+        let customs = match guild_id {
+            Some(g) => s.emojis_of(g),
+            None => {
+                saved = guild_emojis_of(&s, channel_id).0;
+                &saved[..]
+            }
+        };
         quick_reactions(&settings.read().recent_emoji, customs, |e| {
             crate::image_assets::cached_uri(&s.emoji_images, &e.image).unwrap_or_default()
         })
+    };
+    let reaction_pictures = if guild_id.is_none() {
+        state.read().dm_reactions.pictures_of(channel_id, message_id)
+    } else {
+        Vec::new()
     };
     let react_popover = use_hook(|| format!("react-picker-{}", uuid::Uuid::new_v4()));
 
@@ -1240,6 +1257,13 @@ pub(super) fn MessageRow(
         "dxf-msg-bar opacity-0 group-hover:opacity-100"
     };
 
+    let row_state = match (arriving, menu_open) {
+        (true, true) => "dxf-msg-in dxf-msg-active",
+        (true, false) => "dxf-msg-in",
+        (false, true) => "dxf-msg-active",
+        (false, false) => "",
+    };
+
     if expires_at.is_some_and(|expires| chrono::Utc::now().timestamp() >= expires) {
         return rsx! {};
     }
@@ -1272,7 +1296,7 @@ pub(super) fn MessageRow(
             }
         }
         div {
-            class: if arriving { "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in" } else { "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02]" },
+            class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] {row_state}",
             style: "{mention_style}",
             "data-context-message": "{message.content}",
 
@@ -1454,7 +1478,7 @@ pub(super) fn MessageRow(
                                         "data-tip-wrap": "true",
                                         aria_label: "{r.emoji} {count}: {who}",
                                         onclick: move |_| react.call(emoji.clone()),
-                                        span { class: "flex items-center", EmojiText { text: r.emoji.clone(), guild_id, reaction: true } }
+                                        span { class: "flex items-center", EmojiText { text: r.emoji.clone(), guild_id, reaction: true, extra: reaction_pictures.clone() } }
                                         span { class: "text-[10px]", "{count}" }
                                     }
                                 }
@@ -1606,6 +1630,75 @@ pub(super) fn MessageRow(
     }
 }
 
+/// A DM reaction with a saved emoji carries its picture (NIP-30): the one
+/// already drawn on the message, else the blob server's copy, uploaded on
+/// first use like a message's, else the picture inline if it is small enough.
+fn react_in_dm(
+    mut state: Signal<crate::state::AppState>,
+    settings: Signal<crate::settings::ClientSettings>,
+    nostr: crate::nostr::service::NostrTx,
+    secret: Option<secp256k1::SecretKey>,
+    channel_id: Id,
+    message_id: Id,
+    emoji: String,
+) {
+    let send = move |nostr: &crate::nostr::service::NostrTx, emoji: String, picture| {
+        nostr.send(crate::nostr::service::NostrCmd::React {
+            channel_id,
+            message_id,
+            emoji,
+            picture,
+        });
+    };
+    let Some(code) = crate::nostr::reactions::custom_code(&emoji).map(str::to_owned) else {
+        return send(&nostr, emoji, None);
+    };
+    let (held, saved) = {
+        let s = state.peek();
+        let held = s
+            .dm_reactions
+            .picture(channel_id, message_id, &emoji)
+            .map(str::to_owned);
+        let saved = s.saved_emoji.iter().find(|e| e.shortcode == code).map(|e| {
+            let data = s.emoji_images.get(&e.image).filter(|d| d.starts_with("data:")).cloned();
+            (e.image.clone(), e.blossom_url.clone(), data)
+        });
+        (held, saved)
+    };
+    let (image, data) = match (held, saved) {
+        (Some(url), _) | (None, Some((_, Some(url), _))) => return send(&nostr, emoji, Some(url)),
+        (None, Some((image, None, Some(data)))) => (image, data),
+        _ => return send(&nostr, emoji, None),
+    };
+    let inline = (data.len() <= crate::emoji::DM_INLINE_MAX).then(|| data.clone());
+    let server = settings.peek().emoji_blob_server.clone();
+    let (Some(server), Some(secret)) = (server, secret) else {
+        if inline.is_none() {
+            state.write().error_toast = Some(format!(
+                ":{code}: is too large to react with in a DM without a blob server."
+            ));
+        }
+        return send(&nostr, emoji, inline);
+    };
+    dioxus::core::spawn_forever(async move {
+        let now = chrono::Utc::now().timestamp();
+        let picture = match crate::nostr::blossom::upload(&server, &secret, &data, now).await {
+            Ok(url) => {
+                let mut s = state.write();
+                if let Some(e) = s.saved_emoji.iter_mut().find(|e| e.image == image) {
+                    e.blossom_url = Some(url.clone());
+                }
+                Some(url)
+            }
+            Err(why) => {
+                state.write().error_toast = Some(format!("Couldn't upload :{code}: — {why}."));
+                inline
+            }
+        };
+        send(&nostr, emoji, picture);
+    });
+}
+
 /// The full picker for a reaction, in the browser's top layer: the chat
 /// scroller would clip it above the first visible line (trap 22).
 #[component]
@@ -1617,12 +1710,8 @@ fn ReactionPicker(
     on_close: EventHandler<()>,
 ) -> Element {
     let state = use_app_state();
-    // A DM reaction is a unicode glyph only (`reactions::valid_emoji`); a
-    // guild's accepts its own emoji too.
-    let (emojis, urls) = match guild_id {
-        Some(_) => guild_emoji_uris_of(&state.read(), channel_id),
-        None => Default::default(),
-    };
+    // A guild reacts with its own emoji; a DM with the person's saved ones.
+    let (emojis, urls) = guild_emoji_uris_of(&state.read(), channel_id);
     let focus = if cfg!(target_os = "android") {
         ""
     } else {
@@ -1645,7 +1734,7 @@ fn ReactionPicker(
                 EmojiPicker {
                     guild_emojis: emojis,
                     emoji_urls: urls,
-                    is_dm: false,
+                    is_dm: guild_id.is_none(),
                     on_pick: move |pick: ComposerPick| {
                         if let Some(emoji) = pick_emoji(&pick) {
                             on_pick.call(emoji);
@@ -1926,7 +2015,7 @@ mod author_name_tests {
         dom.runtime()
             .handle_event("click", Event::new(click, true), button);
         assert!(
-            matches!(dm.try_recv(), Ok(crate::nostr::service::NostrCmd::React { channel_id, message_id, emoji }) if channel_id == Id::nil() && message_id == Id::nil() && emoji == "👍")
+            matches!(dm.try_recv(), Ok(crate::nostr::service::NostrCmd::React { channel_id, message_id, emoji, picture: None }) if channel_id == Id::nil() && message_id == Id::nil() && emoji == "👍")
         );
         assert!(gateway.try_recv().is_err());
     }

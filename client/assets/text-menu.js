@@ -1,6 +1,6 @@
 return (async function () {
   if (window.__dxfTextMenuOff) window.__dxfTextMenuOff();
-  let menu = null, context = null, waiting = null, alive = true;
+  let menu = null, context = null, waiting = null, alive = true, marked = null;
   const listeners = [];
   let stop;
   const stopped = new Promise(resolve => { stop = resolve; });
@@ -11,6 +11,8 @@ return (async function () {
   function close(restoreFocus = false) {
     if (menu) menu.remove();
     menu = null;
+    if (marked) marked.removeAttribute('data-context-open');
+    marked = null;
     if (restoreFocus && context && context.target.isConnected) context.target.focus();
   }
   function editable(target) {
@@ -192,6 +194,8 @@ return (async function () {
       item('all', 'A');
     }
     document.body.append(menu);
+    // An attribute, not a class: Dioxus rewrites the row's class whenever it changes.
+    if (row && !field) { marked = row; row.setAttribute('data-context-open', ''); }
     const bounds = menu.getBoundingClientRect();
     menu.style.left = Math.max(8, Math.min(e.clientX, innerWidth - bounds.width - 8)) + 'px';
     menu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - bounds.height - 8)) + 'px';

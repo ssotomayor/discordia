@@ -365,7 +365,7 @@ pub fn PollCard(
                                 }
                                 div { class: "relative flex items-center gap-2 px-2.5 py-1.5 text-[12.5px]",
                                     span {
-                                        class: if chosen { "w-4 h-4 shrink-0 flex items-center justify-center rounded-full bg-[var(--accent)] text-[var(--bg)]" } else { "w-4 h-4 shrink-0 rounded-full border border-[var(--edge-strong)]" },
+                                        class: if chosen { "w-4 h-4 shrink-0 flex items-center justify-center rounded-full bg-[var(--accent)] text-[#1a1206]" } else { "w-4 h-4 shrink-0 rounded-full border border-[var(--edge-strong)]" },
                                         if chosen { span { class: "block w-3 h-3", dangerous_inner_html: super::icons::CHECK } }
                                     }
                                     span { class: "flex-1 min-w-0 break-words text-[var(--text)]", "{option}" }

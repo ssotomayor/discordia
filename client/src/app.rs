@@ -1561,20 +1561,24 @@ mod background_tests {
     }
 
     /// `--bg` is overridden to `transparent` whenever a pattern or an image is
-    /// on, so anything using it as *ink* disappears. Two unread badges did.
+    /// on, so anything using it as *ink* disappears: two unread badges, then the
+    /// date and time pickers' selected cell.
     #[test]
     fn nothing_paints_foreground_with_the_overridable_ground() {
-        for file in [
-            include_str!("features/guilds.rs"),
-            include_str!("features/channels.rs"),
-            include_str!("features/chat.rs"),
-            include_str!("features/members.rs"),
-            include_str!("features/workspace.rs"),
-        ] {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/features");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            seen += 1;
             assert!(
-                !file.contains("text-[var(--bg)]"),
-                "use --panel-solid for ink: --bg goes transparent under a background"
+                !std::fs::read_to_string(&path).unwrap().contains("text-[var(--bg)]"),
+                "{}: ink on the accent is #1a1206; --bg goes transparent under a background",
+                path.display()
             );
         }
+        assert!(seen > 20, "read the features directory");
     }
 }
