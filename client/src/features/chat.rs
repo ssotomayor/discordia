@@ -1124,7 +1124,10 @@ pub(super) fn MessageRow(
         })
     };
     let reaction_pictures = if guild_id.is_none() {
-        state.read().dm_reactions.pictures_of(channel_id, message_id)
+        state
+            .read()
+            .dm_reactions
+            .pictures_of(channel_id, message_id)
     } else {
         Vec::new()
     };
@@ -1660,7 +1663,11 @@ fn react_in_dm(
             .picture(channel_id, message_id, &emoji)
             .map(str::to_owned);
         let saved = s.saved_emoji.iter().find(|e| e.shortcode == code).map(|e| {
-            let data = s.emoji_images.get(&e.image).filter(|d| d.starts_with("data:")).cloned();
+            let data = s
+                .emoji_images
+                .get(&e.image)
+                .filter(|d| d.starts_with("data:"))
+                .cloned();
             (e.image.clone(), e.blossom_url.clone(), data)
         });
         (held, saved)

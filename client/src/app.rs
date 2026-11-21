@@ -1574,7 +1574,9 @@ mod background_tests {
             }
             seen += 1;
             assert!(
-                !std::fs::read_to_string(&path).unwrap().contains("text-[var(--bg)]"),
+                !std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("text-[var(--bg)]"),
                 "{}: ink on the accent is #1a1206; --bg goes transparent under a background",
                 path.display()
             );

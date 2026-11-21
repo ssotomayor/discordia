@@ -161,7 +161,10 @@ pub fn receive(state: &mut AppState, ours: &str, rumor: &Rumor) -> bool {
             let oldest_key = oldest_key.clone();
             versions.remove(&oldest_key);
             let (cid, mid, _, emoji) = oldest_key;
-            if !versions.keys().any(|(c, m, _, e)| (c, m, e) == (&cid, &mid, &emoji)) {
+            if !versions
+                .keys()
+                .any(|(c, m, _, e)| (c, m, e) == (&cid, &mid, &emoji))
+            {
                 state.dm_reactions.pictures.remove(&(cid, mid, emoji));
             }
         }
@@ -321,21 +324,36 @@ mod tests {
         let url = "https://blob.example/cat.png";
         for bare in [
             rumor(&peer, &ours, &target, ":cat:", None, true, 1),
-            rumor(&peer, &ours, &target, ":cat:", Some("http://blob.example/cat.png"), true, 1),
+            rumor(
+                &peer,
+                &ours,
+                &target,
+                ":cat:",
+                Some("http://blob.example/cat.png"),
+                true,
+                1,
+            ),
             rumor(&peer, &ours, &target, ":not a code:", Some(url), true, 1),
         ] {
             receive(&mut state, &ours, &bare);
         }
         assert!(state.messages[&channel][0].reactions.is_empty());
         let add = rumor(&peer, &ours, &target, ":cat:", Some(url), true, 2);
-        assert_eq!(super::super::nip17::emoji_tags(&add), vec![("cat".into(), url.into())]);
+        assert_eq!(
+            super::super::nip17::emoji_tags(&add),
+            vec![("cat".into(), url.into())]
+        );
         receive(&mut state, &ours, &add);
         assert_eq!(state.messages[&channel][0].reactions[0].emoji, ":cat:");
         assert_eq!(
             state.dm_reactions.pictures_of(channel, mid),
             vec![("cat".to_string(), url.to_string())]
         );
-        receive(&mut state, &ours, &rumor(&peer, &ours, &target, ":cat:", None, false, 3));
+        receive(
+            &mut state,
+            &ours,
+            &rumor(&peer, &ours, &target, ":cat:", None, false, 3),
+        );
         assert!(state.messages[&channel][0].reactions.is_empty());
         state.dm_reactions.forget(mid);
         assert!(state.dm_reactions.pictures_of(channel, mid).is_empty());
