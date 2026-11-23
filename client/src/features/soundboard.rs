@@ -231,7 +231,7 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                                                 }
                                                 button {
                                                     r#type: "button",
-                                                    class: "dxf-sound-favorite w-7 flex items-center justify-center rounded-md",
+                                                    class: "dxf-sound-favorite",
                                                     style: if favorite { "color:var(--accent)" } else { "color:var(--text-dim)" },
                                                     aria_pressed: "{favorite}",
                                                     title: crate::i18n::text(if favorite { "Remove sound from favorites" } else { "Add sound to favorites" }, &[]),
