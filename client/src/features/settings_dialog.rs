@@ -563,7 +563,7 @@ fn ActivitySettings() -> Element {
                                     if crate::presence::ipc::discord_compatible_supported() {
                                         {crate::i18n::text("Listens on the sockets a game already looks for. Whichever app starts first takes the socket. Restart the app after changing this.", &[])}
                                     } else {
-                                        {crate::i18n::text("Unavailable on Windows: this integration can crash Call of Duty's Discord SDK. Running-game detection remains available.", &[])}
+                                        {crate::i18n::text("Unavailable on Windows: some games' Discord integration can crash when it connects. Running-game detection remains available.", &[])}
                                     }
                                 }
                                 GameDetectionOverrides {}
