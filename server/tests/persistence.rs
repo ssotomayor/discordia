@@ -429,6 +429,7 @@ async fn every_kind_of_blob_reference_is_found() {
             guild_id,
             name: "silence".into(),
             audio: SILENT_WAV.into(),
+            emoji: None,
         })
         .await
         .unwrap();

@@ -1,6 +1,6 @@
 return (async function () {
   if (window.__dxfTextMenuOff) window.__dxfTextMenuOff();
-  let menu = null, context = null, waiting = null, alive = true, marked = null;
+  let menu = null, context = null, waiting = null, alive = true, marked = null, press = null;
   const listeners = [];
   let stop;
   const stopped = new Promise(resolve => { stop = resolve; });
@@ -14,6 +14,10 @@ return (async function () {
     if (marked) marked.removeAttribute('data-context-open');
     marked = null;
     if (restoreFocus && context && context.target.isConnected) context.target.focus();
+  }
+  function unpress() {
+    if (press) press.row.removeAttribute('data-context-press');
+    press = null;
   }
   function editable(target) {
     const el = target.closest('input, textarea, [contenteditable="true"]');
@@ -202,7 +206,23 @@ return (async function () {
     menu.querySelector('button').focus({ preventScroll: true });
   });
   on(document, 'pointerdown', e => { if (menu && !menu.contains(e.target)) { close(); context = null; } }, true);
+  // The long-press menu comes only after the hold, so a touch marks its row at once.
+  on(document, 'pointerdown', e => {
+    unpress();
+    if (e.pointerType !== 'touch' || !e.target.closest || editable(e.target) || e.target.closest('button, [role="button"]')) return;
+    const row = e.target.closest('[data-context-message]');
+    if (!row) return;
+    press = { row, x: e.clientX, y: e.clientY };
+    row.setAttribute('data-context-press', '');
+  }, true);
+  // A scroll or a swipe is not a press: past a few pixels the mark goes.
+  on(document, 'pointermove', e => {
+    if (press && Math.abs(e.clientX - press.x) + Math.abs(e.clientY - press.y) > 10) unpress();
+  }, true);
+  on(document, 'pointerup', unpress, true);
+  on(document, 'pointercancel', unpress, true);
   on(document, 'scroll', e => {
+    unpress();
     if (menu && menu.contains(e.target)) return;
     close(); context = null;
   }, true);
@@ -219,7 +239,7 @@ return (async function () {
       buttons[i].focus({ preventScroll: true });
     }
   }, true);
-  const off = () => { alive = false; close(); context = null; listeners.forEach(remove => remove()); stop(); };
+  const off = () => { alive = false; close(); unpress(); context = null; listeners.forEach(remove => remove()); stop(); };
   window.__dxfTextMenuOff = off;
   try {
     while (alive) {

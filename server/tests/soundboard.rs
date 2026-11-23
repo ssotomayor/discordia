@@ -129,6 +129,7 @@ async fn add_sound(owner: &mut Bot, guild_id: Id, name: &str) -> Vec<GuildSound>
             guild_id,
             name: name.into(),
             audio: tiny_wav(),
+            emoji: None,
         })
         .await
         .unwrap();
@@ -162,11 +163,34 @@ async fn the_owner_manages_the_library_and_members_see_it() {
             guild_id,
             sound_id,
             name: "Horn".into(),
+            emoji: Some("📯".into()),
         })
         .await
         .unwrap();
-    assert_eq!(next_sounds(&mut owner).await[0].name, "Horn");
-    assert_eq!(next_sounds(&mut member).await[0].name, "Horn");
+    let renamed = next_sounds(&mut owner).await;
+    assert_eq!(
+        (renamed[0].name.as_str(), renamed[0].emoji.as_deref()),
+        ("Horn", Some("📯"))
+    );
+    assert_eq!(
+        next_sounds(&mut member).await[0].emoji.as_deref(),
+        Some("📯")
+    );
+
+    owner
+        .send(&ClientMessage::RenameGuildSound {
+            guild_id,
+            sound_id,
+            name: "Horn".into(),
+            emoji: Some(":not_here:".into()),
+        })
+        .await
+        .unwrap();
+    let err = next_error(&mut owner).await;
+    assert!(
+        err.contains("not in this guild"),
+        "another guild's emoji is refused: {err}"
+    );
 
     owner
         .send(&ClientMessage::DeleteGuildSound { guild_id, sound_id })
@@ -193,6 +217,7 @@ async fn a_member_without_manage_guild_cannot_upload_or_remove() {
             guild_id,
             name: "sneaky".into(),
             audio: tiny_wav(),
+            emoji: None,
         })
         .await
         .unwrap();
@@ -224,6 +249,7 @@ async fn a_picture_is_not_a_sound() {
             guild_id,
             name: "pixel".into(),
             audio: png.into(),
+            emoji: None,
         })
         .await
         .unwrap();
@@ -235,6 +261,7 @@ async fn a_picture_is_not_a_sound() {
             guild_id,
             name: "pixel".into(),
             audio: mislabelled,
+            emoji: None,
         })
         .await
         .unwrap();

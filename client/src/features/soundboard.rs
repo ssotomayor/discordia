@@ -43,7 +43,7 @@ pub fn SoundboardPanel() -> Element {
     }
 }
 
-const POPOVER_W: f64 = 360.0;
+const POPOVER_W: f64 = 440.0;
 
 #[component]
 fn SoundboardPopover(guild_id: Id) -> Element {
@@ -208,10 +208,10 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                                             None => sound.name.clone(),
                                         };
                                         rsx! {
-                                            div { key: "{id}", class: "dxf-sound-tile relative min-w-0 rounded-md border border-[var(--border)]",
+                                            div { key: "{id}", class: "dxf-sound-tile relative min-w-0",
                                                 button {
                                                     r#type: "button",
-                                                    class: "dxf-sound-play h-9 px-1 w-full min-w-0 rounded-md text-xs text-[var(--text)] truncate hover:text-[var(--accent)] transition-colors disabled:opacity-40",
+                                                    class: "dxf-sound-play w-full min-w-0 text-[var(--text)] transition-colors disabled:opacity-40",
                                                     disabled: !ready || blocked.is_some() || cooling,
                                                     title: "{title}",
                                                     aria_label: "{sound.name}",
@@ -222,11 +222,16 @@ fn SoundboardPopover(guild_id: Id) -> Element {
                                                         last_play.set(Some(Instant::now()));
                                                         play(state, gw.clone(), v.clone(), sound.clone());
                                                     },
-                                                    "{sound.name}"
+                                                    if let Some(emoji) = sound.emoji.clone() {
+                                                        span { class: "dxf-sound-emoji",
+                                                            crate::features::chat::EmojiText { text: emoji, guild_id: Some(guild_id), compact: true, untitled: true }
+                                                        }
+                                                    }
+                                                    span { class: "dxf-sound-name", "{sound.name}" }
                                                 }
                                                 button {
                                                     r#type: "button",
-                                                    class: "dxf-sound-favorite w-7 h-9 flex items-center justify-center rounded-md",
+                                                    class: "dxf-sound-favorite w-7 flex items-center justify-center rounded-md",
                                                     style: if favorite { "color:var(--accent)" } else { "color:var(--text-dim)" },
                                                     aria_pressed: "{favorite}",
                                                     title: crate::i18n::text(if favorite { "Remove sound from favorites" } else { "Add sound to favorites" }, &[]),
@@ -388,10 +393,56 @@ fn preview_sound(mut state: Signal<AppState>, sound: GuildSound) {
     });
 }
 
+/// Opens the emoji picker for one sound, anchored to itself.
+#[component]
+fn SoundEmojiButton(
+    guild_id: Id,
+    emoji: Option<String>,
+    on_pick: EventHandler<Option<String>>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let id = use_hook(|| format!("sound-emoji-{}", uuid::Uuid::new_v4()));
+    let label = crate::i18n::text("Choose an emoji for this sound", &[]);
+    rsx! {
+        div { class: "relative shrink-0",
+            if open() {
+                div { class: "fixed inset-0 z-20", onclick: move |_| open.set(false) }
+            }
+            button {
+                r#type: "button",
+                class: "dxf-sound-emoji-pick",
+                title: "{label}",
+                aria_label: "{label}",
+                aria_expanded: "{open}",
+                onclick: move |_| open.set(!open()),
+                match emoji.clone() {
+                    Some(text) => rsx! {
+                        crate::features::chat::EmojiText { text, guild_id: Some(guild_id), compact: true, untitled: true }
+                    },
+                    None => rsx! { span { class: "dxf-sound-emoji-none", dangerous_inner_html: crate::features::icons::SMILE } },
+                }
+            }
+            if open() {
+                crate::features::chat::SoundEmojiPicker {
+                    id: id.clone(),
+                    guild_id,
+                    clearable: emoji.is_some(),
+                    on_pick: move |picked| {
+                        open.set(false);
+                        on_pick.call(picked);
+                    },
+                    on_close: move |_| open.set(false),
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct PendingSound {
     key: u64,
     name: String,
+    emoji: Option<String>,
     data_url: String,
     secs: f32,
     pcm: Arc<[f32]>,
@@ -464,7 +515,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
             let mut sends = Vec::new();
             for p in pending().iter() {
                 match crate::protocol::sound_name(&p.name) {
-                    Ok(n) => sends.push((p.key, n, p.data_url.clone())),
+                    Ok(n) => sends.push((p.key, n, p.data_url.clone(), p.emoji.clone())),
                     Err(_) => {
                         error.set(Some(format!(
                             "Name every sound in 1-{MAX_SOUND_NAME_LEN} characters."
@@ -484,7 +535,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
             adding.set(true);
             let gw = gateway.clone();
             spawn(async move {
-                for (i, (key, name, audio)) in sends.into_iter().enumerate() {
+                for (i, (key, name, audio, emoji)) in sends.into_iter().enumerate() {
                     if i > 0 {
                         tokio::time::sleep(UPLOAD_SPACING).await;
                     }
@@ -492,6 +543,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                         guild_id,
                         name,
                         audio,
+                        emoji,
                     });
                     pending.write().retain(|p| p.key != key);
                 }
@@ -558,6 +610,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                                 pending.write().push(PendingSound {
                                                     key,
                                                     name: stem_of(&file_name),
+                                                    emoji: None,
                                                     data_url,
                                                     secs,
                                                     pcm,
@@ -601,6 +654,15 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                         title: crate::i18n::text("Preview — only you hear it", &[]),
                                         onclick: move |_| preview(&state.peek(), pcm.clone()),
                                         dangerous_inner_html: crate::features::icons::PLAY,
+                                    }
+                                    SoundEmojiButton {
+                                        guild_id,
+                                        emoji: p.emoji.clone(),
+                                        on_pick: move |emoji| {
+                                            if let Some(entry) = pending.write().iter_mut().find(|q| q.key == key) {
+                                                entry.emoji = emoji;
+                                            }
+                                        },
                                     }
                                     input {
                                         class: if name_ok {
@@ -661,6 +723,9 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                 {
                     let gw_del = gateway.clone();
                     let gw_ren = gateway.clone();
+                    let gw_emoji = gateway.clone();
+                    let kept_emoji = sound.emoji.clone();
+                    let emoji_name = sound.name.clone();
                     let id = sound.id;
                     let current = sound.name.clone();
                     let is_renaming = renaming() == Some(id);
@@ -681,6 +746,16 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                 onclick: move |_| preview_sound(state, to_preview.clone()),
                                 dangerous_inner_html: crate::features::icons::PLAY,
                             }
+                            SoundEmojiButton {
+                                guild_id,
+                                emoji: sound.emoji.clone(),
+                                on_pick: move |emoji| gw_emoji.send(ClientMessage::RenameGuildSound {
+                                    guild_id,
+                                    sound_id: id,
+                                    name: emoji_name.clone(),
+                                    emoji,
+                                }),
+                            }
                             if is_renaming {
                                 input {
                                     class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-0.5 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
@@ -696,6 +771,7 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                                                 guild_id,
                                                 sound_id: id,
                                                 name: next,
+                                                emoji: kept_emoji.clone(),
                                             });
                                             renaming.set(None);
                                         }
@@ -750,6 +826,7 @@ mod tests {
             audio: "media:test.wav".into(),
             added_by: String::new(),
             created_ms: 0,
+            emoji: None,
         }
     }
 

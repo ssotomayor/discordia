@@ -1995,6 +1995,21 @@ impl AppState {
             .is_some_and(|list| list.iter().any(|s| s.id == sound_id))
     }
 
+    /// A custom emoji must be this guild's: another guild's picture is not
+    /// in what its members fetch.
+    fn sound_emoji(&self, guild_id: Id, raw: Option<&str>) -> Result<Option<String>, String> {
+        let Some(raw) = raw.filter(|r| !r.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let emoji = crate::protocol::sound_emoji(raw).ok_or("that is not an emoji")?;
+        if let Some(code) = emoji.strip_prefix(':').and_then(|e| e.strip_suffix(':'))
+            && !self.emojis_of(guild_id).iter().any(|e| e.shortcode == code)
+        {
+            return Err("that emoji is not in this guild".into());
+        }
+        Ok(Some(emoji))
+    }
+
     /// `audio` is already stored; the gateway checks the permission before
     /// storing it too, so a refused upload never reaches the disk.
     pub async fn create_sound(
@@ -2002,11 +2017,13 @@ impl AppState {
         guild_id: Id,
         name: &str,
         audio: String,
+        emoji: Option<&str>,
         by_pubkey: &str,
     ) -> Result<GuildSound, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let name = crate::protocol::sound_name(name)?;
+        let emoji = self.sound_emoji(guild_id, emoji)?;
         let sound = {
             let list = self
                 .sounds
@@ -2028,6 +2045,7 @@ impl AppState {
                 audio,
                 added_by: by_pubkey.to_string(),
                 created_ms: chrono::Utc::now().timestamp_millis(),
+                emoji,
             }
         };
         durable(self.store.upsert_sound(&sound).await, "sound create")?;
@@ -2040,11 +2058,13 @@ impl AppState {
         guild_id: Id,
         sound_id: Id,
         name: &str,
+        emoji: Option<&str>,
         by_pubkey: &str,
     ) -> Result<GuildSound, String> {
         let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let name = crate::protocol::sound_name(name)?;
+        let emoji = self.sound_emoji(guild_id, emoji)?;
         let updated = {
             let list = self
                 .sounds
@@ -2063,6 +2083,7 @@ impl AppState {
                 .cloned()
                 .ok_or("unknown sound")?;
             s.name = name;
+            s.emoji = emoji;
             s.clone()
         };
         durable(self.store.upsert_sound(&updated).await, "sound rename")?;

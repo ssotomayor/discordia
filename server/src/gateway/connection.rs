@@ -1174,7 +1174,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             break;
                         }
                     }
-                    ClientMessage::CreateGuildSound { guild_id, name, audio } => {
+                    ClientMessage::CreateGuildSound { guild_id, name, audio, emoji } => {
                         let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1209,21 +1209,21 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 continue;
                             }
                         };
-                        match ctx.state.create_sound(guild_id, &name, address, &u.pubkey).await {
+                        match ctx.state.create_sound(guild_id, &name, address, emoji.as_deref(), &u.pubkey).await {
                             Ok(_) => broadcast_sounds(&ctx.state, guild_id),
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             }
                         }
                     }
-                    ClientMessage::RenameGuildSound { guild_id, sound_id, name } => {
+                    ClientMessage::RenameGuildSound { guild_id, sound_id, name, emoji } => {
                         let Some(u) = phase.user() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
                             continue;
                         };
-                        match ctx.state.rename_sound(guild_id, sound_id, &name, &u.pubkey).await {
+                        match ctx.state.rename_sound(guild_id, sound_id, &name, emoji.as_deref(), &u.pubkey).await {
                             Ok(_) => broadcast_sounds(&ctx.state, guild_id),
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;

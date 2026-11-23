@@ -347,6 +347,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 audio: "../../etc/passwd".into(),
                 added_by: owner.clone(),
                 created_ms: 0,
+                emoji: None,
             },
             GuildSound {
                 id: Uuid::new_v4(),
@@ -355,6 +356,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
                 audio: format!("media:{}.mp3", "a".repeat(64)),
                 added_by: owner.clone(),
                 created_ms: 0,
+                emoji: None,
             },
         ],
         members: vec![

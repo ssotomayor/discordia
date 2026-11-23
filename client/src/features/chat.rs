@@ -1754,6 +1754,67 @@ fn ReactionPicker(
     }
 }
 
+/// A soundboard sound's emoji: a glyph or the guild's own, never a saved one
+/// from elsewhere — its members could not fetch the picture.
+#[component]
+pub(crate) fn SoundEmojiPicker(
+    id: String,
+    guild_id: Id,
+    clearable: bool,
+    on_pick: EventHandler<Option<String>>,
+    on_close: EventHandler<()>,
+) -> Element {
+    let state = use_app_state();
+    let (emojis, urls) = {
+        let s = state.read();
+        let list = s.emojis_of(guild_id).to_vec();
+        let urls = list
+            .iter()
+            .filter_map(|e| {
+                crate::image_assets::cached_uri(&s.emoji_images, &e.image)
+                    .map(|u| (e.image.clone(), u))
+            })
+            .collect();
+        (list, urls)
+    };
+    rsx! {
+        div {
+            id: "{id}",
+            "popover": "manual",
+            // No display class here: it would beat the hidden state of a closed popover.
+            class: "rounded-md bg-[var(--panel-solid)] border border-[var(--border)] shadow-lg p-2 text-[var(--text)]",
+            style: "position:fixed;inset:auto;margin:0;max-width:calc(100vw - 16px);",
+            onmounted: move |_| {
+                let _ = document::eval(&format!(
+                    "({})({id:?}, false);",
+                    include_str!("../../assets/voice-tooltip.js")
+                ));
+            },
+            div { class: "dxf-emoji-popover",
+                if clearable {
+                    button {
+                        r#type: "button",
+                        class: "dxf-sound-emoji-clear",
+                        onclick: move |_| on_pick.call(None),
+                        {crate::i18n::text("No emoji", &[])}
+                    }
+                }
+                EmojiPicker {
+                    guild_emojis: emojis,
+                    emoji_urls: urls,
+                    is_dm: false,
+                    on_pick: move |pick: ComposerPick| {
+                        if let Some(emoji) = pick_emoji(&pick) {
+                            on_pick.call(Some(emoji));
+                        }
+                    },
+                    on_escape: move |_| on_close.call(()),
+                }
+            }
+        }
+    }
+}
+
 /// Loads saved emoji pictures off disk into the media cache, once each: a
 /// DM has no gateway to ask, and a guild's picker shows them as saved.
 pub fn use_saved_emoji_pictures() {

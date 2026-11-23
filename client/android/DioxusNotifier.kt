@@ -20,9 +20,10 @@ import org.json.JSONObject
 
 // Context only: a push may start a process in which no Activity ever runs.
 object DioxusNotifier {
-    const val DM_CHANNEL = "discordia-dm-v1"
+    // A channel's vibration is fixed once created, so a new pattern needs new ids.
+    const val DM_CHANNEL = "discordia-dm-v2"
     const val QUIET_CHANNEL = "discordia-dm-quiet-v1"
-    const val MENTION_CHANNEL = "discordia-mention-v1"
+    const val MENTION_CHANNEL = "discordia-mention-v2"
     const val QUIET_MENTION_CHANNEL = "discordia-mention-quiet-v1"
     const val DM_PREFIX = "discordia-dm:"
     const val MENTION_PREFIX = "discordia-mention:"
@@ -35,6 +36,9 @@ object DioxusNotifier {
     private const val DEDUP_CAP = 64
     private const val SEEN = "seen"
     private val FALLBACK = mapOf("dm" to "Private messages", "mention" to "Mentions", "ping" to "Notifications are working", "reply" to "Reply", "read" to "Mark as read")
+    private val RETIRED = mapOf("discordia-dm-v1" to DM_CHANNEL, "discordia-mention-v1" to MENTION_CHANNEL)
+    // Two long pulses; the default's two short taps went unnoticed in a pocket.
+    private val VIBRATION = longArrayOf(0, 400, 200, 400)
     private val ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
     @Volatile var resumed = false
@@ -79,11 +83,20 @@ object DioxusNotifier {
         val manager = manager(context)
         val dm = label(labels(context), "dm")
         val mention = label(labels(context), "mention")
-        manager.createNotificationChannel(NotificationChannel(DM_CHANNEL, dm, NotificationManager.IMPORTANCE_HIGH))
+        // A channel the person switched off stays off under its new id.
+        val off = RETIRED.filter { (old, _) -> manager.getNotificationChannel(old)?.importance == NotificationManager.IMPORTANCE_NONE }.values.toSet()
+        manager.createNotificationChannel(loud(DM_CHANNEL, dm, DM_CHANNEL in off))
         manager.createNotificationChannel(quiet(QUIET_CHANNEL, dm))
-        manager.createNotificationChannel(NotificationChannel(MENTION_CHANNEL, mention, NotificationManager.IMPORTANCE_HIGH))
+        manager.createNotificationChannel(loud(MENTION_CHANNEL, mention, MENTION_CHANNEL in off))
         manager.createNotificationChannel(quiet(QUIET_MENTION_CHANNEL, mention))
+        RETIRED.keys.forEach { manager.deleteNotificationChannel(it) }
     }
+
+    private fun loud(id: String, name: String, off: Boolean) =
+        NotificationChannel(id, name, if (off) NotificationManager.IMPORTANCE_NONE else NotificationManager.IMPORTANCE_HIGH).apply {
+            enableVibration(true)
+            vibrationPattern = VIBRATION
+        }
 
     private fun quiet(id: String, name: String) = NotificationChannel(id, name, NotificationManager.IMPORTANCE_LOW).apply {
         setSound(null, null)

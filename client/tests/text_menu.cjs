@@ -202,3 +202,26 @@ test('the desktop eval channel stays open after startup and handles clipboard re
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.bridgeClosed(), true, 'unmount closes the channel');
 });
+
+test('a touch marks its message at once, and a scroll or a lift takes the mark away', () => {
+  const f = fixture();
+  const row = new f.Element('div', { 'data-context-message': 'hi' });
+  const text = new f.Element('span'); row.append(text);
+  const button = new f.Element('button'); row.append(button);
+  f.document.body.append(row);
+  const touch = (type, target, x = 10, y = 10) => f.event(type, target, { pointerType: 'touch', clientX: x, clientY: y });
+  touch('pointerdown', text);
+  assert.ok(row.hasAttribute('data-context-press'), 'marked before any menu');
+  touch('pointermove', text, 13, 12);
+  assert.ok(row.hasAttribute('data-context-press'), 'a steady finger keeps it');
+  f.event('contextmenu', text);
+  touch('pointerup', text);
+  assert.ok(!row.hasAttribute('data-context-press'));
+  assert.ok(row.hasAttribute('data-context-open'), 'the open menu keeps its own mark');
+  touch('pointerdown', text); touch('pointermove', text, 10, 40);
+  assert.ok(!row.hasAttribute('data-context-press'), 'a scroll is not a press');
+  touch('pointerdown', button);
+  assert.ok(!row.hasAttribute('data-context-press'), "a button's own press is the button's");
+  f.event('pointerdown', text, { pointerType: 'mouse' });
+  assert.ok(!row.hasAttribute('data-context-press'), 'a mouse has hover instead');
+});

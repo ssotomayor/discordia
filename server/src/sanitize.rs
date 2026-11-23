@@ -137,6 +137,7 @@ pub fn sound(s: &mut GuildSound) -> bool {
         Ok(name) => s.name = name,
         Err(_) => return false,
     }
+    s.emoji = s.emoji.as_deref().and_then(crate::protocol::sound_emoji);
     s.audio.starts_with("media:") && crate::media::is_address(&s.audio)
 }
 

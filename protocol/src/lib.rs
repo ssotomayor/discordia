@@ -1605,6 +1605,9 @@ pub struct GuildSound {
     pub added_by: String,
     #[serde(default)]
     pub created_ms: i64,
+    /// Drawn beside the name: a glyph, or `:code:` of the guild's own emoji.
+    #[serde(default)]
+    pub emoji: Option<String>,
 }
 
 pub const MAX_SOUND_NAME_LEN: usize = 32;
@@ -1616,6 +1619,22 @@ pub const MAX_SOUND_SECS: f32 = 5.5;
 
 pub fn sound_name(raw: &str) -> Result<String, String> {
     sanitize_name("sound", raw, MAX_SOUND_NAME_LEN)
+}
+
+/// The shape of a sound's emoji, `None` for none or a malformed one. Whether
+/// a `:code:` is the guild's own is the server's check.
+pub fn sound_emoji(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if let Some(code) = raw.strip_prefix(':').and_then(|r| r.strip_suffix(':')) {
+        return valid_shortcode(code).then(|| raw.to_string());
+    }
+    let glyph = !raw.is_empty()
+        && raw.len() <= 32
+        && raw.chars().count() <= 8
+        && !raw
+            .chars()
+            .any(|c| c.is_ascii_alphabetic() || c.is_whitespace() || c.is_control());
+    glyph.then(|| raw.to_string())
 }
 
 /// Narrower than NIP-30 on purpose: lowercase-only makes `:Tada:` and `:tada:`
@@ -3042,11 +3061,16 @@ pub enum ClientMessage {
         guild_id: Id,
         name: String,
         audio: String,
+        #[serde(default)]
+        emoji: Option<String>,
     },
+    /// Sets the name and the emoji together; `None` clears the emoji.
     RenameGuildSound {
         guild_id: Id,
         sound_id: Id,
         name: String,
+        #[serde(default)]
+        emoji: Option<String>,
     },
     DeleteGuildSound {
         guild_id: Id,
@@ -4881,5 +4905,21 @@ mod agent_manifest_tests {
         assert!(validate_manifest(manifest(info("p", ""))).is_err());
         let ok = validate_manifest(manifest(info(" Anthropic ", "claude-opus-5-5"))).unwrap();
         assert_eq!(ok.agent, info("Anthropic", "claude-opus-5-5"));
+    }
+}
+
+#[cfg(test)]
+mod sound_emoji_tests {
+    use super::sound_emoji;
+
+    #[test]
+    fn a_sound_emoji_is_a_glyph_or_a_shortcode() {
+        assert_eq!(sound_emoji(" 🦁 ").as_deref(), Some("🦁"));
+        assert_eq!(sound_emoji("❤️").as_deref(), Some("❤️"));
+        assert_eq!(sound_emoji(":lion_2:").as_deref(), Some(":lion_2:"));
+        for bad in ["", "lion", ":Lion:", "🦁 🦁", "🦁🦁🦁🦁🦁🦁🦁🦁🦁", "\u{7}"]
+        {
+            assert_eq!(sound_emoji(bad), None, "{bad:?}");
+        }
     }
 }

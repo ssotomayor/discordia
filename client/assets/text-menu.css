@@ -43,6 +43,8 @@
 .dxf-text-menu .dxf-text-menu-danger { color: var(--danger, #ed4245); }
 .dxf-text-menu .dxf-text-menu-danger:hover, .dxf-text-menu .dxf-text-menu-danger:focus-visible { background-color: var(--danger, #ed4245); color: #fff; }
 /* Inset shadows paint over a mention's inline background, under the text. */
-[data-context-open], .dxf-msg-active {
+[data-context-press], [data-context-open], .dxf-msg-active {
   box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 100vmax color-mix(in srgb, var(--accent) 14%, transparent) !important;
 }
+/* A touch that turns into a scroll is cancelled within a few frames; the fade keeps it from flashing. */
+[data-context-message] { transition: box-shadow 90ms ease-out; }

@@ -342,6 +342,7 @@ impl Store {
             "ALTER TABLE profiles ADD COLUMN hide_guild_owner INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN hide_operator INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE profiles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE guild_sounds ADD COLUMN emoji TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -501,10 +502,11 @@ impl Store {
                 created_ms: r.get(5),
             });
         }
-        for r in
-            sqlx::query("SELECT id, guild_id, name, audio, added_by, created_ms FROM guild_sounds")
-                .fetch_all(&self.pool)
-                .await?
+        for r in sqlx::query(
+            "SELECT id, guild_id, name, audio, added_by, created_ms, emoji FROM guild_sounds",
+        )
+        .fetch_all(&self.pool)
+        .await?
         {
             out.sounds.push(GuildSound {
                 id: parse_id(&r.get::<String, _>(0)),
@@ -513,6 +515,7 @@ impl Store {
                 audio: r.get(3),
                 added_by: r.get(4),
                 created_ms: r.get(5),
+                emoji: r.get(6),
             });
         }
         for r in sqlx::query("SELECT guild_id, pubkey FROM bans")
@@ -884,9 +887,9 @@ impl Store {
 
     pub async fn upsert_sound(&self, s: &GuildSound) -> Result<()> {
         sqlx::query(
-            "INSERT INTO guild_sounds (id, guild_id, name, audio, added_by, created_ms)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, audio=excluded.audio",
+            "INSERT INTO guild_sounds (id, guild_id, name, audio, added_by, created_ms, emoji)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, audio=excluded.audio, emoji=excluded.emoji",
         )
         .bind(s.id.to_string())
         .bind(s.guild_id.to_string())
@@ -894,6 +897,7 @@ impl Store {
         .bind(&s.audio)
         .bind(&s.added_by)
         .bind(s.created_ms)
+        .bind(&s.emoji)
         .execute(&self.pool)
         .await?;
         Ok(())

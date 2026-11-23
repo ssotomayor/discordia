@@ -216,6 +216,7 @@ async fn a_guild_at_every_cap_still_fits_in_its_members_ready() {
                 gid,
                 &format!("{}{n:02}", wide(30)),
                 format!("media:{}.ogg", key(n)),
+                None,
                 by,
             )
             .await

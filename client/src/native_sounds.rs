@@ -265,7 +265,7 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
         let command = if let Some(command) = take_pending_peer_join(&control) {
             command
         } else if output.is_some() {
-            match rx.recv_timeout(IDLE.saturating_sub(last_play.elapsed())) {
+            match rx.recv_timeout(idle_left(last_play, Instant::now())) {
                 Ok(command) => command,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     output = None;
@@ -339,6 +339,12 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
             }
         }
     }
+}
+
+/// A clip sets `last_play` to its end, which lies ahead: counted from now
+/// instead, the output closed 1.5 s into every longer clip.
+fn idle_left(last_play: Instant, now: Instant) -> Duration {
+    (last_play + IDLE).saturating_duration_since(now)
 }
 
 /// Linear, which is plenty for a preview of a sound that will play through
@@ -776,6 +782,15 @@ fn oscillator(wave: Wave, phase: f64, frequency: f64, rate: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_output_outlives_a_clip_longer_than_the_idle_wait() {
+        let now = Instant::now();
+        let clip_ends = now + Duration::from_secs(5);
+        assert_eq!(idle_left(clip_ends, now), Duration::from_secs(5) + IDLE);
+        assert_eq!(idle_left(now, now), IDLE);
+        assert_eq!(idle_left(now, now + IDLE * 2), Duration::ZERO);
+    }
 
     #[test]
     fn app_volume_policy_keeps_all_events_and_dnd_keeps_local_feedback() {
