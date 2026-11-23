@@ -2412,5 +2412,7 @@
   "Th": ["Ju", "Qui", "四", "木"],
   "Fr": ["Vi", "Sex", "五", "金"],
   "Sa": ["Sá", "Sáb", "六", "土"],
-  "Su": ["Do", "Dom", "日", "日"]
+  "Su": ["Do", "Dom", "日", "日"],
+  "No emoji": ["Sin emoji", "Sem emoji", "无表情", "絵文字なし"],
+  "Choose an emoji for this sound": ["Elige un emoji para este sonido", "Escolha um emoji para este som", "为这个声音选择表情", "このサウンドの絵文字を選ぶ"]
 }
