@@ -2414,5 +2414,13 @@
   "Sa": ["Sá", "Sáb", "六", "土"],
   "Su": ["Do", "Dom", "日", "日"],
   "No emoji": ["Sin emoji", "Sem emoji", "无表情", "絵文字なし"],
-  "Choose an emoji for this sound": ["Elige un emoji para este sonido", "Escolha um emoji para este som", "为这个声音选择表情", "このサウンドの絵文字を選ぶ"]
+  "Choose an emoji for this sound": ["Elige un emoji para este sonido", "Escolha um emoji para este som", "为这个声音选择表情", "このサウンドの絵文字を選ぶ"],
+  "Smileys & emotion": ["Caras y emociones", "Carinhas e emoções", "笑脸和情感", "スマイリーと感情"],
+  "People & body": ["Personas y cuerpo", "Pessoas e corpo", "人物和身体", "人と体"],
+  "Animals & nature": ["Animales y naturaleza", "Animais e natureza", "动物和自然", "動物と自然"],
+  "Food & drink": ["Comida y bebida", "Comida e bebida", "食物和饮料", "食べ物と飲み物"],
+  "Travel & places": ["Viajes y lugares", "Viagens e lugares", "旅行和地点", "旅行と場所"],
+  "Objects": ["Objetos", "Objetos", "物品", "物"],
+  "Symbols": ["Símbolos", "Símbolos", "符号", "記号"],
+  "Flags": ["Banderas", "Bandeiras", "旗帜", "旗"]
 }

@@ -9,18 +9,60 @@ use crate::state::{use_app_state, use_gateway};
 
 /// Named so `:fi` can offer 🔥. Names follow the usual shortcode set.
 #[rustfmt::skip]
-pub(crate) const EMOJIS: &[(&str, &str)] = &[
-    ("😀", "grinning"), ("😂", "joy"), ("😅", "sweat_smile"), ("😍", "heart_eyes"),
-    ("😎", "sunglasses"), ("🤔", "thinking"), ("😭", "sob"), ("😡", "rage"),
-    ("👍", "thumbsup"), ("👎", "thumbsdown"), ("🙏", "pray"), ("🔥", "fire"),
-    ("🎉", "tada"), ("❤️", "heart"), ("💯", "100"), ("✨", "sparkles"),
-    ("🚀", "rocket"), ("👀", "eyes"), ("🙌", "raised_hands"), ("😉", "wink"),
-    ("🥳", "partying_face"), ("😴", "sleeping"), ("🤯", "exploding_head"), ("🤝", "handshake"),
-    ("👋", "wave"), ("💀", "skull"), ("✅", "white_check_mark"), ("❌", "x"),
-    ("⚡", "zap"), ("🌈", "rainbow"), ("🍕", "pizza"), ("☕", "coffee"),
-    ("🎮", "video_game"), ("💸", "money_with_wings"), ("🐛", "bug"), ("📎", "paperclip"),
-    ("🖼️", "framed_picture"), ("🤖", "robot"), ("🫡", "saluting_face"), ("😬", "grimacing"),
-];
+/// Every emoji in Unicode 14 and earlier, in CLDR order, as `(glyph, name)`:
+/// later ones draw as empty boxes on Android 12L and macOS 12, which we support.
+pub(crate) static EMOJIS: std::sync::LazyLock<Vec<(&'static str, &'static str)>> =
+    std::sync::LazyLock::new(|| EMOJI_TABLE.iter().map(|(e, n, _)| (*e, *n)).collect());
+
+type UnicodeEmoji = (&'static str, &'static str);
+
+/// Where each CLDR group starts and ends in `EMOJIS`.
+static EMOJI_GROUPS: std::sync::LazyLock<Vec<(emojis::Group, std::ops::Range<usize>)>> =
+    std::sync::LazyLock::new(|| {
+        let mut out: Vec<(emojis::Group, std::ops::Range<usize>)> = Vec::new();
+        for (i, (_, _, group)) in EMOJI_TABLE.iter().enumerate() {
+            match out.last_mut() {
+                Some((g, range)) if g == group => range.end = i + 1,
+                _ => out.push((*group, i..i + 1)),
+            }
+        }
+        out
+    });
+
+static EMOJI_TABLE: std::sync::LazyLock<Vec<(&'static str, &'static str, emojis::Group)>> =
+    std::sync::LazyLock::new(|| {
+        let mut seen = std::collections::HashSet::new();
+        emojis::iter()
+            .filter(|e| e.unicode_version() <= emojis::UnicodeVersion::new(14, 0))
+            .filter_map(|e| {
+                // A name is a list key and a search term, so it must be unique.
+                let name = e
+                    .shortcodes()
+                    .find(|c| {
+                        c.len() >= 2
+                            && c.chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                    })
+                    .or(e.shortcode())?;
+                seen.insert(name).then_some((e.as_str(), name, e.group()))
+            })
+            .collect()
+    });
+
+fn emoji_group_label(group: emojis::Group) -> &'static str {
+    use emojis::Group;
+    match group {
+        Group::SmileysAndEmotion => "Smileys & emotion",
+        Group::PeopleAndBody => "People & body",
+        Group::AnimalsAndNature => "Animals & nature",
+        Group::FoodAndDrink => "Food & drink",
+        Group::TravelAndPlaces => "Travel & places",
+        Group::Activities => "Activities",
+        Group::Objects => "Objects",
+        Group::Symbols => "Symbols",
+        Group::Flags => "Flags",
+    }
+}
 
 const QUICK_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "🔥", "👀", "🙏", "✅"];
 
@@ -2722,15 +2764,14 @@ fn emoji_suggestions(
                     },
                 }),
         );
-        out.extend(
-            EMOJIS
-                .iter()
-                .filter(|(_, name)| hit(name))
-                .map(|(emoji, name)| ComposerSuggestion {
-                    name: (*name).to_string(),
-                    pick: ComposerPick::Unicode(emoji),
-                }),
-        );
+        // Shortest, then alphabetical: CLDR order put fist_raised before fire for `:fi`.
+        let mut unicode: Vec<&(&'static str, &'static str)> =
+            EMOJIS.iter().filter(|(_, name)| hit(name)).collect();
+        unicode.sort_by_key(|(_, name)| (name.len(), *name));
+        out.extend(unicode.into_iter().map(|(emoji, name)| ComposerSuggestion {
+            name: (*name).to_string(),
+            pick: ComposerPick::Unicode(emoji),
+        }));
         if out.len() >= MAX_SUGGESTIONS {
             break;
         }
@@ -2973,6 +3014,19 @@ fn EmojiPicker(
                 .map(|&(u, _)| ComposerPick::Unicode(u))
         });
     let nothing = first.is_none();
+    let unicode_sections: Vec<(Option<&'static str>, Vec<UnicodeEmoji>)> = if searching {
+        vec![(None, unicode_shown)]
+    } else {
+        EMOJI_GROUPS
+            .iter()
+            .map(|(group, range)| {
+                (
+                    Some(emoji_group_label(*group)),
+                    EMOJIS[range.clone()].to_vec(),
+                )
+            })
+            .collect()
+    };
 
     rsx! {
         div { class: "contents",
@@ -3063,9 +3117,12 @@ fn EmojiPicker(
                             }
                         }
                     }
-                    if !unicode_shown.is_empty() {
+                    for (heading, shown) in unicode_sections.into_iter().filter(|(_, shown)| !shown.is_empty()) {
+                        if let Some(heading) = heading {
+                            div { class: "dxf-emoji-heading", {crate::i18n::label(heading)} }
+                        }
                         div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5",
-                            for (emoji, name) in unicode_shown.into_iter() {
+                            for (emoji, name) in shown.into_iter() {
                                 button {
                                     key: "{name}",
                                     r#type: "button",
@@ -4346,16 +4403,45 @@ mod composer_tests {
     }
 
     #[test]
+    fn the_emoji_table_is_whole_unique_and_grouped() {
+        for (glyph, name) in [
+            ("🍑", "peach"),
+            ("🍆", "eggplant"),
+            ("🦁", "lion"),
+            ("👍", "thumbsup"),
+            ("❤️", "heart"),
+        ] {
+            assert!(EMOJIS.contains(&(glyph, name)), "{glyph} {name}");
+        }
+        assert!(EMOJIS.len() > 1500);
+        let names: std::collections::HashSet<_> = EMOJIS.iter().map(|(_, n)| n).collect();
+        assert_eq!(names.len(), EMOJIS.len());
+        assert_eq!(
+            EMOJI_GROUPS.iter().map(|(_, r)| r.len()).sum::<usize>(),
+            EMOJIS.len()
+        );
+        assert_eq!(EMOJI_GROUPS.len(), 9, "each group is one run");
+    }
+
+    #[test]
     fn suggestions_rank_this_guild_and_prefixes_first_and_stay_bounded() {
         let guild = vec![custom("fireball"), custom("campfire")];
         let urls =
             std::collections::HashMap::from([("fireball.png".to_string(), "data:x".to_string())]);
-        let got = emoji_suggestions("fi", &guild, &urls);
+        let got = emoji_suggestions("fir", &guild, &urls);
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["fireball", "fire", "campfire"]);
+        assert_eq!(names[..2], ["fireball", "fire"]);
+        assert_eq!(
+            got.len(),
+            MAX_SUGGESTIONS,
+            "every built-in prefix ranks above a substring"
+        );
         assert!(matches!(&got[0].pick, ComposerPick::Custom { url, .. } if url == "data:x"));
-        assert!(matches!(&got[2].pick, ComposerPick::Custom { url, .. } if url.is_empty()));
         assert!(matches!(got[1].pick, ComposerPick::Unicode("🔥")));
+        let inside = emoji_suggestions("mpfi", &guild, &urls);
+        assert!(
+            matches!(&inside[..], [s] if s.name == "campfire" && matches!(&s.pick, ComposerPick::Custom { url, .. } if url.is_empty()))
+        );
         assert!(emoji_suggestions("zzzz", &guild, &urls).is_empty());
         assert_eq!(emoji_suggestions("_", &guild, &urls).len(), MAX_SUGGESTIONS);
     }

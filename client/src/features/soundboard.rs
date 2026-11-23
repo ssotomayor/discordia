@@ -749,12 +749,21 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                             SoundEmojiButton {
                                 guild_id,
                                 emoji: sound.emoji.clone(),
-                                on_pick: move |emoji| gw_emoji.send(ClientMessage::RenameGuildSound {
-                                    guild_id,
-                                    sound_id: id,
-                                    name: emoji_name.clone(),
-                                    emoji,
-                                }),
+                                on_pick: move |emoji: Option<String>| {
+                                    // Shown at once; the server's list replaces it, and a server
+                                    // too old to store an emoji takes it away again.
+                                    if let Some(list) = state.write().guild_sounds.get_mut(&guild_id)
+                                        && let Some(entry) = list.iter_mut().find(|s| s.id == id)
+                                    {
+                                        entry.emoji = emoji.clone();
+                                    }
+                                    gw_emoji.send(ClientMessage::RenameGuildSound {
+                                        guild_id,
+                                        sound_id: id,
+                                        name: emoji_name.clone(),
+                                        emoji,
+                                    });
+                                },
                             }
                             if is_renaming {
                                 input {
