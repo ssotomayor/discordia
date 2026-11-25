@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
@@ -17,6 +18,7 @@ import android.os.Bundle
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import org.json.JSONObject
+import java.io.File
 
 // Context only: a push may start a process in which no Activity ever runs.
 object DioxusNotifier {
@@ -39,6 +41,8 @@ object DioxusNotifier {
     private val RETIRED = mapOf("discordia-dm-v1" to DM_CHANNEL, "discordia-mention-v1" to MENTION_CHANNEL)
     // Two long pulses; the default's two short taps went unnoticed in a pocket.
     private val VIBRATION = longArrayOf(0, 400, 200, 400)
+    private const val BRAND = 0xFFFFD21A.toInt()
+    private const val AVATAR_BYTES = 256 * 1024
     private val ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
     @Volatile var resumed = false
@@ -141,6 +145,16 @@ object DioxusNotifier {
         return (earlier + (at to text)).takeLast(DM_LINES)
     }
 
+    fun brand(context: Context, channel: String): Notification.Builder =
+        Notification.Builder(context, channel).setSmallIcon(R.drawable.ic_notification).setColor(BRAND)
+
+    // Written by the running app (`push::avatars`), so a cold push finds it too.
+    private fun avatar(context: Context, peer: String): Icon? {
+        val file = File(context.noBackupFilesDir, "discordia/notification-avatars/$peer.png")
+        if (!file.isFile || file.length() > AVATAR_BYTES) return null
+        return BitmapFactory.decodeFile(file.path)?.let { Icon.createWithBitmap(it) }
+    }
+
     private fun launch(context: Context, uri: Uri?): PendingIntent? {
         val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
         if (uri != null) {
@@ -240,20 +254,28 @@ object DioxusNotifier {
             null
         }
         val lines = unseen(shown?.getLongArray(LINE_TIMES), shown?.getStringArray(LINE_TEXTS), at, text)
-        // The names, not `Person`: that needs API 28 and this runs from 26.
-        val style = Notification.MessagingStyle(context.getString(R.string.app_name))
-        for ((time, line) in lines) style.addMessage(line, time * 1000, sender)
+        val picture = avatar(context, peer)
+        // `Person`, which carries the picture, needs API 28; this runs from 26.
+        val style = if (Build.VERSION.SDK_INT >= 28) {
+            val them = android.app.Person.Builder().setName(sender).setKey(peer).setIcon(picture).build()
+            Notification.MessagingStyle(android.app.Person.Builder().setName(context.getString(R.string.app_name)).build()).also { style ->
+                for ((time, line) in lines) style.addMessage(Notification.MessagingStyle.Message(line, time * 1000, them))
+            }
+        } else {
+            Notification.MessagingStyle(context.getString(R.string.app_name)).also { style ->
+                for ((time, line) in lines) style.addMessage(line, time * 1000, sender)
+            }
+        }
         // `message` may be the message itself; a locked screen gets the line that never is.
-        val publicVersion = Notification.Builder(context, channel)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
+        val publicVersion = brand(context, channel)
             .setContentTitle(context.getString(R.string.app_name))
             .setContentText(value.optString("public", label(labels(context), "dm")))
             .build()
-        val notification = Notification.Builder(context, channel)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
+        val notification = brand(context, channel)
             .setContentTitle(sender)
             .setContentText(text)
             .setStyle(style)
+            .apply { if (Build.VERSION.SDK_INT < 28 && picture != null) setLargeIcon(picture) }
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
@@ -285,13 +307,11 @@ object DioxusNotifier {
         if (!remember(alerted(context), tag, value.getLong("at"))) return
         ensureChannels(context)
         val notificationChannel = if (value.optBoolean("silent", false)) QUIET_MENTION_CHANNEL else MENTION_CHANNEL
-        val publicVersion = Notification.Builder(context, notificationChannel)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
+        val publicVersion = brand(context, notificationChannel)
             .setContentTitle(context.getString(R.string.app_name))
             .setContentText(label(labels(context), "mention"))
             .build()
-        val notification = Notification.Builder(context, notificationChannel)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
+        val notification = brand(context, notificationChannel)
             .setContentTitle("${value.getString("guild_name")} · ${value.getString("channel_name")}".take(200))
             .setContentText(value.getString("text").take(300))
             .setCategory(Notification.CATEGORY_MESSAGE)
@@ -305,8 +325,7 @@ object DioxusNotifier {
 
     private fun showPing(context: Context) {
         ensureChannels(context)
-        val notification = Notification.Builder(context, DM_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
+        val notification = brand(context, DM_CHANNEL)
             .setContentTitle(context.getString(R.string.app_name))
             .setContentText(label(labels(context), "ping"))
             .setContentIntent(launch(context, null))

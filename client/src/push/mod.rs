@@ -5,6 +5,7 @@ pub mod actions;
 #[cfg(target_os = "android")]
 mod android;
 pub mod attention;
+pub mod avatars;
 pub mod device;
 pub mod gateway;
 pub mod headless;

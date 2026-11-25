@@ -554,6 +554,10 @@ fn set_active(pubkey: &str) -> Result<(), String> {
 
 /// Readers see a complete file, with 0600 before any byte lands.
 pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
+    write_private_bytes(path, content.as_bytes())
+}
+
+pub(crate) fn write_private_bytes(path: &Path, content: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "identity path has no parent".to_string())?;
@@ -575,7 +579,7 @@ pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
         let mut file = opts
             .open(&tmp)
             .map_err(|e| format!("write identity: {e}"))?;
-        file.write_all(content.as_bytes())
+        file.write_all(content)
             .and_then(|()| file.sync_all())
             .map_err(|e| format!("write identity: {e}"))?;
     }

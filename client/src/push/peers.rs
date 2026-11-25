@@ -109,13 +109,47 @@ pub fn write(dir: &Path, peers: &PushPeers) -> Result<(), String> {
     crate::identity::write_private(&dir.join(PEERS_FILE), &content)
 }
 
+/// Each peer's picture as already held in memory: a miss would ask the cache to
+/// load it, and a big guild would then pull every mate's avatar for a notification.
+pub(crate) fn avatars(state: &AppState, peers: &PushPeers) -> Vec<crate::push::avatars::Source> {
+    peers
+        .peers
+        .iter()
+        .map(|peer| {
+            // The profile's, not `avatar_address`: that scans the roster per key.
+            let address = state
+                .profiles
+                .get(&peer.pubkey)
+                .and_then(|profile| profile.avatar.clone());
+            let data = address
+                .as_deref()
+                .and_then(|address| address.strip_prefix("media:"))
+                .filter(|blob| state.emoji_images.contains_key(blob))
+                .and_then(|blob| state.emoji_images.get_shared(blob))
+                .filter(|data| !data.is_empty());
+            crate::push::avatars::Source {
+                pubkey: peer.pubkey.clone(),
+                address,
+                data,
+            }
+        })
+        .collect()
+}
+
 /// Rewrites the cache whole, once a burst of state changes has settled.
 pub(crate) fn use_push_peers(state: dioxus::prelude::Signal<AppState>, account: String) {
     use dioxus::prelude::*;
-    let peers = use_memo(move || WRITES.then(|| build(&state.read(), &account)));
+    let peers = use_memo(move || {
+        WRITES.then(|| {
+            let state = state.read();
+            let peers = build(&state, &account);
+            let avatars = avatars(&state, &peers);
+            (peers, avatars)
+        })
+    });
     let mut pending = use_signal(|| None::<dioxus::core::Task>);
     use_effect(move || {
-        let Some(peers) = peers() else {
+        let Some((peers, avatars)) = peers() else {
             return;
         };
         if let Some(task) = pending.write().take() {
@@ -123,9 +157,12 @@ pub(crate) fn use_push_peers(state: dioxus::prelude::Signal<AppState>, account: 
         }
         pending.set(Some(spawn(async move {
             tokio::time::sleep(DEBOUNCE).await;
-            if let Err(error) = write(&crate::identity::config_dir(), &peers) {
+            let dir = crate::identity::config_dir();
+            if let Err(error) = write(&dir, &peers) {
                 tracing::warn!(%error, "Could not save the push peer cache");
             }
+            let _ = tokio::task::spawn_blocking(move || crate::push::avatars::sync(&dir, &avatars))
+                .await;
         })));
     });
 }

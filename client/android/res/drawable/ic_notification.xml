@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar silhouette of client/assets/icon.svg: Android paints every opaque
+     pixel white, so the halves stay apart and the pill is a hole. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="668" android:viewportHeight="668">
+    <group android:translateX="-202" android:translateY="-163">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M315,301 C253,354 223,428 230,507 C237,598 288,684 370,727 C421,754 481,766 553,761 L455,659 L499,609 L376,530 L445,434 Z" />
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+            android:pathData="M326,278 C420,218 553,205 657,245 C752,282 814,366 828,467 C842,570 801,667 724,719 C686,745 639,759 584,758 L503,661 L558,602 L432,530 L490,434 Z M623,395 A35,35 0 0 1 658,430 L658,524 A35,35 0 0 1 588,524 L588,430 A35,35 0 0 1 623,395 Z" />
+    </group>
+</vector>
