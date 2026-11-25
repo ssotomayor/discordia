@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
 pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp"];
+/// For pictures stored as picked (stickers, event covers): what the server keeps and this
+/// client can read. No BMP, which the store refuses, nor AVIF, which `image` here cannot open.
+pub const STORED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 
 pub struct PickedFile {
     path: PathBuf,
@@ -34,7 +37,7 @@ pub async fn pick_file(filters: &[(&str, &[&str])]) -> Result<Option<PickedFile>
     {
         let mut dialog = rfd::AsyncFileDialog::new();
         for (name, extensions) in filters {
-            dialog = dialog.add_filter(*name, extensions);
+            dialog = dialog.add_filter(*name, &either_case(extensions));
         }
         Ok(dialog.pick_file().await.map(|file| PickedFile {
             path: file.path().to_owned(),
@@ -57,6 +60,17 @@ pub async fn pick_file(filters: &[(&str, &[&str])]) -> Result<Option<PickedFile>
         let _ = filters;
         Err("File selection is not available on mobile yet.".into())
     }
+}
+
+/// GTK matches a filter's patterns case-sensitively, so `PHOTO.JPG` would be greyed
+/// out on Linux; macOS and Windows ignore case already.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn either_case(extensions: &[&str]) -> Vec<String> {
+    let mut all: Vec<String> = extensions.iter().map(|e| e.to_string()).collect();
+    if cfg!(target_os = "linux") {
+        all.extend(extensions.iter().map(|e| e.to_ascii_uppercase()));
+    }
+    all
 }
 
 #[cfg(not(target_os = "android"))]
@@ -92,5 +106,16 @@ pub async fn pick_folder(start: &Path) -> Result<Option<PathBuf>, String> {
     {
         let _ = start;
         Err("Custom storage folders are not available on mobile.".into())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn linux_filters_offer_both_cases() {
+        assert_eq!(
+            super::either_case(&["jpg", "png"]),
+            ["jpg", "png", "JPG", "PNG"]
+        );
     }
 }

@@ -7,11 +7,20 @@ const OUT_LONG_EDGE: u32 = 1024;
 pub enum CropShape {
     Square,
     Banner,
+    /// Square, and may zoom out past the picture: what it does not cover is transparent.
+    Sticker,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sticker_opens_on_the_whole_picture_and_an_avatar_fills_its_frame() {
+        let (frame, wide) = ((260.0, 260.0), (520.0, 130.0));
+        assert_eq!(CropShape::Sticker.least_zoom(frame, wide), 0.5);
+        assert_eq!(CropShape::Square.least_zoom(frame, wide), 2.0);
+    }
     use crate::render_check::Checked;
     use dioxus::core::{AttributeValue, ElementId, Mutation};
     use std::{any::Any, cell::RefCell, rc::Rc};
@@ -146,13 +155,24 @@ impl CropShape {
     pub(super) fn input_limit(self) -> usize {
         match self {
             Self::Square => crate::image_edit::MAX_AVATAR_INPUT_BYTES,
-            Self::Banner => crate::image_edit::MAX_BANNER_INPUT_BYTES,
+            Self::Banner | Self::Sticker => crate::image_edit::MAX_BANNER_INPUT_BYTES,
+        }
+    }
+
+    /// The zoom that shows the whole picture, for a shape that may pad, else the one
+    /// that fills the frame.
+    fn least_zoom(self, frame: (f64, f64), picture: (f64, f64)) -> f64 {
+        let (across, down) = (frame.0 / picture.0, frame.1 / picture.1);
+        if self == Self::Sticker {
+            across.min(down)
+        } else {
+            across.max(down)
         }
     }
 
     fn aspect(self) -> f64 {
         match self {
-            CropShape::Square => 1.0,
+            CropShape::Square | CropShape::Sticker => 1.0,
             CropShape::Banner => 3.0,
         }
     }
@@ -160,13 +180,15 @@ impl CropShape {
     fn output(self) -> (u32, u32) {
         match self {
             CropShape::Square => (512, 512),
+            // Chat draws a picture at most 400×300.
+            CropShape::Sticker => (320, 320),
             CropShape::Banner => (OUT_LONG_EDGE, (OUT_LONG_EDGE as f64 / 3.0) as u32),
         }
     }
 
     fn preview_w(self) -> f64 {
         match self {
-            CropShape::Square => 260.0,
+            CropShape::Square | CropShape::Sticker => 260.0,
             CropShape::Banner => 360.0,
         }
     }
@@ -187,6 +209,9 @@ pub fn ImageEditor(
     shape: CropShape,
     on_cancel: EventHandler<()>,
     on_apply: EventHandler<String>,
+    /// Offered when the picture may be kept untouched, such as a sticker that already fits.
+    #[props(default)]
+    on_original: Option<EventHandler<()>>,
 ) -> Element {
     let mut loaded = use_signal(|| None::<Result<Arc<crate::image_edit::DecodedImage>, String>>);
     let mut error = use_signal(|| None::<String>);
@@ -213,10 +238,11 @@ pub fn ImageEditor(
                 .and_then(|result| result)
                 .map(Arc::new);
                 if let Ok(image) = &result {
-                    zoom.set(
-                        (vp_w / f64::from(image.pixels.width()))
-                            .max(vp_h / f64::from(image.pixels.height())),
+                    let picture = (
+                        f64::from(image.pixels.width()),
+                        f64::from(image.pixels.height()),
                     );
+                    zoom.set(shape.least_zoom((vp_w, vp_h), picture));
                 }
                 loaded.set(Some(result));
             }
@@ -248,12 +274,13 @@ pub fn ImageEditor(
     let preview = image.preview.clone();
     let animated = image.is_animated();
 
-    let min_zoom = (vp_w / nat_w).max(vp_h / nat_h);
-    let max_zoom = min_zoom * 5.0;
+    let min_zoom = shape.least_zoom((vp_w, vp_h), (nat_w, nat_h));
+    let max_zoom = (vp_w / nat_w).max(vp_h / nat_h) * 5.0;
     let z = zoom().clamp(min_zoom, max_zoom);
 
-    let slack_x = ((nat_w * z) - vp_w).max(0.0) / 2.0;
-    let slack_y = ((nat_h * z) - vp_h).max(0.0) / 2.0;
+    // A picture smaller than the frame moves within it, a larger one only as far as its edges.
+    let slack_x = ((nat_w * z) - vp_w).abs() / 2.0;
+    let slack_y = ((nat_h * z) - vp_h).abs() / 2.0;
     let cur_dx = dx().clamp(-slack_x, slack_x);
     let cur_dy = dy().clamp(-slack_y, slack_y);
 
@@ -269,13 +296,16 @@ pub fn ImageEditor(
         let sy = (nat_h / 2.0) - (cur_dy / z) - sh / 2.0;
         let image = Arc::clone(&image);
         spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                crate::image_edit::crop_image(
+            let result = tokio::task::spawn_blocking(move || match shape {
+                CropShape::Sticker => {
+                    crate::image_edit::crop_padded(&image, [sx, sy, sw, sh], shape.output())
+                }
+                _ => crate::image_edit::crop_image(
                     &image,
                     [sx, sy, sw, sh],
                     shape.output(),
                     shape == CropShape::Banner,
-                )
+                ),
             })
             .await
             .map_err(|e| format!("Couldn't process that image: {e}"))
@@ -376,6 +406,14 @@ pub fn ImageEditor(
                         class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:text-[var(--text)] transition-colors",
                         onclick: move |_| on_cancel.call(()),
                         {crate::i18n::text("Cancel", &[])}
+                    }
+                    if let Some(original) = on_original {
+                        button {
+                            class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:text-[var(--text)] transition-colors",
+                            disabled: working(),
+                            onclick: move |_| original.call(()),
+                            {crate::i18n::text("Use as is", &[])}
+                        }
                     }
                     button {
                         class: "dxf-cta rounded px-3 py-1 text-[10px] uppercase tracking-wider disabled:opacity-50",

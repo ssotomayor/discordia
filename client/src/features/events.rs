@@ -467,7 +467,7 @@ fn EventForm(guild_id: Id, event: Option<GuildEvent>, on_done: EventHandler<()>)
         spawn(async move {
             match crate::file_dialog::pick_file(&[(
                 crate::i18n::label("Image"),
-                &["png", "gif", "webp", "jpg"],
+                crate::file_dialog::STORED_IMAGE_EXTENSIONS,
             )])
             .await
             {

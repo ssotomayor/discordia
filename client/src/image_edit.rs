@@ -117,32 +117,59 @@ pub fn crop_image(
     output: (u32, u32),
     jpeg: bool,
 ) -> Result<String, String> {
+    crop_with(image, rect, output, jpeg, false)
+}
+
+/// As `crop_image`, but `rect` may reach past the picture and what it covers there is
+/// transparent: a sticker shows the whole of a picture that is not square.
+pub fn crop_padded(
+    image: &DecodedImage,
+    rect: [f64; 4],
+    output: (u32, u32),
+) -> Result<String, String> {
+    crop_with(image, rect, output, false, true)
+}
+
+fn crop_with(
+    image: &DecodedImage,
+    rect: [f64; 4],
+    output: (u32, u32),
+    jpeg: bool,
+    pad: bool,
+) -> Result<String, String> {
+    let pad = pad && !inside(&image.pixels, rect);
     if !image.is_animated() {
-        return crop(&image.pixels, rect, output, jpeg);
+        return crop(&image.pixels, rect, output, jpeg, pad);
     }
-    let (left, top, width, height) = crop_bounds(&image.pixels, rect, output)?;
-    // Re-encoding composited frames loses the original GIF's delta compression.
-    if left == 0
-        && top == 0
-        && (width, height) == image.pixels.dimensions()
-        && width <= output.0
-        && height <= output.1
-        && (u64::from(width) * u64::from(output.1))
-            .abs_diff(u64::from(height) * u64::from(output.0))
-            <= u64::from(width.max(height))
-        && image.original_bytes <= MAX_GIF_BYTES
-    {
-        return Ok(image.preview.clone());
-    }
-    let scale = (f64::from(width) / f64::from(output.0))
-        .min(f64::from(height) / f64::from(output.1))
+    let (width, height) = if pad {
+        placement(&image.pixels, rect, output)?;
+        (rect[2], rect[3])
+    } else {
+        let (left, top, width, height) = crop_bounds(&image.pixels, rect, output)?;
+        // Re-encoding composited frames loses the original GIF's delta compression.
+        if left == 0
+            && top == 0
+            && (width, height) == image.pixels.dimensions()
+            && width <= output.0
+            && height <= output.1
+            && (u64::from(width) * u64::from(output.1))
+                .abs_diff(u64::from(height) * u64::from(output.0))
+                <= u64::from(width.max(height))
+            && image.original_bytes <= MAX_GIF_BYTES
+        {
+            return Ok(image.preview.clone());
+        }
+        (f64::from(width), f64::from(height))
+    };
+    let scale = (width / f64::from(output.0))
+        .min(height / f64::from(output.1))
         .min(1.0);
     let mut output = (
         (f64::from(output.0) * scale).floor().max(1.0) as u32,
         (f64::from(output.1) * scale).floor().max(1.0) as u32,
     );
     loop {
-        if let Some(bytes) = encode_gif(&image.gif_bytes, rect, output, image.repeat)? {
+        if let Some(bytes) = encode_gif(&image.gif_bytes, rect, output, image.repeat, pad)? {
             return Ok(data_url("image/gif", &bytes));
         }
         if output.0.max(output.1) <= 64 {
@@ -157,6 +184,7 @@ fn encode_gif(
     rect: [f64; 4],
     output: (u32, u32),
     repeat: image::codecs::gif::Repeat,
+    pad: bool,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut bytes = Vec::new();
     let mut writer = GifOutput {
@@ -169,7 +197,7 @@ fn encode_gif(
         // Keeping composited frames in memory rejects small, well-compressed GIFs.
         for frame in gif_decoder(source)?.into_frames() {
             let frame = frame.map_err(|e| format!("Couldn't decode that GIF: {e}"))?;
-            let pixels = crop_pixels(frame.buffer(), rect, output)?;
+            let pixels = region(frame.buffer(), rect, output, pad)?;
             encoder
                 .encode_frame(image::Frame::from_parts(pixels, 0, 0, frame.delay()))
                 .map_err(|e| format!("Couldn't export that GIF: {e}"))?;
@@ -206,8 +234,9 @@ pub fn crop(
     rect: [f64; 4],
     output: (u32, u32),
     jpeg: bool,
+    pad: bool,
 ) -> Result<String, String> {
-    let resized = crop_pixels(pixels, rect, output)?;
+    let resized = region(pixels, rect, output, pad)?;
     if !jpeg {
         return png_url(&resized);
     }
@@ -256,6 +285,72 @@ fn crop_pixels(
         }
     }
     Ok(resized)
+}
+
+fn region(
+    pixels: &RgbaImage,
+    rect: [f64; 4],
+    output: (u32, u32),
+    pad: bool,
+) -> Result<RgbaImage, String> {
+    if !pad {
+        return crop_pixels(pixels, rect, output);
+    }
+    let (inner, (left, top, width, height)) = placement(pixels, rect, output)?;
+    let part = crop_pixels(pixels, inner, (width, height))?;
+    let mut canvas = RgbaImage::new(output.0, output.1);
+    image::imageops::overlay(&mut canvas, &part, i64::from(left), i64::from(top));
+    Ok(canvas)
+}
+
+fn inside(pixels: &RgbaImage, [x, y, width, height]: [f64; 4]) -> bool {
+    x >= -0.001
+        && y >= -0.001
+        && x + width <= f64::from(pixels.width()) + 0.001
+        && y + height <= f64::from(pixels.height()) + 0.001
+}
+
+/// Left, top, width and height in an output, in pixels.
+type Spot = (u32, u32, u32, u32);
+
+/// The part of `rect` the picture covers, and where it lands in `output`. A rect
+/// may reach past the picture but must overlap it, and is at most twice its long edge.
+fn placement(
+    pixels: &RgbaImage,
+    rect: [f64; 4],
+    output: (u32, u32),
+) -> Result<([f64; 4], Spot), String> {
+    let [x, y, width, height] = rect;
+    let (w, h) = (f64::from(pixels.width()), f64::from(pixels.height()));
+    let reach = 2.0 * w.max(h);
+    if !rect.iter().all(|v| v.is_finite())
+        || w == 0.0
+        || h == 0.0
+        || width <= 0.0
+        || height <= 0.0
+        || width > reach
+        || height > reach
+        || output.0 == 0
+        || output.1 == 0
+        || output.0 > 1024
+        || output.1 > 1024
+    {
+        return Err("Invalid image crop.".into());
+    }
+    let (left, top) = (x.max(0.0), y.max(0.0));
+    let (right, bottom) = ((x + width).min(w), (y + height).min(h));
+    let (sx, sy) = (f64::from(output.0) / width, f64::from(output.1) / height);
+    let at_x = (((left - x) * sx).round() as u32).min(output.0 - 1);
+    let at_y = (((top - y) * sy).round() as u32).min(output.1 - 1);
+    let across = (((right - left) * sx).round() as u32).clamp(1, output.0 - at_x);
+    let down = (((bottom - top) * sy).round() as u32).clamp(1, output.1 - at_y);
+    if right - left < 1.0 || bottom - top < 1.0 {
+        return Err("Invalid image crop.".into());
+    }
+    Ok((
+        [left, top, right - left, bottom - top],
+        (at_x, at_y, across, down),
+    ))
 }
 
 fn crop_bounds(
@@ -346,7 +441,7 @@ mod tests {
         .unwrap();
         let rect = [16.0, 16.0, 352.0, 352.0];
         assert!(
-            encode_gif(&image.gif_bytes, rect, (352, 352), image.repeat)
+            encode_gif(&image.gif_bytes, rect, (352, 352), image.repeat, false)
                 .unwrap()
                 .is_none()
         );
@@ -560,6 +655,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_sticker_crop_pads_what_lies_past_the_picture_with_transparency() {
+        let pixels = RgbaImage::from_pixel(8, 4, image::Rgba([255, 0, 0, 255]));
+        let image = decode(&png_url(&pixels).unwrap(), MAX_AVATAR_INPUT_BYTES).unwrap();
+        let url = crop_padded(&image, [0.0, -2.0, 8.0, 8.0], (32, 32)).unwrap();
+        let out = pixels_from_url(&url).into_rgba8();
+        assert_eq!(out.dimensions(), (32, 32));
+        assert_eq!(out.get_pixel(16, 2)[3], 0, "above the picture");
+        assert_eq!(out.get_pixel(16, 29)[3], 0, "below the picture");
+        assert_eq!(out.get_pixel(16, 16).0, [255, 0, 0, 255]);
+        assert_eq!(
+            out.get_pixel(0, 16).0,
+            [255, 0, 0, 255],
+            "the whole width kept"
+        );
+        let inside = crop_padded(&image, [0.0, 0.0, 4.0, 4.0], (32, 32)).unwrap();
+        assert_eq!(
+            pixels_from_url(&inside).into_rgba8().get_pixel(0, 0).0,
+            [255, 0, 0, 255]
+        );
+        for rect in [
+            [9.0, 0.0, 4.0, 4.0],
+            [0.0, 0.0, 17.0, 17.0],
+            [f64::NAN, 0.0, 8.0, 8.0],
+        ] {
+            assert!(crop_padded(&image, rect, (32, 32)).is_err(), "{rect:?}");
+        }
+    }
+
+    #[test]
+    fn an_animated_sticker_pads_every_frame_and_keeps_its_timing() {
+        let mut input = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut input);
+            for (color, delay) in [([255, 0, 0, 255], 100), ([0, 255, 0, 255], 250)] {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        RgbaImage::from_pixel(8, 4, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(delay, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let image = decode(&data_url("image/gif", &input), MAX_AVATAR_INPUT_BYTES).unwrap();
+        let url = crop_padded(&image, [0.0, -2.0, 8.0, 8.0], (320, 320)).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        let frames = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
+            .unwrap()
+            .into_frames()
+            .collect_frames()
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        let (width, height) = frames[0].buffer().dimensions();
+        assert_eq!((width, height), (8, 8), "never upscaled past the source");
+        assert_eq!(frames[0].buffer().get_pixel(4, 0)[3], 0);
+        assert_eq!(frames[0].buffer().get_pixel(4, 4).0, [255, 0, 0, 255]);
+        assert_eq!(frames[1].buffer().get_pixel(4, 4).0, [0, 255, 0, 255]);
+        assert_eq!(frames[1].delay().numer_denom_ms(), (250, 1));
+    }
+
     fn pixels_from_url(url: &str) -> image::DynamicImage {
         let payload = url.split_once(',').unwrap().1;
         let bytes = base64::engine::general_purpose::STANDARD
@@ -577,7 +736,7 @@ mod tests {
                 image::Rgba([0, 0, 255, 128])
             }
         });
-        let url = crop(&pixels, [4.0, 0.0, 4.0, 4.0], (512, 512), false).unwrap();
+        let url = crop(&pixels, [4.0, 0.0, 4.0, 4.0], (512, 512), false, false).unwrap();
         let decoded = pixels_from_url(&url).into_rgba8();
         assert_eq!(decoded.dimensions(), (512, 512));
         assert_eq!(decoded.get_pixel(256, 256).0, [0, 0, 255, 128]);
@@ -586,7 +745,7 @@ mod tests {
     #[test]
     fn banner_exports_jpeg_and_flattens_transparency_to_white() {
         let pixels = RgbaImage::from_pixel(6, 2, image::Rgba([0, 0, 0, 0]));
-        let url = crop(&pixels, [0.0, 0.0, 6.0, 2.0], (1024, 341), true).unwrap();
+        let url = crop(&pixels, [0.0, 0.0, 6.0, 2.0], (1024, 341), true, false).unwrap();
         assert!(url.starts_with("data:image/jpeg;base64,"));
         let decoded = pixels_from_url(&url).into_rgb8();
         assert_eq!(decoded.dimensions(), (1024, 341));
@@ -602,7 +761,7 @@ mod tests {
                 image::Rgba([0, 0, 255, 0])
             }
         });
-        let url = crop(&pixels, [0.0, 0.0, 4.0, 4.0], (64, 64), false).unwrap();
+        let url = crop(&pixels, [0.0, 0.0, 4.0, 4.0], (64, 64), false, false).unwrap();
         let resized = pixels_from_url(&url).into_rgba8();
         assert!(
             resized
@@ -620,8 +779,8 @@ mod tests {
         assert!(decode("data:image/png;base64,broken", MAX_AVATAR_INPUT_BYTES).is_err());
         assert!(decode("https://example.com/avatar.png", MAX_AVATAR_INPUT_BYTES).is_err());
         let pixels = RgbaImage::new(4, 4);
-        assert!(crop(&pixels, [f64::NAN, 0.0, 4.0, 4.0], (512, 512), false).is_err());
-        assert!(crop(&pixels, [3.0, 0.0, 4.0, 4.0], (512, 512), false).is_err());
+        assert!(crop(&pixels, [f64::NAN, 0.0, 4.0, 4.0], (512, 512), false, false).is_err());
+        assert!(crop(&pixels, [3.0, 0.0, 4.0, 4.0], (512, 512), false, false).is_err());
     }
 
     #[test]
