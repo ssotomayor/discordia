@@ -548,7 +548,7 @@ pub async fn upload(
         .body(bytes)
         .send()
         .await
-        .map_err(|_| "Encrypted image upload failed. Retry when connected.")?;
+        .map_err(|error| unsent(&error))?;
     if !response.status().is_success() {
         return Err(match response.status().as_u16() {
             413 => "The file server does not accept images of this size.",
@@ -570,6 +570,24 @@ pub async fn upload(
     let url = blossom::blob_url(raw, hash)?;
     public_url(&url)?;
     Ok(url)
+}
+
+fn unsent(error: &reqwest::Error) -> String {
+    let mut reason = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(next) = cause {
+        reason = format!("{reason}: {next}");
+        cause = next.source();
+    }
+    tracing::warn!(%reason, "encrypted image upload did not reach the file server");
+    if error.is_connect() {
+        "Could not reach the file server. Check your connection or choose another file server."
+    } else if error.is_timeout() {
+        "The file server took too long. Retry, or choose another file server."
+    } else {
+        "Encrypted image upload failed. Retry when connected."
+    }
+    .into()
 }
 
 fn authorization(
@@ -599,9 +617,10 @@ fn authorization(
         ],
         "Manage encrypted image".into(),
     );
+    // BUD-01 says base64; blossom.primal.net answers URL-safe with 400 "invalid base64".
     Ok(format!(
         "Nostr {}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
+        base64::engine::general_purpose::STANDARD
             .encode(serde_json::to_vec(&event).map_err(|_| "Could not authorize image.")?)
     ))
 }
@@ -2156,6 +2175,39 @@ mod tests {
         assert_eq!(crate::chat_image::MAX_BYTES, 2 * 1024 * 1024);
     }
 
+    #[tokio::test]
+    #[ignore = "uploads to public file servers; run where they are reachable"]
+    async fn measure_which_file_servers_take_encrypted_images() {
+        let secret = secp256k1::SecretKey::new(&mut rand::thread_rng());
+        let extra = std::env::var("DISCORDIA_PROBE_SERVERS").unwrap_or_default();
+        let mut servers: Vec<String> = blossom::PRESETS
+            .iter()
+            .map(|s| s.to_string())
+            .chain(crate::settings::ClientSettings::default().dm_blob_server)
+            .chain(extra.split(',').filter(|s| !s.is_empty()).map(String::from))
+            .collect();
+        servers.sort();
+        servers.dedup();
+        for server in servers {
+            let (mut image, ciphertext) = encrypt(PNG).unwrap();
+            let started = std::time::Instant::now();
+            let result = match upload(&server, &secret, ciphertext, &image.hash.clone()).await {
+                Ok(url) => {
+                    image.url = url;
+                    open_once(&image).await.map(|data| {
+                        if data == PNG {
+                            "uploaded and read back"
+                        } else {
+                            "read back different bytes"
+                        }
+                    })
+                }
+                Err(error) => Err(error),
+            };
+            println!("{server}: {result:?} after {:?}", started.elapsed());
+        }
+    }
+
     #[test]
     fn authorization_is_scoped_to_server_ciphertext_and_action() {
         let secret = secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
@@ -2167,7 +2219,7 @@ mod tests {
             "upload",
         )
         .unwrap();
-        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        let raw = base64::engine::general_purpose::STANDARD
             .decode(header.strip_prefix("Nostr ").unwrap())
             .unwrap();
         let event: event::Event = serde_json::from_slice(&raw).unwrap();

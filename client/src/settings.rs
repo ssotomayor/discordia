@@ -306,8 +306,31 @@ fn default_emoji_blob_server() -> Option<String> {
     Some(crate::nostr::blossom::PRESETS[0].to_string())
 }
 
+/// The only preset that accepts encrypted blobs: the others answer 415 to
+/// `application/octet-stream` (`measure_which_file_servers_take_encrypted_images`).
 fn default_dm_blob_server() -> Option<String> {
-    Some("https://nostr.download".into())
+    Some("https://blossom.yakihonne.com".into())
+}
+
+/// Servers that stopped answering, swapped for the default where a saved
+/// setting still names one; otherwise every upload fails at connect.
+const RETIRED_BLOB_SERVERS: [&str; 1] = ["https://nostr.download"];
+
+fn retire_blob_servers(mut settings: ClientSettings) -> ClientSettings {
+    let retired = |url: &Option<String>| {
+        url.as_deref()
+            .is_some_and(|url| RETIRED_BLOB_SERVERS.contains(&url))
+    };
+    settings
+        .blob_servers
+        .retain(|url| !RETIRED_BLOB_SERVERS.contains(&url.as_str()));
+    if retired(&settings.emoji_blob_server) {
+        settings.emoji_blob_server = default_emoji_blob_server();
+    }
+    if retired(&settings.dm_blob_server) {
+        settings.dm_blob_server = default_dm_blob_server();
+    }
+    settings
 }
 
 /// A rendezvous serves plain `ws://` on 7700 (it must see real peer
@@ -646,7 +669,7 @@ pub(crate) fn parse(content: &str) -> Option<ClientSettings> {
     }
     let saved = stored.get("settings")?.as_object()?;
     if let Ok(settings) = serde_json::from_value::<ClientSettings>(Value::Object(saved.clone())) {
-        return Some(settings);
+        return Some(retire_blob_servers(settings));
     }
     let mut merged = serde_json::to_value(ClientSettings::default())
         .ok()?
@@ -661,7 +684,9 @@ pub(crate) fn parse(content: &str) -> Option<ClientSettings> {
             tracing::warn!(%field, "a saved setting could not be read; it is back to its default");
         }
     }
-    serde_json::from_value(Value::Object(merged)).ok()
+    serde_json::from_value(Value::Object(merged))
+        .ok()
+        .map(retire_blob_servers)
 }
 
 /// The newest settings not yet written, per file. Every write takes from here
@@ -888,6 +913,18 @@ mod tests {
         let mut off = defaults;
         off["emoji_blob_server"] = serde_json::Value::Null;
         assert_eq!(parse(&file(off)).unwrap().emoji_blob_server, None);
+    }
+
+    #[test]
+    fn a_saved_server_that_stopped_answering_falls_back_to_the_default() {
+        let mut saved = serde_json::to_value(ClientSettings::default()).unwrap();
+        saved["dm_blob_server"] = "https://nostr.download".into();
+        saved["emoji_blob_server"] = "https://nostr.download".into();
+        saved["blob_servers"] = serde_json::json!(["https://nostr.download", "https://b.example"]);
+        let s = parse(&file(saved)).unwrap();
+        assert_eq!(s.dm_blob_server, default_dm_blob_server());
+        assert_eq!(s.emoji_blob_server, default_emoji_blob_server());
+        assert_eq!(s.blob_servers, ["https://b.example"]);
     }
 
     #[test]
