@@ -64,7 +64,8 @@ class DioxusForegroundService : Service() {
                 label("muted_status", "Microphone muted").takeIf { microphone && controls?.optBoolean("muted") == true && controls?.optBoolean("deafened") != true },
             ).joinToString(" · "))
             .setContentIntent(launch?.let { PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT) })
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(0xFFFFD21A.toInt())
             .setCategory(Notification.CATEGORY_CALL)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setOnlyAlertOnce(true)
