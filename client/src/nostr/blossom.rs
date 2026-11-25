@@ -18,7 +18,7 @@ pub const KIND_AUTH: u16 = 24242;
 pub const PRESETS: [&str; 3] = [
     "https://blossom.nostr.build",
     "https://blossom.primal.net",
-    "https://nostr.download",
+    "https://blossom.yakihonne.com",
 ];
 /// Long enough for a slow upload, short enough that a captured header is
 /// worth little.
