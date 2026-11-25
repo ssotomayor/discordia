@@ -95,6 +95,10 @@ pub enum NostrCmd {
     Open {
         peer: String,
     },
+    /// Fetch history older than any held, for the conversation `channel_id`.
+    LoadEarlier {
+        channel_id: Id,
+    },
     /// Add or remove a contact, and publish the whole replaced list.
     SetContact {
         peer: String,
@@ -198,13 +202,13 @@ pub fn spawn_nostr(
 
         // No author filter: gift wraps are signed by ephemeral keys. `p` is
         // the only handle.
-        pool.subscribe(
+        pool.subscribe_resuming(
             SUB_DM,
             vec![
                 Filter {
                     kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
                     p: Some(vec![our_pubkey.clone()]),
-                    limit: Some(500),
+                    limit: Some(DM_WINDOW),
                     ..Default::default()
                 },
                 Filter {
@@ -229,7 +233,9 @@ pub fn spawn_nostr(
                     ..Default::default()
                 },
             ],
+            RESUME_SLACK,
         );
+        let mut history = super::older::History::new(relays.clone());
 
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
         // Without kind 0 two Discordia clients read each other as keys. It waits
@@ -590,6 +596,16 @@ pub fn spawn_nostr(
                         open_conversation(&peer, &mut state);
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
+                    Some(NostrCmd::LoadEarlier { channel_id }) => {
+                        let (held, up) = {
+                            let s = state.peek();
+                            (s.messages.get(&channel_id).map_or(0, Vec::len), s.nostr_relays_up.clone())
+                        };
+                        if history.start(channel_id, held, &up, std::time::Instant::now()) {
+                            pool.fetch_older(SUB_DM_OLDER, older_filters(&our_pubkey), SUB_DM);
+                        }
+                        show_history(&history, &mut state);
+                    }
                     Some(NostrCmd::Retry { message_id }) => {
                         let Some(change) = advance(&mut state, &mut outbox, message_id, Input::Retry) else { continue; };
                         if change.effect != Effect::Resubmit {
@@ -776,6 +792,14 @@ pub fn spawn_nostr(
                         eprintln!("[nostr] {relay}: no end of stored events after {}s; not waiting for it", REPLAY_PATIENCE.as_secs());
                     }
                 }
+                _ = tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(history.due().unwrap_or_else(std::time::Instant::now))
+                ), if history.due().is_some() => {
+                    if let Some(done) = history.overdue(std::time::Instant::now()) {
+                        pool.unsubscribe(SUB_DM_OLDER);
+                        page_back(done, &mut history, &pool, &our_pubkey, &mut state);
+                    }
+                }
                 _ = marks_tick.tick(), if marks_checked => {
                     let marks = state.peek().read_marks();
                     match marks_publisher.offer(marks, &secret, &our_pubkey, now(), std::time::Instant::now()) {
@@ -792,7 +816,7 @@ pub fn spawn_nostr(
                     }
                 }
                 ev = events.recv() => match ev {
-                    Some(RelayEvent::Event { relay: from, event }) => match event.kind {
+                    Some(RelayEvent::Event { relay: from, subscription, event }) => match event.kind {
                         nip17::KIND_DM_RELAYS => routes.note(&event),
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
@@ -892,6 +916,10 @@ pub fn spawn_nostr(
                         }
                         nip59::KIND_GIFT_WRAP => {
                             let Ok(rumor) = nip59::unwrap(&secret, &event) else { continue; };
+                            let older = subscription == SUB_DM_OLDER;
+                            if rumor.kind == super::calls::KIND_CALL && older {
+                                continue;
+                            }
                             if rumor.kind == super::calls::KIND_CALL {
                                 let offset = state.peek().clock_offset(&rumor.pubkey);
                                 let sender_now = super::calls::sender_now(now(), offset);
@@ -925,7 +953,8 @@ pub fn spawn_nostr(
                             if is_reaction || apply_dm_change(&rumor, &our_pubkey, &mut state, &mut settings) {
                                 continue;
                             }
-                            let live = replay.live(&state.peek().nostr_relays_up, &from);
+                            // A page of older history arrives after its relay has replayed: still backlog.
+                            let live = !older && replay.live(&state.peek().nostr_relays_up, &from);
                             if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
                                 insert_message_with_settings(
                                     &msg,
@@ -955,6 +984,9 @@ pub fn spawn_nostr(
                         eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
                         replay.disconnected(&relay);
                         state.write().nostr_relays_up.remove(&relay);
+                        if let Some(done) = history.disconnected(&relay) {
+                            page_back(done, &mut history, &pool, &our_pubkey, &mut state);
+                        }
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
                         if accepted {
@@ -974,8 +1006,16 @@ pub fn spawn_nostr(
                             );
                         }
                     }
-                    Some(RelayEvent::EndOfStored { relay, subscription }) => {
+                    Some(RelayEvent::EndOfStored { relay, subscription, count }) => {
+                        if subscription == SUB_DM_OLDER {
+                            if let Some(done) = history.finished(&relay, count) {
+                                page_back(done, &mut history, &pool, &our_pubkey, &mut state);
+                            }
+                            continue;
+                        }
                         if subscription != SUB_DM { continue; }
+                        history.replayed(&relay, count);
+                        show_history(&history, &mut state);
                         eprintln!("[nostr] {relay}: finished replaying stored events");
                         replay.finished(&relay);
                     }
@@ -1031,6 +1071,52 @@ fn adopt_profile(theirs: profile::SyncedProfile, our_pubkey: String, mut state: 
 
 /// The subscription carrying gift wraps and our own replaceable events.
 const SUB_DM: &str = "dxf-dm";
+/// One-shot pages of gift wraps older than `SUB_DM` brought.
+const SUB_DM_OLDER: &str = "dxf-dm-older";
+/// Gift wraps per relay at start. The DM list is built from them, so fewer drops
+/// older conversations off it until someone pages back.
+const DM_WINDOW: u32 = 500;
+/// A wrap's stamp is up to `MAX_BACKDATE` before it was sent, so a reconnect asks
+/// that far behind the newest it holds, and an hour more for clocks.
+const RESUME_SLACK: i64 = nip59::MAX_BACKDATE + 3600;
+
+fn older_filters(our_pubkey: &str) -> Vec<Filter> {
+    vec![Filter {
+        kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
+        p: Some(vec![our_pubkey.to_string()]),
+        limit: Some(super::older::PAGE),
+        ..Default::default()
+    }]
+}
+
+fn show_history(history: &super::older::History, state: &mut Signal<AppState>) {
+    let look = history.look();
+    if state.peek().dm_older != look {
+        state.write().dm_older = look;
+    }
+}
+
+/// A page ended: fetch another if the conversation it was for gained nothing.
+fn page_back(
+    done: super::older::Done,
+    history: &mut super::older::History,
+    pool: &RelayPool,
+    our_pubkey: &str,
+    state: &mut Signal<AppState>,
+) {
+    let (held, up) = {
+        let s = state.peek();
+        (
+            s.messages.get(&done.channel()).map_or(0, Vec::len),
+            s.nostr_relays_up.clone(),
+        )
+    };
+    if history.again(done, held, &up, std::time::Instant::now()) {
+        pool.fetch_older(SUB_DM_OLDER, older_filters(our_pubkey), SUB_DM);
+    }
+    show_history(history, state);
+}
+
 /// The subscription carrying kind 0 for the people we can see.
 ///
 /// Its own id because it is re-issued whenever a new peer appears, and a `REQ`
