@@ -391,6 +391,8 @@ pub struct AppState {
     /// Changed only by `choose_dm`.
     dm_choices: HashMap<String, DmChoice>,
     pub nostr_relays_up: std::collections::HashSet<String>,
+    /// Whether older DM history is loading or gone; the service's alone to write.
+    pub dm_older: crate::nostr::older::Look,
     /// Names peers published for themselves (kind 0), by pubkey, each with the
     /// `created_at` it came with. Kept because kind 0 is replaceable and the
     /// pool dedupes by event id: a rename is a new id, so the old copy still
@@ -661,6 +663,7 @@ impl AppState {
             mutes: Default::default(),
             dm_choices: HashMap::new(),
             nostr_relays_up: std::collections::HashSet::new(),
+            dm_older: Default::default(),
             nostr_names: HashMap::new(),
             dm_mode: false,
             dm_pane_open: false,
@@ -1087,6 +1090,7 @@ impl AppState {
             mutes: _,
             dm_choices: _,
             nostr_relays_up: _,
+            dm_older: _,
             nostr_names: _,
             relay_app_manifests: _,
             relay_blocklists: _,
@@ -3232,7 +3236,7 @@ mod tests {
                 dm_read_at, dm_clock_offset, nostr_event_ids, dm_deleted_ids,
                 pending_dm_edits, dm_edit_versions, dm_reactions, pending_dm_deletions, dm_delivery,
                 dm_pending, dm_images, dm_call_history, dm_call, contacts, mutes,
-                dm_choices, nostr_relays_up, nostr_names, relay_app_manifests,
+                dm_choices, nostr_relays_up, dm_older, nostr_names, relay_app_manifests,
                 relay_blocklists, global_xp, dm_pane_open, app_foreground,
                 dm_notification_open, dm_opened_by_tap, mention_tap, error_toast, agents_open,
                 composer_focus_request, screen_capture_available,

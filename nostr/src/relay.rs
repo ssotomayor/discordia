@@ -20,7 +20,7 @@
 //! is also the reason a failed connection is logged and retried rather than
 //! surfaced — one relay refusing is not a condition the user can act on.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,6 +64,8 @@ pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
@@ -74,12 +76,16 @@ pub enum RelayEvent {
     /// to say whether that relay was still replaying, never which relays hold it.
     Event {
         relay: String,
+        subscription: String,
         event: Box<Event>,
     },
-    /// A relay finished replaying stored events for a subscription.
+    /// A relay finished replaying stored events for a subscription. `count` is how
+    /// many it sent under that id since the request, duplicates included, so 0
+    /// means it holds nothing that matched.
     EndOfStored {
         relay: String,
         subscription: String,
+        count: usize,
     },
     /// A relay accepted or rejected something we published.
     Published {
@@ -96,10 +102,98 @@ pub enum RelayEvent {
     },
 }
 
+#[derive(Clone)]
 enum Command {
     Publish(Box<Event>),
-    Subscribe { id: String, filters: Vec<Filter> },
-    Unsubscribe { id: String },
+    Subscribe(String, Standing),
+    Unsubscribe {
+        id: String,
+    },
+    FetchOlder {
+        id: String,
+        filters: Vec<Filter>,
+        base: String,
+    },
+}
+
+#[derive(Clone)]
+struct Standing {
+    filters: Vec<Filter>,
+    /// Seconds before the newest event a relay delivered that a reconnect asks
+    /// from; `None` replays the filters as given.
+    resume: Option<i64>,
+}
+
+/// What one relay delivered, counted before dedup: dedup credits an event to
+/// whichever relay was first, but `since` and `until` are each relay's own.
+#[derive(Default)]
+struct Delivered {
+    /// Oldest and newest `created_at` per standing id, the newest never past our clock.
+    span: HashMap<String, (i64, i64)>,
+    /// One-shot id → the standing id whose span its events extend.
+    once: HashMap<String, String>,
+    /// Events per id since its `REQ` on this connection.
+    counts: HashMap<String, usize>,
+}
+
+impl Delivered {
+    fn note(&mut self, subscription: &str, created_at: i64, now: i64) {
+        *self.counts.entry(subscription.to_string()).or_default() += 1;
+        let key = self
+            .once
+            .get(subscription)
+            .cloned()
+            .unwrap_or_else(|| subscription.to_string());
+        // A far-future stamp, which anyone can put on a gift wrap to us, must not
+        // push the next `since` past what is still unread.
+        let newest = created_at.min(now);
+        let span = self.span.entry(key).or_insert((created_at, newest));
+        span.0 = span.0.min(created_at);
+        span.1 = span.1.max(newest);
+    }
+
+    fn request(&mut self, id: &str, standing: &Standing) -> String {
+        self.counts.remove(id);
+        let since = standing
+            .resume
+            .zip(self.span.get(id))
+            .map(|(slack, (_, newest))| newest - slack);
+        let filters: Vec<Filter> = standing
+            .filters
+            .iter()
+            .map(|f| Filter {
+                since: f.since.max(since),
+                ..f.clone()
+            })
+            .collect();
+        req_frame(id, &filters)
+    }
+
+    /// `None` when this relay delivered nothing under `base`: it has nothing older.
+    fn older(&mut self, id: &str, filters: &[Filter], base: &str) -> Option<String> {
+        let (oldest, _) = *self.span.get(base)?;
+        self.counts.remove(id);
+        self.once.insert(id.to_string(), base.to_string());
+        let filters: Vec<Filter> = filters
+            .iter()
+            .map(|f| Filter {
+                until: Some(f.until.map_or(oldest, |until| until.min(oldest))),
+                ..f.clone()
+            })
+            .collect();
+        Some(req_frame(id, &filters))
+    }
+
+    fn reconnected(&mut self) {
+        self.once.clear();
+        self.counts.clear();
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Standing subscriptions, by the id the relay knows them under.
@@ -110,7 +204,7 @@ enum Command {
 /// every time a new peer appears — and sharing an id meant the second `REQ`
 /// silently cancelled the first. Ordered so a reconnect re-issues them the same
 /// way every time.
-type Subscriptions = BTreeMap<String, Vec<Filter>>;
+type Subscriptions = BTreeMap<String, Standing>;
 
 /// A set of relay connections, driven as one.
 #[derive(Clone)]
@@ -181,24 +275,16 @@ impl RelayPool {
         tasks.push(tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 match &cmd {
-                    Command::Subscribe { id, filters } => {
-                        subs.lock().await.insert(id.clone(), filters.clone());
+                    Command::Subscribe(id, standing) => {
+                        subs.lock().await.insert(id.clone(), standing.clone());
                     }
                     Command::Unsubscribe { id } => {
                         subs.lock().await.remove(id);
                     }
-                    Command::Publish(_) => {}
+                    Command::Publish(_) | Command::FetchOlder { .. } => {}
                 }
                 for s in &senders {
-                    let copy = match &cmd {
-                        Command::Publish(e) => Command::Publish(e.clone()),
-                        Command::Subscribe { id, filters } => Command::Subscribe {
-                            id: id.clone(),
-                            filters: filters.clone(),
-                        },
-                        Command::Unsubscribe { id } => Command::Unsubscribe { id: id.clone() },
-                    };
-                    let _ = s.send(copy);
+                    let _ = s.send(cmd.clone());
                 }
             }
         }));
@@ -232,9 +318,32 @@ impl RelayPool {
     /// own: it is re-asked whenever a new peer appears, and sharing an id with
     /// the DM filters would have replayed every gift wrap each time.
     pub fn subscribe(&self, id: &str, filters: Vec<Filter>) {
-        let _ = self.cmd.send(Command::Subscribe {
+        let standing = Standing {
+            filters,
+            resume: None,
+        };
+        let _ = self.cmd.send(Command::Subscribe(id.to_string(), standing));
+    }
+
+    /// As `subscribe`, but a relay that reconnects is asked only for events from
+    /// `slack` seconds before the newest it already delivered under `id`, not
+    /// for its whole stored window again.
+    pub fn subscribe_resuming(&self, id: &str, filters: Vec<Filter>, slack: i64) {
+        let standing = Standing {
+            filters,
+            resume: Some(slack),
+        };
+        let _ = self.cmd.send(Command::Subscribe(id.to_string(), standing));
+    }
+
+    /// Ask each relay once, under `id`, for what is older than the oldest event
+    /// it delivered under the standing `base`; closed at its `EndOfStored`. A
+    /// relay that delivered nothing under `base` answers at once with a count of 0.
+    pub fn fetch_older(&self, id: &str, filters: Vec<Filter>, base: &str) {
+        let _ = self.cmd.send(Command::FetchOlder {
             id: id.to_string(),
             filters,
+            base: base.to_string(),
         });
     }
 
@@ -293,6 +402,7 @@ async fn run_relay(
     mut refresh: watch::Receiver<u64>,
 ) {
     let mut backoff = RECONNECT_MIN;
+    let mut delivered = Delivered::default();
     // Only the newest subscription per id matters; publishes are dropped rather
     // than queued to avoid stale delivery.
     loop {
@@ -315,7 +425,7 @@ async fn run_relay(
                         renewed = true;
                         "connection refreshed after resume or network change".into()
                     }
-                    why = serve(&url, stream, &mut cmds, &out, &seen, &subs) => why,
+                    why = serve(&url, stream, &mut cmds, &out, &seen, &subs, &mut delivered) => why,
                 };
                 let _ = out.send(RelayEvent::Disconnected {
                     relay: url.clone(),
@@ -385,10 +495,22 @@ async fn serve(
     out: &mpsc::UnboundedSender<RelayEvent>,
     seen: &Arc<Mutex<SeenSet>>,
     subs: &Arc<Mutex<Subscriptions>>,
+    delivered: &mut Delivered,
 ) -> String {
-    serve_with_health(url, stream, cmds, out, seen, subs, RelayHealth::default()).await
+    serve_with_health(
+        url,
+        stream,
+        cmds,
+        out,
+        seen,
+        subs,
+        delivered,
+        RelayHealth::default(),
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_with_health(
     url: &str,
     stream: Ws,
@@ -396,6 +518,7 @@ async fn serve_with_health(
     out: &mpsc::UnboundedSender<RelayEvent>,
     seen: &Arc<Mutex<SeenSet>>,
     subs: &Arc<Mutex<Subscriptions>>,
+    delivered: &mut Delivered,
     health: RelayHealth,
 ) -> String {
     use tokio_tungstenite::tungstenite::Message;
@@ -403,9 +526,10 @@ async fn serve_with_health(
 
     // Re-issue every standing subscription; a fresh connection without a REQ
     // receives nothing.
+    delivered.reconnected();
     let subscriptions = subs.lock().await.clone();
-    for (id, filters) in &subscriptions {
-        if send_frame(&mut tx, Message::Text(req_frame(id, filters)))
+    for (id, standing) in &subscriptions {
+        if send_frame(&mut tx, Message::Text(delivered.request(id, standing)))
             .await
             .is_err()
         {
@@ -436,11 +560,23 @@ async fn serve_with_health(
                         return "send failed".into();
                     }
                 }
-                Some(Command::Subscribe { id, filters }) => {
-                    if send_frame(&mut tx, Message::Text(req_frame(&id, &filters))).await.is_err() {
+                Some(Command::Subscribe(id, standing)) => {
+                    // Asked for afresh: the filters as given, with no `since` from before.
+                    delivered.counts.remove(&id);
+                    if send_frame(&mut tx, Message::Text(req_frame(&id, &standing.filters))).await.is_err() {
                         return "send failed".into();
                     }
                 }
+                Some(Command::FetchOlder { id, filters, base }) => match delivered.older(&id, &filters, &base) {
+                    Some(frame) => {
+                        if send_frame(&mut tx, Message::Text(frame)).await.is_err() {
+                            return "send failed".into();
+                        }
+                    }
+                    None => {
+                        let _ = out.send(RelayEvent::EndOfStored { relay: url.to_string(), subscription: id, count: 0 });
+                    }
+                },
                 Some(Command::Unsubscribe { id }) => {
                     let msg = serde_json::json!(["CLOSE", id]).to_string();
                     if send_frame(&mut tx, Message::Text(msg)).await.is_err() {
@@ -453,7 +589,12 @@ async fn serve_with_health(
                 pong_due = None;
                 match msg {
                 Some(Ok(Message::Text(text))) => {
-                    handle_relay_message(url, &text, out, seen).await;
+                    if let Some(id) = handle_relay_message(url, &text, out, seen, delivered).await {
+                        let msg = serde_json::json!(["CLOSE", id]).to_string();
+                        if send_frame(&mut tx, Message::Text(msg)).await.is_err() {
+                            return "send failed".into();
+                        }
+                    }
                 }
                 Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_))) => {}
                 Some(Ok(Message::Close(_))) => return "relay closed the connection".into(),
@@ -482,24 +623,21 @@ fn req_frame(id: &str, filters: &[Filter]) -> String {
 /// Anything unrecognised is ignored rather than treated as an error: relays
 /// send `NOTICE`s and extensions we have no opinion about, and disconnecting
 /// over one would make this client fragile against relays it works with fine.
+/// Returns a one-shot subscription that has ended and must now be closed.
 async fn handle_relay_message(
     url: &str,
     text: &str,
     out: &mpsc::UnboundedSender<RelayEvent>,
     seen: &Arc<Mutex<SeenSet>>,
-) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return;
-    };
-    let Some(kind) = v.get(0).and_then(|k| k.as_str()) else {
-        return;
-    };
+    delivered: &mut Delivered,
+) -> Option<String> {
+    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let kind = v.get(0).and_then(|k| k.as_str())?;
     match kind {
         "EVENT" => {
-            let Some(raw) = v.get(2) else { return };
-            let Ok(event) = serde_json::from_value::<Event>(raw.clone()) else {
-                return;
-            };
+            let subscription = v.get(1).and_then(|s| s.as_str()).unwrap_or_default();
+            let raw = v.get(2)?;
+            let event = serde_json::from_value::<Event>(raw.clone()).ok()?;
             // Verify once here; unverified events are forgery attempts, and a
             // relay serving them is worth flagging.
             if !event.verify() {
@@ -507,24 +645,29 @@ async fn handle_relay_message(
                     "[nostr] {url}: dropped an event that does not verify (id {})",
                     event.id
                 );
-                return;
+                return None;
             }
+            delivered.note(subscription, event.created_at, unix_now());
             if !seen.lock().await.insert_new(&event.id) {
-                return;
+                return None;
             }
             let _ = out.send(RelayEvent::Event {
                 relay: url.to_string(),
+                subscription: subscription.to_string(),
                 event: Box::new(event),
             });
         }
         "EOSE" => {
-            let Some(subscription) = v.get(1).and_then(|s| s.as_str()) else {
-                return;
-            };
+            let subscription = v.get(1).and_then(|s| s.as_str())?;
+            let count = delivered.counts.remove(subscription).unwrap_or(0);
             let _ = out.send(RelayEvent::EndOfStored {
                 relay: url.to_string(),
                 subscription: subscription.to_string(),
+                count,
             });
+            if delivered.once.remove(subscription).is_some() {
+                return Some(subscription.to_string());
+            }
         }
         "OK" => {
             let id = v.get(1).and_then(|s| s.as_str()).unwrap_or_default();
@@ -543,6 +686,7 @@ async fn handle_relay_message(
         }
         _ => {}
     }
+    None
 }
 
 #[cfg(test)]
@@ -717,6 +861,7 @@ mod tests {
                 &out,
                 &Arc::new(Mutex::new(SeenSet::default())),
                 &Arc::new(Mutex::new(Subscriptions::new())),
+                &mut Delivered::default(),
                 RelayHealth {
                     ping_every: Duration::from_millis(20),
                     pong_wait: Duration::from_millis(30),
@@ -815,8 +960,9 @@ mod tests {
     async fn feed(frames: &[&str]) -> Vec<RelayEvent> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let seen = Arc::new(Mutex::new(SeenSet::default()));
+        let mut delivered = Delivered::default();
         for f in frames {
-            handle_relay_message("wss://r.test", f, &tx, &seen).await;
+            handle_relay_message("wss://r.test", f, &tx, &seen, &mut delivered).await;
         }
         drop(tx);
         let mut out = Vec::new();
@@ -888,9 +1034,130 @@ mod tests {
         let out = feed(&[r#"["EOSE"]"#, r#"["EOSE",null]"#, r#"["EOSE","sub"]"#]).await;
 
         assert!(
-            matches!(&out[..], [RelayEvent::EndOfStored { relay, subscription }] if relay == "wss://r.test" && subscription == "sub"),
+            matches!(&out[..], [RelayEvent::EndOfStored { relay, subscription, count: 0 }] if relay == "wss://r.test" && subscription == "sub"),
             "got {out:?}"
         );
+    }
+
+    fn standing(resume: Option<i64>) -> Standing {
+        Standing {
+            filters: vec![Filter {
+                kinds: Some(vec![1059]),
+                limit: Some(500),
+                ..Default::default()
+            }],
+            resume,
+        }
+    }
+
+    fn frame_filter(frame: &str) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(frame).unwrap()[2].clone()
+    }
+
+    /// A reconnect asks only for what is newer than this relay's newest, less the
+    /// slack; a first connection, or a subscription that does not resume, asks for all.
+    #[test]
+    fn a_resuming_subscription_asks_from_the_newest_this_relay_delivered() {
+        let mut delivered = Delivered::default();
+        assert_eq!(
+            frame_filter(&delivered.request("dm", &standing(Some(100))))["since"],
+            serde_json::Value::Null
+        );
+        delivered.note("dm", 1_000, 5_000);
+        delivered.note("dm", 3_000, 5_000);
+        delivered.note("dm", 2_000, 5_000);
+        assert_eq!(
+            frame_filter(&delivered.request("dm", &standing(Some(100))))["since"],
+            2_900
+        );
+        assert_eq!(
+            frame_filter(&delivered.request("dm", &standing(None)))["since"],
+            serde_json::Value::Null
+        );
+    }
+
+    /// Anyone can stamp a gift wrap to us in the future; that must not move
+    /// `since` past messages not yet read.
+    #[test]
+    fn a_future_stamp_counts_as_now() {
+        let mut delivered = Delivered::default();
+        delivered.note("dm", 9_999_999, 5_000);
+        assert_eq!(
+            frame_filter(&delivered.request("dm", &standing(Some(100))))["since"],
+            4_900
+        );
+    }
+
+    /// Older pages go back from this relay's oldest, and each page moves that
+    /// mark, so the next one starts where it ended.
+    #[test]
+    fn an_older_page_goes_back_from_this_relays_oldest() {
+        let mut delivered = Delivered::default();
+        let filters = standing(None).filters;
+        assert!(
+            delivered.older("old", &filters, "dm").is_none(),
+            "nothing under the base: nothing older"
+        );
+        delivered.note("dm", 3_000, 5_000);
+        delivered.note("dm", 2_000, 5_000);
+        assert_eq!(
+            frame_filter(&delivered.older("old", &filters, "dm").unwrap())["until"],
+            2_000
+        );
+        delivered.note("old", 1_500, 5_000);
+        assert_eq!(
+            frame_filter(&delivered.older("old", &filters, "dm").unwrap())["until"],
+            1_500
+        );
+    }
+
+    /// The relay is told to close a one-shot at its end, and the count says how
+    /// many it sent, duplicates included: another relay having sent them first
+    /// does not make this one empty.
+    #[tokio::test]
+    async fn a_one_shot_ends_with_its_count_and_is_closed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let seen = Arc::new(Mutex::new(SeenSet::default()));
+        let mut delivered = Delivered::default();
+        delivered.note("dm", 1_800_000_000, 1_800_000_000);
+        delivered.older("old", &[Filter::default()], "dm").unwrap();
+        let event = serde_json::json!(["EVENT", "old", signed_event()]).to_string();
+        for frame in [&event, &event] {
+            assert_eq!(
+                handle_relay_message("wss://r.test", frame, &tx, &seen, &mut delivered).await,
+                None
+            );
+        }
+        let closed = handle_relay_message(
+            "wss://r.test",
+            r#"["EOSE","old"]"#,
+            &tx,
+            &seen,
+            &mut delivered,
+        )
+        .await;
+        assert_eq!(closed.as_deref(), Some("old"));
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            out.push(event);
+        }
+        assert!(
+            matches!(&out[..], [RelayEvent::Event { subscription, .. }, RelayEvent::EndOfStored { count: 2, .. }] if subscription == "old"),
+            "got {out:?}"
+        );
+        assert_eq!(
+            delivered.span["dm"].0, 1_700_000_000,
+            "the page extends the base's span"
+        );
+        let standing_end = handle_relay_message(
+            "wss://r.test",
+            r#"["EOSE","dm"]"#,
+            &tx,
+            &seen,
+            &mut delivered,
+        )
+        .await;
+        assert_eq!(standing_end, None, "a standing subscription stays open");
     }
 
     /// Nothing a relay can put in the first slot should reach the app as a

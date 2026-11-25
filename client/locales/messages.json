@@ -1226,6 +1226,7 @@
   "Listening to": ["Escuchando", "Ouvindo", "聆听", "を聞いています"],
   "Listens on the sockets a game already looks for. Whichever app starts first takes the socket. Restart the app after changing this.": ["Escucha en los sockets que ya buscan los juegos. La primera app que se inicia toma el socket. Reinicia la app después de cambiar esto.", "Escuta nos sockets que os jogos já procuram. O primeiro app a iniciar assume o socket. Reinicie o app após alterar esta opção.", "监听游戏已经寻找的套接字。无论哪个应用程序首先启动都会占用套接字。更改后重新启动应用程序。", "ゲームがすでに探しているソケットをリッスンします。どちらのアプリが最初に起動してもソケットを取得します。これを変更した後、アプリを再起動します。"],
   "Live": ["En vivo", "Ao vivo", "直播", "ライブ"],
+  "Loading earlier messages…": ["Cargando mensajes anteriores…", "Carregando mensagens anteriores…", "正在加载较早的消息…", "以前のメッセージを読み込んでいます…"],
   "Load earlier messages": ["Cargar mensajes anteriores", "Carregar mensagens anteriores", "加载较早的消息", "以前のメッセージをロードする"],
   "Load more": ["Cargar más", "Carregar mais", "加载更多", "もっと読み込む"],
   "Loading Discordia…": ["Cargando Discordia…", "Carregando Discordia…", "正在加载 Discordia…", "Discordia を読み込み中…"],

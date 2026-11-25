@@ -564,6 +564,8 @@ pub fn ChatView() -> Element {
                 document::eval("window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure();");
         }
     });
+    let mut dm_reveal = use_signal(std::collections::HashMap::<Id, Reveal>::new);
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
     let jump = use_memo(move || state.read().message_jump);
     let mut jump_fetched = use_signal(|| None::<i64>);
     let jump_gateway = gateway.clone();
@@ -581,12 +583,19 @@ pub fn ChatView() -> Element {
         let found = held.iter().position(|m| m.id == target);
         let oldest = held.first().map(|m| m.created_at.timestamp_millis());
         let page = found.map(|i| held[i - i % PAGE_SIZE].id);
+        let is_dm = s.dm_of(channel_id).is_some();
         drop(s);
-        if selected != Some(channel_id) || (page.is_none() && oldest.is_some_and(|o| o < at)) {
+        // A DM's history is the relays', never the gateway's (trap 7).
+        if selected != Some(channel_id)
+            || (page.is_none() && (is_dm || oldest.is_some_and(|o| o < at)))
+        {
             state.write().message_jump = None;
             return;
         }
         if let Some(page) = page {
+            if is_dm && !matches!(dm_reveal.peek().get(&channel_id), Some(Reveal::All)) {
+                dm_reveal.write().insert(channel_id, Reveal::From(page));
+            }
             state.write().message_jump = None;
             let id = |id: Id| serde_json::to_string(&id).unwrap_or_default();
             let _ = document::eval(&format!("({JUMP_JS})({}, {});", id(page), id(target)));
@@ -644,6 +653,27 @@ pub fn ChatView() -> Element {
             })
             .map(|m| m.id)
     });
+    let dm_older = history.dm_older;
+    let drawn_from = if is_dm {
+        let at = |id: Id| messages.iter().position(|m| m.id == id);
+        let reveal = selected_channel.and_then(|cid| dm_reveal.read().get(&cid).copied());
+        let jump_at = history
+            .message_jump
+            .filter(|(cid, ..)| Some(*cid) == selected_channel)
+            .and_then(|(_, target, _)| at(target));
+        let reveal_at = match reveal {
+            Some(Reveal::All) => Some(0),
+            Some(Reveal::From(id)) => at(id),
+            None => None,
+        };
+        window_start(
+            messages.len(),
+            reveal_at,
+            [jump_at, first_unread.and_then(at)].into_iter().flatten(),
+        )
+    } else {
+        0
+    };
     rsx! {
         div { id: "{drop_id}", class: "relative flex flex-col h-full min-h-0",
             ondragover: move |event: DragEvent| {
@@ -724,7 +754,37 @@ pub fn ChatView() -> Element {
                     }
                     div { id: "dxf-chat-content", style: "display: flow-root;",
                         if !messages.is_empty() {
-                            if messages.len() >= PAGE_SIZE {
+                            if is_dm && (drawn_from > 0 || !dm_older.exhausted) {
+                                if let Some(channel_id) = selected_channel {
+                                    {
+                                        let fetching = drawn_from == 0 && dm_older.loading;
+                                        let earlier = drawn_from.checked_sub(PAGE_SIZE).map(|at| messages[at].id);
+                                        let nostr = nostr.clone();
+                                        rsx! {
+                                            div { class: "flex justify-center pb-3",
+                                                button {
+                                                    class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors disabled:opacity-60",
+                                                    disabled: fetching,
+                                                    onclick: move |_| match earlier {
+                                                        Some(id) => {
+                                                            dm_reveal.write().insert(channel_id, Reveal::From(id));
+                                                        }
+                                                        None => {
+                                                            dm_reveal.write().insert(channel_id, Reveal::All);
+                                                            nostr.send(crate::nostr::service::NostrCmd::LoadEarlier { channel_id });
+                                                        }
+                                                    },
+                                                    if fetching {
+                                                        {crate::i18n::text("Loading earlier messages…", &[])}
+                                                    } else {
+                                                        {crate::i18n::text("Load earlier messages", &[])}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if !is_dm && messages.len() >= PAGE_SIZE {
                                 if let (Some(channel_id), Some(oldest)) =
                                     (selected_channel, messages.first())
                                 {
@@ -749,7 +809,7 @@ pub fn ChatView() -> Element {
                                     }
                                 }
                             }
-                            for start in (0..messages.len()).step_by(PAGE_SIZE) {
+                            for start in (drawn_from..messages.len()).step_by(PAGE_SIZE) {
                                 {
                                     let end = (start + PAGE_SIZE).min(messages.len());
                                     let id = messages[start].id;
@@ -885,6 +945,33 @@ fn follow_bottom() {
 }
 
 const PAGE_SIZE: usize = 50;
+
+/// How far back a DM is drawn: everything once someone fetched from the relays,
+/// else from the page holding the message revealed down to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reveal {
+    All,
+    From(Id),
+}
+
+/// The first message a DM draws: its newest two pages, or back to the page
+/// `revealed` (an index) sits in, and never past a message in `keep`. Aligned to
+/// pages counted from the oldest held, so a page keeps its id as the window moves.
+fn window_start(
+    len: usize,
+    revealed: Option<usize>,
+    keep: impl IntoIterator<Item = usize>,
+) -> usize {
+    let Some(last) = len.checked_sub(1) else {
+        return 0;
+    };
+    let page = |i: usize| i - i % PAGE_SIZE;
+    let newest = page(last).saturating_sub(PAGE_SIZE);
+    keep.into_iter()
+        .chain(revealed)
+        .map(page)
+        .fold(newest, usize::min)
+}
 const JUMP_PAGE: u32 = 200;
 
 /// A page off screen is a placeholder until the scroll policy activates it, so
@@ -4501,6 +4588,38 @@ mod reactor_tests {
         assert_eq!(
             reactors(&state, &others[..1], None),
             state.display_name(&others[0])
+        );
+    }
+}
+
+#[cfg(test)]
+mod dm_window_tests {
+    use super::*;
+
+    #[test]
+    fn a_dm_draws_its_newest_two_pages_and_reaches_back_only_when_asked() {
+        assert_eq!(window_start(0, None, []), 0);
+        assert_eq!(window_start(30, None, []), 0);
+        assert_eq!(
+            window_start(120, None, []),
+            50,
+            "pages 50..100 and 100..120"
+        );
+        assert_eq!(
+            window_start(120, None, [10]),
+            0,
+            "the unread line stays drawn"
+        );
+        assert_eq!(
+            window_start(220, Some(60), []),
+            50,
+            "revealed down to a page start"
+        );
+        assert_eq!(window_start(220, Some(0), []), 0);
+        assert_eq!(
+            window_start(220, Some(199), []),
+            150,
+            "never later than the newest two"
         );
     }
 }

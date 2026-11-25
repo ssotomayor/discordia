@@ -9,7 +9,7 @@ use super::nip44;
 pub const KIND_SEAL: u16 = 13;
 pub const KIND_GIFT_WRAP: u16 = 1059;
 
-const MAX_BACKDATE: i64 = 2 * 24 * 60 * 60;
+pub(crate) const MAX_BACKDATE: i64 = 2 * 24 * 60 * 60;
 
 fn fuzzed(now: i64) -> i64 {
     use rand::Rng;
