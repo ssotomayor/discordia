@@ -4,6 +4,8 @@ use dioxus::prelude::*;
 use crate::protocol::{Attachment, ClientMessage, FilePolicy, Id, MessageSearch, Permission};
 use crate::state::{use_app_state, use_gateway};
 
+use super::image_editor::{CropShape, ImageEditor};
+
 pub(super) fn read_file(
     path: &std::path::Path,
     max_bytes: usize,
@@ -254,6 +256,13 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     }
 }
 
+/// What a base64 data URL decodes to.
+fn data_url_bytes(url: &str) -> usize {
+    let payload = url.split_once(',').map_or("", |(_, payload)| payload);
+    let padding = payload.bytes().rev().take_while(|b| *b == b'=').count();
+    (payload.len() / 4 * 3).saturating_sub(padding)
+}
+
 #[component]
 pub(super) fn StickerPicker(
     channel_id: Id,
@@ -266,6 +275,8 @@ pub(super) fn StickerPicker(
     let mut error = use_signal(|| None::<String>);
     let mut sticker_name = use_signal(String::new);
     let mut sticker_image = use_signal(|| None::<String>);
+    let mut cropping = use_signal(|| None::<String>);
+    let crop_id = use_hook(|| format!("dxf-sticker-crop-{}", uuid::Uuid::new_v4().simple()));
     let manage = state.read().can(guild_id, Permission::ManageEmojis);
     let fetch = gateway.clone();
     use_effect(move || {
@@ -347,10 +358,11 @@ pub(super) fn StickerPicker(
                             onkeydown: move |e: KeyboardEvent| { if e.key() == Key::Enter { e.prevent_default(); } },
                         }
                             button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
-                                match crate::file_dialog::pick_file(&[(crate::i18n::label("Image"), &["png", "gif", "webp", "jpg"])]).await {
+                                match crate::file_dialog::pick_file(&[(crate::i18n::label("Image"), crate::file_dialog::STORED_IMAGE_EXTENSIONS)]).await {
                                 Ok(Some(path)) => {
-                                    match tokio::task::spawn_blocking(move || crate::chat_image::read_file_with_limit(&path, max_sticker_bytes)).await {
-                                        Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
+                                    let limit = CropShape::Sticker.input_limit();
+                                    match tokio::task::spawn_blocking(move || crate::chat_image::attach_file(&path, limit)).await {
+                                        Ok(Ok(image)) => { cropping.set(Some(image)); error.set(None); }
                                         Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
                                     }
                                 }
@@ -367,6 +379,42 @@ pub(super) fn StickerPicker(
                                         sticker_name.set(String::new());
                                     }
                                 } }, {crate::i18n::text("Add", &[])} }
+                        }
+                    }
+                    // The top layer: this panel sits inside a grid panel, which traps a fixed overlay (trap 22).
+                    if let Some(src) = cropping() {
+                        div {
+                            id: "{crop_id}",
+                            "popover": "manual",
+                            "data-dismiss": "{dismiss}",
+                            style: "position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;overflow:visible;",
+                            onmounted: {
+                                let id = serde_json::to_string(&crop_id).unwrap_or_default();
+                                move |_| { let _ = document::eval(&format!("document.getElementById({id})?.showPopover?.();")); }
+                            },
+                            ImageEditor {
+                                src: src.clone(),
+                                shape: CropShape::Sticker,
+                                on_cancel: move |_| cropping.set(None),
+                                on_original: (data_url_bytes(&src) <= max_sticker_bytes).then(|| {
+                                    let src = src.clone();
+                                    EventHandler::new(move |_| {
+                                        cropping.set(None);
+                                        sticker_image.set(Some(src.clone()));
+                                        error.set(None);
+                                    })
+                                }),
+                                on_apply: move |cropped: String| {
+                                    cropping.set(None);
+                                    if data_url_bytes(&cropped) > max_sticker_bytes {
+                                        let limit = (max_sticker_bytes / 1000).to_string();
+                                        error.set(Some(crate::i18n::text("That sticker is over this community's {0} KB limit. Zoom in or choose a smaller image.", &[limit])));
+                                    } else {
+                                        sticker_image.set(Some(cropped));
+                                        error.set(None);
+                                    }
+                                },
+                            }
                         }
                     }
                 }
