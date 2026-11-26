@@ -337,6 +337,10 @@ impl AppState {
                 let policy = self.file_policy(guild_id).await?;
                 let limit = (policy.max_sticker_bytes as usize)
                     .min(crate::protocol::MAX_GUILD_UPLOAD_BYTES);
+                let side = crate::protocol::MAX_STICKER_SIDE;
+                if !crate::media::fits_within(&image, side) {
+                    return Err(format!("a sticker is at most {side}×{side} pixels"));
+                }
                 let image = self.store_upload_with_limit(&user.pubkey, &image, limit)?;
                 let sticker = GuildEmoji {
                     id: uuid::Uuid::new_v4(),

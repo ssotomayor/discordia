@@ -180,8 +180,10 @@ impl CropShape {
     fn output(self) -> (u32, u32) {
         match self {
             CropShape::Square => (512, 512),
-            // Chat draws a picture at most 400×300.
-            CropShape::Sticker => (320, 320),
+            CropShape::Sticker => (
+                crate::protocol::MAX_STICKER_SIDE,
+                crate::protocol::MAX_STICKER_SIDE,
+            ),
             CropShape::Banner => (OUT_LONG_EDGE, (OUT_LONG_EDGE as f64 / 3.0) as u32),
         }
     }
@@ -209,7 +211,7 @@ pub fn ImageEditor(
     shape: CropShape,
     on_cancel: EventHandler<()>,
     on_apply: EventHandler<String>,
-    /// Offered when the picture may be kept untouched, such as a sticker that already fits.
+    /// Offered when the picture may be kept untouched and already fits the output, such as a small sticker.
     #[props(default)]
     on_original: Option<EventHandler<()>>,
 ) -> Element {
@@ -273,6 +275,9 @@ pub fn ImageEditor(
     let nat_h = f64::from(image.pixels.height());
     let preview = image.preview.clone();
     let animated = image.is_animated();
+    let (out_w, out_h) = shape.output();
+    let on_original =
+        on_original.filter(|_| nat_w <= f64::from(out_w) && nat_h <= f64::from(out_h));
 
     let min_zoom = shape.least_zoom((vp_w, vp_h), (nat_w, nat_h));
     let max_zoom = (vp_w / nat_w).max(vp_h / nat_h) * 5.0;

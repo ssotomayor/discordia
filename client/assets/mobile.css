@@ -73,7 +73,11 @@
 .dxf-platform-mobile .dxf-mic-private-note { flex-basis: 100%; min-width: 0; }
 .dxf-platform-mobile .dxf-emoji-popover { max-height: 45dvh; max-width: calc(100vw - 32px); }
 .dxf-platform-mobile .dxf-emoji-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; max-width: 100%; }
-.dxf-platform-mobile .dxf-emoji-grid button { width: 44px; height: 44px; }
+.dxf-platform-mobile .dxf-emoji-grid button { width: min(44px, 100%); height: 44px; }
+.dxf-platform-mobile .dxf-emoji-body { gap: 4px; }
+.dxf-platform-mobile .dxf-emoji-rail { padding-right: 4px; }
+.dxf-platform-mobile .dxf-emoji-rail-btn { width: 26px; }
+.dxf-platform-mobile .dxf-emoji-deferred { contain-intrinsic-size: auto 284px auto var(--dxf-emoji-h-touch); }
 .dxf-platform-mobile .dxf-gif-embed { height: 160px; }
 .dxf-platform-mobile .dxf-desktop-hint { display: none; }
 .dxf-stream-video { position: relative; min-height: 120px; }
