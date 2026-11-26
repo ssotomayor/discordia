@@ -1540,7 +1540,7 @@ fn show_image_job(
     let channel_id = conversation_id(&job.peer);
     state.write().dm_images.insert(
         id,
-        super::dm_image::Image::uploading(channel_id, job.image.clone()),
+        super::dm_image::Image::uploading(channel_id, job.image.clone(), &job.text),
     );
     outbox.hold_upload(id, job.peer.clone());
     show(state, outbox, id);

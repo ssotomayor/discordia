@@ -120,14 +120,23 @@ pub(super) fn EncryptedImage(channel_id: Id, message_id: Id) -> Element {
         Status::Ready { .. } => "",
     };
     let retry_nostr = nostr.clone();
+    let uploading = status == Status::Uploading;
+    let skeleton = if uploading || matches!(status, Status::Loading { .. }) {
+        "dxf-image-skeleton"
+    } else {
+        ""
+    };
     rsx! {
         div {
-            class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex flex-wrap items-center justify-center gap-y-1 text-center overflow-hidden",
+            class: "mt-1 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--panel2)] flex flex-wrap items-center justify-center gap-y-1 text-center overflow-hidden {skeleton}",
             // Every state holds the picture's box: leaving a DM unloads its pictures,
             // so each one passes through these on every visit. A min-width widens a tall
             // box and aspect-ratio then makes it taller too, so max-height holds it.
             style: "{super::image_attachment::frame(details_width.zip(details_height))} min-width: min(120px, 100%); min-height: 48px; max-height: 300px; align-content: center; column-gap: 0.75rem;",
-            span { class: if matches!(status, Status::Loading { .. }) { "dxf-late" } else { "" }, {crate::i18n::message(label)} }
+            span { class: if matches!(status, Status::Loading { .. }) { "dxf-late" } else { "" },
+                if uploading { span { class: "dx-spinner align-[-1px]" } }
+                {crate::i18n::message(label)}
+            }
             if matches!(status, Status::Failed(_) | Status::UploadFailed(_) | Status::Evicted) {
                 button {
                     r#type: "button",
@@ -188,7 +197,10 @@ pub(super) fn ViewOnce(channel_id: Id, message_id: Id) -> Element {
         let retry = nostr.clone();
         return rsx! {
             div { class: "dxf-view-once",
-                span { {crate::i18n::message(label)} }
+                span {
+                    if status == Status::Uploading { span { class: "dx-spinner align-[-1px]" } }
+                    {crate::i18n::message(label)}
+                }
                 if matches!(status, Status::UploadFailed(_)) {
                     button { r#type: "button", onclick: move |_| retry.send(NostrCmd::Retry { message_id }), {crate::i18n::text("Retry", &[])} }
                 }
