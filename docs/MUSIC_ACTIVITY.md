@@ -1,8 +1,9 @@
 # Music activity
 
 Current phase: installable shared-queue prototype, named **Music Lab**. Playback
-and collection expansion are not connected. Nothing starts with Discordia or
-the gateway by default. The source probe CLI remains available separately.
+and collection expansion are not connected to the activity. An optional native
+audio engine and encrypted transport have been tested independently. Nothing
+starts with Discordia or the gateway by default.
 
 ## Optional installation
 
@@ -123,3 +124,68 @@ Primary references: [SoundCloud oEmbed](https://developers.soundcloud.com/docs/o
 [Ibuki](https://github.com/Deivu/Ibuki),
 [RustyPipe](https://codeberg.org/ThetaDev/rustypipe),
 [Songbird](https://github.com/serenity-rs/songbird).
+
+## Native audio prototype
+
+| Feature | Scope |
+|---|---|
+| `audio` | Symphonia decoder, stereo resampling, bounded producer queue, playback state and publication clock |
+| `transport` | Adds the existing native LiveKit SDK, a dedicated-room publisher and an independent E2EE key provider |
+| Default / `activity` alone | Neither audio feature is enabled; the installed bundle still says audio is not connected |
+
+`DecodedStream::file` reads a regular local file on a blocking worker. It does
+not resolve a provider URL or accept file paths from the installed activity.
+Enabled decoders: PCM/WAV, MP3, Ogg/Vorbis; unsupported codecs/layouts fail.
+Mono duplicates to both channels; stereo stays separate. Output is interleaved
+48 kHz signed 16-bit PCM in 10 ms frames; only the last frame is zero-padded.
+Resampling removes its own startup delay and preserves the converted duration.
+Floating-point values must be finite; out-of-range peaks clamp to PCM full scale.
+
+| Resource/control | Behavior |
+|---|---|
+| File | At most 512 MiB; read incrementally, never loaded whole |
+| Packet | At most 1 MiB encoded / 32,768 decoded frames; not a process-wide decoder memory guarantee |
+| Metadata | Tags capped at 16 KiB; embedded pictures disabled |
+| PCM queue | 50 frames / 500 ms, about 96 KiB of sample payload; full queue blocks the decoder |
+| Input | 8–192 kHz, one or two channels; format/rate changes fail |
+| Pause | Returns silence for the publication loop without advancing song position; decoder stops at its queue limit |
+| Replacement/stop | Closes the old receiver and waits for the worker; stale PCM cannot enter the replacement |
+| Publication clock | Advances through silence; short scheduling slips catch up, >250 ms reports `ClockStalled` rather than silently falling behind |
+| Publisher | 192 kbit/s Opus ceiling, no microphone AEC/noise suppression/AGC, no automatic subscriptions |
+
+The publisher takes an explicit music-room token and its own 32-byte key. It
+does not mint activity grants, borrow voice tokens/keys, or expose networking
+to the activity window. Current activity commands do not invoke it: permission
+and grant integration has not been implemented. Owners must close the publisher
+and stop the decoder when their media session ends. Probe/queue capabilities
+are unchanged.
+
+```powershell
+# Local decode validation only; no playback, upload or publication.
+cargo run -p discordia-music --features audio --bin discordia-music-audio-check -- 'C:\Music\example.wav'
+cargo test -p discordia-music --features activity,audio
+
+# Needs the same native C++ toolchain as the client.
+cargo clippy -p discordia-music --all-features --all-targets -- -D warnings
+cargo test -p discordia-music --all-features
+```
+
+Synthetic PCM tests cover 8 / 44.1 / 48 / 96 / 192 kHz conversion, channel
+separation, exact duration/partial tails, an 11-second input, bounded buffering,
+cancellation, pause, replacement and stalled clocks. MP3/Vorbis are enabled
+but have not been validated with provider audio.
+
+An opt-in native network test (`music/tests/media.rs`) was run on Windows against
+an isolated local LiveKit 1.13.9 server: two receivers decoded separate 440/880 Hz
+stereo tones, including a silence interval; a third receiver with a different
+key did not decode the signal. No microphones, speakers or user streams were
+used. The temporary server was stopped and its exit verified.
+
+The network test is ignored by default and requires `MUSIC_TEST_SFU_URL` pointing
+to loopback plus `MUSIC_TEST_API_KEY` / `MUSIC_TEST_API_SECRET` for that dedicated
+test server. It creates its own room and restrictive publisher/subscriber
+grants; it never starts or attaches to an ordinary user's voice session.
+
+```powershell
+cargo test -p discordia-music --all-features --test media -- --ignored --test-threads=1
+```

@@ -93,8 +93,8 @@ jobs:
 
       - name: Installable music activity
         run: |
-          cargo clippy -p discordia-music --features activity --all-targets -- -D warnings
-          cargo test -p discordia-music --features activity
+          cargo clippy -p discordia-music --features activity,audio --all-targets -- -D warnings
+          cargo test -p discordia-music --features activity,audio
           node --test music/tests/activity_ui.cjs
 
   audit:
@@ -153,6 +153,11 @@ jobs:
 
       - name: Tests (client + grid-layout)
         run: cargo test -p discordia -p dioxus-grid-layout
+
+      - name: Native music audio transport
+        run: |
+          cargo clippy -p discordia-music --all-features --all-targets -- -D warnings
+          cargo test -p discordia-music --all-features
 
       - name: Desktop edit channel recovery and service scheduling
         run: cargo test -p dioxus-desktop --lib

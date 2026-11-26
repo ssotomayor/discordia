@@ -7,11 +7,18 @@ default-run = "discordia-music"
 
 [features]
 activity = ["dep:discordia-bot", "dep:sha2", "dep:hex", "tokio/fs", "tokio/io-util", "tokio/signal", "tokio/sync"]
+audio = ["dep:symphonia", "dep:rubato", "tokio/sync"]
+transport = ["audio", "dep:livekit"]
 
 [[bin]]
 name = "discordia-music-activity"
 path = "src/bin/activity.rs"
 required-features = ["activity"]
+
+[[bin]]
+name = "discordia-music-audio-check"
+path = "src/bin/audio_check.rs"
+required-features = ["audio"]
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
@@ -23,8 +30,13 @@ url = "2"
 discordia-bot = { path = "../bot-sdk", optional = true }
 sha2 = { version = "0.10", optional = true }
 hex = { workspace = true, optional = true }
+symphonia = { version = "=0.6.1", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm"], optional = true }
+rubato = { version = "=5.0.1", optional = true }
+livekit = { version = "=0.9.5", optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["net", "io-util"] }
+tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 discordia-server = { workspace = true }
 tempfile = "3"
+livekit-api = { workspace = true }
+futures-util = { workspace = true }

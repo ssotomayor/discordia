@@ -39,7 +39,7 @@ another. Deferred work goes in a GitHub issue, never only in a commit message.
 | `push-relay/` | `discordia-push-relay` | Holds the FCM credential: device and handle registry, forwards ciphertext pushes to phones. |
 | `bot-sdk/` | `discordia-bot` | Bot client library; integration tests drive the server through it. |
 | `agent/` | `discordia-agent` | Runs an LLM agent as an app over `bot-sdk`: triggers, context, limits, provider harnesses. |
-| `music/` | `discordia-music` | Source probe CLI and opt-in installable Music Lab service (`activity` feature); shared queue, no audio playback yet. |
+| `music/` | `discordia-music` | Opt-in installable Music Lab queue (`activity`), source probes, optional native `audio`/`transport` prototypes; media not yet connected to the activity. |
 | `grid-layout/` | `dioxus-grid-layout` | Draggable/resizable grid widget. Self-contained. |
 
 ## Traps
