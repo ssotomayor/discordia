@@ -11,3 +11,4 @@ chrono = { workspace = true }
 url = "2"
 unicode-normalization = "0.1"
 serde_json = { workspace = true }
+sha2 = "0.10"

@@ -6,6 +6,7 @@ pub mod connection_routes;
 pub mod gateway;
 pub mod http;
 pub mod livekit;
+pub mod livekit_activity;
 pub mod livekit_bundle;
 pub mod media;
 pub mod poll;

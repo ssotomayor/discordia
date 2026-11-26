@@ -2052,6 +2052,9 @@ fn apply(
         } => {
             s.guild_blocklists.insert(guild_id, (curators, lists));
         }
+        // The native receiver bridge is not enabled yet; bearer tokens must
+        // never be forwarded to the activity page's generic message channel.
+        ServerMessage::ActivityAudioToken { .. } | ServerMessage::ActivityAudioError { .. } => {}
         ServerMessage::ActivityInstances {
             channel_id,
             instances,

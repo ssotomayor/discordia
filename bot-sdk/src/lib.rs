@@ -395,6 +395,22 @@ impl Bot {
         .await
     }
 
+    pub async fn request_activity_audio(
+        &mut self,
+        instance: &protocol::ActivityInstance,
+        role: protocol::ActivityAudioRole,
+    ) -> Result<protocol::Id> {
+        let request_id = protocol::Id::new_v4();
+        self.send(&ClientMessage::RequestActivityAudio {
+            instance_id: instance.id,
+            request_id,
+            epoch: protocol::activity_audio_epoch(instance),
+            role,
+        })
+        .await?;
+        Ok(request_id)
+    }
+
     /// Replaces this bot's picture, banner and bio on the host; `None` clears
     /// one. The host stores the images itself, so they reach no one else's server.
     pub async fn set_profile(

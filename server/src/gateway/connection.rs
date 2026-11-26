@@ -191,6 +191,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                             | ClientMessage::RegisterManifest { .. }
                             | ClientMessage::OfferActivityBundle { .. }
                             | ClientMessage::ActivitySend { .. }
+                            | ClientMessage::RequestActivityAudio { .. }
                             | ClientMessage::InvokeCommand { .. }
                             | ClientMessage::RespondToCommand { .. }
                             | ClientMessage::SetProfile { .. }
@@ -1473,6 +1474,7 @@ pub(crate) async fn handle_connection_with_route<S>(
                         match ctx.state.set_app_access(guild_id, &bot_pubkey, access, &u.pubkey).await {
                             Ok(seat) => {
                                 announce_seat(&ctx, guild_id, &bot_pubkey, seat);
+                                share_instances(&ctx.state, ctx.state.prune_instances());
                                 share_guild_apps(&ctx.state, guild_id);
                             }
                             Err(message) => {
@@ -1744,6 +1746,17 @@ pub(crate) async fn handle_connection_with_route<S>(
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             }
                         }
+                    }
+                    ClientMessage::RequestActivityAudio { instance_id, request_id, epoch, role } => {
+                        let Some(user) = phase.user() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        if !reads.allow() { reject_rate_limited(&mut ws_tx).await; continue; }
+                        super::activity_audio::grant(&ctx, super::activity_audio::Request {
+                            connection: conn_id, key: user.pubkey.clone(), is_bot: phase.is_bot(),
+                            instance: instance_id, request: request_id, epoch, role,
+                        });
                     }
                     ClientMessage::ActivityStart { channel_id, app } => {
                         let Some(u) = phase.user() else {
@@ -3833,6 +3846,7 @@ fn apply_sight_change(
             }
         }
     }
+    share_instances(state, state.prune_instances());
 }
 
 /// Covers an app that doesn't hang up itself (frozen, crashed or modified). Being
@@ -4145,6 +4159,7 @@ pub(crate) fn announce_uninstall(
 }
 
 pub(crate) fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
+    share_instances(state, state.prune_instances());
     let (curators, lists) = state.guild_blocklists(guild_id);
     state.deliver(
         state.guild_managers(guild_id),
@@ -4290,6 +4305,8 @@ fn filter_for_bot(
             })
         }
         ServerMessage::ActivityEvent { .. }
+        | ServerMessage::ActivityAudioToken { .. }
+        | ServerMessage::ActivityAudioError { .. }
         | ServerMessage::CommandResponse { .. }
         | ServerMessage::BundleWanted { .. } => Some(msg.clone()),
         ServerMessage::Error { .. } => Some(msg.clone()),

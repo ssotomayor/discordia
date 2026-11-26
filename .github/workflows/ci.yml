@@ -97,6 +97,11 @@ jobs:
           cargo test -p discordia-music --features activity,audio
           node --test music/tests/activity_ui.cjs
 
+      - name: Activity audio authorization
+        run: |
+          cargo clippy -p discordia-server --no-default-features --features activity-audio --all-targets -- -D warnings
+          cargo test -p discordia-server --no-default-features --features activity-audio --test activity_audio
+
   audit:
     name: dependency advisories
     runs-on: ubuntu-latest

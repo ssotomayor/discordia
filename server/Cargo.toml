@@ -9,6 +9,7 @@ default = ["cli"]
 # The binary: flags, the config file, `setup`, and the rendezvous as a subcommand.
 # The client embeds the library and leaves these out.
 cli = ["dep:clap", "dep:toml", "dep:discordia-rendezvous"]
+activity-audio = []
 
 [[bin]]
 name = "discordia-server"

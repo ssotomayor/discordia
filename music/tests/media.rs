@@ -50,6 +50,11 @@ fn token(room: &str, identity: &str, publish: bool) -> String {
         can_publish: publish,
         can_subscribe: !publish,
         can_publish_data: false,
+        can_publish_sources: if publish {
+            vec!["microphone".into()]
+        } else {
+            vec![]
+        },
         ..Default::default()
     })
     .to_jwt()

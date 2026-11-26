@@ -83,7 +83,9 @@ impl Publisher {
             room.local_participant().publish_track(
                 LocalTrack::Audio(track),
                 TrackPublishOptions {
-                    source: TrackSource::Unknown,
+                    // The narrow grant allows this source tag. Samples still come
+                    // from the music decoder, never from a microphone device.
+                    source: TrackSource::Microphone,
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: 192_000,
                     }),

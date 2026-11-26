@@ -140,6 +140,28 @@ impl AppState {
         Ok(activity.max_players)
     }
 
+    fn may_use_activity(
+        &self,
+        pubkey: &str,
+        channel: &crate::protocol::Channel,
+        app: &str,
+    ) -> Result<(), String> {
+        if app.starts_with("builtin:") {
+            return Ok(());
+        }
+        let install = self
+            .bot_install(channel.guild_id, app)
+            .ok_or("that activity is not available here")?;
+        if install.app.as_ref().is_none_or(|app| app.activity.is_none()) {
+            return Err("that activity is not available here".into());
+        }
+        if install.access.reads(channel.id) && self.may_use_app(&install, pubkey) {
+            Ok(())
+        } else {
+            Err("that activity is not available to you in this channel".into())
+        }
+    }
+
     pub fn start_instance(
         &self,
         pubkey: &str,
@@ -147,6 +169,7 @@ impl AppState {
         app: &str,
     ) -> Result<(ActivityInstance, Touched), String> {
         let channel = self.may_use_channel(pubkey, channel_id)?;
+        self.may_use_activity(pubkey, &channel, app)?;
         let max_players = self.max_players_for(channel.guild_id, app)?;
         let mut all = self.activity_instances.lock();
         if all.values().filter(|i| i.channel_id == channel_id).count() >= MAX_INSTANCES_PER_CHANNEL
@@ -175,11 +198,12 @@ impl AppState {
         instance_id: Id,
         role: ActivityRole,
     ) -> Result<Touched, String> {
-        let channel_id = self
+        let instance = self
             .instance(instance_id)
-            .ok_or("that activity has ended")?
-            .channel_id;
-        self.may_use_channel(pubkey, channel_id)?;
+            .ok_or("that activity has ended")?;
+        let channel_id = instance.channel_id;
+        let channel = self.may_use_channel(pubkey, channel_id)?;
+        self.may_use_activity(pubkey, &channel, &instance.app)?;
         let mut all = self.activity_instances.lock();
         let current = all.get(&instance_id).ok_or("that activity has ended")?;
         let already = current.role_of(pubkey);
@@ -255,7 +279,8 @@ impl AppState {
                 return Err("that app isn't installed here any more".into());
             }
         } else {
-            self.may_use_channel(pubkey, instance.channel_id)?;
+            let channel = self.may_use_channel(pubkey, instance.channel_id)?;
+            self.may_use_activity(pubkey, &channel, &instance.app)?;
             if instance.role_of(pubkey) != Some(ActivityRole::Player) {
                 return Err("only players move".into());
             }
@@ -285,6 +310,7 @@ impl AppState {
         for instance in snapshot {
             let Some(channel) = self.channel(instance.channel_id) else {
                 verdicts.push((instance.id, None));
+                touched.push(instance.channel_id);
                 continue;
             };
             let app_gone = Self::instance_bot(&instance)
@@ -300,6 +326,9 @@ impl AppState {
                 .filter(|p| {
                     !self.is_guild_member(channel.guild_id, &p.pubkey)
                         || !self.can_see_channel(&p.pubkey, &channel)
+                        || self
+                            .may_use_activity(&p.pubkey, &channel, &instance.app)
+                            .is_err()
                 })
                 .map(|p| p.pubkey.clone())
                 .collect();

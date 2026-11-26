@@ -13,6 +13,7 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
+mod activity_audio;
 mod apps;
 mod blocklists;
 mod chat_tools;

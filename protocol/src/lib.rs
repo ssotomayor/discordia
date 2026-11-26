@@ -2,8 +2,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod activity_audio;
 pub mod push;
 pub mod rendezvous;
+pub use activity_audio::{
+    ActivityAudioCredential, ActivityAudioRole, activity_audio_epoch, activity_audio_room,
+};
 
 pub type Id = Uuid;
 
@@ -1839,6 +1843,7 @@ pub enum ActivityCapability {
     ChannelRead,
     MessageSend,
     Instance,
+    Audio,
 }
 
 impl ActivityCapability {
@@ -1848,6 +1853,7 @@ impl ActivityCapability {
             ActivityCapability::ChannelRead => "See the channel it was opened in",
             ActivityCapability::MessageSend => "Post messages as you in that channel",
             ActivityCapability::Instance => "Play with others who join it",
+            ActivityCapability::Audio => "Listen to shared activity audio",
         }
     }
 }
@@ -2327,6 +2333,11 @@ pub fn validate_manifest(raw: AppManifest) -> Result<AppManifest, String> {
                 return Err("the bundle url must be https".into());
             }
             let mut capabilities = a.capabilities;
+            if capabilities.contains(&ActivityCapability::Audio)
+                && !capabilities.contains(&ActivityCapability::Instance)
+            {
+                return Err("activity audio requires the instance capability".into());
+            }
             capabilities.sort_unstable();
             capabilities.dedup();
             Some(ActivityManifest { capabilities, ..a })
@@ -3210,6 +3221,12 @@ pub enum ClientMessage {
     FetchActivityInstances {
         channel_id: Id,
     },
+    RequestActivityAudio {
+        instance_id: Id,
+        request_id: Id,
+        epoch: String,
+        role: ActivityAudioRole,
+    },
     /// Every instance in the guild's channels this member can see.
     FetchGuildActivityInstances {
         guild_id: Id,
@@ -3786,6 +3803,24 @@ pub enum ServerMessage {
     /// To an app's bot: a guild approved this bundle and the host lacks it.
     BundleWanted {
         sha256: String,
+    },
+    ActivityAudioToken {
+        instance_id: Id,
+        request_id: Id,
+        epoch: String,
+        role: ActivityAudioRole,
+        livekit_url: String,
+        #[serde(default)]
+        livekit_urls: Vec<String>,
+        token: ActivityAudioCredential,
+        expires_in_secs: u64,
+        #[serde(default)]
+        ice_servers: Vec<IceServer>,
+    },
+    ActivityAudioError {
+        instance_id: Id,
+        request_id: Id,
+        message: String,
     },
     /// Activities whose bundle this host holds, for any member.
     GuildActivities {

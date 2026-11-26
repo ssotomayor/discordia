@@ -1,3 +1,4 @@
+mod activity_audio;
 pub(crate) mod connection;
 pub(crate) use connection::handle_connection_with_route;
 
