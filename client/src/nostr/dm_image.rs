@@ -1301,6 +1301,8 @@ pub struct Image {
     pub channel_id: crate::protocol::Id,
     pub descriptor: Descriptor,
     status: Status,
+    /// Ours only: the caption goes out after the picture, so until then it shows from here.
+    caption: String,
     /// Each mounted view, and whether it wants the original rather than the preview.
     viewers: std::collections::HashMap<uuid::Uuid, bool>,
 }
@@ -1322,8 +1324,15 @@ impl std::fmt::Debug for Image {
 const MAX_READY_IMAGES: usize = 8;
 
 impl Image {
-    pub fn uploading(channel_id: crate::protocol::Id, descriptor: Descriptor) -> Self {
-        Self::new(channel_id, descriptor, Status::Uploading)
+    pub fn uploading(
+        channel_id: crate::protocol::Id,
+        descriptor: Descriptor,
+        caption: &str,
+    ) -> Self {
+        Self {
+            caption: caption.to_owned(),
+            ..Self::new(channel_id, descriptor, Status::Uploading)
+        }
     }
 
     pub fn received(channel_id: crate::protocol::Id, descriptor: Descriptor) -> Self {
@@ -1335,6 +1344,7 @@ impl Image {
             channel_id,
             descriptor,
             status,
+            caption: String::new(),
             viewers: Default::default(),
         }
     }
@@ -1345,6 +1355,10 @@ impl Image {
 
     pub fn is_upload(&self) -> bool {
         matches!(self.status, Status::Uploading | Status::UploadFailed(_))
+    }
+
+    pub fn pending_caption(&self) -> Option<&str> {
+        (self.is_upload() && !self.caption.is_empty()).then_some(self.caption.as_str())
     }
 
     /// The decrypted picture, and whether it is the original rather than the preview.
@@ -1638,6 +1652,22 @@ mod tests {
         upload.see(a, true);
         upload.leave(a);
         assert_eq!(upload.status, Status::Uploading);
+    }
+
+    #[test]
+    fn an_upload_shows_its_caption_until_it_is_sent_and_through_a_failure() {
+        let (descriptor, _) = encrypt(PNG).unwrap();
+        let mut upload = Image::uploading(crate::protocol::Id::nil(), descriptor, "look");
+        assert_eq!(upload.pending_caption(), Some("look"));
+        upload.upload_failed("offline".into());
+        assert_eq!(upload.pending_caption(), Some("look"));
+        upload.status = ready(true);
+        assert_eq!(upload.pending_caption(), None);
+
+        let (descriptor, _) = encrypt(PNG).unwrap();
+        let bare = Image::uploading(crate::protocol::Id::nil(), descriptor, "");
+        assert_eq!(bare.pending_caption(), None);
+        assert_eq!(view(Status::Waiting).pending_caption(), None);
     }
 
     #[test]

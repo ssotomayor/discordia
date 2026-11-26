@@ -1578,6 +1578,11 @@ pub(super) fn MessageRow(
                     Some(false) => rsx! { super::dm_images::EncryptedImage { channel_id, message_id } },
                     None => rsx! {},
                 }
+                if let Some(caption) = state.read().dm_images.get(&message_id).and_then(|image| image.pending_caption().map(str::to_owned)) {
+                    div { class: "mt-1 text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed opacity-60",
+                        MessageContent { content: caption, channel_id, message_id }
+                    }
+                }
                 if let Some(name) = message.image_metadata.as_ref().and_then(|metadata| metadata.name.as_ref()) {
                     div {
                         class: "mt-1 text-[10px] text-[var(--text-dim)]",
@@ -4310,13 +4315,24 @@ fn Composer(
 
                     // Enter already sends; the button is for the pointer, and a
                     // permanently greyed one is a control that never does anything.
+                    // Neither button takes focus: that would blur the field and drop the soft keyboard.
                     if !draft().trim().is_empty() || pending_image().is_some() || pending_file().is_some() {
-                        button {
-                            class: "dxf-cta shrink-0 h-8 text-xs font-semibold uppercase tracking-wider px-4 rounded-lg transition-all",
-                            r#type: "submit",
-                            // Taking focus would blur the field and drop the soft keyboard.
-                            onmousedown: move |e| e.prevent_default(),
-                            {crate::i18n::text("Send", &[])}
+                        if cfg!(any(target_os = "android", target_os = "ios")) {
+                            button {
+                                class: "dxf-cta shrink-0 h-8 w-8 flex items-center justify-center rounded-lg transition-all",
+                                r#type: "submit",
+                                title: crate::i18n::text("Send", &[]),
+                                aria_label: crate::i18n::text("Send", &[]),
+                                onmousedown: move |e| e.prevent_default(),
+                                span { class: "block w-4 h-4", dangerous_inner_html: super::icons::SEND }
+                            }
+                        } else {
+                            button {
+                                class: "dxf-cta shrink-0 h-8 text-xs font-semibold uppercase tracking-wider px-4 rounded-lg transition-all",
+                                r#type: "submit",
+                                onmousedown: move |e| e.prevent_default(),
+                                {crate::i18n::text("Send", &[])}
+                            }
                         }
                     }
                 }

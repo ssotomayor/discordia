@@ -443,7 +443,15 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
 .dxf-skeleton-line { height: 10px; }
 @keyframes dxf-skeleton-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
-@media (prefers-reduced-motion: reduce) { .dxf-skeleton, .dxf-skeleton-bar { animation: none; } }
+/* A sweep, not a pulse: the box keeps its text legible, and starts off-edge so a quick load never flashes. */
+.dxf-image-skeleton {
+  background-image: linear-gradient(100deg, transparent 35%, color-mix(in srgb, var(--text) 9%, transparent) 50%, transparent 65%);
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  animation: dxf-image-sweep 1.6s ease-in-out 0.15s infinite backwards;
+}
+@keyframes dxf-image-sweep { from { background-position: 130% 0; } to { background-position: -30% 0; } }
+@media (prefers-reduced-motion: reduce) { .dxf-skeleton, .dxf-skeleton-bar, .dxf-image-skeleton { animation: none; } .dxf-image-skeleton { background-image: none; } }
 
 .dx-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); border-top-color: var(--accent); display: inline-block; margin-right: 8px; animation: dxf-spin 1s linear infinite; }
 @keyframes dxf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
