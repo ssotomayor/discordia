@@ -198,7 +198,9 @@ fn CameraSetupDialog() -> Element {
                 div { class: "px-4 py-3 flex items-center gap-2 border-t border-[var(--border)]",
                     button { disabled: submitting(), onclick: close, {crate::i18n::text("Cancel", &[])} }
                     button {
-                        disabled: !can_start, class: "px-3 py-2 rounded bg-[var(--accent)] text-white text-sm",
+                        id: "camera-setup-start",
+                        r#type: "button",
+                        disabled: !can_start, class: "px-3 py-2 rounded border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text)] text-sm",
                         onclick: move |_| {
                             if !ready() || submitting() { return; }
                             submitting.set(true);
