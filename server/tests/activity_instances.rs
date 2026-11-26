@@ -604,6 +604,54 @@ async fn an_activity_only_app_plays_without_a_seat_among_the_members() {
     assert!(!seat_change(&mut alice, &key).await);
     assert!(!ready_members(&url, &alice_id).await.contains(&key));
 
+    alice
+        .send(&ClientMessage::ActivityStart {
+            channel_id: text,
+            app: "builtin:rps".into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        let own = instances(&mut bot).await;
+        assert!(
+            own.iter().all(|i| i.app == key),
+            "an activity-only app must not see another app's participants"
+        );
+        if own.is_empty() {
+            break;
+        }
+    }
+    alice
+        .send(&ClientMessage::ActivityStart {
+            channel_id: text,
+            app: key.clone(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if !instances(&mut bot).await.is_empty() {
+            break;
+        }
+    }
+    alice
+        .send(&ClientMessage::CreateChannel {
+            guild_id: gid,
+            name: "keep-one-text-channel".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            divider: Default::default(),
+        })
+        .await
+        .unwrap();
+    alice
+        .send(&ClientMessage::DeleteChannel { channel_id: text })
+        .await
+        .unwrap();
+    assert!(
+        instances(&mut bot).await.is_empty(),
+        "a deleted channel must release the activity backend too"
+    );
+
     handle.abort();
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::AppState;
 use crate::protocol::{
@@ -10,15 +10,64 @@ use crate::protocol::{
 pub type Touched = Vec<Id>;
 
 #[derive(Default)]
-pub struct Instances(std::sync::Mutex<HashMap<Id, ActivityInstance>>);
+pub struct Instances {
+    instances: std::sync::Mutex<HashMap<Id, ActivityInstance>>,
+    // The last app needs a final empty snapshot after its instance disappears.
+    apps: std::sync::Mutex<HashMap<Id, HashSet<String>>>,
+}
 
 impl Instances {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Id, ActivityInstance>> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner())
+        self.instances.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn app_updates(
+        &self,
+        channel: Id,
+        instances: &[ActivityInstance],
+    ) -> Vec<(String, Vec<ActivityInstance>)> {
+        let current: HashSet<String> = instances
+            .iter()
+            .filter_map(|i| AppState::instance_bot(i).map(str::to_string))
+            .collect();
+        let mut apps = self.apps.lock().unwrap_or_else(|p| p.into_inner());
+        let mut targets = apps.remove(&channel).unwrap_or_default();
+        targets.extend(current.iter().cloned());
+        if !current.is_empty() {
+            apps.insert(channel, current);
+        }
+        targets
+            .into_iter()
+            .map(|app| {
+                let own = instances
+                    .iter()
+                    .filter(|i| AppState::instance_bot(i) == Some(app.as_str()))
+                    .cloned()
+                    .collect();
+                (app, own)
+            })
+            .collect()
     }
 }
 
 impl AppState {
+    pub fn instances_for_app(&self, app: &str) -> Vec<ActivityInstance> {
+        self.activity_instances
+            .lock()
+            .values()
+            .filter(|i| Self::instance_bot(i) == Some(app))
+            .cloned()
+            .collect()
+    }
+
+    pub fn instance_app_updates(
+        &self,
+        channel: Id,
+        instances: &[ActivityInstance],
+    ) -> Vec<(String, Vec<ActivityInstance>)> {
+        self.activity_instances.app_updates(channel, instances)
+    }
+
     pub fn instances_in(&self, channel_id: Id) -> Vec<ActivityInstance> {
         let mut out: Vec<ActivityInstance> = self
             .activity_instances
@@ -348,5 +397,33 @@ mod tests {
         assert_eq!(all[&id].host(), Some("b"));
         leave_all(&mut all, "b");
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn apps_receive_only_their_own_instances_and_a_final_empty_snapshot() {
+        let instances = Instances::default();
+        let mut first = instance(&[("a", ActivityRole::Player)]);
+        first.app = "app-one".into();
+        let mut second = first.clone();
+        second.id = Id::new_v4();
+        second.app = "app-two".into();
+        let channel = first.channel_id;
+        let updates: HashMap<_, _> = instances
+            .app_updates(channel, &[first.clone(), second.clone()])
+            .into_iter()
+            .collect();
+        assert_eq!(updates["app-one"], vec![first]);
+        assert_eq!(updates["app-two"], vec![second.clone()]);
+        let updates: HashMap<_, _> = instances
+            .app_updates(channel, &[second])
+            .into_iter()
+            .collect();
+        assert!(updates["app-one"].is_empty());
+        assert_eq!(updates["app-two"].len(), 1);
+        assert_eq!(
+            instances.app_updates(channel, &[]),
+            vec![("app-two".into(), Vec::new())]
+        );
+        assert!(instances.app_updates(channel, &[]).is_empty());
     }
 }

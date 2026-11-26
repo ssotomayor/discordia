@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Lab</title>
+<style>
+  :root { color-scheme: dark; font: 15px system-ui, sans-serif; background: #10151c; color: #edf1f6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; max-width: 900px; margin-inline: auto; }
+  h1 { margin: 0 0 8px; font-size: 24px; }
+  .muted { color: #b3bdca; }
+  #notice { border: 1px solid #b99549; padding: 12px; border-radius: 10px; color: #f5d69a; }
+  form, .toolbar { display: flex; gap: 8px; margin-block: 16px; flex-wrap: wrap; }
+  input { flex: 1; min-width: 160px; }
+  input, button { color: inherit; background: #202b39; border: 1px solid #65768b; padding: 10px; border-radius: 8px; font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:hover:not(:disabled) { border-color: #d8e5f5; }
+  :focus-visible { outline: 2px solid #f5d69a; outline-offset: 3px; }
+  #error { color: #ffb3b3; min-height: 24px; }
+  #queue { padding: 0; list-style: none; }
+  #queue li { display: flex; gap: 12px; align-items: center; padding: 14px 0; border-bottom: 1px solid #344153; }
+  .song { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .detail { font-size: 13px; margin-top: 5px; }
+  .actions { display: flex; gap: 6px; }
+  @media (max-width: 480px) { body { padding: 12px; } #queue li { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<h1>Music Lab</h1>
+<p id="notice">Experimental shared queue. Audio playback is not connected in this build. Adding a song checks its public metadata only.</p>
+<p id="status" class="muted" role="status" aria-live="polite">Connecting to the music service…</p>
+<form id="add-form">
+  <label for="url" class="muted">Song link</label>
+  <input id="url" type="url" required maxlength="2048" placeholder="Paste a public song link" autocomplete="off">
+  <button id="add" type="submit" disabled>Add to queue</button>
+</form>
+<div id="error" role="alert"></div>
+<div class="toolbar"><button id="refresh" disabled>Refresh</button><button id="clear" disabled>Clear queue</button></div>
+<ol id="queue" aria-label="Shared music queue"></ol>
+<script>
+  'use strict';
+  const $ = id => document.getElementById(id);
+  let info = null, state = null, pending = false, pendingId = null, alive = true, timer = null, requestNumber = 0;
+  const me = () => info && info.me;
+  const player = () => info && info.participants.some(p => p.pubkey === me() && p.role === 'player');
+  const host = () => state && state.host === me() && player();
+  const name = key => (info && info.participants.find(p => p.pubkey === key)?.name) || key.slice(0, 10);
+  const metadata = value => ({metadata_available: 'Metadata available · audio not verified', unsupported_probe: 'Metadata lookup is not supported yet',
+    provider_rejected: 'The source rejected the metadata request', rate_limited: 'The source is limiting requests', redirect_blocked: 'The source redirected the request',
+    timed_out: 'The source took too long to respond', network_error: 'The service could not reach the source', invalid_response: 'The source returned invalid metadata',
+    response_too_large: 'The source response exceeded the size limit'})[value] || 'Checking public metadata…';
+
+  function requestId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  function render() {
+    $('add').disabled = !alive || !player() || !state || pending || state.queue.length >= state.queue_limit;
+    $('refresh').disabled = !alive || !player() || pending;
+    $('clear').disabled = !alive || !host() || pending || !state.queue.length;
+    $('status').textContent = !alive ? 'This activity has ended.' : !state ? 'Waiting for the Music Lab service. Its operator must keep it running.'
+      : `${state.queue.length}/${state.queue_limit} songs · Host: ${name(state.host || '')}${player() ? '' : ' · Watching only'}`;
+    $('queue').replaceChildren();
+    for (const [index, entry] of (state?.queue || []).entries()) {
+      const row = document.createElement('li'), song = document.createElement('div'); song.className = 'song';
+      const title = document.createElement('strong'); title.textContent = entry.title || entry.source.canonical_url;
+      const detail = document.createElement('div'); detail.className = 'detail muted';
+      detail.textContent = `${entry.source.provider} · Added by ${name(entry.added_by)} · ${metadata(entry.metadata)}`;
+      song.append(title, detail); row.append(song);
+      const actions = document.createElement('div'); actions.className = 'actions';
+      const button = (label, data) => {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.disabled = pending || !alive;
+        b.onclick = () => send(data); actions.append(b);
+      };
+      if (host() && index > 0) button('↑', {t: 'move', entry_id: entry.id, before: state.queue[index - 1].id});
+      if (player() && (host() || entry.added_by === me())) button('Remove', {t: 'remove', entry_id: entry.id});
+      row.append(actions); $('queue').append(row);
+    }
+  }
+
+  function finish(message = '') {
+    clearTimeout(timer); timer = null; pending = false; pendingId = null; $('error').textContent = message; render();
+  }
+
+  async function send(data) {
+    if (!alive || !player() || pending) return;
+    const generation = ++requestNumber;
+    pending = true; $('error').textContent = ''; render();
+    timer = setTimeout(() => { if (generation === requestNumber) finish('The music service did not answer. Refresh to check the queue before retrying.'); }, 15000);
+    try {
+      pendingId = requestId();
+      data = {...data, request_id: pendingId};
+      await discordia.call('instance.send', {data, to: info.app});
+    } catch (_) {
+      if (pending && generation === requestNumber) finish('Could not send the command to the music service.');
+    }
+  }
+
+  $('add-form').onsubmit = event => { event.preventDefault(); send({t: 'add', url: $('url').value.trim()}); };
+  $('clear').onclick = () => send({t: 'clear'});
+  $('refresh').onclick = () => send({t: 'hello'});
+  discordia.on('instance.update', next => { info = next; render(); });
+  discordia.on('instance.message', event => {
+    if (!info || event.from !== info.app) return;
+    const data = event.data;
+    if (data?.t === 'state' && Array.isArray(data.queue)) {
+      if (state && data.session_epoch === state.session_epoch && data.revision < state.revision) return;
+      const restarted = state && data.session_epoch !== state.session_epoch;
+      state = data;
+      if (restarted) finish('The music service restarted this session. Check the queue before retrying a command.');
+      else if (pendingId && data.ack === pendingId) finish(); else render();
+    } else if (data?.t === 'error' && (!data.request_id || data.request_id === pendingId)) finish(typeof data.message === 'string' ? data.message : 'The music service rejected the command.');
+  });
+  discordia.call('instance.info').then(next => { info = next; render(); if (player()) send({t: 'hello'}); })
+    .catch(() => { alive = false; finish(''); });
+  window.addEventListener('pagehide', () => { alive = false; clearTimeout(timer); });
+</script>
+</body>
+</html>

@@ -1,8 +1,46 @@
 # Music activity
 
-Current phase: source feasibility. `discordia-music` is an isolated CLI/library,
-not an installed activity or an audio player. Nothing executes in the gateway,
-and no UI, protocol frames, account credentials or voice keys have changed.
+Current phase: installable shared-queue prototype, named **Music Lab**. Playback
+and collection expansion are not connected. Nothing starts with Discordia or
+the gateway by default. The source probe CLI remains available separately.
+
+## Optional installation
+
+```powershell
+cargo run -p discordia-music --features activity --bin discordia-music-activity -- --server 'ws://127.0.0.1:9000'
+```
+
+Off loopback, use the host's `quic://…` share string (or its TLS-proxied URL).
+The operator runs this process independently, like the Wizards example. It
+prints its public app key; a guild manager installs that key in
+**Integrations → Install an app**. No commands, guild intents or guild
+permissions are requested: only the activity's consented `Instance` capability.
+The service supplies its signed, hash-pinned HTML bundle through `BundleWanted` /
+`OfferActivityBundle`; no public download URL or automatic install is needed.
+
+`music.key` (or `--key-file` / `MUSIC_KEY_FILE`) is the service's secret identity:
+keep it private and preserve it across restarts. Unix creation uses mode 0600;
+on Windows it inherits the directory's permissions. An invalid existing file
+fails startup; it is never overwritten or replaced. Ctrl+C stops the service.
+
+| Prototype behavior | Limit |
+|---|---|
+| Independent sessions | One per channel, 16 per service; follows existing activity channel visibility |
+| Queue | 8 single-track links; no pretend album/playlist imports |
+| Controls | Players add/remove their own tracks; first current player hosts, reorders/removes any/clears |
+| Metadata workers | 4 per service, at most 2 pending tracks per person per session |
+| Repeated commands | Last 64 successful mutations deduplicated by participant + request UUID |
+| Session data | Memory only; last participant leaving ends the session |
+| Service reconnect | Re-registers the same app, receives own instances; queue resets with a new epoch and UI notice |
+| Media | No voice tokens, microphone access, audio publication or streaming credentials |
+| Client | Existing isolated activity window, with Wizards' current platform support; Android activity windows are not supported yet |
+
+Interface labels and notices identify this as a metadata/queue prototype.
+Spectators receive state but cannot issue commands. No playback controls are
+shown. URLs and returned titles render as text, never HTML, embeds or thumbnails.
+Request acknowledgements are correlated, source jobs cancel when removed, and
+late results cannot resurrect deleted entries. Bundle changes require a newer
+signed manifest version.
 
 ## Source validation
 
@@ -27,6 +65,10 @@ cargo run -p discordia-music -- --probe 'https://soundcloud.com/forss/flickermoo
 
 cargo test -p discordia-music
 cargo clippy -p discordia-music --all-targets -- -D warnings
+
+# Optional service, queue, key and local gateway installation regression tests.
+cargo test -p discordia-music --features activity
+node --test music/tests/activity_ui.cjs
 ```
 
 At most 32 links per invocation, processed sequentially. Invalid input rejects
@@ -45,8 +87,8 @@ bodies. Titles are untrusted text. No request authentication or cookie store.
 | Boundary | Direction |
 |---|---|
 | Runtime | Rust service explicitly enabled by the operator; guild installs never execute code in the gateway (trap 39) |
-| Authority | One ephemeral music session per voice channel, server-checked access and controls |
-| Client | Trusted native Dioxus UI for desktop/mobile; preserve third-party activity isolation |
+| Authority | Installable activity with an external Rust backend; current queue inherits channel access, voice participation will be part of the media boundary |
+| Client | Installed isolated bundle, as with Wizards; media support must not open third-party activity networking or Dioxus IPC |
 | Audio | One stereo publication per session; reuse Symphonia, resampling and LiveKit where compatible |
 | Privacy | Dedicated music credentials/key scope; no microphone subscriptions or voice-room keys for the music service |
 | Resources | Bounded queues and decode buffers, streaming reads, cancellation and explicit teardown |
@@ -69,6 +111,11 @@ Live metadata requests returned HTTP 200 and nonempty titles for YouTube
 single-item observations, not platform-wide availability guarantees. All
 reports retain `audio_verified: false` and `playlist_entries_verified: false`.
 No live TIDAL request or music playback test was performed.
+
+Local gateway tests cover explicit installation (absent before install), bundle
+delivery, two participants sharing a queue, command deduplication, host handoff,
+and service reconnect. UI bridge tests cover sender validation, untrusted text,
+command acknowledgement, timeout, spectator controls and restart epochs.
 
 Primary references: [SoundCloud oEmbed](https://developers.soundcloud.com/docs/oembed),
 [Spotify oEmbed](https://developer.spotify.com/documentation/embeds/reference/oembed),

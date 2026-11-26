@@ -1580,8 +1580,11 @@ pub(crate) async fn handle_connection_with_route<S>(
                                     share_guild_apps(&ctx.state, guild_id);
                                 }
                                 ask_for_bundles(&ctx.state, &u.pubkey);
+                                share_app_instances(&ctx.state, &u.pubkey);
                             }
-                            Ok(crate::state::ManifestOutcome::Stale) => {}
+                            Ok(crate::state::ManifestOutcome::Stale) => {
+                                share_app_instances(&ctx.state, &u.pubkey);
+                            }
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             }
@@ -2686,7 +2689,9 @@ pub(crate) async fn handle_connection_with_route<S>(
                         let seen_by = ctx.state.channel(channel_id).map(|c| viewers_of(&ctx.state, &c));
                         match ctx.state.delete_channel(channel_id, &u.pubkey).await {
                             Ok((guild_id, evicted)) => {
-                                ctx.state.end_channel_instances(channel_id);
+                                if ctx.state.end_channel_instances(channel_id) {
+                                    share_instances(&ctx.state, vec![channel_id]);
+                                }
                                 tracing::info!(%guild_id, %channel_id, by = ?u.username, "channel deleted");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 // The channel is gone, so only who could see it is told who was inside.
@@ -4011,20 +4016,44 @@ fn bot_can(
 /// the instances of its own activity, wherever it can see.
 fn share_instances(state: &crate::state::AppState, channels: Vec<Id>) {
     for channel_id in channels {
-        let Some(channel) = state.channel(channel_id) else {
-            continue;
-        };
         let instances = state.instances_in(channel_id);
-        let mut to = viewers_of(state, &channel);
-        to.extend(
-            instances
-                .iter()
-                .filter_map(|i| crate::state::AppState::instance_bot(i).map(str::to_string)),
-        );
-        to.sort_unstable();
-        to.dedup();
+        let to = state
+            .channel(channel_id)
+            .map(|channel| viewers_of(state, &channel))
+            .unwrap_or_default();
+        for (app, own) in state.instance_app_updates(channel_id, &instances) {
+            if !to.contains(&app) {
+                state.deliver(
+                    vec![app],
+                    ServerMessage::ActivityInstances {
+                        channel_id,
+                        instances: own,
+                    },
+                );
+            }
+        }
         state.deliver(
             to,
+            ServerMessage::ActivityInstances {
+                channel_id,
+                instances,
+            },
+        );
+    }
+}
+
+fn share_app_instances(state: &crate::state::AppState, app: &str) {
+    let mut channels: std::collections::HashMap<Id, Vec<crate::protocol::ActivityInstance>> =
+        std::collections::HashMap::new();
+    for instance in state.instances_for_app(app) {
+        channels
+            .entry(instance.channel_id)
+            .or_default()
+            .push(instance);
+    }
+    for (channel_id, instances) in channels {
+        state.deliver(
+            vec![app.to_string()],
             ServerMessage::ActivityInstances {
                 channel_id,
                 instances,

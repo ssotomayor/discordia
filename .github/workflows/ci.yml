@@ -91,6 +91,12 @@ jobs:
       - name: Tests (protocol + nostr + server + bot SDK + rendezvous + push relay)
         run: cargo test -p discordia-protocol -p discordia-nostr -p discordia-server -p discordia-bot -p discordia-agent -p discordia-rendezvous -p discordia-push-relay -p discordia-music
 
+      - name: Installable music activity
+        run: |
+          cargo clippy -p discordia-music --features activity --all-targets -- -D warnings
+          cargo test -p discordia-music --features activity
+          node --test music/tests/activity_ui.cjs
+
   audit:
     name: dependency advisories
     runs-on: ubuntu-latest
