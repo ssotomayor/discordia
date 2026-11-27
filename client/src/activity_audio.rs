@@ -231,6 +231,7 @@ fn document_eval(script: &str) {
 
 pub fn start(connection: Connection) {
     use dioxus::prelude::*;
+    let request = connection.request;
     let Ok(options) = serde_json::to_string(&connection) else {
         return;
     };
@@ -267,9 +268,13 @@ pub fn start(connection: Connection) {
                     | "encryption_failed"
                     | "connection_timeout"
             ) {
-                break;
+                return;
             }
         }
+        crate::features::activities::inbound(crate::features::activities::Inbound::AudioState {
+            request,
+            status: "connection_failed".into(),
+        });
     });
 }
 
