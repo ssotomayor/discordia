@@ -152,7 +152,11 @@ impl AppState {
         let install = self
             .bot_install(channel.guild_id, app)
             .ok_or("that activity is not available here")?;
-        if install.app.as_ref().is_none_or(|app| app.activity.is_none()) {
+        if install
+            .app
+            .as_ref()
+            .is_none_or(|app| app.activity.is_none())
+        {
             return Err("that activity is not available here".into());
         }
         if install.access.reads(channel.id) && self.may_use_app(&install, pubkey) {

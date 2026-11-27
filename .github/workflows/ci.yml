@@ -93,8 +93,8 @@ jobs:
 
       - name: Installable music activity
         run: |
-          cargo clippy -p discordia-music --features activity,audio --all-targets -- -D warnings
-          cargo test -p discordia-music --features activity,audio
+          cargo clippy -p discordia-music --features activity,audio,audio-keys --all-targets -- -D warnings
+          cargo test -p discordia-music --features activity,audio,audio-keys
           node --test music/tests/activity_ui.cjs
 
       - name: Activity audio authorization

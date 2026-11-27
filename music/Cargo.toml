@@ -7,6 +7,7 @@ default-run = "discordia-music"
 
 [features]
 activity = ["dep:discordia-bot", "dep:sha2", "dep:hex", "tokio/fs", "tokio/io-util", "tokio/signal", "tokio/sync"]
+audio-keys = ["activity", "discordia-bot/audio-keys"]
 audio = ["dep:symphonia", "dep:rubato", "tokio/sync"]
 transport = ["audio", "dep:livekit"]
 

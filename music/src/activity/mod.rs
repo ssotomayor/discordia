@@ -1,3 +1,5 @@
+#[cfg(feature = "audio-keys")]
+pub mod keys;
 pub mod runtime;
 pub mod session;
 

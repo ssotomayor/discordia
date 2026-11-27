@@ -153,12 +153,10 @@ Floating-point values must be finite; out-of-range peaks clamp to PCM full scale
 | Publication clock | Advances through silence; short scheduling slips catch up, >250 ms reports `ClockStalled` rather than silently falling behind |
 | Publisher | 192 kbit/s Opus ceiling, no microphone AEC/noise suppression/AGC, no automatic subscriptions |
 
-The publisher takes an explicit music-room token and its own 32-byte key. It
-does not mint activity grants, borrow voice tokens/keys, or expose networking
-to the activity window. Current activity commands do not invoke it: permission
-and grant integration has not been implemented. Owners must close the publisher
+The publisher takes an explicit music-room token and its own 32-byte key.
+Current activity commands do not invoke it. Owners must close the publisher
 and stop the decoder when their media session ends. Probe/queue capabilities
-are unchanged.
+are unchanged; no networking is exposed to the activity window.
 
 ```powershell
 # Local decode validation only; no playback, upload or publication.
@@ -188,4 +186,44 @@ grants; it never starts or attaches to an ordinary user's voice session.
 
 ```powershell
 cargo test -p discordia-music --all-features --test media -- --ignored --test-threads=1
+```
+
+## Experimental audio permissions and key delivery
+
+The gateway's `activity-audio` build feature is off by default. Music Lab's
+manifest still requests only `Instance`; it cannot obtain audio grants. The
+native receiver and key exchange are not connected to the activity yet.
+
+| Boundary | Implemented behavior |
+|---|---|
+| Consent | An installed app needs both `Audio` and `Instance`; adding audio requires renewed approval |
+| Publisher | Only the instance's app identity; publish audio only, no subscriptions or data publication |
+| Listener | Current participant, including spectators, with current guild/channel/app access; no publication |
+| Credential | Private activity-room scope, 60-second admission token, reply to the requesting connection only; debug output redacts it |
+| Routing | Direct operator-owned SFU only; shared placement and external media minters are rejected |
+| Revalidation | Membership, permissions, epoch and media route checked again after minting |
+| Access removal | Channel/app/role changes prune ineligible participants and notify the app, including the final empty snapshot |
+| Key prototype | Optional music `audio-keys` feature; fresh random key/publication ID after membership or role changes and service restarts |
+| Key envelope | Existing NIP-44 encryption to each recipient; binds instance, channel, epoch, request nonce, publication, publisher and recipient |
+
+`nostr::activity_audio` supplies shared envelope validation for Rust clients;
+the optional bot SDK helpers use the service identity without exporting its
+secret. Invalid, oversized, altered and cross-context envelopes fail with a
+generic error. Key debug output is redacted; owned key buffers and serialized
+plaintext are cleared on drop. This does not guarantee erasure of every copy
+made by serialization or cryptographic dependencies.
+
+`PublicationKeys` rejects outsiders, stale scopes and stopped sessions. An
+unchanged snapshot preserves its publication; leaving and returning to the
+same participant list generates a new key and publication ID. Callers must
+close the previous publication before starting its replacement. Token expiry
+does not disconnect an existing SFU participant, and deterministic membership
+hashes alone do not revoke access. This teardown and the trusted native client
+receiver must be wired before enabling music audio.
+
+```powershell
+cargo test -p discordia-nostr --test activity_audio
+cargo test -p discordia-music --features audio-keys --test keys
+cargo test -p discordia-server --no-default-features --features activity-audio --test activity_audio
+cargo test -p discordia-server --no-default-features --test activity_audio_disabled
 ```

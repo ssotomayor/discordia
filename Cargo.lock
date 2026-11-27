@@ -2547,6 +2547,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bs58",
+ "discordia-nostr",
  "discordia-protocol",
  "futures-util",
  "hex",
@@ -2606,6 +2607,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "zeroize",
 ]
 
 [[package]]

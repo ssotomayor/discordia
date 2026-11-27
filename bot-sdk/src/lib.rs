@@ -6,6 +6,8 @@ use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 
+#[cfg(feature = "audio-keys")]
+pub use discordia_nostr::activity_audio;
 pub use discordia_protocol as protocol;
 use protocol::{AppManifest, BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
 
@@ -80,6 +82,26 @@ impl BotIdentity {
 
     pub fn pubkey(&self) -> &str {
         &self.pubkey_hex
+    }
+
+    #[cfg(feature = "audio-keys")]
+    pub fn seal_activity_audio_key(
+        &self,
+        recipient: &str,
+        context: &activity_audio::KeyContext,
+        key: &activity_audio::AudioKey,
+    ) -> std::result::Result<String, &'static str> {
+        activity_audio::seal(&self.secret, recipient, context, key)
+    }
+
+    #[cfg(feature = "audio-keys")]
+    pub fn open_activity_audio_key(
+        &self,
+        publisher: &str,
+        context: &activity_audio::KeyContext,
+        ciphertext: &str,
+    ) -> std::result::Result<activity_audio::AudioKey, &'static str> {
+        activity_audio::open(&self.secret, publisher, context, ciphertext)
     }
 
     pub fn secret_base58(&self) -> String {
