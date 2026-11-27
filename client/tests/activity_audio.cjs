@@ -27,7 +27,7 @@ function setup({ blocked = false, slow = false, fail = false } = {}) {
   }
   const events = Object.fromEntries(['TrackPublished','TrackSubscribed','TrackUnsubscribed','Disconnected','Reconnecting','Reconnected'].map(name => [name, name]));
   const context = {
-    window: { LivekitClient: { Room, RoomEvent: events, ExternalE2EEKeyProvider: class {} }, __dxfE2eeWorkerSrc: 'worker' },
+    window: { LivekitClient: { Room, RoomEvent: events, ExternalE2EEKeyProvider: class {} }, __dxfE2eeWorkerSrc: 'worker', __dxfActivityAudioWanted: 'request' },
     document: { body: { appendChild: element => elements.push(element) } },
     Blob: class {}, Worker,
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => { released++; } },
@@ -42,7 +42,7 @@ function setup({ blocked = false, slow = false, fail = false } = {}) {
   const track = () => ({ kind: 'audio', setVolume(value) { this.volume = value; }, detach() { this.detached = true; }, attach() {
     return { style: {}, remove() { this.removed = true; }, play() { return blocked ? Promise.reject(new Error()) : Promise.resolve(); } };
   } });
-  return { api, options, rooms, workers, reports, elements, timers, publication, participant, track, released: () => released, send: value => reports.push(value) };
+  return { api, options, rooms, workers, reports, elements, timers, publication, participant, track, released: () => released, send: value => reports.push(value), wanted: request => { context.window.__dxfActivityAudioWanted = request; } };
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -80,6 +80,7 @@ test('a cancelled connection cannot attach audio or overwrite its replacement', 
   const first = h.api.start(h.options(), h.send);
   await settle();
   const old = h.rooms[0];
+  h.wanted('replacement');
   const second = h.api.start({ ...h.options(), request: 'replacement' }, h.send);
   await settle();
   old.finishConnect(); await first;
@@ -89,6 +90,18 @@ test('a cancelled connection cannot attach audio or overwrite its replacement', 
   assert.equal(h.reports.at(-1).request, 'replacement');
   assert.equal(h.reports.at(-1).status, 'waiting_for_audio');
   await h.api.stop();
+});
+
+test('an audio start queued before leaving cannot recreate a cancelled room', async () => {
+  const h=setup();
+  await h.api.stop();
+  const options=h.options();
+  await h.api.start(options,h.send);
+  assert.equal(h.rooms.length,0);
+  assert.equal(h.workers.length,0);
+  assert.equal(options.keyHex,'');
+  assert.equal(options.token,'');
+  assert.equal(h.reports.at(-1).status,'stopped');
 });
 
 test('playback restrictions are reported and subscriptions remain bounded', async () => {

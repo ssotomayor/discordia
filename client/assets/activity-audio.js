@@ -22,6 +22,7 @@
     s.report({ request: s.request, status: 'stopped' });
   }
   function stop() {
+    window.__dxfActivityAudioWanted = null;
     revision++;
     const old = current;
     current = null;
@@ -34,17 +35,23 @@
     return true;
   }
   async function start(options, send) {
+    const cancelled = () => {
+      options.keyHex = ''; options.token = '';
+      send({ request: options.request, status: 'stopped' });
+    };
+    if (options.request !== window.__dxfActivityAudioWanted) { cancelled(); return; }
     const ticket = ++revision;
     const old = current;
     current = null;
     await dispose(old);
-    if (ticket !== revision) return;
+    if (ticket !== revision || options.request !== window.__dxfActivityAudioWanted) { cancelled(); return; }
     const s = { request: options.request, report: send, tracks: new Map(), room: null };
     current = s;
     const fail = status => {
       if (current !== s) return;
       report(s, status);
       current = null;
+      if (window.__dxfActivityAudioWanted === s.request) window.__dxfActivityAudioWanted = null;
       void dispose(s);
     };
     try {

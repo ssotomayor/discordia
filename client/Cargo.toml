@@ -81,6 +81,7 @@ desktop = ["dioxus/desktop", "dep:dioxus-desktop"]
 devtools = ["dioxus/devtools", "dioxus-desktop?/devtools"]
 mobile = ["dioxus/mobile"]
 web = ["dioxus/web"]
+activity-audio = ["discordia-server/activity-audio"]
 
 [lib]
 name = "discordia"

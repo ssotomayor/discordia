@@ -2062,6 +2062,7 @@ fn apply(
             channel_id,
             instances,
         } => {
+            crate::features::activities::instances_changed(channel_id, &instances);
             s.activity_instances.insert(channel_id, instances);
         }
         ServerMessage::GuildActivityInstances {
@@ -2074,14 +2075,23 @@ fn apply(
                 .filter(|c| c.guild_id == guild_id)
                 .map(|c| c.id)
                 .collect();
-            for channel_id in guild_channels {
-                s.activity_instances.remove(&channel_id);
+            for channel_id in &guild_channels {
+                s.activity_instances.remove(channel_id);
             }
             for instance in instances {
                 s.activity_instances
                     .entry(instance.channel_id)
                     .or_default()
                     .push(instance);
+            }
+            for channel in guild_channels {
+                crate::features::activities::instances_changed(
+                    channel,
+                    s.activity_instances
+                        .get(&channel)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                );
             }
         }
         ServerMessage::ActivityStarted { instance } => {

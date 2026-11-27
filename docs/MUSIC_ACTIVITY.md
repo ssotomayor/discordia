@@ -24,13 +24,16 @@ reports `instance.audio` statuses, including connecting, playing, reconnecting,
 waiting for audio, playback blocked, credential timeout, permission denial and
 connection/encryption failure. No raw SDK errors or credentials reach the page.
 
-The trusted bridge sends a targeted `__dxaudio: key_request` with request UUID
+After authorizing listener admission, the gateway sends a targeted `__dxaudio: key_request` with request UUID
 and membership epoch. The service must reply privately with `__dxaudio: key`,
 `context` and NIP-44 `ciphertext`. The host validates that context and decrypts
 with the account identity; it never accepts a plaintext page-supplied key.
 
-Music Lab still requests only `Instance`: its publisher, key exchange and
-playback controls are not connected to this bridge yet. End-to-end provider
+Music Lab metadata mode requests only `Instance`. Its opt-in `playback` mode
+connects local files, publication and key exchange, with separate default identity
+and explicit `Audio` approval. All players control play/pause/next; spectators
+listen and control their own volume. The desktop client feature `activity-audio`
+also enables the embedded host broker; both host variants default off. End-to-end provider
 playback and mobile activity windows are not supported. A deterministic epoch
 or expired admission token alone does not revoke an existing listener: the
 service must stop the old publication and rotate its key on membership changes.
@@ -47,5 +50,8 @@ node client/tests/e2ee_worker.cjs
 Receiver tests cover out-of-order credentials, stale requests, sender/scope
 checks, expiry, replacement races, blocked playback, worker errors and cleanup.
 Real-worker tests cover UTF-8 passphrase and raw-byte key paths without moving
-CryptoKeys across the worker boundary. Complete service-to-app playback has
-not yet been validated.
+CryptoKeys across the worker boundary. A real local gateway/SFU test validates two native SDK receivers, spectator
+admission, shared controls, rekey/revocation and position preservation. Complete
+desktop GUI/WebView playback still requires manual validation. Ordered membership
+snapshots prevent coalesced leave/rejoin from retaining a key; a synchronous
+request fence prevents canceled asynchronous starts from recreating reception.

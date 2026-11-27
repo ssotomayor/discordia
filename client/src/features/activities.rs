@@ -229,6 +229,21 @@ pub enum Inbound {
 
 thread_local! {
     static INBOX: std::cell::RefCell<Option<Coroutine<HostCmd>>> = const { std::cell::RefCell::new(None) };
+    static OWNED_INSTANCE: std::cell::Cell<Option<(Id,Id)>> = const { std::cell::Cell::new(None) };
+}
+
+// Reactive snapshots can coalesce A→B→A; audio still needs both rotations.
+pub fn instances_changed(channel: Id, instances: &[ActivityInstance]) {
+    let owned = OWNED_INSTANCE.with(|owned| owned.get());
+    if let Some((id, _)) = owned.filter(|(_, ch)| *ch == channel) {
+        INBOX.with(|inbox| {
+            if let Some(co) = inbox.borrow().as_ref() {
+                co.send(HostCmd::Sync(
+                    instances.iter().find(|i| i.id == id).cloned(),
+                ));
+            }
+        });
+    }
 }
 
 pub fn request_join(instance_id: Id, role: ActivityRole) {
@@ -506,7 +521,12 @@ fn instance_event(session: &mut Session, from: &str, data: &str, state: &AppStat
         .is_some_and(|v| v.get("__dxaudio").is_some());
     if reserved {
         if let Some(identity) = state.identity.as_ref() {
-            session.audio.key(from, data, &identity.secret_key());
+            if let Some(status) = session.audio.key(from, data, &identity.secret_key()) {
+                session.audio.stop();
+                crate::activity_audio::stop();
+                session.tell("instance.audio", json!({"status":status}));
+                return;
+            }
             if let Some(connection) = session.audio.ready() {
                 crate::activity_audio::start(connection);
             }
@@ -602,6 +622,7 @@ pub fn ActivityHost(
                 match cmd {
                     HostCmd::Begin(next) => {
                         let mut next = *next;
+                        OWNED_INSTANCE.with(|owned| owned.set(next.instance.zip(next.channel)));
                         crate::activity_audio::stop();
                         if let Some(old) = session.take()
                             && let Some(id) = old.instance
@@ -664,6 +685,7 @@ pub fn ActivityHost(
                         {
                             gateway.send(ClientMessage::ActivityLeave { instance_id: id });
                         }
+                        OWNED_INSTANCE.with(|owned| owned.set(None));
                         launched.set(None);
                         if let FromActivity::Failed(error) = event {
                             problem.set(Some(error));
@@ -749,6 +771,7 @@ pub fn ActivityHost(
                         let Some(s) = session.as_mut() else { continue };
                         match found {
                             None => {
+                                OWNED_INSTANCE.with(|owned| owned.set(None));
                                 crate::activity_audio::stop();
                                 session = None;
                                 activity_window::close(WINDOW_KEY);
@@ -780,6 +803,7 @@ pub fn ActivityHost(
     });
     use_hook(move || INBOX.with(|i| *i.borrow_mut() = Some(co)));
     use_drop(move || {
+        OWNED_INSTANCE.with(|owned| owned.set(None));
         INBOX.with(|i| *i.borrow_mut() = None);
         activity_window::close(WINDOW_KEY);
         crate::activity_audio::stop();

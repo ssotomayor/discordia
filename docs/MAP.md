@@ -20,10 +20,10 @@ These hold most of the tree. Grep the variant or the `fn` name instead.
 | `client/src/features/chat.rs` | 4238 |
 | `client/src/features/screenshare.rs` | 4263 |
 | `server/tests/owner_controls.rs` | 3460 |
-| `client/src/net.rs` | 3607 |
+| `client/src/net.rs` | 3617 |
 | `client/src/features/channels.rs` | 2741 |
 | `client/src/nostr/service.rs` | 2770 |
-| `client/src/features/activities.rs` | 2210 |
+| `client/src/features/activities.rs` | 2234 |
 | `server/src/store.rs` | 2154 |
 | `client/src/identity.rs` | 1437 |
 | `client/src/features/guild_settings.rs` | 1160 |

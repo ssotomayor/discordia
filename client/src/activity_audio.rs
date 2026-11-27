@@ -4,6 +4,7 @@ use crate::protocol::{
 };
 use discordia_nostr::activity_audio::{AudioKey, KeyContext};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ struct Attempt {
     since: Instant,
     grant: Option<Grant>,
     key: Option<AudioKey>,
+    publication: Option<[u8; 16]>,
     started: bool,
 }
 
@@ -54,20 +56,12 @@ impl Listener {
     pub fn begin(&mut self, instance: ActivityInstance) -> Vec<ClientMessage> {
         let request = Id::new_v4();
         let epoch = activity_audio_epoch(&instance);
-        let messages = vec![
-            ClientMessage::RequestActivityAudio {
-                instance_id: instance.id,
-                request_id: request,
-                epoch: epoch.clone(),
-                role: ActivityAudioRole::Listener,
-            },
-            ClientMessage::ActivitySend {
-                instance_id: instance.id,
-                to: Some(instance.app.clone()),
-                data: json!({"__dxaudio":"key_request", "request_id":request, "epoch":epoch})
-                    .to_string(),
-            },
-        ];
+        let messages = vec![ClientMessage::RequestActivityAudio {
+            instance_id: instance.id,
+            request_id: request,
+            epoch: epoch.clone(),
+            role: ActivityAudioRole::Listener,
+        }];
         self.attempt = Some(Attempt {
             instance,
             epoch,
@@ -75,6 +69,7 @@ impl Listener {
             since: Instant::now(),
             grant: None,
             key: None,
+            publication: None,
             started: false,
         });
         messages
@@ -151,16 +146,44 @@ impl Listener {
         }
     }
 
-    pub fn key(&mut self, from: &str, data: &str, secret: &secp256k1::SecretKey) {
-        let Some(a) = self
+    pub fn key(
+        &mut self,
+        from: &str,
+        data: &str,
+        secret: &secp256k1::SecretKey,
+    ) -> Option<&'static str> {
+        let current = self.attempt.as_ref().filter(|a| a.instance.app == from)?;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+            match value.get("__dxaudio").and_then(|v| v.as_str()) {
+                Some("error")
+                    if value
+                        .get("request_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.parse::<Id>().ok())
+                        == Some(current.request) =>
+                {
+                    return Some("service_unavailable");
+                }
+                Some("stop")
+                    if current.publication.is_some()
+                        && value
+                            .get("publication")
+                            .and_then(|v| v.as_str())
+                            .and_then(|v| v.parse::<Id>().ok())
+                            .map(|id| *id.as_bytes())
+                            == current.publication =>
+                {
+                    return Some("service_stopped");
+                }
+                _ => {}
+            }
+        }
+        let a = self
             .attempt
             .as_mut()
-            .filter(|a| !a.started && a.instance.app == from)
-        else {
-            return;
-        };
+            .filter(|a| !a.started && a.instance.app == from)?;
         let Ok(envelope) = serde_json::from_str::<Envelope>(data) else {
-            return;
+            return None;
         };
         let context = &envelope.context;
         if envelope.__dxaudio != "key"
@@ -170,13 +193,15 @@ impl Listener {
             || hex::encode(context.epoch) != a.epoch
             || context.publication == [0; 16]
         {
-            return;
+            return None;
         }
         if let Ok(key) =
             discordia_nostr::activity_audio::open(secret, from, context, &envelope.ciphertext)
         {
             a.key = Some(key);
+            a.publication = Some(context.publication);
         }
+        None
     }
 
     pub fn ready(&mut self) -> Option<Connection> {
@@ -213,7 +238,7 @@ fn invalid_url(value: &str) -> bool {
 }
 
 pub fn stop() {
-    document_eval("window.__dxfActivityAudio?.stop();");
+    document_eval("window.__dxfActivityAudioWanted=null;window.__dxfActivityAudio?.stop();");
 }
 
 pub fn set_volume(value: f64) {
@@ -232,6 +257,7 @@ fn document_eval(script: &str) {
 pub fn start(connection: Connection) {
     use dioxus::prelude::*;
     let request = connection.request;
+    document_eval(&format!("window.__dxfActivityAudioWanted='{request}';"));
     let Ok(options) = serde_json::to_string(&connection) else {
         return;
     };
@@ -351,11 +377,11 @@ mod tests {
             if token_first {
                 listener.token(grant(&instance, request));
             } else {
-                listener.key(&instance.app, &data, &me);
+                assert!(listener.key(&instance.app, &data, &me).is_none());
             }
             assert!(listener.ready().is_none());
             if token_first {
-                listener.key(&instance.app, &data, &me);
+                assert!(listener.key(&instance.app, &data, &me).is_none());
             } else {
                 listener.token(grant(&instance, request));
             }
@@ -368,7 +394,7 @@ mod tests {
             assert!(listener.ready().is_none());
             listener.stop();
             listener.token(grant(&instance, request));
-            listener.key(&instance.app, &data, &me);
+            assert!(listener.key(&instance.app, &data, &me).is_none());
             assert!(listener.ready().is_none());
         }
     }
@@ -379,14 +405,14 @@ mod tests {
         let data = envelope(&instance, &app, request);
         listener.begin(instance.clone());
         listener.token(grant(&instance, request));
-        listener.key(&instance.app, &data, &me);
+        assert!(listener.key(&instance.app, &data, &me).is_none());
         assert!(listener.ready().is_none());
         let request = listener.attempt.as_ref().unwrap().request;
         let data = envelope(&instance, &app, request);
         listener.token(grant(&instance, request));
-        listener.key("another-app", &data, &me);
+        assert!(listener.key("another-app", &data, &me).is_none());
         assert!(listener.ready().is_none());
-        listener.key(&instance.app, &data, &me);
+        assert!(listener.key(&instance.app, &data, &me).is_none());
         listener
             .attempt
             .as_mut()
@@ -401,5 +427,32 @@ mod tests {
         assert!(listener.changed(&changed));
         listener.attempt.as_mut().unwrap().since = Instant::now() - Duration::from_secs(21);
         assert!(listener.expired());
+    }
+
+    #[test]
+    fn service_stop_and_errors_are_bound_to_the_current_publication_or_request() {
+        let (mut listener, instance, app, me, request) = setup();
+        let data = envelope(&instance, &app, request);
+        assert!(listener.key(&instance.app, &data, &me).is_none());
+        let value: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let context: KeyContext = serde_json::from_value(value["context"].clone()).unwrap();
+        let publication = Id::from_bytes(context.publication);
+        let stop = json!({"__dxaudio":"stop","publication":publication}).to_string();
+        assert!(listener.key("another-app", &stop, &me).is_none());
+        let stale = json!({"__dxaudio":"stop","publication":Id::new_v4()}).to_string();
+        assert!(listener.key(&instance.app, &stale, &me).is_none());
+        assert_eq!(
+            listener.key(&instance.app, &stop, &me),
+            Some("service_stopped")
+        );
+        listener.begin(instance.clone());
+        let stale = json!({"__dxaudio":"error","request_id":request}).to_string();
+        assert!(listener.key(&instance.app, &stale, &me).is_none());
+        let fresh = listener.attempt.as_ref().unwrap().request;
+        let failure = json!({"__dxaudio":"error","request_id":fresh}).to_string();
+        assert_eq!(
+            listener.key(&instance.app, &failure, &me),
+            Some("service_unavailable")
+        );
     }
 }
