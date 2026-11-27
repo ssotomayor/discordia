@@ -51,7 +51,20 @@ Receiver tests cover out-of-order credentials, stale requests, sender/scope
 checks, expiry, replacement races, blocked playback, worker errors and cleanup.
 Real-worker tests cover UTF-8 passphrase and raw-byte key paths without moving
 CryptoKeys across the worker boundary. A real local gateway/SFU test validates two native SDK receivers, spectator
-admission, shared controls, rekey/revocation and position preservation. Complete
-desktop GUI/WebView playback still requires manual validation. Ordered membership
+admission, shared controls, rekey/revocation and position preservation. An isolated Windows WebView2 receiver also verifies decrypted PCM and cleanup,
+using the app's local-origin configuration and muted generated tones. The full
+activity installation/consent GUI workflow still requires manual validation. Ordered membership
 snapshots prevent coalesced leave/rejoin from retaining a key; a synchronous
 request fence prevents canceled asynchronous starts from recreating reception.
+
+
+`cargo build -p discordia --example activity_audio_probe` builds the optional
+receiver probe. The external service's ignored `activity_media` test launches it
+only when `MUSIC_TEST_WEBVIEW_PROBE` explicitly selects that executable. Credentials
+travel over private stdin, not command-line arguments; no user account is opened.
+The worker regression also verifies explicit errors when WebCrypto is unavailable.
+
+The external service now offers an experimental configured SoundCloud connector;
+its README covers operator credentials, queue selection and resource bounds. Live
+provider validation is pending; this does not enable provider networking in the
+activity page or the gateway.

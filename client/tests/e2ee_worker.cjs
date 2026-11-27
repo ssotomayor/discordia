@@ -30,11 +30,11 @@ function containsKey(value) {
   return value && typeof value === 'object' && Object.values(value).some(containsKey);
 }
 
-function worker(source) {
+function worker(source, cryptoImpl = webcrypto) {
   const pending = [];
   const messages = [];
   const context = {
-    crypto: webcrypto, CryptoKey, TextEncoder, TextDecoder,
+    crypto: cryptoImpl, CryptoKey, TextEncoder, TextDecoder,
     Uint8Array, Uint32Array, ArrayBuffer, DataView,
     ReadableStream, WritableStream, TransformStream,
     RTCEncodedAudioFrame: AudioFrame, RTCEncodedVideoFrame: VideoFrame,
@@ -115,6 +115,13 @@ async function roundtrip(senderSource, receiverSource, sharedKey = true, rawByte
   const error = invalid.wait('error');
   invalid.send('setKeyRawBytes', { keyHex: 'not-a-key' });
   assert.equal((await error).data.error.message, 'invalid raw encryption key');
+  const unavailable = worker(current, {subtle: undefined});
+  const initialized = unavailable.wait('initAck');
+  unavailable.send('init', {loglevel:'silent',keyProviderOptions:{sharedKey:true,ratchetSalt:'LKFrameEncryptionKey',ratchetWindowSize:0,failureTolerance:-1,keyringSize:16}});
+  await initialized;
+  const unavailableError = unavailable.wait('error');
+  unavailable.send('setKeyRawBytes', {keyHex:'ab'.repeat(32),keyIndex:0});
+  assert.match((await unavailableError).data.error.message, /^setKeyRaw:/);
   if (process.env.LIVEKIT_REFERENCE_WORKER) {
     const reference = fs.readFileSync(process.env.LIVEKIT_REFERENCE_WORKER, 'utf8');
     await roundtrip(current, reference);

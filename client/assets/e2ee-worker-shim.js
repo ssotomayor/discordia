@@ -58,11 +58,13 @@
       } else {
         bytes = new TextEncoder().encode(String(d.keyString));
       }
-      return crypto.subtle
-        .importKey('raw', bytes, { name: 'PBKDF2' }, false, [
-          'deriveBits',
-          'deriveKey',
-        ])
+      return Promise.resolve()
+        .then(function () {
+          return crypto.subtle.importKey('raw', bytes, { name: 'PBKDF2' }, false, [
+            'deriveBits',
+            'deriveKey',
+          ]);
+        })
         .then(function (key) {
           return inner({
             data: {
