@@ -228,8 +228,34 @@ pub enum Inbound {
 }
 
 thread_local! {
-    static INBOX: std::cell::RefCell<Option<Coroutine<HostCmd>>> = const { std::cell::RefCell::new(None) };
+    static INBOX: std::cell::RefCell<Option<HostInbox>> = const { std::cell::RefCell::new(None) };
     static OWNED_INSTANCE: std::cell::Cell<Option<(Id,Id)>> = const { std::cell::Cell::new(None) };
+}
+
+#[derive(Clone)]
+struct HostInbox {
+    owner: Id,
+    sender: UnboundedSender<HostCmd>,
+}
+
+impl HostInbox {
+    fn send(&self, command: HostCmd) {
+        if self.sender.unbounded_send(command).is_err() {
+            tracing::debug!("activity host receiver closed");
+        }
+    }
+}
+
+fn release_host(owner: Id) -> bool {
+    INBOX.with(|inbox| {
+        let mut inbox = inbox.borrow_mut();
+        if inbox.as_ref().is_some_and(|inbox| inbox.owner == owner) {
+            *inbox = None;
+            true
+        } else {
+            false
+        }
+    })
 }
 
 // Reactive snapshots can coalesce A→B→A; audio still needs both rotations.
@@ -595,8 +621,10 @@ pub fn ActivityHost(
     let mut picker_open = picker.unwrap_or(local_picker);
     let mut consenting = use_signal(|| None::<Pending>);
     let mut pending = use_signal(|| None::<Pending>);
+    let mut launch_attempt = use_signal(|| 0u64);
     let mut problem = use_signal(|| None::<String>);
     let mut launched = use_signal(|| None::<Launched>);
+    let owner = use_hook(Id::new_v4);
 
     let host_gw = gateway.clone();
     let co = use_coroutine(move |mut rx: UnboundedReceiver<HostCmd>| {
@@ -744,6 +772,10 @@ pub fn ActivityHost(
                         }
                     }
                     HostCmd::Join(instance_id, role) => {
+                        tracing::debug!(
+                            window_open = activity_window::is_open(WINDOW_KEY),
+                            "activity reopen requested"
+                        );
                         if session
                             .as_ref()
                             .is_some_and(|s| s.instance == Some(instance_id))
@@ -801,10 +833,19 @@ pub fn ActivityHost(
             }
         }
     });
-    use_hook(move || INBOX.with(|i| *i.borrow_mut() = Some(co)));
+    use_hook(move || {
+        INBOX.with(|i| {
+            *i.borrow_mut() = Some(HostInbox {
+                owner,
+                sender: co.tx(),
+            })
+        })
+    });
     use_drop(move || {
+        if !release_host(owner) {
+            return;
+        }
         OWNED_INSTANCE.with(|owned| owned.set(None));
-        INBOX.with(|i| *i.borrow_mut() = None);
         activity_window::close(WINDOW_KEY);
         crate::activity_audio::stop();
     });
@@ -861,6 +902,8 @@ pub fn ActivityHost(
 
     let fetch_gw = gateway.clone();
     let begin = use_callback(move |p: Pending| {
+        let attempt = launch_attempt.peek().wrapping_add(1);
+        launch_attempt.set(attempt);
         problem.set(None);
         if let Source::App { sha256, .. } = &p.activity.source {
             fetch_gw.send(ClientMessage::FetchEmoji {
@@ -883,15 +926,19 @@ pub fn ActivityHost(
         // error, so a launch that never resolves is given up on.
         spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            if pending
-                .peek()
-                .as_ref()
-                .is_some_and(|q| q.activity == p.activity)
+            if *launch_attempt.peek() == attempt
+                && pending
+                    .peek()
+                    .as_ref()
+                    .is_some_and(|q| q.activity == p.activity)
             {
                 pending.set(None);
+                tracing::warn!("activity launch timed out waiting for bundle or membership");
                 problem.set(Some(
                     "The activity didn't open. The game may be full or over.".into(),
                 ));
+                consenting.set(None);
+                picker_open.set(true);
             }
         });
     });
@@ -975,7 +1022,8 @@ pub fn ActivityHost(
                 class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                 onclick: move |_| { picker_open.set(false); consenting.set(None); },
                 div {
-                    class: "dxf-activities-dialog dxf-modal-in w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                    class: "dxf-activities-dialog dxf-modal-in bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                    style: "width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
                     div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
                         h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", {crate::i18n::text("Activities", &[])} }
@@ -1312,9 +1360,9 @@ fn ConsentPanel(
         Source::Builtin(_) => None,
     };
     rsx! {
-        div { class: "px-1 py-1",
-            div { class: "flex items-center gap-2 mb-2",
-                span { class: "text-lg", "{activity.icon}" }
+        div { class: "px-2 py-2",
+            div { class: "flex items-center gap-3 mb-3",
+                span { class: "w-9 h-9 rounded-md border border-[var(--border)] flex items-center justify-center text-lg shrink-0", "{activity.icon}" }
                 div { class: "min-w-0",
                     div { class: "text-sm text-[var(--text)] font-medium truncate", {activity.display_name()} }
                     if let Some(author) = &author {
@@ -1323,7 +1371,7 @@ fn ConsentPanel(
                 }
             }
             div { class: "text-xs text-[var(--text-muted)] mb-1.5", {crate::i18n::text("This activity will be able to:", &[])} }
-            ul { class: "space-y-1 mb-3",
+            ul { class: "space-y-1 mb-3", style: "padding: 12px; background-color: var(--panel2); border: 1px solid var(--border); border-radius: 8px;",
                 for cap in activity.caps.iter().copied() {
                     li { class: "flex items-start gap-2 text-xs text-[var(--text)]",
                         span { class: "text-[var(--accent)]", "•" }
@@ -1334,7 +1382,7 @@ fn ConsentPanel(
                     li { class: "text-xs text-[var(--text-dim)]", {crate::i18n::text("Nothing beyond drawing in its window", &[])} }
                 }
             }
-            div { class: "text-[10px] text-[var(--text-dim)] mb-2",
+            div { class: "text-xs text-[var(--text-muted)] mb-3",
                 {crate::i18n::text("Opens in its own window with no internet access. It can't read your other channels, files, or keys, and it never needs your recovery phrase.", &[])}
             }
             div { class: "flex gap-2",
@@ -1716,6 +1764,33 @@ mod tests {
     use crate::state::ConnectionStatus;
 
     #[tokio::test]
+    async fn old_host_cleanup_preserves_the_new_host_inbox() {
+        fn harness() -> Element {
+            let co = use_coroutine(|mut commands: UnboundedReceiver<HostCmd>| async move {
+                use futures_util::StreamExt;
+                while let Some(HostCmd::Join(_, _)) = commands.next().await {}
+            });
+            use_hook(move || {
+                INBOX.with(|inbox| {
+                    *inbox.borrow_mut() = Some(HostInbox {
+                        owner: Id::nil(),
+                        sender: co.tx(),
+                    })
+                })
+            });
+            rsx! {}
+        }
+        let mut dom = VirtualDom::new(harness);
+        dom.rebuild_checked();
+        let old_owner = Id::new_v4();
+        assert!(!release_host(old_owner));
+        request_join(Id::new_v4(), ActivityRole::Player);
+        INBOX.with(|inbox| assert!(!inbox.borrow().as_ref().unwrap().sender.is_closed()));
+        assert!(release_host(Id::nil()));
+        INBOX.with(|inbox| assert!(inbox.borrow().is_none()));
+    }
+
+    #[tokio::test]
     async fn failed_window_reopens_picker_and_leaves_shared_instance() {
         #[derive(Clone)]
         struct Props {
@@ -1748,7 +1823,7 @@ mod tests {
         let session = Session::new(Vec::new(), None, Some(id));
         let window = session.window;
         INBOX.with(|inbox| {
-            let co = inbox.borrow().as_ref().copied().unwrap();
+            let co = inbox.borrow().as_ref().cloned().unwrap();
             co.send(HostCmd::Begin(Box::new(session)));
             co.send(HostCmd::Window(
                 window,

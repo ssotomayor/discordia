@@ -104,6 +104,8 @@ pub fn is_open(key: u64) -> bool {
 pub fn focus(key: u64) {
     OPEN.with(|o| {
         if let Some(open) = o.borrow().get(&key) {
+            open.window.set_minimized(false);
+            open.window.set_visible(true);
             open.window.set_focus();
         }
     });
