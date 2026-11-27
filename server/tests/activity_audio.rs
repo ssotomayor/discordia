@@ -408,3 +408,68 @@ async fn changing_app_access_removes_ineligible_participants_and_blocks_rejoinin
     );
     w.handle.abort();
 }
+
+#[tokio::test]
+async fn spectators_request_audio_keys_without_receiving_game_write_access() {
+    let mut w = setup(true).await;
+    w.guest
+        .send(&ClientMessage::ActivityJoin {
+            instance_id: w.instance.id,
+            role: ActivityRole::Spectator,
+        })
+        .await
+        .unwrap();
+    let current = updated(&mut w.service, w.instance.id, 2).await;
+    w.guest
+        .send(&ClientMessage::ActivitySend {
+            instance_id: current.id,
+            to: Some(w.app.pubkey().into()),
+            data: r#"{"t":"pretend_game_move"}"#.into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::Error { message } = next(&mut w.guest).await {
+            assert!(message.contains("only players"));
+            break;
+        }
+    }
+    let request_id = Id::new_v4();
+    let epoch = activity_audio_epoch(&current);
+    w.guest
+        .send(&ClientMessage::RequestActivityAudio {
+            instance_id: current.id,
+            request_id,
+            epoch: epoch.clone(),
+            role: ActivityAudioRole::Listener,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ActivityAudioToken {
+            request_id: received,
+            ..
+        } = next(&mut w.guest).await
+        {
+            assert_eq!(received, request_id);
+            break;
+        }
+    }
+    loop {
+        if let ServerMessage::ActivityEvent {
+            instance_id,
+            from,
+            data,
+        } = next(&mut w.service).await
+        {
+            assert_eq!(instance_id, current.id);
+            assert!(current.role_of(&from) == Some(ActivityRole::Spectator));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&data).unwrap(),
+                serde_json::json!({"__dxaudio":"key_request","request_id":request_id,"epoch":epoch})
+            );
+            break;
+        }
+    }
+    w.handle.abort();
+}

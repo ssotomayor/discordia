@@ -127,7 +127,7 @@ pub fn grant(ctx: &Arc<AppContext>, request: Request) {
             &ServerMessage::ActivityAudioToken {
                 instance_id: request.instance,
                 request_id: request.request,
-                epoch: request.epoch,
+                epoch: request.epoch.clone(),
                 role: request.role,
                 livekit_url: url.clone(),
                 livekit_urls: alternatives.to_vec(),
@@ -136,5 +136,13 @@ pub fn grant(ctx: &Arc<AppContext>, request: Request) {
                 ice_servers: cfg.ice_servers(),
             },
         );
+        if request.role == ActivityAudioRole::Listener
+            && let Some(instance) = ctx.state.instance(request.instance)
+        {
+            ctx.state.deliver(vec![instance.app],ServerMessage::ActivityEvent {
+                instance_id:request.instance, from:request.key,
+                data:serde_json::json!({"__dxaudio":"key_request","request_id":request.request,"epoch":request.epoch}).to_string(),
+            });
+        }
     });
 }
