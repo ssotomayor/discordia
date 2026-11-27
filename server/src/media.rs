@@ -36,6 +36,18 @@ pub fn image_metadata(url: &str, original_name: Option<&str>) -> crate::protocol
     }
 }
 
+pub fn fits_within(data_url: &str, side: u32) -> bool {
+    data_url
+        .split_once(";base64,")
+        .and_then(|(_, payload)| {
+            base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .ok()
+        })
+        .and_then(|bytes| discordia_image_policy::bounds::check(&bytes).ok())
+        .is_some_and(|b| b.width <= side && b.height <= side)
+}
+
 pub fn validate_chat_preview(data_url: &str) -> Result<(), StoreError> {
     let (bytes, ext) = decode(
         data_url,

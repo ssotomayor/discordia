@@ -428,7 +428,37 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
     assert!(state.handle_chat_tool(&member, create()).await.is_err());
     state.handle_chat_tool(&owner, create()).await.unwrap();
     assert!(state.handle_chat_tool(&owner, create()).await.is_err());
-    let sticker = state.store.stickers(guild_id).await.unwrap().pop().unwrap();
+    let gif_of = |width: u8| {
+        let mut bytes = vec![0; 64];
+        bytes[..10].copy_from_slice(&[b'G', b'I', b'F', b'8', b'9', b'a', width, 0, 1, 0]);
+        format!(
+            "data:image/gif;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        )
+    };
+    let sized = |name: &str, width: u8| ClientMessage::CreateGuildSticker {
+        guild_id,
+        name: name.into(),
+        image: gif_of(width),
+    };
+    assert!(
+        state
+            .handle_chat_tool(&owner, sized("too_wide", 161))
+            .await
+            .is_err()
+    );
+    state
+        .handle_chat_tool(&owner, sized("just_fits", 160))
+        .await
+        .unwrap();
+    let sticker = state
+        .store
+        .stickers(guild_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|s| s.shortcode == "test_sticker")
+        .unwrap();
     assert!(
         state
             .store
@@ -483,7 +513,15 @@ async fn stickers_require_management_and_can_only_be_sent_in_their_community() {
         )
         .await
         .unwrap();
-    assert!(state.store.stickers(guild_id).await.unwrap().is_empty());
+    assert!(
+        !state
+            .store
+            .stickers(guild_id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.id == sticker.id)
+    );
     assert!(
         state
             .store

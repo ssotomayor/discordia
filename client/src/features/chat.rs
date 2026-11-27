@@ -14,8 +14,6 @@ use crate::state::{use_app_state, use_gateway};
 pub(crate) static EMOJIS: std::sync::LazyLock<Vec<(&'static str, &'static str)>> =
     std::sync::LazyLock::new(|| EMOJI_TABLE.iter().map(|(e, n, _)| (*e, *n)).collect());
 
-type UnicodeEmoji = (&'static str, &'static str);
-
 /// Where each CLDR group starts and ends in `EMOJIS`.
 static EMOJI_GROUPS: std::sync::LazyLock<Vec<(emojis::Group, std::ops::Range<usize>)>> =
     std::sync::LazyLock::new(|| {
@@ -63,6 +61,61 @@ fn emoji_group_label(group: emojis::Group) -> &'static str {
         Group::Flags => "Flags",
     }
 }
+
+fn emoji_group_glyph(group: emojis::Group) -> &'static str {
+    use emojis::Group;
+    match group {
+        Group::SmileysAndEmotion => "😀",
+        Group::PeopleAndBody => "👋",
+        Group::AnimalsAndNature => "🐻",
+        Group::FoodAndDrink => "🍔",
+        Group::TravelAndPlaces => "🚗",
+        Group::Activities => "⚽",
+        Group::Objects => "💡",
+        Group::Symbols => "🔣",
+        Group::Flags => "🏁",
+    }
+}
+
+/// Marks the rail button whose section is at the top of the scroller.
+const EMOJI_RAIL_JS: &str = r#"
+(function (pid) {
+  const scroller = document.getElementById(pid + '-scroll');
+  const rail = document.getElementById(pid + '-rail');
+  if (!scroller || !rail || scroller.__dxfRail) return;
+  scroller.__dxfRail = true;
+  let frame = 0;
+  const mark = () => {
+    frame = 0;
+    let active = null;
+    for (const s of scroller.querySelectorAll('[data-emoji-section]')) {
+      if (s.offsetTop > scroller.scrollTop + 8) break;
+      active = s.dataset.emojiSection;
+    }
+    for (const b of rail.querySelectorAll('[data-emoji-target]')) {
+      b.toggleAttribute('data-active', b.dataset.emojiTarget === active);
+    }
+  };
+  const soon = () => { if (!frame) frame = requestAnimationFrame(mark); };
+  scroller.addEventListener('scroll', soon, { passive: true });
+  new MutationObserver(soon).observe(scroller, { childList: true });
+  mark();
+})
+"#;
+
+/// Waits for a section that may not be mounted yet, then puts it at the top.
+const EMOJI_JUMP_JS: &str = r#"
+(function (pid, target) {
+  let tries = 0;
+  const go = () => {
+    const scroller = document.getElementById(pid + '-scroll');
+    const s = scroller && scroller.querySelector('[data-emoji-section="' + target + '"]');
+    if (s) { scroller.scrollTop = s.offsetTop; return; }
+    if (++tries < 60) requestAnimationFrame(go);
+  };
+  go();
+})
+"#;
 
 const QUICK_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "🔥", "👀", "🙏", "✅"];
 
@@ -3078,6 +3131,15 @@ fn EmojiPicker(
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
     let mut query = use_signal(String::new);
+    let pid = use_hook(|| format!("dxf-emoji-{}", uuid::Uuid::new_v4().simple()));
+    // ~1800 glyphs at once held the first open for seconds; one group per frame keeps it instant.
+    let mut mounted = use_signal(|| 1_usize);
+    use_future(move || async move {
+        while mounted() < EMOJI_GROUPS.len() {
+            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            mounted += 1;
+        }
+    });
     let q = query();
     let searching = !q.trim().trim_matches(':').is_empty();
     let recent = if searching {
@@ -3086,14 +3148,19 @@ fn EmojiPicker(
         recent_picks(&settings.read().recent_emoji, &guild_emojis, &emoji_urls)
     };
     let guild_shown: Vec<GuildEmoji> = guild_emojis
-        .into_iter()
-        .filter(|e| emoji_matches(&q, &e.shortcode))
-        .collect();
-    let unicode_shown: Vec<(&'static str, &'static str)> = EMOJIS
         .iter()
-        .copied()
-        .filter(|(_, name)| emoji_matches(&q, name))
+        .filter(|e| emoji_matches(&q, &e.shortcode))
+        .cloned()
         .collect();
+    let unicode_shown: Vec<(&'static str, &'static str)> = if searching {
+        EMOJIS
+            .iter()
+            .copied()
+            .filter(|(_, name)| emoji_matches(&q, name))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let first = guild_shown
         .first()
         .map(|e| ComposerPick::Custom {
@@ -3105,19 +3172,30 @@ fn EmojiPicker(
                 .first()
                 .map(|&(u, _)| ComposerPick::Unicode(u))
         });
-    let nothing = first.is_none();
-    let unicode_sections: Vec<(Option<&'static str>, Vec<UnicodeEmoji>)> = if searching {
-        vec![(None, unicode_shown)]
+    let nothing = searching && first.is_none();
+    let custom_label = if is_dm {
+        crate::i18n::text("Your emoji", &[])
     } else {
-        EMOJI_GROUPS
-            .iter()
-            .map(|(group, range)| {
-                (
-                    Some(emoji_group_label(*group)),
-                    EMOJIS[range.clone()].to_vec(),
-                )
-            })
-            .collect()
+        crate::i18n::text("This guild", &[])
+    };
+    // The rail keeps every section a search hides, so a press there can clear it.
+    let rail_recent = searching
+        && !recent_picks(&settings.read().recent_emoji, &guild_emojis, &emoji_urls).is_empty()
+        || !recent.is_empty();
+    let rail_custom = !guild_emojis.is_empty();
+    let custom_icon = guild_emojis
+        .first()
+        .and_then(|e| emoji_urls.get(&e.image).cloned());
+    let has_recent = !recent.is_empty();
+    let jump = {
+        let pid = pid.clone();
+        move |target: String| {
+            let (mut query, mut mounted) = (query, mounted);
+            query.set(String::new());
+            mounted.set(EMOJI_GROUPS.len());
+            let args = serde_json::json!([pid, target]);
+            let _ = document::eval(&format!("({EMOJI_JUMP_JS}).apply(null, {args});"));
+        }
     };
 
     rsx! {
@@ -3152,89 +3230,181 @@ fn EmojiPicker(
                         _ => {}
                     },
                 }
-                div { class: "dxf-emoji-scroll",
+                div { class: "dxf-emoji-body",
                     onmousedown: move |e| e.prevent_default(),
-                    if !recent.is_empty() {
-                        div { class: "dxf-emoji-heading", {crate::i18n::text("Recently used", &[])} }
-                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
-                            for (p, title) in recent.into_iter() {
-                                button {
-                                    key: "{title}",
-                                    r#type: "button",
-                                    class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
-                                    title: "{title}",
-                                    onclick: {
-                                        let p = p.clone();
-                                        move |_| on_pick.call(p.clone())
-                                    },
-                                    match &p {
-                                        ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! { img { src: "{url}" } },
-                                        ComposerPick::Unicode(e) => rsx! { "{e}" },
-                                        _ => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
-                                    }
+                    nav { id: "{pid}-rail", class: "dxf-emoji-rail",
+                        if rail_recent {
+                            button {
+                                r#type: "button",
+                                class: "dxf-emoji-rail-btn",
+                                "data-emoji-target": "recent",
+                                title: crate::i18n::text("Recently used", &[]),
+                                aria_label: crate::i18n::text("Recently used", &[]),
+                                onclick: { let jump = jump.clone(); move |_| jump("recent".into()) },
+                                span { class: "dxf-emoji-rail-icon", dangerous_inner_html: super::icons::CLOCK }
+                            }
+                        }
+                        if rail_custom {
+                            button {
+                                r#type: "button",
+                                class: "dxf-emoji-rail-btn",
+                                "data-emoji-target": "custom",
+                                title: "{custom_label}",
+                                aria_label: "{custom_label}",
+                                onclick: { let jump = jump.clone(); move |_| jump("custom".into()) },
+                                if let Some(url) = custom_icon.clone() {
+                                    img { src: "{url}", alt: "" }
+                                } else {
+                                    span { class: "dxf-emoji-rail-icon", dangerous_inner_html: super::icons::SMILE }
                                 }
                             }
                         }
-                    }
-                    if !guild_shown.is_empty() {
-                        div { class: "dxf-emoji-heading",
-                            if is_dm { {crate::i18n::text("Your emoji", &[])} } else { {crate::i18n::text("This guild", &[])} }
+                        for (i, (group, _)) in EMOJI_GROUPS.iter().enumerate() {
+                            button {
+                                key: "g{i}",
+                                r#type: "button",
+                                class: "dxf-emoji-rail-btn",
+                                "data-emoji-target": "g{i}",
+                                title: crate::i18n::label(emoji_group_label(*group)).to_string(),
+                                aria_label: crate::i18n::label(emoji_group_label(*group)).to_string(),
+                                onclick: { let jump = jump.clone(); move |_| jump(format!("g{i}")) },
+                                "{emoji_group_glyph(*group)}"
+                            }
                         }
-                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
-                            for e in guild_shown.into_iter() {
-                                {
-                                    let code = e.shortcode.clone();
-                                    let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
-                                    let target = EmojiMenuTarget { shortcode: e.shortcode.clone(), image: e.image.clone(), guild_id: e.guild_id, url: url.clone() };
-                                    let custom = ComposerPick::Custom { code: code.clone(), url: url.clone() };
-                                    rsx! {
+                    }
+                    div {
+                        id: "{pid}-scroll",
+                        class: "dxf-emoji-scroll",
+                        onmounted: {
+                            let pid = pid.clone();
+                            move |_| {
+                                let args = serde_json::json!([pid]);
+                                let _ = document::eval(&format!("({EMOJI_RAIL_JS}).apply(null, {args});"));
+                            }
+                        },
+                        if has_recent {
+                            section { "data-emoji-section": "recent",
+                                div { class: "dxf-emoji-heading", {crate::i18n::text("Recently used", &[])} }
+                                div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                                    for (p, title) in recent.into_iter() {
                                         button {
-                                            key: "{e.shortcode}",
+                                            key: "{title}",
                                             r#type: "button",
                                             class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
-                                            title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
-                                            onclick: move |_| on_pick.call(custom.clone()),
-                                            oncontextmenu: move |ev: MouseEvent| {
-                                                ev.prevent_default();
-                                                emoji_menu.set(Some(target.clone()));
+                                            title: "{title}",
+                                            onclick: {
+                                                let p = p.clone();
+                                                move |_| on_pick.call(p.clone())
                                             },
-                                            if url.is_empty() {
-                                                span { class: "text-[8px] text-[var(--text-dim)]", "…" }
-                                            } else {
-                                                img { src: "{url}" }
+                                            match &p {
+                                                ComposerPick::Custom { url, .. } if !url.is_empty() => rsx! { img { src: "{url}" } },
+                                                ComposerPick::Unicode(e) => rsx! { "{e}" },
+                                                _ => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    for (heading, shown) in unicode_sections.into_iter().filter(|(_, shown)| !shown.is_empty()) {
-                        if let Some(heading) = heading {
-                            div { class: "dxf-emoji-heading", {crate::i18n::label(heading)} }
-                        }
-                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5",
-                            for (emoji, name) in shown.into_iter() {
-                                button {
-                                    key: "{name}",
-                                    r#type: "button",
-                                    class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
-                                    title: ":{name}:",
-                                    onclick: move |_| on_pick.call(ComposerPick::Unicode(emoji)),
-                                    "{emoji}"
+                        if !guild_shown.is_empty() {
+                            section { "data-emoji-section": "custom",
+                                div { class: "dxf-emoji-heading", "{custom_label}" }
+                                div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                                    for e in guild_shown.into_iter() {
+                                        {
+                                            let code = e.shortcode.clone();
+                                            let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
+                                            let target = EmojiMenuTarget { shortcode: e.shortcode.clone(), image: e.image.clone(), guild_id: e.guild_id, url: url.clone() };
+                                            let custom = ComposerPick::Custom { code: code.clone(), url: url.clone() };
+                                            rsx! {
+                                                button {
+                                                    key: "{e.shortcode}",
+                                                    r#type: "button",
+                                                    class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
+                                                    title: crate::i18n::text(":{0}: — right-click to save or remove", std::slice::from_ref(&(code))),
+                                                    onclick: move |_| on_pick.call(custom.clone()),
+                                                    oncontextmenu: move |ev: MouseEvent| {
+                                                        ev.prevent_default();
+                                                        emoji_menu.set(Some(target.clone()));
+                                                    },
+                                                    if url.is_empty() {
+                                                        span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                                    } else {
+                                                        img { src: "{url}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                    if searching && nothing {
-                        div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8",
-                            div { class: "px-1 py-2 text-[11px] text-[var(--text-dim)]", style: "grid-column: 1 / -1;",
-                                {crate::i18n::text("No emoji match your search.", &[])}
+                        if searching {
+                            if !unicode_shown.is_empty() {
+                                div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8 gap-0.5",
+                                    for (emoji, name) in unicode_shown.into_iter() {
+                                        {unicode_cell(emoji, name, on_pick)}
+                                    }
+                                }
+                            }
+                        } else {
+                            for index in 0..mounted().min(EMOJI_GROUPS.len()) {
+                                UnicodeEmojiGroup { key: "g{index}", index, on_pick }
+                            }
+                        }
+                        if nothing {
+                            div { class: "dxf-emoji-grid dxf-emoji-cols grid grid-cols-8",
+                                div { class: "px-1 py-2 text-[11px] text-[var(--text-dim)]", style: "grid-column: 1 / -1;",
+                                    {crate::i18n::text("No emoji match your search.", &[])}
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// One `EMOJI_GROUPS` run. Its own component so mounting the next group leaves
+/// this one undiffed, and `dxf-emoji-deferred` lets the page skip drawing it offscreen.
+#[component]
+fn UnicodeEmojiGroup(index: usize, on_pick: EventHandler<ComposerPick>) -> Element {
+    let (group, range) = EMOJI_GROUPS[index].clone();
+    let rows = |cols: usize, cell: usize, gap: usize| {
+        let rows = range.len().div_ceil(cols);
+        rows * cell + rows.saturating_sub(1) * gap
+    };
+    let style = format!(
+        "--dxf-emoji-h:{}px;--dxf-emoji-h-touch:{}px;",
+        rows(8, 40, 2),
+        rows(6, 44, 4)
+    );
+    rsx! {
+        section { "data-emoji-section": "g{index}",
+            div { class: "dxf-emoji-heading", {crate::i18n::label(emoji_group_label(group))} }
+            div { class: "dxf-emoji-grid dxf-emoji-cols dxf-emoji-deferred grid grid-cols-8 gap-0.5", style: "{style}",
+                for &(emoji, name) in &EMOJIS[range] {
+                    {unicode_cell(emoji, name, on_pick)}
+                }
+            }
+        }
+    }
+}
+
+fn unicode_cell(
+    emoji: &'static str,
+    name: &'static str,
+    on_pick: EventHandler<ComposerPick>,
+) -> Element {
+    rsx! {
+        button {
+            key: "{name}",
+            r#type: "button",
+            class: "dxf-emoji-cell flex items-center justify-center rounded hover:bg-white/[0.06]",
+            title: ":{name}:",
+            onclick: move |_| on_pick.call(ComposerPick::Unicode(emoji)),
+            "{emoji}"
         }
     }
 }

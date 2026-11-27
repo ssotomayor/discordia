@@ -528,7 +528,19 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-reply-quote:hover .dxf-reply-excerpt { color: var(--text); }
 .dxf-emoji-popover { display: flex; flex-direction: column; }
 /* Fixed in both axes: a search narrows the list, not the dialog. */
-.dxf-emoji-scroll { min-height: 0; height: min(22rem, 50vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.dxf-emoji-body { display: flex; gap: 6px; min-height: 0; height: min(22rem, 50vh); }
+.dxf-emoji-rail { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; padding-right: 6px; border-right: 1px solid var(--border); overflow-y: auto; scrollbar-width: none; }
+.dxf-emoji-rail::-webkit-scrollbar { display: none; }
+.dxf-emoji-rail-btn { width: 28px; height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 18px; line-height: 1; color: var(--text-muted); opacity: 0.55; filter: grayscale(1); transition: opacity 120ms, filter 120ms, background-color 120ms; }
+.dxf-emoji-rail-btn:hover, .dxf-emoji-rail-btn[data-active] { opacity: 1; filter: none; background-color: color-mix(in srgb, var(--text) 8%, transparent); }
+.dxf-emoji-rail-btn[data-active] { color: var(--accent); }
+.dxf-emoji-rail-btn img { width: 20px; height: 20px; object-fit: contain; }
+.dxf-emoji-rail-icon { display: block; width: 16px; height: 16px; }
+.dxf-emoji-rail-icon svg { width: 100%; height: 100%; }
+/* Positioned so a section's offsetTop is measured from it: the rail jumps by setting scrollTop. */
+.dxf-emoji-scroll { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+/* An offscreen group is neither laid out nor drawn; the colour glyphs were most of a cold open. */
+.dxf-emoji-deferred { content-visibility: auto; contain-intrinsic-size: auto 334px auto var(--dxf-emoji-h); }
 .dxf-emoji-cols { grid-template-columns: repeat(8, 40px); }
 .dxf-emoji-heading { position: sticky; top: 0; z-index: 1; padding: 0 4px 4px; background-color: var(--panel-solid); color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; }
 .dxf-emoji-cell { width: 40px; height: 40px; font-size: 28px; line-height: 1; }
