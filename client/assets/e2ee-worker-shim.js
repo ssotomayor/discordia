@@ -38,17 +38,28 @@
 
   self.onmessage = function (ev) {
     var m = ev && ev.data;
-    if (!m || m.kind !== 'setKeyRaw') {
+    if (!m || (m.kind !== 'setKeyRaw' && m.kind !== 'setKeyRawBytes')) {
       return inOrder(function () {
         return inner(ev);
       });
     }
     var d = m.data || {};
-    // PBKDF2 over the UTF-8 bytes: what ExternalE2EEKeyProvider.setKey(string)
-    // does, and what libwebrtc derives from the same bytes on the native side.
+    // Music uses native byte keys; voice/screen use UTF-8 passphrases.
+    // Import inside the worker so CryptoKeys never cross its boundary.
     return inOrder(function () {
+      var bytes;
+      if (m.kind === 'setKeyRawBytes') {
+        if (typeof d.keyHex !== 'string' || !/^[0-9a-f]{64}$/.test(d.keyHex)) {
+          send({ kind: 'error', data: { error: new Error('invalid raw encryption key') } });
+          return;
+        }
+        bytes = new Uint8Array(32);
+        for (var i = 0; i < bytes.length; i++) bytes[i] = parseInt(d.keyHex.slice(i * 2, i * 2 + 2), 16);
+      } else {
+        bytes = new TextEncoder().encode(String(d.keyString));
+      }
       return crypto.subtle
-        .importKey('raw', new TextEncoder().encode(String(d.keyString)), { name: 'PBKDF2' }, false, [
+        .importKey('raw', bytes, { name: 'PBKDF2' }, false, [
           'deriveBits',
           'deriveKey',
         ])

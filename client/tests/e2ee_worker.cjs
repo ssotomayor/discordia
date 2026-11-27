@@ -61,7 +61,7 @@ function worker(source) {
   };
 }
 
-async function ready(instance, sharedKey) {
+async function ready(instance, sharedKey, rawBytes = false) {
   const initialized = instance.wait('initAck');
   instance.send('init', { loglevel: 'silent', keyProviderOptions: {
     sharedKey, ratchetSalt: 'LKFrameEncryptionKey', ratchetWindowSize: 8,
@@ -69,7 +69,7 @@ async function ready(instance, sharedKey) {
   } });
   await initialized;
   const enabled = instance.wait('enable');
-  instance.send('setKeyRaw', { keyString: 'worker-interoperability-test', keyIndex: 0, participantIdentity: 'participant' });
+  instance.send(rawBytes ? 'setKeyRawBytes' : 'setKeyRaw', { keyString: 'worker-interoperability-test', keyHex: '00ff7f80'.repeat(8), keyIndex: 0, participantIdentity: 'participant' });
   instance.send('enable', { enabled: true, participantIdentity: 'participant' });
   await enabled;
 }
@@ -86,9 +86,9 @@ async function transform(instance, operation, frame) {
   });
 }
 
-async function roundtrip(senderSource, receiverSource, sharedKey = true) {
+async function roundtrip(senderSource, receiverSource, sharedKey = true, rawBytes = false) {
   const sender = worker(senderSource), receiver = worker(receiverSource);
-  await Promise.all([ready(sender, sharedKey), ready(receiver, sharedKey)]);
+  await Promise.all([ready(sender, sharedKey, rawBytes), ready(receiver, sharedKey, rawBytes)]);
   for (const Frame of [AudioFrame, VideoFrame]) {
     const payload = Uint8Array.from({ length: 80 }, (_, index) => index + 16);
     const plain = Frame === VideoFrame ? Uint8Array.from([0, 0, 0, 1, 0x65, 0xb8, ...payload]) : payload;
@@ -109,6 +109,12 @@ async function roundtrip(senderSource, receiverSource, sharedKey = true) {
 (async () => {
   await roundtrip(current, current);
   await roundtrip(current, current, false);
+  await roundtrip(current, current, true, true);
+  const invalid = worker(current);
+  await ready(invalid, true);
+  const error = invalid.wait('error');
+  invalid.send('setKeyRawBytes', { keyHex: 'not-a-key' });
+  assert.equal((await error).data.error.message, 'invalid raw encryption key');
   if (process.env.LIVEKIT_REFERENCE_WORKER) {
     const reference = fs.readFileSync(process.env.LIVEKIT_REFERENCE_WORKER, 'utf8');
     await roundtrip(current, reference);

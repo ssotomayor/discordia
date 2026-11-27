@@ -214,6 +214,11 @@ fn builtin_bundle_in(id: &str, language: crate::i18n::Language) -> Option<(Strin
 }
 
 pub enum Inbound {
+    Audio(Box<crate::protocol::ServerMessage>),
+    AudioState {
+        request: Id,
+        status: String,
+    },
     Started(ActivityInstance),
     Event {
         instance_id: Id,
@@ -279,6 +284,7 @@ struct Session {
     /// Events held until the page first calls in: before that it has no
     /// listeners, and a host's snapshot for a newcomer would be lost.
     backlog: Option<Vec<(&'static str, Value)>>,
+    audio: crate::activity_audio::Listener,
 }
 
 impl Session {
@@ -293,6 +299,7 @@ impl Session {
             seen: HashMap::new(),
             last: None,
             backlog: Some(Vec::new()),
+            audio: crate::activity_audio::Listener::default(),
         }
     }
 
@@ -310,7 +317,7 @@ const EARLY_LIMIT: usize = 64;
 const MAX_SEEN_COMMITS: usize = 1024;
 
 enum HostCmd {
-    Begin(Session),
+    Begin(Box<Session>),
     Window(u64, FromActivity),
     Inbound(Inbound),
     Sync(Option<ActivityInstance>),
@@ -392,13 +399,44 @@ fn handle_instance_call(
             .filter(|r| !r.is_empty() && r.len() <= 64)
     };
     Some(match method {
+        "instance.audio.join" => match audio_instance(session, &state.read()) {
+            Some(instance) => {
+                crate::activity_audio::stop();
+                for message in session.audio.begin(instance) {
+                    gateway.send(message);
+                }
+                session.tell("instance.audio", json!({"status":"connecting"}));
+                Ok(json!({"requested":true}))
+            }
+            None => Err("activity audio is not approved or available".into()),
+        },
+        "instance.audio.leave" => {
+            session.audio.stop();
+            crate::activity_audio::stop();
+            session.tell("instance.audio", json!({"status":"stopped"}));
+            Ok(json!({"stopped":true}))
+        }
+        "instance.audio.volume" => {
+            if !session.caps.contains(&ActivityCapability::Audio) {
+                Err("permission denied".into())
+            } else if let Some(volume) = params
+                .get("volume")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            {
+                crate::activity_audio::set_volume(volume);
+                Ok(json!({"volume":volume}))
+            } else {
+                Err("volume must be between zero and one".into())
+            }
+        }
         "instance.info" => find_instance(&state.read(), instance_id)
             .map(|i| instance_info(&state.read(), &i))
             .ok_or_else(|| "that activity has ended".into()),
         "instance.send" => {
             let data = params.get("data").cloned().unwrap_or(Value::Null);
-            if data.get("__dxf").is_some() {
-                return Some(Err("__dxf is reserved".into()));
+            if data.get("__dxf").is_some() || data.get("__dxaudio").is_some() {
+                return Some(Err("host message namespace is reserved".into()));
             }
             let to = params
                 .get("to")
@@ -442,6 +480,41 @@ fn handle_instance_call(
         }
         _ => Err("unknown method".into()),
     })
+}
+
+fn audio_instance(session: &Session, state: &AppState) -> Option<ActivityInstance> {
+    if state.server_session() != ServerSession::Live
+        || !session.caps.contains(&ActivityCapability::Audio)
+    {
+        return None;
+    }
+    let instance = find_instance(state, session.instance?)?;
+    let me = &state.self_user.as_ref()?.pubkey;
+    if instance.role_of(me).is_none()
+        || !activity_of(state, &instance.app)?
+            .caps
+            .contains(&ActivityCapability::Audio)
+    {
+        return None;
+    }
+    Some(instance)
+}
+
+fn instance_event(session: &mut Session, from: &str, data: &str, state: &AppState) {
+    let reserved = serde_json::from_str::<Value>(data)
+        .ok()
+        .is_some_and(|v| v.get("__dxaudio").is_some());
+    if reserved {
+        if let Some(identity) = state.identity.as_ref() {
+            session.audio.key(from, data, &identity.secret_key());
+            if let Some(connection) = session.audio.ready() {
+                crate::activity_audio::start(connection);
+            }
+        }
+        return;
+    }
+    let (name, payload) = handle_instance_event(session, from, data);
+    session.tell(name, payload);
 }
 
 /// A frame from another participant, turned into what the page hears. A
@@ -512,9 +585,24 @@ pub fn ActivityHost(
             use futures_util::StreamExt;
             let mut session: Option<Session> = None;
             let mut early: Vec<(Id, String, String)> = Vec::new();
-            while let Some(cmd) = rx.next().await {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(1));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                let cmd = tokio::select! {
+                    cmd = rx.next() => match cmd { Some(cmd) => cmd, None => break },
+                    _ = timer.tick(), if session.as_ref().is_some_and(|s| s.audio.pending()) => {
+                        if let Some(s) = session.as_mut().filter(|s| s.audio.expired()) {
+                            s.audio.stop();
+                            crate::activity_audio::stop();
+                            s.tell("instance.audio", json!({"status":"credentials_timeout"}));
+                        }
+                        continue;
+                    }
+                };
                 match cmd {
-                    HostCmd::Begin(mut next) => {
+                    HostCmd::Begin(next) => {
+                        let mut next = *next;
+                        crate::activity_audio::stop();
                         if let Some(old) = session.take()
                             && let Some(id) = old.instance
                             && Some(id) != next.instance
@@ -523,9 +611,7 @@ pub fn ActivityHost(
                         }
                         for (instance_id, from, data) in std::mem::take(&mut early) {
                             if next.instance == Some(instance_id) {
-                                let (name, payload) =
-                                    handle_instance_event(&mut next, &from, &data);
-                                next.tell(name, payload);
+                                instance_event(&mut next, &from, &data, &state.peek());
                             }
                         }
                         session = Some(next);
@@ -572,6 +658,7 @@ pub fn ActivityHost(
                         if session.as_ref().is_none_or(|s| s.window != window) {
                             continue;
                         }
+                        crate::activity_audio::stop();
                         if let Some(s) = session.take()
                             && let Some(id) = s.instance
                         {
@@ -590,14 +677,38 @@ pub fn ActivityHost(
                         data,
                     }) => match session.as_mut() {
                         Some(s) if s.instance == Some(instance_id) => {
-                            let (name, payload) = handle_instance_event(s, &from, &data);
-                            s.tell(name, payload);
+                            instance_event(s, &from, &data, &state.peek());
                         }
                         _ if pending.peek().is_some() && early.len() < EARLY_LIMIT => {
                             early.push((instance_id, from, data));
                         }
                         _ => {}
                     },
+                    HostCmd::Inbound(Inbound::Audio(message)) => {
+                        let Some(s) = session.as_mut() else { continue };
+                        if let Some(status) = s.audio.token(*message) {
+                            s.audio.stop();
+                            crate::activity_audio::stop();
+                            s.tell("instance.audio", json!({"status":status}));
+                        } else if let Some(connection) = s.audio.ready() {
+                            crate::activity_audio::start(connection);
+                        }
+                    }
+                    HostCmd::Inbound(Inbound::AudioState { request, status }) => {
+                        if let Some(s) = session.as_mut().filter(|s| s.audio.matches(request)) {
+                            if matches!(
+                                status.as_str(),
+                                "stopped"
+                                    | "disconnected"
+                                    | "connection_failed"
+                                    | "encryption_failed"
+                                    | "connection_timeout"
+                            ) {
+                                s.audio.stop();
+                            }
+                            s.tell("instance.audio", json!({"status":status}));
+                        }
+                    }
                     HostCmd::Inbound(Inbound::Started(instance)) => {
                         let waiting = pending.peek().clone();
                         if let Some(p) = waiting
@@ -638,11 +749,23 @@ pub fn ActivityHost(
                         let Some(s) = session.as_mut() else { continue };
                         match found {
                             None => {
+                                crate::activity_audio::stop();
                                 session = None;
                                 activity_window::close(WINDOW_KEY);
                                 launched.set(None);
                             }
                             Some(instance) => {
+                                if s.audio.active() && audio_instance(s, &state.peek()).is_none() {
+                                    s.audio.stop();
+                                    crate::activity_audio::stop();
+                                    s.tell("instance.audio", json!({"status":"permission_denied"}));
+                                } else if s.audio.changed(&instance) {
+                                    crate::activity_audio::stop();
+                                    for message in s.audio.begin(instance.clone()) {
+                                        gateway.send(message);
+                                    }
+                                    s.tell("instance.audio", json!({"status":"connecting"}));
+                                }
                                 let info = instance_info(&state.peek(), &instance);
                                 if s.last.as_ref() != Some(&info) {
                                     s.last = Some(info.clone());
@@ -659,6 +782,7 @@ pub fn ActivityHost(
     use_drop(move || {
         INBOX.with(|i| *i.borrow_mut() = None);
         activity_window::close(WINDOW_KEY);
+        crate::activity_audio::stop();
     });
 
     use_effect(move || {
@@ -669,13 +793,17 @@ pub fn ActivityHost(
         if let Some(channel) = l.channel
             && !s.channels.iter().any(|c| c.id == channel)
         {
+            co.send(HostCmd::Sync(None));
             activity_window::close(WINDOW_KEY);
             drop(s);
             launched.set(None);
             return;
         }
         if let Some(id) = l.instance {
-            co.send(HostCmd::Sync(find_instance(&s, id)));
+            let found = (s.server_session() == ServerSession::Live)
+                .then(|| find_instance(&s, id))
+                .flatten();
+            co.send(HostCmd::Sync(found));
         }
     });
 
@@ -686,7 +814,7 @@ pub fn ActivityHost(
             let (tx, mut wrx) = tokio::sync::mpsc::unbounded_channel();
             let session = Session::new(p.activity.caps.clone(), p.channel, instance);
             let window = session.window;
-            co.send(HostCmd::Begin(session));
+            co.send(HostCmd::Begin(Box::new(session)));
             activity_window::open(activity_window::OpenSpec {
                 key: WINDOW_KEY,
                 title: p.activity.title(),
@@ -1597,7 +1725,7 @@ mod tests {
         let window = session.window;
         INBOX.with(|inbox| {
             let co = inbox.borrow().as_ref().copied().unwrap();
-            co.send(HostCmd::Begin(session));
+            co.send(HostCmd::Begin(Box::new(session)));
             co.send(HostCmd::Window(
                 window,
                 FromActivity::Failed("test open failure".into()),
@@ -1784,6 +1912,23 @@ mod tests {
 
     fn session(instance: Id) -> Session {
         Session::new(vec![ActivityCapability::Instance], None, Some(instance))
+    }
+
+    #[test]
+    fn reserved_audio_envelopes_never_reach_the_installed_page() {
+        let mut s = session(Id::new_v4());
+        let state = AppState::empty();
+        for from in ["app", "another-participant"] {
+            instance_event(
+                &mut s,
+                from,
+                r#"{"__dxaudio":"key","ciphertext":"private-test-payload"}"#,
+                &state,
+            );
+        }
+        assert!(s.backlog.as_ref().unwrap().is_empty());
+        instance_event(&mut s, "app", r#"{"t":"state"}"#, &state);
+        assert_eq!(s.backlog.as_ref().unwrap().len(), 1);
     }
 
     #[tokio::test]

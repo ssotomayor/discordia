@@ -2569,28 +2569,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "discordia-music"
-version = "0.1.0"
-dependencies = [
- "clap",
- "discordia-bot",
- "discordia-server",
- "futures-util",
- "hex",
- "livekit",
- "livekit-api",
- "reqwest 0.12.28",
- "rubato 5.0.1",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "symphonia",
- "tempfile",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "discordia-nostr"
 version = "0.1.0"
 dependencies = [

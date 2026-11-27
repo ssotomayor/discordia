@@ -3,6 +3,7 @@ pub(crate) use dioxus::desktop as platform;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use dioxus::mobile as platform;
 
+mod activity_audio;
 mod activity_bundle;
 mod activity_window;
 mod agc;
